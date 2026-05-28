@@ -5,6 +5,8 @@ import type {
   ExportResult,
   ImportFileResult,
   LibraryStats,
+  TrackEdit,
+  GenreTagCount,
 } from "../types";
 
 export async function importLibrary(xmlPath: string): Promise<ImportResult> {
@@ -36,4 +38,24 @@ export async function searchTracks(
 
 export async function getLibraryStats(): Promise<LibraryStats> {
   return invoke("get_library_stats");
+}
+
+export async function updateTrack(trackId: number, edits: TrackEdit): Promise<void> {
+  return invoke("update_track", { trackId, edits });
+}
+
+export async function setTrackRating(trackId: number, rating: number): Promise<void> {
+  return invoke("set_track_rating", { trackId, rating });
+}
+
+export async function addGenreTag(trackIds: number[], tag: string): Promise<void> {
+  return invoke("add_genre_tag", { trackIds, tag });
+}
+
+export async function removeGenreTag(trackIds: number[], tag: string): Promise<void> {
+  return invoke("remove_genre_tag", { trackIds, tag });
+}
+
+export async function getAllGenreTags(): Promise<GenreTagCount[]> {
+  return invoke("get_all_genre_tags");
 }
