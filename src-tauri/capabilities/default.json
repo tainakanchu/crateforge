@@ -9,6 +9,12 @@
     "fs:allow-read-file",
     "fs:allow-write-file",
     "fs:allow-mkdir",
-    "fs:allow-exists"
+    "fs:allow-exists",
+    {
+      "identifier": "shell:allow-open",
+      "allow": [
+        { "url": "https://github.com/**" }
+      ]
+    }
   ]
 }

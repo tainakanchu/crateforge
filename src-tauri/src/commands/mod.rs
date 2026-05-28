@@ -3,3 +3,5 @@ pub mod playback;
 pub mod playlists;
 pub mod ripping;
 pub mod rules;
+pub mod smtc;
+pub mod updater;

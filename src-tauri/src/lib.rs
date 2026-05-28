@@ -7,16 +7,29 @@ mod itunes_xml;
 mod metadata;
 mod models;
 mod playlist_rules;
+mod smtc;
+mod updater;
 
 use std::sync::Mutex;
 
 pub fn run() {
     let audio_player = Mutex::new(audio::AudioPlayer::new());
+    let smtc_state = Mutex::new(smtc::SmtcState::new());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_shell::init())
         .manage(audio_player)
+        .manage(smtc_state)
+        .setup(|app| {
+            // SMTC is best-effort: failure here shouldn't block app launch.
+            let handle = app.handle().clone();
+            if let Err(e) = smtc::init(&handle) {
+                eprintln!("SMTC init failed (non-fatal): {}", e);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // library
             commands::library::import_library,
@@ -69,6 +82,10 @@ pub fn run() {
             commands::rules::apply_rules,
             commands::rules::read_text_file,
             commands::rules::write_text_file,
+            // updater
+            commands::updater::check_for_update,
+            // smtc
+            commands::smtc::update_smtc,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

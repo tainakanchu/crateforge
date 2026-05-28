@@ -19,6 +19,7 @@
     "@tanstack/react-virtual": "^3.13.6",
     "@tauri-apps/api": "^2.5.0",
     "@tauri-apps/plugin-dialog": "^2.6.0",
+    "@tauri-apps/plugin-shell": "^2.3.5",
     "@uiw/react-codemirror": "^4.25.10",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
