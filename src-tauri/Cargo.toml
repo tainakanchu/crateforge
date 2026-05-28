@@ -40,6 +40,10 @@ lofty = "0.21"
 [target.'cfg(unix)'.dependencies]
 discid = "0.6"
 
+# === Windows-only: System Media Transport Controls (Now Playing widget + media keys) ===
+[target.'cfg(target_os = "windows")'.dependencies]
+souvlaki = "0.8"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
