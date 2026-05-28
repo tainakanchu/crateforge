@@ -2,16 +2,21 @@ import { useEffect, useCallback, useRef, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { SearchBar } from "./components/SearchBar";
 import { TrackTable } from "./components/TrackTable";
+import { AlbumView } from "./components/AlbumView";
 import { PlayerBar } from "./components/PlayerBar";
 import { Toolbar } from "./components/Toolbar";
 import { TrackEditor } from "./components/TrackEditor";
 import { RipDialog } from "./components/ripper/RipDialog";
 import { RulesPanel } from "./components/rules/RulesPanel";
+import { UpdateBanner, CloseUpdateDialog } from "./components/UpdateBanner";
 import { useStore } from "./store/useStore";
 import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
 import * as playbackApi from "./api/playback";
+import * as systemApi from "./api/system";
 import type { Track } from "./types";
+import type { UpdateInfo } from "./api/system";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -47,6 +52,8 @@ export default function App() {
   const [ripOpen, setRipOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [editorTrack, setEditorTrack] = useState<Track | null>(null);
+  const [closeUpdate, setCloseUpdate] = useState<UpdateInfo | null>(null);
+  const updateInfoRef = useRef<UpdateInfo | null>(null);
 
   const reloadPlaylists = useCallback(async () => {
     if (!isTauri) return;
@@ -73,6 +80,11 @@ export default function App() {
 
         if (viewMode === "recent") {
           result = await playbackApi.getRecentTracks(200);
+          setTracks(result);
+          setHasMore(false);
+        } else if (viewMode === "albums" || viewMode === "artists") {
+          // Group views need everything in-memory to group consistently.
+          result = await libraryApi.getTracks(50000, 0);
           setTracks(result);
           setHasMore(false);
         } else if (searchQuery) {
@@ -135,6 +147,99 @@ export default function App() {
     }, 250);
     return () => clearInterval(pollRef.current);
   }, [setPlayback]);
+
+  // Sync now-playing to SMTC + listen to media key events from the OS.
+  useEffect(() => {
+    if (!isTauri) return;
+
+    const current = playback.currentTrackId
+      ? tracks.find((t) => t.trackId === playback.currentTrackId) ?? null
+      : null;
+
+    systemApi
+      .updateSmtc(
+        current?.name ?? "",
+        current?.artist ?? "",
+        current?.album ?? "",
+        playback.isPlaying,
+        playback.positionMs,
+        playback.durationMs,
+      )
+      .catch(() => {});
+  }, [
+    playback.currentTrackId,
+    playback.isPlaying,
+    playback.positionMs,
+    playback.durationMs,
+    tracks,
+  ]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await systemApi.onSmtcButton((kind) => {
+        switch (kind) {
+          case "play":
+            playbackApi.resume().catch(() => {});
+            break;
+          case "pause":
+            playbackApi.pause().catch(() => {});
+            break;
+          case "toggle":
+            if (playback.isPlaying) playbackApi.pause();
+            else playbackApi.resume();
+            break;
+          case "next":
+            playbackApi.playNext();
+            break;
+          case "prev":
+            playbackApi.playPrev();
+            break;
+          case "stop":
+            playbackApi.stop();
+            break;
+        }
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+    // playback.isPlaying read inside handler is intentionally lagging
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Check for update on mount + intercept window close to prompt.
+  useEffect(() => {
+    if (!isTauri) return;
+    (async () => {
+      try {
+        const info = await systemApi.checkForUpdate();
+        if (info.available) {
+          updateInfoRef.current = info;
+        }
+      } catch {
+        // ignore
+      }
+    })();
+
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      const win = getCurrentWindow();
+      unlisten = await win.onCloseRequested((event) => {
+        const info = updateInfoRef.current;
+        const dismissed = info ? sessionStorage.getItem("close-update-asked") : null;
+        if (info && !dismissed) {
+          event.preventDefault();
+          sessionStorage.setItem("close-update-asked", info.latestVersion);
+          setCloseUpdate(info);
+        }
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   // Advance queue when current track finishes.
   useEffect(() => {
@@ -257,17 +362,25 @@ export default function App() {
     <div className="app">
       <Sidebar onPlaylistsChanged={triggerReload} />
       <div className="main">
+        <UpdateBanner />
         <Toolbar
           onLibraryChanged={triggerReload}
           onOpenRipDialog={() => setRipOpen(true)}
           onOpenRulesPanel={() => setRulesOpen(true)}
         />
         <SearchBar />
-        <TrackTable
-          onLoadMore={handleLoadMore}
-          onTracksChanged={triggerReload}
-          onEditTrack={(t) => setEditorTrack(t)}
-        />
+        {viewMode === "albums" || viewMode === "artists" ? (
+          <AlbumView
+            mode={viewMode === "albums" ? "album" : "artist"}
+            onTracksChanged={triggerReload}
+          />
+        ) : (
+          <TrackTable
+            onLoadMore={handleLoadMore}
+            onTracksChanged={triggerReload}
+            onEditTrack={(t) => setEditorTrack(t)}
+          />
+        )}
       </div>
       <PlayerBar />
       <RipDialog open={ripOpen} onClose={() => setRipOpen(false)} onLibraryChanged={triggerReload} />
@@ -277,6 +390,20 @@ export default function App() {
           track={editorTrack}
           onClose={() => setEditorTrack(null)}
           onSaved={triggerReload}
+        />
+      )}
+      {closeUpdate && (
+        <CloseUpdateDialog
+          info={closeUpdate}
+          onClose={async () => {
+            setCloseUpdate(null);
+            // The user chose "Later" or clicked the link; allow the window to close now.
+            try {
+              await getCurrentWindow().close();
+            } catch {
+              // ignore
+            }
+          }}
         />
       )}
     </div>

@@ -5,4 +5,4 @@ export interface PlaybackState {
   durationMs: number;
 }
 
-export type ViewMode = "library" | "playlist" | "recent";
+export type ViewMode = "library" | "playlist" | "recent" | "albums" | "artists";

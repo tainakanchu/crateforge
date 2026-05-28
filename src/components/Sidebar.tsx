@@ -167,6 +167,28 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
           <span className="sidebar-label">All Tracks</span>
         </div>
         <div
+          className={`sidebar-item ${viewMode === "albums" ? "active" : ""}`}
+          onClick={() => {
+            setViewMode("albums");
+            setSelectedPlaylistId(null);
+            setSearchQuery("");
+          }}
+        >
+          <span className="sidebar-icon">💿</span>
+          <span className="sidebar-label">Albums</span>
+        </div>
+        <div
+          className={`sidebar-item ${viewMode === "artists" ? "active" : ""}`}
+          onClick={() => {
+            setViewMode("artists");
+            setSelectedPlaylistId(null);
+            setSearchQuery("");
+          }}
+        >
+          <span className="sidebar-icon">🎤</span>
+          <span className="sidebar-label">Artists</span>
+        </div>
+        <div
           className={`sidebar-item ${viewMode === "recent" ? "active" : ""}`}
           onClick={handleRecentClick}
         >
