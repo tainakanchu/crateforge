@@ -47,10 +47,17 @@ pub fn get_tracks(
     app: AppHandle,
     limit: Option<i64>,
     offset: Option<i64>,
+    sort_field: Option<String>,
+    sort_order: Option<String>,
 ) -> Result<Vec<Track>, String> {
     let db = get_db(&app)?;
-    db.get_tracks(limit.unwrap_or(500), offset.unwrap_or(0))
-        .map_err(|e| e.to_string())
+    db.get_tracks(
+        limit.unwrap_or(500),
+        offset.unwrap_or(0),
+        sort_field.as_deref(),
+        sort_order.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -59,10 +66,18 @@ pub fn search_tracks(
     query: String,
     limit: Option<i64>,
     offset: Option<i64>,
+    sort_field: Option<String>,
+    sort_order: Option<String>,
 ) -> Result<Vec<Track>, String> {
     let db = get_db(&app)?;
-    db.search_tracks(&query, limit.unwrap_or(500), offset.unwrap_or(0))
-        .map_err(|e| e.to_string())
+    db.search_tracks(
+        &query,
+        limit.unwrap_or(500),
+        offset.unwrap_or(0),
+        sort_field.as_deref(),
+        sort_order.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -1,6 +1,9 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
+import { Icon } from "./Icon";
+import { Cover } from "./Cover";
+import { bpmColor } from "../lib/art";
 
 function formatTime(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
@@ -9,55 +12,50 @@ function formatTime(ms: number): string {
   return `${min}:${sec.toString().padStart(2, "0")}`;
 }
 
+const WAVE_N = 64;
+
 export function PlayerBar() {
-  const {
-    playback,
-    tracks,
-    volume,
-    shuffle,
-    repeat,
-    setVolume,
-    setShuffle,
-    setRepeat,
-  } = useStore();
+  const { playback, tracks, volume, shuffle, repeat, setVolume, setShuffle, setRepeat } =
+    useStore();
 
   const currentTrack = playback.currentTrackId
     ? tracks.find((t) => t.trackId === playback.currentTrackId)
     : null;
 
-  const handlePlayPause = useCallback(async () => {
-    if (playback.isPlaying) {
-      await playbackApi.pause();
-    } else if (playback.currentTrackId !== null) {
-      await playbackApi.resume();
-    }
-  }, [playback.isPlaying, playback.currentTrackId]);
-
-  const handleStop = useCallback(async () => {
-    await playbackApi.stop();
-  }, []);
-
-  const handleNext = useCallback(async () => {
-    await playbackApi.playNext();
-  }, []);
-
-  const handlePrev = useCallback(async () => {
-    await playbackApi.playPrev();
-  }, []);
-
-  const handleSeek = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const pos = parseInt(e.target.value, 10);
-      playbackApi.seek(pos);
-    },
+  // 決定的な波形バー（インデックスから高さ算出）。
+  const waveHeights = useMemo(
+    () =>
+      Array.from({ length: WAVE_N }, (_, i) => 6 + Math.abs(Math.sin(i * 0.6) * 18) + (i % 3) * 2),
     [],
   );
 
-  const handleVolumeChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const v = parseFloat(e.target.value);
-      setVolume(v);
-      playbackApi.setVolume(v);
+  const progress =
+    playback.durationMs > 0 ? playback.positionMs / playback.durationMs : 0;
+
+  const handlePlayPause = useCallback(async () => {
+    if (playback.isPlaying) await playbackApi.pause();
+    else if (playback.currentTrackId !== null) await playbackApi.resume();
+  }, [playback.isPlaying, playback.currentTrackId]);
+
+  const handleNext = useCallback(() => playbackApi.playNext(), []);
+  const handlePrev = useCallback(() => playbackApi.playPrev(), []);
+
+  const handleWaveSeek = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!currentTrack || playback.durationMs <= 0) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      playbackApi.seek(Math.floor(ratio * playback.durationMs));
+    },
+    [currentTrack, playback.durationMs],
+  );
+
+  const handleVolumeClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      setVolume(ratio);
+      playbackApi.setVolume(ratio);
     },
     [setVolume],
   );
@@ -70,90 +68,101 @@ export function PlayerBar() {
 
   const handleRepeatToggle = useCallback(async () => {
     const order = ["off", "all", "one"] as const;
-    const i = order.indexOf(repeat);
-    const next = order[(i + 1) % order.length];
+    const next = order[(order.indexOf(repeat) + 1) % order.length];
     setRepeat(next);
     await playbackApi.setRepeat(next);
   }, [repeat, setRepeat]);
 
-  const repeatIcon = repeat === "one" ? "🔂" : repeat === "all" ? "🔁" : "🔁";
-  const repeatTitle = repeat === "one" ? "Repeat One" : repeat === "all" ? "Repeat All" : "Repeat Off";
-
   return (
-    <div className="player-bar">
-      <div className="player-controls">
-        <button className="player-btn small" onClick={handlePrev} title="Previous (J)">
-          ⏮
-        </button>
-        <button className="player-btn" onClick={handlePlayPause} title="Play/Pause (Space)">
-          {playback.isPlaying ? "⏸" : "▶"}
-        </button>
-        <button className="player-btn small" onClick={handleStop} title="Stop">
-          ⏹
-        </button>
-        <button className="player-btn small" onClick={handleNext} title="Next (K)">
-          ⏭
-        </button>
-        <button
-          className={`player-btn small toggle ${shuffle ? "on" : ""}`}
-          onClick={handleShuffleToggle}
-          title="Shuffle (S)"
-        >
-          🔀
-        </button>
-        <button
-          className={`player-btn small toggle ${repeat !== "off" ? "on" : ""}`}
-          onClick={handleRepeatToggle}
-          title={`${repeatTitle} (R)`}
-        >
-          <span style={{ position: "relative" }}>
-            {repeatIcon}
-            {repeat === "one" && <span className="repeat-one-badge">1</span>}
-          </span>
-        </button>
-      </div>
-
-      <div className="player-track-info">
+    <div className="cb-player">
+      {/* left: track info */}
+      <div className="cb-pinfo">
         {currentTrack ? (
           <>
-            <span className="player-track-name">
-              {currentTrack.name || "(unknown)"}
-            </span>
-            <span className="player-track-artist">
-              {currentTrack.artist || ""}
-              {currentTrack.album ? ` — ${currentTrack.album}` : ""}
-            </span>
+            <Cover seed={currentTrack.album} glyph={currentTrack.name} size={48} radius={9} />
+            <div className="cb-pa-meta">
+              <div className="cj">{currentTrack.name || "(unknown)"}</div>
+              <div className="la">
+                {currentTrack.artist || ""}
+                {currentTrack.bpm != null && (
+                  <>
+                    {currentTrack.artist ? " · " : ""}
+                    <b style={{ color: bpmColor(currentTrack.bpm) }}>{currentTrack.bpm} BPM</b>
+                  </>
+                )}
+              </div>
+            </div>
           </>
         ) : (
-          <span className="player-track-name dim">No track playing</span>
+          <div className="cb-pa-meta">
+            <div className="cj dim">No track playing</div>
+          </div>
         )}
       </div>
 
-      <div className="player-seek">
-        <span className="player-time">{formatTime(playback.positionMs)}</span>
-        <input
-          type="range"
-          min={0}
-          max={playback.durationMs || 100}
-          value={playback.positionMs}
-          onChange={handleSeek}
-          className="seek-slider"
-          disabled={!currentTrack}
-        />
-        <span className="player-time">{formatTime(playback.durationMs)}</span>
+      {/* center: controls + waveform */}
+      <div className="cb-ctr">
+        <div className="cb-ctrl">
+          <button
+            className={"cb-ctrl-btn cb-tg" + (shuffle ? " on" : "")}
+            onClick={handleShuffleToggle}
+            title="Shuffle (S)"
+          >
+            <Icon name="shuffle" size={16} />
+          </button>
+          <button className="cb-ctrl-btn" onClick={handlePrev} title="Previous (J)">
+            <Icon name="prev" size={18} fill="currentColor" stroke={0} />
+          </button>
+          <button className="cb-pp" onClick={handlePlayPause} title="Play / Pause (Space)">
+            <Icon
+              name={playback.isPlaying ? "pause" : "play"}
+              size={16}
+              fill="currentColor"
+              stroke={0}
+            />
+          </button>
+          <button className="cb-ctrl-btn" onClick={handleNext} title="Next (K)">
+            <Icon name="next" size={18} fill="currentColor" stroke={0} />
+          </button>
+          <button
+            className={"cb-ctrl-btn cb-tg" + (repeat !== "off" ? " on" : "")}
+            onClick={handleRepeatToggle}
+            title={`Repeat: ${repeat} (R)`}
+            style={{ position: "relative" }}
+          >
+            <Icon name="repeat" size={16} />
+            {repeat === "one" && <span className="cb-repeat-badge">1</span>}
+          </button>
+        </div>
+        <div className="cb-seek">
+          <span>{formatTime(playback.positionMs)}</span>
+          <div className="cb-wave" onClick={handleWaveSeek}>
+            {waveHeights.map((h, i) => (
+              <i
+                key={i}
+                className={i / WAVE_N < progress ? "on" : ""}
+                style={{ height: h }}
+              />
+            ))}
+          </div>
+          <span>{formatTime(playback.durationMs)}</span>
+        </div>
       </div>
 
-      <div className="player-volume" title="Volume (↑/↓)">
-        <span className="player-volume-icon">🔊</span>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.02}
-          value={volume}
-          onChange={handleVolumeChange}
-          className="seek-slider volume-slider"
-        />
+      {/* right: queue + volume */}
+      <div className="cb-pr">
+        <button className="cb-pr-btn" title="Queue">
+          <Icon name="queue" size={16} />
+        </button>
+        <button
+          className="cb-pr-btn"
+          title={volume === 0 ? "Muted" : "Volume (↑/↓)"}
+        >
+          <Icon name={volume === 0 ? "volumeX" : "volume"} size={16} />
+        </button>
+        <div className="cb-vbar" onClick={handleVolumeClick} title="Volume (↑/↓)">
+          <i style={{ right: `${(1 - volume) * 100}%` }} />
+        </div>
       </div>
     </div>
   );

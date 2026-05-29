@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as ripperApi from "../../api/ripper";
+import { Icon } from "../Icon";
 import type {
   DiscToc,
   EncodeFormat,
@@ -181,8 +182,12 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal rip-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>💿 Rip CD</h2>
-          <button className="modal-close" onClick={onClose}>✕</button>
+          <h2>
+            <Icon name="disc" size={16} /> Rip CD
+          </h2>
+          <button className="modal-close" onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
         </div>
 
         <div className="modal-body">
@@ -202,7 +207,7 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
               disabled={stage === "detecting" || stage === "looking-up" || stage === "ripping"}
             >
               {stage === "detecting" ? "Reading TOC..." :
-                stage === "looking-up" ? "Looking up..." : "🔍 Detect Disc"}
+                stage === "looking-up" ? "Looking up..." : "Detect Disc"}
             </button>
           </div>
 
@@ -302,7 +307,7 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
                   onChange={(e) => setOutputDir(e.target.value)}
                 />
                 <button className="toolbar-btn" onClick={handlePickOutputDir}>
-                  📁 Browse
+                  <Icon name="folderOpen" size={14} /> Browse
                 </button>
               </div>
               <div className="rip-row">
@@ -323,7 +328,8 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
                   onClick={handleRip}
                   disabled={selectedTracks.size === 0 || !outputDir}
                 >
-                  ▶ Start Ripping ({selectedTracks.size})
+                  <Icon name="play" size={14} fill="currentColor" stroke={0} /> Start Ripping (
+                  {selectedTracks.size})
                 </button>
               </div>
             </>

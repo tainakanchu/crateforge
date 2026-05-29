@@ -17,6 +17,9 @@ pnpm-debug.log*
 *.sln
 *.sw?
 
+# WSL / NTFS metadata
+*:Zone.Identifier
+
 # Node
 node_modules
 dist

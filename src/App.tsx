@@ -1,9 +1,10 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
-import { SearchBar } from "./components/SearchBar";
 import { TrackTable } from "./components/TrackTable";
+import { CoversView } from "./components/CoversView";
 import { AlbumView } from "./components/AlbumView";
 import { PlayerBar } from "./components/PlayerBar";
+import { RightRail } from "./components/RightRail";
 import { Toolbar } from "./components/Toolbar";
 import { TrackEditor } from "./components/TrackEditor";
 import { RipDialog } from "./components/ripper/RipDialog";
@@ -43,6 +44,9 @@ export default function App() {
     setShuffle,
     repeat,
     setRepeat,
+    sortField,
+    sortOrder,
+    displayMode,
   } = useStore();
 
   const PAGE_SIZE = 500;
@@ -88,7 +92,13 @@ export default function App() {
           setTracks(result);
           setHasMore(false);
         } else if (searchQuery) {
-          result = await libraryApi.searchTracks(searchQuery, PAGE_SIZE, offset);
+          result = await libraryApi.searchTracks(
+            searchQuery,
+            PAGE_SIZE,
+            offset,
+            sortField,
+            sortOrder,
+          );
           if (reset) setTracks(result);
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
@@ -97,12 +107,19 @@ export default function App() {
             selectedPlaylistId,
             PAGE_SIZE,
             offset,
+            sortField,
+            sortOrder,
           );
           if (reset) setTracks(result);
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
         } else {
-          result = await libraryApi.getTracks(PAGE_SIZE, offset);
+          result = await libraryApi.getTracks(
+            PAGE_SIZE,
+            offset,
+            sortField,
+            sortOrder,
+          );
           if (reset) setTracks(result);
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
@@ -113,13 +130,13 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [viewMode, selectedPlaylistId, searchQuery, tracks.length, setTracks, appendTracks, setHasMore, setIsLoading],
+    [viewMode, selectedPlaylistId, searchQuery, sortField, sortOrder, tracks.length, setTracks, appendTracks, setHasMore, setIsLoading],
   );
 
   useEffect(() => {
     loadTracks(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, selectedPlaylistId, searchQuery, reloadCount]);
+  }, [viewMode, selectedPlaylistId, searchQuery, sortField, sortOrder, reloadCount]);
 
   useEffect(() => {
     reloadPlaylists();
@@ -358,22 +375,25 @@ export default function App() {
     setSelectedPlaylistId,
   ]);
 
+  const isAlbumView = viewMode === "albums" || viewMode === "artists";
+
   return (
     <div className="app">
       <Sidebar onPlaylistsChanged={triggerReload} />
-      <div className="main">
+      <div className="cb-main">
         <UpdateBanner />
         <Toolbar
           onLibraryChanged={triggerReload}
           onOpenRipDialog={() => setRipOpen(true)}
           onOpenRulesPanel={() => setRulesOpen(true)}
         />
-        <SearchBar />
-        {viewMode === "albums" || viewMode === "artists" ? (
+        {isAlbumView ? (
           <AlbumView
             mode={viewMode === "albums" ? "album" : "artist"}
             onTracksChanged={triggerReload}
           />
+        ) : displayMode === "covers" ? (
+          <CoversView onLoadMore={handleLoadMore} />
         ) : (
           <TrackTable
             onLoadMore={handleLoadMore}
@@ -382,6 +402,7 @@ export default function App() {
           />
         )}
       </div>
+      <RightRail onPlaylistsChanged={triggerReload} />
       <PlayerBar />
       <RipDialog open={ripOpen} onClose={() => setRipOpen(false)} onLibraryChanged={triggerReload} />
       <RulesPanel open={rulesOpen} onClose={() => setRulesOpen(false)} onLibraryChanged={triggerReload} />

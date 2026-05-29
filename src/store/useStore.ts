@@ -5,15 +5,21 @@ import type {
   Playlist,
   PlaybackState,
   ViewMode,
-  ColumnKey,
+  DisplayMode,
+  CoverSize,
+  RailTab,
+  FieldKey,
   SortField,
   SortOrder,
   RepeatMode,
 } from "../types";
-import { COLUMNS } from "../types";
+import { DEFAULT_FIELDS } from "../types";
 
 interface PersistedSettings {
-  visibleColumns: ColumnKey[];
+  fields: FieldKey[];
+  rowH: number;
+  coverSize: CoverSize;
+  displayMode: DisplayMode;
   sortField: SortField;
   sortOrder: SortOrder;
   volume: number;
@@ -37,6 +43,10 @@ interface AppState extends PersistedSettings {
   // Playback
   playback: PlaybackState;
 
+  // Staging Crate (DJ 選曲) — セッション内のみ、永続化しない
+  crate: Track[];
+  railTab: RailTab;
+
   // Actions
   setViewMode: (mode: ViewMode) => void;
   setSelectedPlaylistId: (id: number | null) => void;
@@ -51,8 +61,21 @@ interface AppState extends PersistedSettings {
   toggleTrackSelection: (id: number, additive: boolean) => void;
   clearTrackSelection: () => void;
 
+  // Crate
+  setRailTab: (tab: RailTab) => void;
+  addToCrate: (track: Track) => void;
+  removeFromCrate: (trackId: number) => void;
+  reorderCrate: (from: number, to: number) => void;
+  clearCrate: () => void;
+
   // Persisted settings
-  toggleColumn: (key: ColumnKey) => void;
+  setDisplayMode: (mode: DisplayMode) => void;
+  setFields: (fields: FieldKey[]) => void;
+  toggleField: (key: FieldKey) => void;
+  reorderFields: (from: number, to: number) => void;
+  setRowH: (h: number) => void;
+  setCoverSize: (s: CoverSize) => void;
+  resetColumns: () => void;
   setSortField: (field: SortField) => void;
   setSortOrder: (order: SortOrder) => void;
   toggleSort: (field: SortField) => void;
@@ -60,8 +83,6 @@ interface AppState extends PersistedSettings {
   setShuffle: (on: boolean) => void;
   setRepeat: (mode: RepeatMode) => void;
 }
-
-const defaultVisibleColumns: ColumnKey[] = COLUMNS.filter((c) => c.defaultVisible).map((c) => c.key);
 
 export const useStore = create<AppState>()(
   persist(
@@ -80,9 +101,14 @@ export const useStore = create<AppState>()(
         positionMs: 0,
         durationMs: 0,
       },
+      crate: [],
+      railTab: "crate",
 
       // Persisted
-      visibleColumns: defaultVisibleColumns,
+      fields: DEFAULT_FIELDS,
+      rowH: 40,
+      coverSize: 20,
+      displayMode: "list",
       sortField: "name",
       sortOrder: "asc",
       volume: 1.0,
@@ -111,15 +137,49 @@ export const useStore = create<AppState>()(
         }),
       clearTrackSelection: () => set({ selectedTrackIds: new Set() }),
 
-      toggleColumn: (key) =>
+      // Crate
+      setRailTab: (tab) => set({ railTab: tab }),
+      addToCrate: (track) =>
+        set((state) =>
+          state.crate.some((t) => t.trackId === track.trackId)
+            ? {}
+            : { crate: [...state.crate, track], railTab: "crate" },
+        ),
+      removeFromCrate: (trackId) =>
+        set((state) => ({
+          crate: state.crate.filter((t) => t.trackId !== trackId),
+        })),
+      reorderCrate: (from, to) =>
         set((state) => {
-          const has = state.visibleColumns.includes(key);
-          return {
-            visibleColumns: has
-              ? state.visibleColumns.filter((k) => k !== key)
-              : [...state.visibleColumns, key],
-          };
+          if (from === to) return {};
+          const next = [...state.crate];
+          const [m] = next.splice(from, 1);
+          next.splice(to, 0, m);
+          return { crate: next };
         }),
+      clearCrate: () => set({ crate: [] }),
+
+      // Persisted settings
+      setDisplayMode: (mode) => set({ displayMode: mode }),
+      setFields: (fields) => set({ fields }),
+      toggleField: (key) =>
+        set((state) => ({
+          fields: state.fields.includes(key)
+            ? state.fields.filter((k) => k !== key)
+            : [...state.fields, key],
+        })),
+      reorderFields: (from, to) =>
+        set((state) => {
+          if (from === to) return {};
+          const next = [...state.fields];
+          const [m] = next.splice(from, 1);
+          next.splice(to, 0, m);
+          return { fields: next };
+        }),
+      setRowH: (rowH) => set({ rowH }),
+      setCoverSize: (coverSize) => set({ coverSize }),
+      resetColumns: () =>
+        set({ fields: DEFAULT_FIELDS, rowH: 40, coverSize: 20 }),
       setSortField: (field) => set({ sortField: field }),
       setSortOrder: (order) => set({ sortOrder: order }),
       toggleSort: (field) =>
@@ -135,15 +195,31 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
+      version: 2,
       partialize: (state) =>
         ({
-          visibleColumns: state.visibleColumns,
+          fields: state.fields,
+          rowH: state.rowH,
+          coverSize: state.coverSize,
+          displayMode: state.displayMode,
           sortField: state.sortField,
           sortOrder: state.sortOrder,
           volume: state.volume,
           shuffle: state.shuffle,
           repeat: state.repeat,
         }) satisfies PersistedSettings,
+      // v1(visibleColumns) からの移行: 旧キーは破棄してデフォルトに倒す。
+      migrate: (persisted, version) => {
+        if (version < 2 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          delete p.visibleColumns;
+          if (!Array.isArray(p.fields)) p.fields = DEFAULT_FIELDS;
+          if (typeof p.rowH !== "number") p.rowH = 40;
+          if (typeof p.coverSize !== "number") p.coverSize = 20;
+          if (p.displayMode !== "covers") p.displayMode = "list";
+        }
+        return persisted as PersistedSettings;
+      },
     },
   ),
 );

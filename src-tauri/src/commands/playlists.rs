@@ -15,10 +15,18 @@ pub fn get_playlist_tracks(
     playlist_id: i64,
     limit: Option<i64>,
     offset: Option<i64>,
+    sort_field: Option<String>,
+    sort_order: Option<String>,
 ) -> Result<Vec<Track>, String> {
     let db = open_db(&app)?;
-    db.get_playlist_tracks(playlist_id, limit.unwrap_or(500), offset.unwrap_or(0))
-        .map_err(|e| e.to_string())
+    db.get_playlist_tracks(
+        playlist_id,
+        limit.unwrap_or(500),
+        offset.unwrap_or(0),
+        sort_field.as_deref(),
+        sort_order.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -65,10 +73,10 @@ pub fn add_tracks_to_playlist(
 pub fn remove_track_from_playlist(
     app: AppHandle,
     playlist_id: i64,
-    sort_index: i64,
+    track_id: i64,
 ) -> Result<(), String> {
     let db = open_db(&app)?;
-    db.remove_track_from_playlist(playlist_id, sort_index)
+    db.remove_track_from_playlist(playlist_id, track_id)
         .map_err(|e| e.to_string())
 }
 

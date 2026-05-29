@@ -1,11 +1,25 @@
 import { useCallback, useState } from "react";
 import { useStore } from "../store/useStore";
 import * as playlistsApi from "../api/playlists";
-import type { Playlist } from "../types";
+import { Icon } from "./Icon";
+import type { Playlist, ViewMode } from "../types";
 
 interface SidebarProps {
   onPlaylistsChanged: () => void;
 }
+
+interface NavItem {
+  mode: Exclude<ViewMode, "playlist">;
+  icon: string;
+  label: string;
+}
+
+const NAV: NavItem[] = [
+  { mode: "library", icon: "music", label: "All Tracks" },
+  { mode: "albums", icon: "disc", label: "Albums" },
+  { mode: "artists", icon: "mic", label: "Artists" },
+  { mode: "recent", icon: "clock", label: "Recently Played" },
+];
 
 export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
   const {
@@ -20,17 +34,14 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState("");
 
-  const handleLibraryClick = useCallback(() => {
-    setViewMode("library");
-    setSelectedPlaylistId(null);
-    setSearchQuery("");
-  }, [setViewMode, setSelectedPlaylistId, setSearchQuery]);
-
-  const handleRecentClick = useCallback(() => {
-    setViewMode("recent");
-    setSelectedPlaylistId(null);
-    setSearchQuery("");
-  }, [setViewMode, setSelectedPlaylistId, setSearchQuery]);
+  const goView = useCallback(
+    (mode: Exclude<ViewMode, "playlist">) => {
+      setViewMode(mode);
+      setSelectedPlaylistId(null);
+      setSearchQuery("");
+    },
+    [setViewMode, setSelectedPlaylistId, setSearchQuery],
+  );
 
   const handlePlaylistClick = useCallback(
     (pl: Playlist) => {
@@ -44,9 +55,7 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
 
   const handleCreatePlaylist = useCallback(
     async (isFolder: boolean) => {
-      const name = window.prompt(
-        isFolder ? "New folder name:" : "New playlist name:",
-      );
+      const name = window.prompt(isFolder ? "New folder name:" : "New playlist name:");
       if (!name?.trim()) return;
       try {
         await playlistsApi.createPlaylist(name.trim(), null, isFolder);
@@ -100,15 +109,16 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
 
   const renderPlaylist = (pl: Playlist, depth: number): React.ReactNode => {
     const children = childrenOf(pl.persistentId);
-    const isActive =
-      viewMode === "playlist" && selectedPlaylistId === pl.playlistId;
+    const isActive = viewMode === "playlist" && selectedPlaylistId === pl.playlistId;
     const isEditing = editingId === pl.playlistId;
 
     return (
       <div key={pl.id}>
         <div
-          className={`sidebar-item ${isActive ? "active" : ""} ${pl.isFolder ? "folder" : ""}`}
-          style={{ paddingLeft: `${12 + depth * 16}px` }}
+          className={
+            "cb-prow" + (isActive ? " on" : "") + (pl.isFolder ? " fold" : "")
+          }
+          style={{ paddingLeft: `${15 + depth * 14}px` }}
           onClick={() => handlePlaylistClick(pl)}
           onDoubleClick={(e) => {
             e.stopPropagation();
@@ -116,22 +126,20 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
           }}
           onContextMenu={(e) => {
             e.preventDefault();
-            const action = window.prompt(
-              `"${pl.name}"\n\n[r] Rename  [d] Delete`,
-              "",
-            );
+            const action = window.prompt(`"${pl.name}"\n\n[r] Rename  [d] Delete`, "");
             if (action === "r") startRename(pl);
             else if (action === "d") handleDelete(pl);
           }}
           title="Double-click to rename, right-click for actions"
         >
-          <span className="sidebar-icon">
-            {pl.isFolder ? "📁" : pl.isSmart ? "⚙️" : "🎵"}
-          </span>
+          <Icon
+            name={pl.isFolder ? "folder" : pl.isSmart ? "sliders" : "music"}
+            size={14}
+          />
           {isEditing ? (
             <input
               autoFocus
-              className="sidebar-rename"
+              className="cb-rename"
               value={editingName}
               onChange={(e) => setEditingName(e.target.value)}
               onBlur={commitRename}
@@ -143,10 +151,8 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
             />
           ) : (
             <>
-              <span className="sidebar-label">{pl.name}</span>
-              {!pl.isFolder && (
-                <span className="sidebar-count">{pl.trackCount}</span>
-              )}
+              <span className="cb-prow-label">{pl.name}</span>
+              {!pl.isFolder && <span className="ct">{pl.trackCount.toLocaleString()}</span>}
             </>
           )}
         </div>
@@ -156,77 +162,55 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
   };
 
   return (
-    <div className="sidebar">
-      <div className="sidebar-section">
-        <div className="sidebar-section-title">Library</div>
-        <div
-          className={`sidebar-item ${viewMode === "library" ? "active" : ""}`}
-          onClick={handleLibraryClick}
-        >
-          <span className="sidebar-icon">🎶</span>
-          <span className="sidebar-label">All Tracks</span>
+    <aside className="cb-side">
+      <div className="cb-brand">
+        <div className="cb-logo">
+          <Icon name="layers" size={14} />
         </div>
-        <div
-          className={`sidebar-item ${viewMode === "albums" ? "active" : ""}`}
-          onClick={() => {
-            setViewMode("albums");
-            setSelectedPlaylistId(null);
-            setSearchQuery("");
-          }}
-        >
-          <span className="sidebar-icon">💿</span>
-          <span className="sidebar-label">Albums</span>
-        </div>
-        <div
-          className={`sidebar-item ${viewMode === "artists" ? "active" : ""}`}
-          onClick={() => {
-            setViewMode("artists");
-            setSelectedPlaylistId(null);
-            setSearchQuery("");
-          }}
-        >
-          <span className="sidebar-icon">🎤</span>
-          <span className="sidebar-label">Artists</span>
-        </div>
-        <div
-          className={`sidebar-item ${viewMode === "recent" ? "active" : ""}`}
-          onClick={handleRecentClick}
-        >
-          <span className="sidebar-icon">🕐</span>
-          <span className="sidebar-label">Recently Played</span>
-        </div>
+        <b>Cratebox</b>
       </div>
 
-      <div className="sidebar-section">
-        <div className="sidebar-section-title">
-          <span>Playlists</span>
-          <span className="sidebar-section-actions">
-            <button
-              className="sidebar-iconbtn"
-              title="New playlist"
-              onClick={() => handleCreatePlaylist(false)}
-            >
-              ＋
-            </button>
-            <button
-              className="sidebar-iconbtn"
-              title="New folder"
-              onClick={() => handleCreatePlaylist(true)}
-            >
-              📁＋
-            </button>
-          </span>
+      <div className="cb-lbl">Library</div>
+      {NAV.map((n) => (
+        <div
+          key={n.mode}
+          className={"cb-nav" + (viewMode === n.mode ? " on" : "")}
+          onClick={() => goView(n.mode)}
+        >
+          <Icon name={n.icon} size={16} />
+          <span className="cb-nav-label">{n.label}</span>
         </div>
-        <div className="sidebar-playlists">
-          {rootPlaylists.length === 0 ? (
-            <div className="sidebar-empty">
-              No playlists yet. Import a library XML or create one.
-            </div>
-          ) : (
-            rootPlaylists.map((pl) => renderPlaylist(pl, 0))
-          )}
-        </div>
+      ))}
+
+      <div className="cb-lbl">
+        <span>Playlists</span>
+        <span className="cb-lbl-actions">
+          <button
+            className="cb-iconbtn"
+            title="New playlist"
+            onClick={() => handleCreatePlaylist(false)}
+          >
+            <Icon name="plus" size={14} />
+          </button>
+          <button
+            className="cb-iconbtn"
+            title="New folder"
+            onClick={() => handleCreatePlaylist(true)}
+          >
+            <Icon name="folderPlus" size={14} />
+          </button>
+        </span>
       </div>
-    </div>
+
+      <div className="cb-pl">
+        {rootPlaylists.length === 0 ? (
+          <div className="cb-side-empty">
+            No playlists yet. Import a library XML or create one.
+          </div>
+        ) : (
+          rootPlaylists.map((pl) => renderPlaylist(pl, 0))
+        )}
+      </div>
+    </aside>
   );
 }

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Playlist, Track } from "../types";
+import type { Playlist, Track, SortField, SortOrder } from "../types";
 
 export async function getPlaylists(): Promise<Playlist[]> {
   return invoke("get_playlists");
@@ -9,8 +9,16 @@ export async function getPlaylistTracks(
   playlistId: number,
   limit?: number,
   offset?: number,
+  sortField?: SortField,
+  sortOrder?: SortOrder,
 ): Promise<Track[]> {
-  return invoke("get_playlist_tracks", { playlistId, limit, offset });
+  return invoke("get_playlist_tracks", {
+    playlistId,
+    limit,
+    offset,
+    sortField,
+    sortOrder,
+  });
 }
 
 export async function createPlaylist(
@@ -45,9 +53,9 @@ export async function addTracksToPlaylist(
 
 export async function removeTrackFromPlaylist(
   playlistId: number,
-  sortIndex: number,
+  trackId: number,
 ): Promise<void> {
-  return invoke("remove_track_from_playlist", { playlistId, sortIndex });
+  return invoke("remove_track_from_playlist", { playlistId, trackId });
 }
 
 export async function reorderPlaylistTracks(

@@ -46,44 +46,56 @@ export type SortField =
 
 export type SortOrder = "asc" | "desc";
 
-export interface ColumnConfig {
-  key: ColumnKey;
-  label: string;
-  /// Default visibility.
-  defaultVisible: boolean;
-  /// Field used for sorting (null = not sortable).
-  sortField: SortField | null;
-  /// CSS width hint (flex|px).
-  width?: string;
-  /// Right-align numeric columns.
-  numeric?: boolean;
-}
-
-export type ColumnKey =
-  | "name"
-  | "artist"
-  | "albumArtist"
+// === 設定可能フィールド（List ビューの列） ===
+// Track の identity（カバー + 曲名 + アーティスト）は常時表示の先頭セルで、
+// ここに含めない。ここで定義するのは右側の固定幅フィールド群。
+export type FieldKey =
+  | "bpm"
   | "album"
   | "genre"
-  | "year"
   | "rating"
-  | "playCount"
-  | "bpm"
-  | "totalTimeMs"
+  | "year"
+  | "plays"
+  | "time"
+  | "albumArtist"
   | "trackNumber"
   | "dateAdded";
 
-export const COLUMNS: ColumnConfig[] = [
-  { key: "name", label: "Track", defaultVisible: true, sortField: "name", width: "3fr" },
-  { key: "artist", label: "Artist", defaultVisible: true, sortField: "artist", width: "2fr" },
-  { key: "albumArtist", label: "Album Artist", defaultVisible: false, sortField: "albumArtist", width: "2fr" },
-  { key: "album", label: "Album", defaultVisible: true, sortField: "album", width: "2fr" },
-  { key: "genre", label: "Genre", defaultVisible: true, sortField: "genre", width: "1.5fr" },
-  { key: "year", label: "Year", defaultVisible: false, sortField: "year", width: "60px", numeric: true },
-  { key: "rating", label: "Rating", defaultVisible: true, sortField: "rating", width: "80px" },
-  { key: "playCount", label: "Plays", defaultVisible: true, sortField: "playCount", width: "50px", numeric: true },
-  { key: "bpm", label: "BPM", defaultVisible: true, sortField: "bpm", width: "50px", numeric: true },
-  { key: "totalTimeMs", label: "Time", defaultVisible: true, sortField: "totalTimeMs", width: "55px", numeric: true },
-  { key: "trackNumber", label: "#", defaultVisible: false, sortField: "trackNumber", width: "40px", numeric: true },
-  { key: "dateAdded", label: "Date Added", defaultVisible: false, sortField: "dateAdded", width: "110px" },
+export interface FieldDef {
+  key: FieldKey;
+  label: string;
+  /// 固定幅 px。
+  width: number;
+  /// ソート対象の SortField（null = ソート不可）。
+  sortField: SortField | null;
+}
+
+export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
+  bpm: { key: "bpm", label: "BPM", width: 64, sortField: "bpm" },
+  album: { key: "album", label: "Album", width: 168, sortField: "album" },
+  genre: { key: "genre", label: "Genre", width: 110, sortField: "genre" },
+  rating: { key: "rating", label: "Rating", width: 90, sortField: "rating" },
+  year: { key: "year", label: "Year", width: 56, sortField: "year" },
+  plays: { key: "plays", label: "Plays", width: 56, sortField: "playCount" },
+  time: { key: "time", label: "Time", width: 60, sortField: "totalTimeMs" },
+  albumArtist: { key: "albumArtist", label: "Album Artist", width: 150, sortField: "albumArtist" },
+  trackNumber: { key: "trackNumber", label: "#", width: 44, sortField: "trackNumber" },
+  dateAdded: { key: "dateAdded", label: "Date Added", width: 104, sortField: "dateAdded" },
+};
+
+/// ColumnPicker の "Available" 列挙順。
+export const ALL_FIELDS: FieldKey[] = [
+  "bpm",
+  "album",
+  "genre",
+  "rating",
+  "year",
+  "plays",
+  "time",
+  "albumArtist",
+  "trackNumber",
+  "dateAdded",
 ];
+
+/// 既定の表示列（順序 = 表示順）。
+export const DEFAULT_FIELDS: FieldKey[] = ["bpm", "album", "genre", "rating"];

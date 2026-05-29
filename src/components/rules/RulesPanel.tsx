@@ -3,6 +3,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import CodeMirror from "@uiw/react-codemirror";
 import { yaml } from "@codemirror/lang-yaml";
 import * as rulesApi from "../../api/rules";
+import { Icon } from "../Icon";
 import type {
   ApplyResult,
   EvaluationResult,
@@ -190,32 +191,34 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
       <div className="modal rules-panel" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>
-            ⚙️ Playlist Rules
+            <Icon name="settings" size={16} /> Playlist Rules
             {currentPath && <span className="rules-path"> — {currentPath}</span>}
           </h2>
-          <button className="modal-close" onClick={onClose}>✕</button>
+          <button className="modal-close" onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
         </div>
 
         <div className="modal-body rules-body">
           <div className="rules-toolbar">
             <button className="toolbar-btn" onClick={handleOpen} disabled={busy}>
-              📂 Open
+              <Icon name="folderOpen" size={14} /> Open
             </button>
             <button className="toolbar-btn" onClick={handleSave} disabled={busy}>
-              💾 Save
+              <Icon name="save" size={14} /> Save
             </button>
             <button className="toolbar-btn" onClick={handleSaveAs} disabled={busy}>
-              💾 Save As…
+              <Icon name="save" size={14} /> Save As…
             </button>
             <span className="rules-toolbar-sep" />
             <button className="toolbar-btn" onClick={handleValidate} disabled={busy}>
-              ✓ Validate
+              <Icon name="check" size={14} /> Validate
             </button>
             <button className="toolbar-btn primary" onClick={handlePreview} disabled={busy}>
-              👁 Preview
+              <Icon name="eye" size={14} /> Preview
             </button>
             <button className="toolbar-btn" onClick={handleApply} disabled={busy || !preview}>
-              ▶ Apply to Library
+              <Icon name="play" size={14} fill="currentColor" stroke={0} /> Apply to Library
             </button>
           </div>
 
@@ -253,7 +256,7 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
             <div className="rules-preview">
               {!preview ? (
                 <div className="rules-preview-empty">
-                  Click <strong>👁 Preview</strong> to evaluate rules against the current library.
+                  Click <strong>Preview</strong> to evaluate rules against the current library.
                 </div>
               ) : (
                 <>

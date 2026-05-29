@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import * as libraryApi from "../api/library";
+import { Icon, Stars } from "./Icon";
 import type { Track, TrackEdit } from "../types";
 
 interface TrackEditorProps {
@@ -79,8 +80,12 @@ export function TrackEditor({ track, onClose, onSaved }: TrackEditorProps) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-header">
-          <h2>ℹ Track Info</h2>
-          <button className="modal-close" onClick={onClose}>✕</button>
+          <h2>
+            <Icon name="info" size={16} /> Track Info
+          </h2>
+          <button className="modal-close" onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
         </div>
 
         <div className="modal-body track-editor-body">
@@ -184,15 +189,18 @@ export function TrackEditor({ track, onClose, onSaved }: TrackEditorProps) {
 
           <Field label="Rating">
             <div className="track-editor-rating">
-              {[0, 1, 2, 3, 4, 5].map((s) => (
-                <span
-                  key={s}
-                  className={`rating-star ${s <= form.rating / 20 ? "on" : ""}`}
-                  onClick={() => update("rating", s * 20)}
-                >
-                  {s === 0 ? "✕" : s <= form.rating / 20 ? "★" : "☆"}
-                </span>
-              ))}
+              <Stars
+                value={Math.round(form.rating / 20)}
+                size={18}
+                onSet={(n) => update("rating", n * 20)}
+              />
+              <button
+                type="button"
+                className="track-editor-clear"
+                onClick={() => update("rating", 0)}
+              >
+                clear
+              </button>
             </div>
           </Field>
 

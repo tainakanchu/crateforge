@@ -25,6 +25,51 @@ fn remove_tag(current: &str, tag: &str) -> String {
         .join(" ")
 }
 
+/// UI 側の sortField → (DB カラム名, テキスト列か).
+fn sort_field_to_column(sort_field: &str) -> Option<(&'static str, bool)> {
+    match sort_field {
+        "name" => Some(("name", true)),
+        "artist" => Some(("artist", true)),
+        "albumArtist" => Some(("album_artist", true)),
+        "album" => Some(("album", true)),
+        "genre" => Some(("genre", true)),
+        "year" => Some(("year", false)),
+        "rating" => Some(("rating", false)),
+        "playCount" => Some(("play_count", false)),
+        "bpm" => Some(("bpm", false)),
+        "trackNumber" => Some(("track_number", false)),
+        "totalTimeMs" => Some(("total_time_ms", false)),
+        "dateAdded" => Some(("date_added", true)),
+        _ => None,
+    }
+}
+
+/// ORDER BY 句を組み立てる。NULL は常に最後、track_id でタイブレーク。
+/// `prefix` は JOIN 時のテーブル別名 ("t." など)。`default` は sort_field が無効な時に丸ごと使う句。
+pub(super) fn build_order_by(
+    sort_field: Option<&str>,
+    sort_order: Option<&str>,
+    prefix: &str,
+    default: &str,
+) -> String {
+    let Some((col, is_text)) = sort_field.and_then(sort_field_to_column) else {
+        return default.to_string();
+    };
+    let dir = if matches!(sort_order, Some("desc")) {
+        "DESC"
+    } else {
+        "ASC"
+    };
+    let collate = if is_text { " COLLATE NOCASE" } else { "" };
+    format!(
+        "({prefix}{col} IS NULL), {prefix}{col}{collate} {dir}, {prefix}track_id ASC",
+        prefix = prefix,
+        col = col,
+        collate = collate,
+        dir = dir,
+    )
+}
+
 impl Database {
     pub fn begin_import(&self) -> Result<()> {
         self.conn.execute_batch(
@@ -151,23 +196,39 @@ impl Database {
         Ok(next_id)
     }
 
-    pub fn get_tracks(&self, limit: i64, offset: i64) -> Result<Vec<Track>> {
-        let mut stmt = self.conn.prepare(
+    pub fn get_tracks(
+        &self,
+        limit: i64,
+        offset: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<Vec<Track>> {
+        let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NOCASE ASC");
+        let sql = format!(
             "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists
-             FROM tracks ORDER BY name COLLATE NOCASE ASC LIMIT ?1 OFFSET ?2",
-        )?;
-
+             FROM tracks ORDER BY {} LIMIT ?1 OFFSET ?2",
+            order_by
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![limit, offset], row_to_track)?;
         rows.collect()
     }
 
-    pub fn search_tracks(&self, query: &str, limit: i64, offset: i64) -> Result<Vec<Track>> {
+    pub fn search_tracks(
+        &self,
+        query: &str,
+        limit: i64,
+        offset: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<Vec<Track>> {
         let pattern = format!("%{}%", query);
-        let mut stmt = self.conn.prepare(
+        let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NOCASE ASC");
+        let sql = format!(
             "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
@@ -176,9 +237,10 @@ impl Database {
              FROM tracks
              WHERE name LIKE ?1 OR artist LIKE ?1 OR album LIKE ?1
                    OR album_artist LIKE ?1 OR genre LIKE ?1 OR comments LIKE ?1
-             ORDER BY name COLLATE NOCASE ASC LIMIT ?2 OFFSET ?3",
-        )?;
-
+             ORDER BY {} LIMIT ?2 OFFSET ?3",
+            order_by
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![pattern, limit, offset], row_to_track)?;
         rows.collect()
     }

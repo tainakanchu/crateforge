@@ -7,6 +7,8 @@ import type {
   LibraryStats,
   TrackEdit,
   GenreTagCount,
+  SortField,
+  SortOrder,
 } from "../types";
 
 export async function importLibrary(xmlPath: string): Promise<ImportResult> {
@@ -24,16 +26,26 @@ export async function importFiles(paths: string[]): Promise<ImportFileResult> {
 export async function getTracks(
   limit?: number,
   offset?: number,
+  sortField?: SortField,
+  sortOrder?: SortOrder,
 ): Promise<Track[]> {
-  return invoke("get_tracks", { limit, offset });
+  return invoke("get_tracks", { limit, offset, sortField, sortOrder });
 }
 
 export async function searchTracks(
   query: string,
   limit?: number,
   offset?: number,
+  sortField?: SortField,
+  sortOrder?: SortOrder,
 ): Promise<Track[]> {
-  return invoke("search_tracks", { query, limit, offset });
+  return invoke("search_tracks", {
+    query,
+    limit,
+    offset,
+    sortField,
+    sortOrder,
+  });
 }
 
 export async function getLibraryStats(): Promise<LibraryStats> {

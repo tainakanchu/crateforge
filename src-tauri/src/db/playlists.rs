@@ -71,8 +71,12 @@ impl Database {
         playlist_id: i64,
         limit: i64,
         offset: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
-        let mut stmt = self.conn.prepare(
+        let order_by =
+            super::tracks::build_order_by(sort_field, sort_order, "t.", "pt.sort_index ASC");
+        let sql = format!(
             "SELECT t.id, t.track_id, t.persistent_id, t.name, t.artist, t.album_artist, t.composer,
                     t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count, t.total_time_ms,
                     t.date_added, t.date_modified, t.bpm, t.comments, t.location_raw, t.location_path,
@@ -81,10 +85,11 @@ impl Database {
              FROM tracks t
              INNER JOIN playlist_tracks pt ON t.track_id = pt.track_id
              WHERE pt.playlist_id = ?1
-             ORDER BY pt.sort_index ASC
+             ORDER BY {}
              LIMIT ?2 OFFSET ?3",
-        )?;
-
+            order_by
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![playlist_id, limit, offset], row_to_track)?;
         rows.collect()
     }
@@ -209,7 +214,20 @@ impl Database {
         Ok(added)
     }
 
-    pub fn remove_track_from_playlist(&self, playlist_id: i64, sort_index: i64) -> Result<()> {
+    pub fn remove_track_from_playlist(&self, playlist_id: i64, track_id: i64) -> Result<()> {
+        // 同一トラックが複数回入っている場合は最小 sort_index の 1 行のみ削除し、後ろを詰める。
+        let sort_index: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT MIN(sort_index) FROM playlist_tracks
+                 WHERE playlist_id = ?1 AND track_id = ?2",
+                params![playlist_id, track_id],
+                |row| row.get(0),
+            )
+            .ok();
+        let Some(sort_index) = sort_index else {
+            return Ok(());
+        };
         self.conn.execute(
             "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND sort_index = ?2",
             params![playlist_id, sort_index],

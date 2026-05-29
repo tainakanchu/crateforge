@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { open as openShell } from "@tauri-apps/plugin-shell";
 import * as systemApi from "../api/system";
+import { Icon } from "./Icon";
 import type { UpdateInfo } from "../api/system";
 
 const DISMISS_KEY = "itunes-viewer-update-dismissed";
@@ -49,7 +50,7 @@ export function UpdateBanner() {
 
   return (
     <div className="update-banner">
-      <span className="update-banner-icon">🆕</span>
+      <Icon name="sparkle" size={16} />
       <span className="update-banner-text">
         <strong>{info.latestVersion}</strong> is available
         <span className="update-banner-current"> (you're on v{info.currentVersion})</span>
@@ -87,8 +88,12 @@ export function CloseUpdateDialog({ info, onClose }: CloseUpdateDialogProps) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-header">
-          <h2>🆕 Update Available</h2>
-          <button className="modal-close" onClick={onClose}>✕</button>
+          <h2>
+            <Icon name="sparkle" size={16} /> Update Available
+          </h2>
+          <button className="modal-close" onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
         </div>
         <div className="modal-body" style={{ padding: 16 }}>
           <p style={{ marginBottom: 8 }}>
