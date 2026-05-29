@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.0.2] - 2026-05-29
+
+### Changed
+- Redesigned the UI to the **Cratebox** art-forward / DJ theme:
+  - Teal palette and a Lucide-style line-icon set (all emoji icons removed).
+  - Three-pane shell: sidebar / center / **right rail** + full-width player bar.
+  - **List** and **Covers** view modes (toolbar segment).
+  - List rows: album-art placeholders (generated gradient + leading glyph), BPM color coding, genre pill chips, inline ★ rating.
+  - **Column picker** popover: drag-reorder columns, toggle fields, row-height slider (32–64 px), artwork size (none / 豆 / 小) — persisted.
+  - **Staging Crate** side rail (Now Playing / Up Next / Crate) for building a selection and saving it as a playlist; waveform seek bar in the player.
+
+### Fixed
+- Track sorting is now applied in the backend (SQLite `ORDER BY`) so the entire result set orders correctly. Previously only the rows already paged into memory were sorted, so sorting appeared to drop tracks until you scrolled to the bottom and back.
+- Removing a track from a playlist now targets it by track id instead of display index, fixing wrong removals when the list was sorted.
+
 ## [v0.0.1] - 2026-05-29
 
 Initial public release. A self-contained iTunes-style music manager that imports / edits / plays / exports your library, rips CDs with MusicBrainz lookup, and builds playlists declaratively from a YAML rules file.
@@ -72,5 +87,6 @@ Initial public release. A self-contained iTunes-style music manager that imports
 - GitHub Actions workflow building `.exe` + MSI + NSIS installer on `windows-latest`; tag-triggered releases attach the installer set automatically.
 - Persistent UI settings (sort, columns, volume, shuffle, repeat) via zustand `persist` → `localStorage`.
 
-[Unreleased]: https://github.com/tainakanchu/itunes-playlist-viewer/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/tainakanchu/itunes-playlist-viewer/compare/v0.0.2...HEAD
+[v0.0.2]: https://github.com/tainakanchu/itunes-playlist-viewer/compare/v0.0.1...v0.0.2
 [v0.0.1]: https://github.com/tainakanchu/itunes-playlist-viewer/releases/tag/v0.0.1
