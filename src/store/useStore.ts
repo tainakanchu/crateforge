@@ -32,6 +32,8 @@ interface AppState extends PersistedSettings {
   viewMode: ViewMode;
   selectedPlaylistId: number | null;
   searchQuery: string;
+  // ジャンル等の絞り込みチップ（フリーテキスト検索と AND 結合、セッション内のみ）
+  filterTags: string[];
 
   // Data
   tracks: Track[];
@@ -51,6 +53,9 @@ interface AppState extends PersistedSettings {
   setViewMode: (mode: ViewMode) => void;
   setSelectedPlaylistId: (id: number | null) => void;
   setSearchQuery: (query: string) => void;
+  addFilterTag: (tag: string) => void;
+  removeFilterTag: (tag: string) => void;
+  clearFilterTags: () => void;
   setTracks: (tracks: Track[]) => void;
   appendTracks: (tracks: Track[]) => void;
   setPlaylists: (playlists: Playlist[]) => void;
@@ -90,6 +95,7 @@ export const useStore = create<AppState>()(
       viewMode: "library",
       selectedPlaylistId: null,
       searchQuery: "",
+      filterTags: [],
       tracks: [],
       playlists: [],
       selectedTrackIds: new Set(),
@@ -118,6 +124,15 @@ export const useStore = create<AppState>()(
       setViewMode: (mode) => set({ viewMode: mode }),
       setSelectedPlaylistId: (id) => set({ selectedPlaylistId: id }),
       setSearchQuery: (query) => set({ searchQuery: query }),
+      addFilterTag: (tag) =>
+        set((state) =>
+          state.filterTags.includes(tag)
+            ? {}
+            : { filterTags: [...state.filterTags, tag] },
+        ),
+      removeFilterTag: (tag) =>
+        set((state) => ({ filterTags: state.filterTags.filter((t) => t !== tag) })),
+      clearFilterTags: () => set({ filterTags: [] }),
       setTracks: (tracks) => set({ tracks, selectedTrackIds: new Set() }),
       appendTracks: (tracks) =>
         set((state) => ({ tracks: [...state.tracks, ...tracks] })),

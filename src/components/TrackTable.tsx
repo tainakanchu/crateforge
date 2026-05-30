@@ -47,7 +47,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
     playlists,
     viewMode,
     selectedPlaylistId,
-    setSearchQuery,
+    addFilterTag,
     fields,
     rowH,
     coverSize,
@@ -261,10 +261,10 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
                 <span
                   key={g}
                   className="cb-tag"
-                  title={`Filter by "${g}"`}
+                  title={`Add "${g}" to filters`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    setSearchQuery(g);
+                    addFilterTag(g);
                   }}
                 >
                   {g}

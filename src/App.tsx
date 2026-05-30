@@ -24,6 +24,7 @@ export default function App() {
     viewMode,
     selectedPlaylistId,
     searchQuery,
+    filterTags,
     setTracks,
     appendTracks,
     setPlaylists,
@@ -76,6 +77,10 @@ export default function App() {
       setIsLoading(true);
       try {
         const offset = reset ? 0 : tracks.length;
+        // フリーテキスト検索 + ジャンル等の絞り込みチップを空白区切りで AND 結合。
+        const combinedQuery = [searchQuery.trim(), ...filterTags]
+          .filter(Boolean)
+          .join(" ");
         let result;
 
         if (viewMode === "recent") {
@@ -87,9 +92,9 @@ export default function App() {
           result = await libraryApi.getTracks(50000, 0);
           setTracks(result);
           setHasMore(false);
-        } else if (searchQuery) {
+        } else if (combinedQuery) {
           result = await libraryApi.searchTracks(
-            searchQuery,
+            combinedQuery,
             PAGE_SIZE,
             offset,
             sortField,
@@ -126,13 +131,13 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [viewMode, selectedPlaylistId, searchQuery, sortField, sortOrder, tracks.length, setTracks, appendTracks, setHasMore, setIsLoading],
+    [viewMode, selectedPlaylistId, searchQuery, filterTags, sortField, sortOrder, tracks.length, setTracks, appendTracks, setHasMore, setIsLoading],
   );
 
   useEffect(() => {
     loadTracks(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, selectedPlaylistId, searchQuery, sortField, sortOrder, reloadCount]);
+  }, [viewMode, selectedPlaylistId, searchQuery, filterTags, sortField, sortOrder, reloadCount]);
 
   useEffect(() => {
     reloadPlaylists();

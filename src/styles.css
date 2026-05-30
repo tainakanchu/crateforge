@@ -456,6 +456,50 @@ input {
   white-space: nowrap;
 }
 
+/* Filter chips row (genre / term filters) */
+.cb-filterbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--bd);
+}
+.cb-filterbar > svg {
+  color: var(--mut);
+}
+.cb-fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 14px;
+  background: var(--ac-16);
+  border: 1px solid rgba(39, 210, 188, 0.4);
+  color: #cffaf4;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cb-fchip svg {
+  color: var(--ac);
+}
+.cb-fchip:hover {
+  background: rgba(39, 210, 188, 0.24);
+}
+.cb-fclear {
+  background: none;
+  border: none;
+  color: var(--mut);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.cb-fclear:hover {
+  color: var(--tx2);
+}
+
 /* ============================================================
    List view
    ============================================================ */

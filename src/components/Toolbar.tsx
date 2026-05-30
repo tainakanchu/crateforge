@@ -49,6 +49,9 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel }:
     setDisplayMode,
     searchQuery,
     setSearchQuery,
+    filterTags,
+    removeFilterTag,
+    clearFilterTags,
     setViewMode,
     sortField,
     sortOrder,
@@ -180,13 +183,14 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel }:
     viewMode === "playlist"
       ? playlists.find((p) => p.playlistId === selectedPlaylistId)
       : null;
-  const title = searchQuery
+  const isSearching = !!searchQuery || filterTags.length > 0;
+  const title = isSearching
     ? "Search"
     : activePlaylist
       ? activePlaylist.name
       : VIEW_TITLE[viewMode];
-  const subCount = searchQuery
-    ? `“${searchQuery}” · ${tracks.length.toLocaleString()}`
+  const subCount = isSearching
+    ? tracks.length.toLocaleString()
     : activePlaylist
       ? activePlaylist.trackCount.toLocaleString()
       : viewMode === "library" && stats
@@ -360,6 +364,26 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel }:
           )}
         </div>
       </div>
+
+      {filterTags.length > 0 && (
+        <div className="cb-filterbar">
+          <Icon name="filter" size={14} />
+          {filterTags.map((t) => (
+            <button
+              key={t}
+              className="cb-fchip"
+              title={`Remove "${t}"`}
+              onClick={() => removeFilterTag(t)}
+            >
+              {t}
+              <Icon name="x" size={12} />
+            </button>
+          ))}
+          <button className="cb-fclear" onClick={clearFilterTags}>
+            clear all
+          </button>
+        </div>
+      )}
     </>
   );
 }
