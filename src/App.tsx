@@ -9,15 +9,13 @@ import { Toolbar } from "./components/Toolbar";
 import { TrackEditor } from "./components/TrackEditor";
 import { RipDialog } from "./components/ripper/RipDialog";
 import { RulesPanel } from "./components/rules/RulesPanel";
-import { UpdateBanner, CloseUpdateDialog } from "./components/UpdateBanner";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { useStore } from "./store/useStore";
 import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
 import * as playbackApi from "./api/playback";
 import * as systemApi from "./api/system";
 import type { Track } from "./types";
-import type { UpdateInfo } from "./api/system";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -56,8 +54,6 @@ export default function App() {
   const [ripOpen, setRipOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [editorTrack, setEditorTrack] = useState<Track | null>(null);
-  const [closeUpdate, setCloseUpdate] = useState<UpdateInfo | null>(null);
-  const updateInfoRef = useRef<UpdateInfo | null>(null);
 
   const reloadPlaylists = useCallback(async () => {
     if (!isTauri) return;
@@ -226,38 +222,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Check for update on mount + intercept window close to prompt.
-  useEffect(() => {
-    if (!isTauri) return;
-    (async () => {
-      try {
-        const info = await systemApi.checkForUpdate();
-        if (info.available) {
-          updateInfoRef.current = info;
-        }
-      } catch {
-        // ignore
-      }
-    })();
-
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      const win = getCurrentWindow();
-      unlisten = await win.onCloseRequested((event) => {
-        const info = updateInfoRef.current;
-        const dismissed = info ? sessionStorage.getItem("close-update-asked") : null;
-        if (info && !dismissed) {
-          event.preventDefault();
-          sessionStorage.setItem("close-update-asked", info.latestVersion);
-          setCloseUpdate(info);
-        }
-      });
-    })();
-    return () => {
-      if (unlisten) unlisten();
-    };
-  }, []);
-
   // Advance queue when current track finishes.
   useEffect(() => {
     if (!isTauri) return;
@@ -411,20 +375,6 @@ export default function App() {
           track={editorTrack}
           onClose={() => setEditorTrack(null)}
           onSaved={triggerReload}
-        />
-      )}
-      {closeUpdate && (
-        <CloseUpdateDialog
-          info={closeUpdate}
-          onClose={async () => {
-            setCloseUpdate(null);
-            // The user chose "Later" or clicked the link; allow the window to close now.
-            try {
-              await getCurrentWindow().close();
-            } catch {
-              // ignore
-            }
-          }}
         />
       )}
     </div>
