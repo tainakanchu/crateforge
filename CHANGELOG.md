@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.0.3] - 2026-05-30
+
+### Added
+- Album artwork: embedded cover art (FLAC picture / MP3 APIC / MP4 covr, etc.) is now read from each track's file and shown in the List thumbnails, Covers cards, player bar, Now Playing rail, crate / up-next, and Album / Artist cards. Tracks without embedded art (or with a missing file) keep the generated gradient + glyph placeholder. Served lazily via an `artwork://` URI scheme so only visible items are read, and the webview caches by URL.
+
+### Fixed
+- The window now always closes on the × button. The close-time "update available" dialog was intercepting the first close (via `preventDefault`) whenever a newer release was published; that interception is removed. Updates are still surfaced by the non-blocking banner at the top of the window.
+
 ## [v0.0.2] - 2026-05-29
 
 ### Changed
@@ -87,6 +95,7 @@ Initial public release. A self-contained iTunes-style music manager that imports
 - GitHub Actions workflow building `.exe` + MSI + NSIS installer on `windows-latest`; tag-triggered releases attach the installer set automatically.
 - Persistent UI settings (sort, columns, volume, shuffle, repeat) via zustand `persist` → `localStorage`.
 
-[Unreleased]: https://github.com/tainakanchu/itunes-playlist-viewer/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/tainakanchu/itunes-playlist-viewer/compare/v0.0.3...HEAD
+[v0.0.3]: https://github.com/tainakanchu/itunes-playlist-viewer/compare/v0.0.2...v0.0.3
 [v0.0.2]: https://github.com/tainakanchu/itunes-playlist-viewer/compare/v0.0.1...v0.0.2
 [v0.0.1]: https://github.com/tainakanchu/itunes-playlist-viewer/releases/tag/v0.0.1
