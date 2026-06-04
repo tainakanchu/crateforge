@@ -6,6 +6,7 @@
 
 mod decode;
 mod features;
+pub mod similarity;
 
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};

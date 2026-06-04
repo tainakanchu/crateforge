@@ -183,6 +183,14 @@ pub struct AnalysisStatus {
     pub total: i64,
 }
 
+/// 類似度検索の 1 ヒット (曲 + 距離。距離が小さいほど似ている)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimilarHit {
+    pub track: Track,
+    pub distance: f64,
+}
+
 // === CD / ripping models ===
 
 /// 物理 CD ドライブから読み取った TOC + disc id。

@@ -122,6 +122,7 @@ pub fn run() {
             commands::analysis::get_analysis,
             commands::analysis::get_analysis_status,
             commands::analysis::get_all_analyses,
+            commands::analysis::get_similar,
             // declarative playlist rules
             commands::rules::validate_rules,
             commands::rules::preview_rules,
