@@ -52,6 +52,8 @@ export type SortOrder = "asc" | "desc";
 // ここに含めない。ここで定義するのは右側の固定幅フィールド群。
 export type FieldKey =
   | "bpm"
+  | "key"
+  | "energy"
   | "album"
   | "genre"
   | "rating"
@@ -74,6 +76,9 @@ export interface FieldDef {
 
 export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
   bpm: { key: "bpm", label: "BPM", width: 64, sortField: "bpm" },
+  // key / energy は track_analysis 由来。tracks テーブルに無いのでソート対象外 (sortField: null)。
+  key: { key: "key", label: "Key", width: 56, sortField: null },
+  energy: { key: "energy", label: "Energy", width: 72, sortField: null },
   album: { key: "album", label: "Album", width: 168, sortField: "album" },
   genre: { key: "genre", label: "Genre", width: 110, sortField: "genre" },
   rating: { key: "rating", label: "Rating", width: 90, sortField: "rating" },
@@ -89,6 +94,8 @@ export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
 /// ColumnPicker の "Available" 列挙順。
 export const ALL_FIELDS: FieldKey[] = [
   "bpm",
+  "key",
+  "energy",
   "album",
   "genre",
   "rating",

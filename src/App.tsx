@@ -15,6 +15,7 @@ import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
 import * as playbackApi from "./api/playback";
 import * as systemApi from "./api/system";
+import * as analysisApi from "./api/analysis";
 import type { Track } from "./types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -46,6 +47,8 @@ export default function App() {
     sortField,
     sortOrder,
     displayMode,
+    setAnalyses,
+    setAnalysisActive,
   } = useStore();
 
   const PAGE_SIZE = 500;
@@ -226,6 +229,35 @@ export default function App() {
     // playback.isPlaying read inside handler is intentionally lagging
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 解析結果の読み込み + 進捗購読 (BPM/Key/Energy)。
+  const loadAnalyses = useCallback(async () => {
+    if (!isTauri) return;
+    try {
+      setAnalyses(await analysisApi.getAllAnalyses());
+    } catch (err) {
+      console.error("Failed to load analyses:", err);
+    }
+  }, [setAnalyses]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    loadAnalyses();
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await analysisApi.onAnalysisProgress((p) => {
+        if (p.kind === "start") setAnalysisActive({ done: 0, total: p.total });
+        else if (p.kind === "item") setAnalysisActive({ done: p.done, total: p.total });
+        else if (p.kind === "finished") {
+          setAnalysisActive(null);
+          loadAnalyses();
+        }
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [loadAnalyses, setAnalysisActive]);
 
   // Advance queue when current track finishes.
   useEffect(() => {

@@ -63,6 +63,7 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel }:
     selectedPlaylistId,
     playlists,
     tracks,
+    analysisActive,
   } = useStore();
 
   const [importing, setImporting] = useState(false);
@@ -376,6 +377,11 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel }:
         <span className="cb-title">{title}</span>
         <span className="cb-titlesub">· {subCount}</span>
         <div className="cb-stats">
+          {analysisActive && (
+            <span className="cb-status">
+              解析中 {analysisActive.done}/{analysisActive.total}
+            </span>
+          )}
           {status && <span className="cb-status">{status}</span>}
           {stats && (
             <>

@@ -12,6 +12,7 @@ import type {
   SortField,
   SortOrder,
   RepeatMode,
+  TrackAnalysis,
 } from "../types";
 import { DEFAULT_FIELDS } from "../types";
 
@@ -54,6 +55,10 @@ interface AppState extends PersistedSettings {
   crate: Track[];
   railTab: RailTab;
 
+  // 音声解析 (BPM/key/energy) のキャッシュと進捗 — セッション内のみ、永続化しない
+  analysisByTrack: Map<number, TrackAnalysis>;
+  analysisActive: { done: number; total: number } | null;
+
   // Actions
   setViewMode: (mode: ViewMode) => void;
   setSelectedPlaylistId: (id: number | null) => void;
@@ -93,6 +98,10 @@ interface AppState extends PersistedSettings {
   setShuffle: (on: boolean) => void;
   setRepeat: (mode: RepeatMode) => void;
   pushRecentPlaylist: (id: number) => void;
+
+  // Analysis
+  setAnalyses: (list: TrackAnalysis[]) => void;
+  setAnalysisActive: (v: { done: number; total: number } | null) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -115,6 +124,8 @@ export const useStore = create<AppState>()(
       },
       crate: [],
       railTab: "crate",
+      analysisByTrack: new Map(),
+      analysisActive: null,
 
       // Persisted
       fields: DEFAULT_FIELDS,
@@ -220,6 +231,10 @@ export const useStore = create<AppState>()(
             ...state.recentPlaylistIds.filter((p) => p !== id),
           ].slice(0, MAX_RECENT_PLAYLISTS),
         })),
+
+      setAnalyses: (list) =>
+        set({ analysisByTrack: new Map(list.map((a) => [a.trackId, a])) }),
+      setAnalysisActive: (v) => set({ analysisActive: v }),
     }),
     {
       name: "itunes-viewer-settings",

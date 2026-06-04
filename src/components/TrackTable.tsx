@@ -4,6 +4,7 @@ import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
+import * as analysisApi from "../api/analysis";
 import { Icon, Stars } from "./Icon";
 import { Cover } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
@@ -59,6 +60,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
     addToCrate,
     recentPlaylistIds,
     pushRecentPlaylist,
+    analysisByTrack,
   } = useStore();
 
   const parentRef = useRef<HTMLDivElement>(null);
@@ -215,6 +217,19 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
     setContextMenu(null);
   }, [ctxIds]);
 
+  // 選択（or 右クリック対象）の曲を BPM/Key/Energy 解析キューへ投入（手動なので再解析強制）。
+  const handleAnalyzeSelection = useCallback(async () => {
+    const ids = ctxIds();
+    if (ids.length > 0) {
+      try {
+        await analysisApi.analyzeTracks(ids, true);
+      } catch (err) {
+        console.error("Failed to queue analysis:", err);
+      }
+    }
+    setContextMenu(null);
+  }, [ctxIds]);
+
   const handleApplyAddTag = useCallback(async () => {
     const tag = newTag.trim();
     if (!tag) {
@@ -351,6 +366,45 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
         return <span className="cb-fmono cb-dim">{(t.dateAdded ?? "").slice(0, 10)}</span>;
       case "lastPlayed":
         return <span className="cb-fmono cb-dim">{(t.lastPlayed ?? "").slice(0, 10)}</span>;
+      case "key": {
+        const a = analysisByTrack.get(t.trackId);
+        return a?.keyCamelot ? (
+          <span
+            className="cb-fmono"
+            style={{ color: "var(--ac)", fontWeight: 600 }}
+            title={a.keyName ?? undefined}
+          >
+            {a.keyCamelot}
+          </span>
+        ) : null;
+      }
+      case "energy": {
+        const a = analysisByTrack.get(t.trackId);
+        if (a?.energy == null) return null;
+        const pct = Math.round(a.energy * 100);
+        return (
+          <span
+            title={`Energy ${pct}`}
+            style={{
+              display: "inline-block",
+              width: 52,
+              height: 6,
+              borderRadius: 3,
+              background: "rgba(255,255,255,0.10)",
+              overflow: "hidden",
+            }}
+          >
+            <span
+              style={{
+                display: "block",
+                height: "100%",
+                width: `${pct}%`,
+                background: "var(--ac)",
+              }}
+            />
+          </span>
+        );
+      }
     }
   };
 
@@ -512,6 +566,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
           onSetRating={handleSetRatingForSelection}
           onAddToCrate={handleAddSelectionToCrate}
           onEnqueue={handleEnqueue}
+          onAnalyze={handleAnalyzeSelection}
           onGetInfo={handleGetInfo}
           onRemoveFromPlaylist={() => handleRemoveFromPlaylist(ctxTrack)}
           onAddToPlaylist={handleAddToPlaylist}

@@ -5,3 +5,4 @@ export * from "./library";
 export * from "./ripper";
 export * from "./rules";
 export * from "./edit";
+export * from "./analysis";
