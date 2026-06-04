@@ -99,6 +99,7 @@ pub fn run() {
             commands::playback::enqueue_track,
             commands::playback::clear_queue,
             commands::playback::get_queue,
+            commands::playback::play_queue_at,
             commands::playback::play_next,
             commands::playback::play_prev,
             commands::playback::set_shuffle,

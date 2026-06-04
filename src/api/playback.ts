@@ -48,6 +48,10 @@ export async function getQueue(): Promise<QueueState> {
   return invoke("get_queue");
 }
 
+export async function playQueueAt(orderIndex: number): Promise<number | null> {
+  return invoke("play_queue_at", { orderIndex });
+}
+
 export async function playNext(): Promise<number | null> {
   return invoke("play_next");
 }

@@ -135,10 +135,14 @@ impl AudioPlayer {
 
     pub fn seek(&mut self, position_ms: u64) {
         if let Some(ref sink) = self.sink {
-            let _ = sink.try_seek(Duration::from_millis(position_ms));
-            self.accumulated_position_ms = position_ms;
-            if self.play_started_at.is_some() {
-                self.play_started_at = Some(Instant::now());
+            // try_seek が成功したときだけ表示位置を更新する。
+            // (一部フォーマットは seek 非対応で、実音はそのままなのに
+            //  表示位置だけズレてしまうのを防ぐ)
+            if sink.try_seek(Duration::from_millis(position_ms)).is_ok() {
+                self.accumulated_position_ms = position_ms;
+                if self.play_started_at.is_some() {
+                    self.play_started_at = Some(Instant::now());
+                }
             }
         }
     }
@@ -301,11 +305,15 @@ impl AudioPlayer {
     /// - repeat One: 現在の曲
     /// - 末尾 + repeat All: 先頭へ (shuffle 時は次の一巡を再シャッフル)
     /// - 末尾 + repeat Off: None
-    pub fn advance_next(&mut self) -> Option<i64> {
+    ///
+    /// `auto` は曲の自動終了による遷移かどうか。
+    /// repeat=One は自動遷移のときだけ同じ曲を繰り返す
+    /// (手動の「次へ」では One でも次の曲へ進む)。
+    pub fn advance_next(&mut self, auto: bool) -> Option<i64> {
         if self.queue.is_empty() {
             return None;
         }
-        if matches!(self.repeat, RepeatMode::One) {
+        if auto && matches!(self.repeat, RepeatMode::One) {
             return self.current_track_id_from_order();
         }
         match self.order_pos {
@@ -358,6 +366,16 @@ impl AudioPlayer {
                 self.order_pos = Some(0);
             }
         }
+        self.current_track_id_from_order()
+    }
+
+    /// order 上の指定位置にジャンプし、その track_id を返す (再生は呼び出し側で行う)。
+    /// Up Next からの選曲で、キュー順 (order_pos) を保ったまま頭出しするために使う。
+    pub fn jump_to(&mut self, order_index: usize) -> Option<i64> {
+        if order_index >= self.order.len() {
+            return None;
+        }
+        self.order_pos = Some(order_index);
         self.current_track_id_from_order()
     }
 }

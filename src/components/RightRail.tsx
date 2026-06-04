@@ -11,6 +11,12 @@ interface RightRailProps {
   onPlaylistsChanged: () => void;
 }
 
+/// Up Next の 1 行。order(再生順) 上の絶対位置を併せ持つ。
+interface QueueItem {
+  track: Track;
+  orderIndex: number;
+}
+
 function ratingToStars(rating: number | null): number {
   if (!rating) return 0;
   return Math.round(rating / 20);
@@ -38,7 +44,7 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
     repeat,
   } = useStore();
 
-  const [queueTracks, setQueueTracks] = useState<Track[]>([]);
+  const [queueTracks, setQueueTracks] = useState<QueueItem[]>([]);
   const dragIdx = useRef<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
 
@@ -51,23 +57,31 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   useEffect(() => {
     if (railTab !== "next") return;
     let alive = true;
-    (async () => {
+    const load = async () => {
       try {
         const q = await playbackApi.getQueue();
         if (!alive) return;
         const byId = new Map(tracks.map((t) => [t.trackId, t]));
         const startAt = q.currentIndex != null ? q.currentIndex + 1 : 0;
+        // order(再生順) 上の絶対位置を保持。Up Next からの頭出しに使う。
         const upcoming = q.trackIds
           .slice(startAt)
-          .map((id) => byId.get(id))
-          .filter((t): t is Track => !!t);
+          .map((id, idx) => {
+            const track = byId.get(id);
+            return track ? { track, orderIndex: startAt + idx } : null;
+          })
+          .filter((x): x is QueueItem => !!x);
         setQueueTracks(upcoming);
       } catch {
         if (alive) setQueueTracks([]);
       }
-    })();
+    };
+    load();
+    // enqueue や曲の自動遷移を反映するため、表示中は定期的に取り直す。
+    const iv = setInterval(load, 1000);
     return () => {
       alive = false;
+      clearInterval(iv);
     };
     // shuffle / repeat 変更で再生順が変わるので Up Next を取り直す。
   }, [railTab, playback.currentTrackId, tracks, shuffle, repeat]);
@@ -112,9 +126,22 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
     await playbackApi.playTrack(ids[0]);
   }, [crate]);
 
-  const playFromCrate = useCallback(async (track: Track) => {
+  // Crate の曲をダブルクリック: Crate 全体をキューにして、その曲から再生。
+  const playFromCrate = useCallback(
+    async (track: Track) => {
+      if (!track.fileExists) return;
+      const ids = crate.map((t) => t.trackId);
+      const startIndex = ids.indexOf(track.trackId);
+      await playbackApi.setQueue(ids, Math.max(0, startIndex));
+      await playbackApi.playTrack(track.trackId);
+    },
+    [crate],
+  );
+
+  // Up Next の曲をダブルクリック: 再生順(order)を保ったまま、その位置へ頭出し。
+  const playFromQueue = useCallback(async (orderIndex: number, track: Track) => {
     if (!track.fileExists) return;
-    await playbackApi.playTrack(track.trackId);
+    await playbackApi.playQueueAt(orderIndex);
   }, []);
 
   return (
@@ -195,11 +222,12 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
           {queueTracks.length === 0 ? (
             <div className="cb-rail-empty">キューは空です。トラックをダブルクリックで再生開始。</div>
           ) : (
-            queueTracks.map((t, i) => (
+            queueTracks.map(({ track: t, orderIndex }) => (
               <div
-                key={`${t.id}-${i}`}
-                className="cb-cnode"
-                onDoubleClick={() => playFromCrate(t)}
+                key={`${orderIndex}-${t.id}`}
+                className={"cb-cnode" + (!t.fileExists ? " missing" : "")}
+                onDoubleClick={() => playFromQueue(orderIndex, t)}
+                title={t.fileExists ? "Double-click to play" : "File not found"}
               >
                 <Cover
                   seed={t.album}

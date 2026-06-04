@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import { Icon } from "./Icon";
@@ -15,8 +15,11 @@ function formatTime(ms: number): string {
 const WAVE_N = 64;
 
 export function PlayerBar() {
-  const { playback, tracks, volume, shuffle, repeat, setVolume, setShuffle, setRepeat } =
+  const { playback, tracks, volume, shuffle, repeat, setVolume, setShuffle, setRepeat, setRailTab } =
     useStore();
+
+  // ミュート前の音量を保持（復帰用）。
+  const lastVolumeRef = useRef(volume > 0 ? volume : 1);
 
   const currentTrack = playback.currentTrackId
     ? tracks.find((t) => t.trackId === playback.currentTrackId)
@@ -39,6 +42,20 @@ export function PlayerBar() {
 
   const handleNext = useCallback(() => playbackApi.playNext(), []);
   const handlePrev = useCallback(() => playbackApi.playPrev(), []);
+
+  const handleMuteToggle = useCallback(() => {
+    if (volume > 0) {
+      lastVolumeRef.current = volume;
+      setVolume(0);
+      playbackApi.setVolume(0);
+    } else {
+      const v = lastVolumeRef.current || 1;
+      setVolume(v);
+      playbackApi.setVolume(v);
+    }
+  }, [volume, setVolume]);
+
+  const handleOpenQueue = useCallback(() => setRailTab("next"), [setRailTab]);
 
   const handleWaveSeek = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -157,12 +174,13 @@ export function PlayerBar() {
 
       {/* right: queue + volume */}
       <div className="cb-pr">
-        <button className="cb-pr-btn" title="Queue">
+        <button className="cb-pr-btn" title="Up Next" onClick={handleOpenQueue}>
           <Icon name="queue" size={16} />
         </button>
         <button
           className="cb-pr-btn"
-          title={volume === 0 ? "Muted" : "Volume (↑/↓)"}
+          title={volume === 0 ? "Unmute" : "Mute"}
+          onClick={handleMuteToggle}
         >
           <Icon name={volume === 0 ? "volumeX" : "volume"} size={16} />
         </button>
