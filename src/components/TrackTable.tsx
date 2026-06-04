@@ -6,9 +6,10 @@ import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import { Icon, Stars } from "./Icon";
 import { Cover } from "./Cover";
+import { TrackContextMenu } from "./TrackContextMenu";
 import { bpmColor } from "../lib/art";
 import { FIELD_DEFS } from "../types";
-import type { Track, FieldKey } from "../types";
+import type { Track, FieldKey, Playlist } from "../types";
 
 function formatTime(ms: number | null): string {
   if (!ms) return "";
@@ -56,6 +57,8 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
     toggleSort,
     crate,
     addToCrate,
+    recentPlaylistIds,
+    pushRecentPlaylist,
   } = useStore();
 
   const parentRef = useRef<HTMLDivElement>(null);
@@ -147,13 +150,14 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
       if (ids.length === 0) return;
       try {
         await playlistsApi.addTracksToPlaylist(playlistId, ids);
+        pushRecentPlaylist(playlistId);
         onTracksChanged();
       } catch (err) {
         alert(`Failed to add: ${err}`);
       }
       setContextMenu(null);
     },
-    [ctxIds, onTracksChanged],
+    [ctxIds, pushRecentPlaylist, onTracksChanged],
   );
 
   const handleAddSelectionToCrate = useCallback(() => {
@@ -188,6 +192,22 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
       }
     },
     [onTracksChanged],
+  );
+
+  // コンテキストメニュー用: 選択中（または右クリック対象）の全曲へレーティングを適用
+  const handleSetRatingForSelection = useCallback(
+    async (stars: number) => {
+      const ids = ctxIds();
+      if (ids.length === 0) return;
+      const newRating = stars * 20;
+      try {
+        for (const id of ids) await libraryApi.setTrackRating(id, newRating);
+        onTracksChanged();
+      } catch (err) {
+        console.error("Failed to set rating:", err);
+      }
+    },
+    [ctxIds, onTracksChanged],
   );
 
   const handleEnqueue = useCallback(async () => {
@@ -233,11 +253,50 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
 
   const closeMenu = useCallback(() => setContextMenu(null), []);
 
+  // アプリケーションキー / Shift+F10 でコンテキストメニューを開く（D）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const isMenuKey = e.key === "ContextMenu" || (e.shiftKey && e.key === "F10");
+      if (!isMenuKey) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
+      if (selectedTrackIds.size === 0) return;
+      const sel = tracks.find((t) => selectedTrackIds.has(t.trackId));
+      if (!sel) return;
+      e.preventDefault();
+      const rowEl = parentRef.current?.querySelector(
+        `[data-track-id="${sel.trackId}"]`,
+      ) as HTMLElement | null;
+      let x = 220;
+      let y = 200;
+      if (rowEl) {
+        const r = rowEl.getBoundingClientRect();
+        x = r.left + 96;
+        y = r.bottom;
+      }
+      setContextMenu({ x, y, track: sel });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tracks, selectedTrackIds]);
+
   const items = rowVirtualizer.getVirtualItems();
+  // 右クリック対象の最新状態（レーティング更新後も即反映させるため tracks から引き直す）
+  const ctxTrack = contextMenu
+    ? tracks.find((t) => t.trackId === contextMenu.track.trackId) ?? contextMenu.track
+    : null;
   const targetPlaylists = playlists.filter((p) => !p.isFolder && !p.isSmart);
-  const ctxGenreTags = contextMenu?.track.genre
-    ? contextMenu.track.genre.split(/\s+/).filter(Boolean)
+  const recentPlaylists = recentPlaylistIds
+    .map((id) => targetPlaylists.find((p) => p.playlistId === id))
+    .filter((p): p is Playlist => Boolean(p));
+  const ctxGenreTags = ctxTrack?.genre
+    ? ctxTrack.genre.split(/\s+/).filter(Boolean)
     : [];
+  const ctxHeaderLabel =
+    selectedTrackIds.size > 1
+      ? `${selectedTrackIds.size} tracks selected`
+      : ctxTrack?.name || "(unknown)";
 
   const renderField = (id: FieldKey, t: Track): React.ReactNode => {
     switch (id) {
@@ -350,6 +409,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
           return (
             <div
               key={t.id}
+              data-track-id={t.trackId}
               className={
                 "cb-row" +
                 (isCurrent ? " play" : "") +
@@ -435,67 +495,27 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
       )}
 
       {/* Context menu */}
-      {contextMenu && (
-        <div
-          className="context-menu"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="context-menu-header">
-            {selectedTrackIds.size > 1
-              ? `${selectedTrackIds.size} tracks selected`
-              : contextMenu.track.name || "(unknown)"}
-          </div>
-          <div className="context-menu-item" onClick={() => handleDoubleClick(contextMenu.track)}>
-            <Icon name="play" size={14} /> Play
-          </div>
-          <div className="context-menu-item" onClick={handleAddSelectionToCrate}>
-            <Icon name="layers" size={14} /> Add to Crate
-          </div>
-          <div className="context-menu-item" onClick={handleEnqueue}>
-            <Icon name="queue" size={14} /> Add to Queue
-          </div>
-          <div className="context-menu-item" onClick={handleGetInfo}>
-            <Icon name="info" size={14} /> Get Info / Edit
-          </div>
-          {viewMode === "playlist" && (
-            <div
-              className="context-menu-item"
-              onClick={() => handleRemoveFromPlaylist(contextMenu.track)}
-            >
-              <Icon name="minus" size={14} /> Remove from this playlist
-            </div>
-          )}
-          <div className="context-menu-divider" />
-          <div className="context-menu-section">Add to playlist…</div>
-          {targetPlaylists.length === 0 ? (
-            <div className="context-menu-empty">No playlists yet</div>
-          ) : (
-            targetPlaylists.map((p) => (
-              <div
-                key={p.playlistId}
-                className="context-menu-item"
-                onClick={() => handleAddToPlaylist(p.playlistId)}
-              >
-                <Icon name="music" size={14} /> {p.name}
-              </div>
-            ))
-          )}
-          <div className="context-menu-divider" />
-          <div className="context-menu-section">Genre tags</div>
-          <div className="context-menu-item" onClick={() => setShowAddTagDialog(true)}>
-            <Icon name="plus" size={14} /> Add tag…
-          </div>
-          {ctxGenreTags.map((tag) => (
-            <div
-              key={tag}
-              className="context-menu-item"
-              onClick={() => handleRemoveGenreTag(tag)}
-            >
-              <Icon name="minus" size={14} /> Remove "{tag}"
-            </div>
-          ))}
-        </div>
+      {contextMenu && ctxTrack && (
+        <TrackContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          headerLabel={ctxHeaderLabel}
+          ratingStars={ratingToStars(ctxTrack.rating)}
+          genreTags={ctxGenreTags}
+          playlists={playlists}
+          recentPlaylists={recentPlaylists}
+          showRemoveFromPlaylist={viewMode === "playlist"}
+          onClose={closeMenu}
+          onPlay={() => handleDoubleClick(ctxTrack)}
+          onSetRating={handleSetRatingForSelection}
+          onAddToCrate={handleAddSelectionToCrate}
+          onEnqueue={handleEnqueue}
+          onGetInfo={handleGetInfo}
+          onRemoveFromPlaylist={() => handleRemoveFromPlaylist(ctxTrack)}
+          onAddToPlaylist={handleAddToPlaylist}
+          onAddTag={() => setShowAddTagDialog(true)}
+          onRemoveTag={handleRemoveGenreTag}
+        />
       )}
 
       {/* Add genre tag dialog */}

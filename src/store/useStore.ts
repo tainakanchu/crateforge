@@ -25,7 +25,12 @@ interface PersistedSettings {
   volume: number;
   shuffle: boolean;
   repeat: RepeatMode;
+  // 直近に「プレイリストへ追加」したプレイリストID（新しい順 / 最大 MAX_RECENT_PLAYLISTS 件）
+  recentPlaylistIds: number[];
 }
+
+// 「前回入れたプレイリスト」ショートカットで保持する件数
+const MAX_RECENT_PLAYLISTS = 3;
 
 interface AppState extends PersistedSettings {
   // View
@@ -87,6 +92,7 @@ interface AppState extends PersistedSettings {
   setVolume: (v: number) => void;
   setShuffle: (on: boolean) => void;
   setRepeat: (mode: RepeatMode) => void;
+  pushRecentPlaylist: (id: number) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -120,6 +126,7 @@ export const useStore = create<AppState>()(
       volume: 1.0,
       shuffle: false,
       repeat: "off",
+      recentPlaylistIds: [],
 
       setViewMode: (mode) => set({ viewMode: mode }),
       setSelectedPlaylistId: (id) => set({ selectedPlaylistId: id }),
@@ -206,11 +213,18 @@ export const useStore = create<AppState>()(
       setVolume: (volume) => set({ volume }),
       setShuffle: (shuffle) => set({ shuffle }),
       setRepeat: (repeat) => set({ repeat }),
+      pushRecentPlaylist: (id) =>
+        set((state) => ({
+          recentPlaylistIds: [
+            id,
+            ...state.recentPlaylistIds.filter((p) => p !== id),
+          ].slice(0, MAX_RECENT_PLAYLISTS),
+        })),
     }),
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 2,
+      version: 3,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -222,8 +236,10 @@ export const useStore = create<AppState>()(
           volume: state.volume,
           shuffle: state.shuffle,
           repeat: state.repeat,
+          recentPlaylistIds: state.recentPlaylistIds,
         }) satisfies PersistedSettings,
       // v1(visibleColumns) からの移行: 旧キーは破棄してデフォルトに倒す。
+      // v3: recentPlaylistIds を追加（旧データには無いので配列で補完）。
       migrate: (persisted, version) => {
         if (version < 2 && persisted && typeof persisted === "object") {
           const p = persisted as Record<string, unknown>;
@@ -232,6 +248,10 @@ export const useStore = create<AppState>()(
           if (typeof p.rowH !== "number") p.rowH = 40;
           if (typeof p.coverSize !== "number") p.coverSize = 20;
           if (p.displayMode !== "covers") p.displayMode = "list";
+        }
+        if (version < 3 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (!Array.isArray(p.recentPlaylistIds)) p.recentPlaylistIds = [];
         }
         return persisted as PersistedSettings;
       },

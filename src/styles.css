@@ -1533,6 +1533,92 @@ input {
   color: var(--mut);
   font-style: italic;
 }
+/* キーボードフォーカス中の項目（hover と同じ見た目） */
+.context-menu-item.active {
+  background: var(--ac-14);
+  color: #eafbf8;
+}
+.context-menu-item.active svg {
+  color: var(--ac);
+}
+.context-menu-item .ell {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 「Add to playlist ▸」サブメニュー親 */
+.context-menu-item.has-sub .ctx-sub-caret {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  color: var(--mut);
+}
+.context-menu-item.active.has-sub .ctx-sub-caret {
+  color: var(--ac);
+}
+/* 「前回入れたプレイリスト」バッジ */
+.ctx-recent-badge {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  font-size: 9px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--ac);
+  background: var(--ac-14);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+/* レーティング行（A） */
+.context-menu-rating {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  cursor: default;
+}
+.context-menu-rating .lbl {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  color: var(--tx);
+}
+.context-menu-rating .lbl svg {
+  color: var(--mut);
+}
+.context-menu-rating.active {
+  background: var(--ac-14);
+}
+.context-menu-rating.active .lbl,
+.context-menu-rating.active .lbl svg {
+  color: var(--ac);
+}
+/* プレイリスト追加フライアウト */
+.context-menu-submenu {
+  min-width: 230px;
+  max-height: 380px;
+}
+.context-menu-filter {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 2px 0 6px;
+  padding: 6px 9px;
+  font-size: 12px;
+  color: var(--tx);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--bd);
+  border-radius: 7px;
+  outline: none;
+}
+.context-menu-filter:focus {
+  border-color: var(--ac);
+}
+.context-menu-filter::placeholder {
+  color: var(--mut);
+}
 
 /* ============================================================
    Album / Artist view
