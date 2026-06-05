@@ -29,7 +29,7 @@ pub fn import_files(db: &Database, paths: &[String]) -> ImportFileResult {
         }
 
         match read_and_insert(db, path, root.as_deref()) {
-            Ok(()) => added += 1,
+            Ok(_) => added += 1,
             Err(e) => {
                 eprintln!("import_files: skipped {} ({})", raw_path, e);
                 skipped += 1;
@@ -43,7 +43,13 @@ pub fn import_files(db: &Database, paths: &[String]) -> ImportFileResult {
     }
 }
 
-fn read_and_insert(db: &Database, path: &Path, library_root: Option<&Path>) -> Result<(), String> {
+/// 既存ファイル (変換結果など) を整理せず、その場参照でライブラリへ追加する。
+/// 追加した track_id を返す。
+pub fn import_in_place(db: &Database, path: &Path) -> Result<i64, String> {
+    read_and_insert(db, path, None)
+}
+
+fn read_and_insert(db: &Database, path: &Path, library_root: Option<&Path>) -> Result<i64, String> {
     let tagged = Probe::open(path)
         .map_err(|e| format!("open failed: {}", e))?
         .read()
@@ -148,7 +154,7 @@ fn read_and_insert(db: &Database, path: &Path, library_root: Option<&Path>) -> R
         let _ = db.set_track_bpm(track_id, b);
     }
 
-    Ok(())
+    Ok(track_id)
 }
 
 /// タグから BPM を読む。TBPM/tmpo (IntegerBpm) を優先し、無ければ Vorbis "BPM"。

@@ -3,6 +3,7 @@ mod artwork;
 mod audio;
 mod cd_ripper;
 mod commands;
+mod converter;
 mod db;
 mod importer;
 mod itunes_xml;
@@ -119,6 +120,8 @@ pub fn run() {
             commands::ripping::lookup_release_by_toc,
             commands::ripping::compute_disc_id,
             commands::ripping::rip_cd,
+            // conversion
+            commands::convert::convert_tracks,
             // audio analysis
             commands::analysis::analyze_tracks,
             commands::analysis::get_analysis,

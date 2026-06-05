@@ -288,3 +288,57 @@ pub struct ImportFileResult {
     pub added_tracks: usize,
     pub skipped: usize,
 }
+
+// === Audio file conversion ===
+
+/// 変換先の音声フォーマット (ffmpeg ベース)。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ConvertFormat {
+    Mp3,
+    Flac,
+    Alac,
+    Aac,
+    Opus,
+    Wav,
+}
+
+impl ConvertFormat {
+    pub fn extension(&self) -> &'static str {
+        match self {
+            ConvertFormat::Mp3 => "mp3",
+            ConvertFormat::Flac => "flac",
+            ConvertFormat::Alac | ConvertFormat::Aac => "m4a",
+            ConvertFormat::Opus => "opus",
+            ConvertFormat::Wav => "wav",
+        }
+    }
+
+    /// 埋め込みカバーアートを保持できるコンテナか。
+    pub fn supports_cover(&self) -> bool {
+        matches!(
+            self,
+            ConvertFormat::Mp3 | ConvertFormat::Flac | ConvertFormat::Alac | ConvertFormat::Aac
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertRequest {
+    pub track_ids: Vec<i64>,
+    pub format: ConvertFormat,
+    /// 非可逆フォーマットのビットレート (kbps)。None なら既定値。
+    pub bitrate_kbps: Option<u32>,
+    pub output_dir: String,
+    /// 変換後のファイルをライブラリへ追加するか。
+    pub add_to_library: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ConvertProgress {
+    Start { total: usize },
+    Item { index: usize, total: usize, name: String, ok: bool },
+    Done { converted: usize, failed: usize, added: usize },
+}
