@@ -29,6 +29,7 @@ interface TrackTableProps {
   onLoadMore: () => void;
   onTracksChanged: () => void;
   onEditTrack: (track: Track) => void;
+  onConvert: (trackIds: number[]) => void;
 }
 
 interface ContextMenuState {
@@ -37,7 +38,7 @@ interface ContextMenuState {
   track: Track;
 }
 
-export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTableProps) {
+export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert }: TrackTableProps) {
   const {
     tracks,
     isLoading,
@@ -273,6 +274,13 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
     setSimilarBase(contextMenu.track.trackId);
     setContextMenu(null);
   }, [contextMenu, setSimilarBase]);
+
+  // 選択（or 右クリック対象）の曲を変換ダイアログへ。
+  const handleConvert = useCallback(() => {
+    const ids = ctxIds();
+    if (ids.length > 0) onConvert(ids);
+    setContextMenu(null);
+  }, [ctxIds, onConvert]);
 
   const closeMenu = useCallback(() => setContextMenu(null), []);
 
@@ -576,6 +584,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack }: TrackTa
           onEnqueue={handleEnqueue}
           onAnalyze={handleAnalyzeSelection}
           onFindSimilar={handleFindSimilar}
+          onConvert={handleConvert}
           onGetInfo={handleGetInfo}
           onRemoveFromPlaylist={() => handleRemoveFromPlaylist(ctxTrack)}
           onAddToPlaylist={handleAddToPlaylist}

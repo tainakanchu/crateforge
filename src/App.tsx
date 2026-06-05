@@ -9,6 +9,7 @@ import { Toolbar } from "./components/Toolbar";
 import { TrackEditor } from "./components/TrackEditor";
 import { RipDialog } from "./components/ripper/RipDialog";
 import { RulesPanel } from "./components/rules/RulesPanel";
+import { ConvertDialog } from "./components/ConvertDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useStore } from "./store/useStore";
 import * as libraryApi from "./api/library";
@@ -59,6 +60,7 @@ export default function App() {
   const [ripOpen, setRipOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [editorTrack, setEditorTrack] = useState<Track | null>(null);
+  const [convertIds, setConvertIds] = useState<number[] | null>(null);
 
   const reloadPlaylists = useCallback(async () => {
     if (!isTauri) return;
@@ -402,6 +404,7 @@ export default function App() {
             onLoadMore={handleLoadMore}
             onTracksChanged={triggerReload}
             onEditTrack={(t) => setEditorTrack(t)}
+            onConvert={(ids) => setConvertIds(ids)}
           />
         )}
       </div>
@@ -414,6 +417,13 @@ export default function App() {
           track={editorTrack}
           onClose={() => setEditorTrack(null)}
           onSaved={triggerReload}
+        />
+      )}
+      {convertIds && (
+        <ConvertDialog
+          trackIds={convertIds}
+          onClose={() => setConvertIds(null)}
+          onLibraryChanged={triggerReload}
         />
       )}
     </div>

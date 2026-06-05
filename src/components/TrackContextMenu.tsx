@@ -24,6 +24,7 @@ interface TrackContextMenuProps {
   onEnqueue: () => void;
   onAnalyze: () => void;
   onFindSimilar: () => void;
+  onConvert: () => void;
   onGetInfo: () => void;
   onRemoveFromPlaylist: () => void;
   onAddToPlaylist: (playlistId: number) => void;
@@ -68,6 +69,7 @@ export function TrackContextMenu({
   onEnqueue,
   onAnalyze,
   onFindSimilar,
+  onConvert,
   onGetInfo,
   onRemoveFromPlaylist,
   onAddToPlaylist,
@@ -97,7 +99,7 @@ export function TrackContextMenu({
 
   // ── メニュー項目（フォーカス可能なものだけ）を上から順に id 化 ──
   const navIds = useMemo(() => {
-    const ids = ["play", "rating", "crate", "queue", "analyze", "similar", "info"];
+    const ids = ["play", "rating", "crate", "queue", "analyze", "similar", "convert", "info"];
     if (showRemoveFromPlaylist) ids.push("remove");
     for (const p of recentPlaylists) ids.push(`recent:${p.playlistId}`);
     ids.push("playlist");
@@ -159,6 +161,7 @@ export function TrackContextMenu({
       if (id === "queue") return run(onEnqueue)();
       if (id === "analyze") return run(onAnalyze)();
       if (id === "similar") return run(onFindSimilar)();
+      if (id === "convert") return run(onConvert)();
       if (id === "info") return run(onGetInfo)();
       if (id === "remove") return run(onRemoveFromPlaylist)();
       if (id === "addtag") return run(onAddTag)();
@@ -169,7 +172,7 @@ export function TrackContextMenu({
         return run(() => onRemoveTag(id.slice(4)))();
       }
     },
-    [run, onPlay, onAddToCrate, onEnqueue, onAnalyze, onFindSimilar, onGetInfo, onRemoveFromPlaylist, onAddTag, onAddToPlaylist, onRemoveTag],
+    [run, onPlay, onAddToCrate, onEnqueue, onAnalyze, onFindSimilar, onConvert, onGetInfo, onRemoveFromPlaylist, onAddTag, onAddToPlaylist, onRemoveTag],
   );
 
   const openSubmenu = useCallback(() => {
@@ -369,6 +372,9 @@ export function TrackContextMenu({
       </div>
       <div {...itemProps("similar")} onClick={run(onFindSimilar)}>
         <Icon name="layers" size={14} /> Find similar
+      </div>
+      <div {...itemProps("convert")} onClick={run(onConvert)}>
+        <Icon name="settings" size={14} /> Convert to…
       </div>
       <div {...itemProps("info")} onClick={run(onGetInfo)}>
         <Icon name="info" size={14} /> Get Info / Edit
