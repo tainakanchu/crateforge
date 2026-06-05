@@ -1,12 +1,65 @@
 use tauri::AppHandle;
 
 use crate::commands::library::open_db;
-use crate::models::{Playlist, Track};
+use crate::models::{Playlist, SmartCriteria, Track};
 
 #[tauri::command]
 pub fn get_playlists(app: AppHandle) -> Result<Vec<Playlist>, String> {
     let db = open_db(&app)?;
     db.get_playlists().map_err(|e| e.to_string())
+}
+
+// ===== Smart playlists =====
+
+#[tauri::command]
+pub fn create_smart_playlist(
+    app: AppHandle,
+    name: String,
+    criteria: SmartCriteria,
+) -> Result<Playlist, String> {
+    let db = open_db(&app)?;
+    db.create_smart_playlist(&name, &criteria)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_smart_criteria(
+    app: AppHandle,
+    playlist_id: i64,
+    criteria: SmartCriteria,
+) -> Result<(), String> {
+    let db = open_db(&app)?;
+    db.set_smart_criteria(playlist_id, &criteria)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_smart_criteria(
+    app: AppHandle,
+    playlist_id: i64,
+) -> Result<Option<SmartCriteria>, String> {
+    let db = open_db(&app)?;
+    db.get_smart_criteria(playlist_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_smart_playlist_tracks(
+    app: AppHandle,
+    playlist_id: i64,
+    limit: Option<i64>,
+    offset: Option<i64>,
+    sort_field: Option<String>,
+    sort_order: Option<String>,
+) -> Result<Vec<Track>, String> {
+    let db = open_db(&app)?;
+    db.get_smart_playlist_tracks(
+        playlist_id,
+        limit.unwrap_or(500),
+        offset.unwrap_or(0),
+        sort_field.as_deref(),
+        sort_order.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Playlist, Track, SortField, SortOrder } from "../types";
+import type { Playlist, Track, SortField, SortOrder, SmartCriteria } from "../types";
 
 export async function getPlaylists(): Promise<Playlist[]> {
   return invoke("get_playlists");
@@ -63,4 +63,40 @@ export async function reorderPlaylistTracks(
   orderedTrackIds: number[],
 ): Promise<void> {
   return invoke("reorder_playlist_tracks", { playlistId, orderedTrackIds });
+}
+
+// ===== Smart playlists =====
+
+export async function createSmartPlaylist(
+  name: string,
+  criteria: SmartCriteria,
+): Promise<Playlist> {
+  return invoke("create_smart_playlist", { name, criteria });
+}
+
+export async function updateSmartCriteria(
+  playlistId: number,
+  criteria: SmartCriteria,
+): Promise<void> {
+  return invoke("update_smart_criteria", { playlistId, criteria });
+}
+
+export async function getSmartCriteria(playlistId: number): Promise<SmartCriteria | null> {
+  return invoke("get_smart_criteria", { playlistId });
+}
+
+export async function getSmartPlaylistTracks(
+  playlistId: number,
+  limit?: number,
+  offset?: number,
+  sortField?: SortField,
+  sortOrder?: SortOrder,
+): Promise<Track[]> {
+  return invoke("get_smart_playlist_tracks", {
+    playlistId,
+    limit,
+    offset,
+    sortField,
+    sortOrder,
+  });
 }

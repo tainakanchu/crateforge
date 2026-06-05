@@ -28,7 +28,7 @@ function ratingToStars(rating: number | null): number {
 interface TrackTableProps {
   onLoadMore: () => void;
   onTracksChanged: () => void;
-  onEditTrack: (track: Track) => void;
+  onEditTrack: (tracks: Track[]) => void;
   onConvert: (trackIds: number[]) => void;
 }
 
@@ -264,9 +264,11 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleGetInfo = useCallback(() => {
     if (!contextMenu) return;
-    onEditTrack(contextMenu.track);
+    const ids = new Set(ctxIds());
+    const sel = tracks.filter((t) => ids.has(t.trackId));
+    onEditTrack(sel.length > 0 ? sel : [contextMenu.track]);
     setContextMenu(null);
-  }, [contextMenu, onEditTrack]);
+  }, [contextMenu, ctxIds, tracks, onEditTrack]);
 
   // 右クリックした 1 曲を基準に右レールの Similar タブを開く。
   const handleFindSimilar = useCallback(() => {

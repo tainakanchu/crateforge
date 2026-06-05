@@ -64,6 +64,9 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel }:
     playlists,
     tracks,
     analysisActive,
+    autoExportEnabled,
+    autoExportPath,
+    setAutoExport,
   } = useStore();
 
   const [importing, setImporting] = useState(false);
@@ -192,13 +195,35 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel }:
     setStatus("Exporting…");
     try {
       const r = await libraryApi.exportLibrary(path);
+      // 自動エクスポートの出力先として記憶する。
+      setAutoExport(autoExportEnabled, path);
       setStatus(`Exported ${r.trackCount} tracks → ${r.outputPath}`);
     } catch (err) {
       setStatus(`Export error: ${err}`);
     } finally {
       setExporting(false);
     }
-  }, []);
+  }, [autoExportEnabled, setAutoExport]);
+
+  // iTunes 互換 XML の自動エクスポートを ON/OFF。ON 時にパス未設定なら出力先を聞く。
+  const handleToggleAutoExport = useCallback(async () => {
+    if (autoExportEnabled) {
+      setAutoExport(false, autoExportPath);
+      setStatus("自動エクスポート: OFF");
+      return;
+    }
+    let path = autoExportPath;
+    if (!path) {
+      const picked = await save({
+        filters: [{ name: "iTunes Library XML", extensions: ["xml"] }],
+        defaultPath: "iTunes Library.xml",
+      });
+      if (!picked) return;
+      path = picked;
+    }
+    setAutoExport(true, path);
+    setStatus(`自動エクスポート: ON（${path}）`);
+  }, [autoExportEnabled, autoExportPath, setAutoExport]);
 
   // View title + subcount.
   const activePlaylist =
@@ -367,6 +392,17 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel }:
             title="Export library to iTunes-compatible XML"
           >
             <Icon name="upload" size={16} />
+          </button>
+          <button
+            className={"cb-btn cb-btn-iconly" + (autoExportEnabled ? " on" : "")}
+            onClick={handleToggleAutoExport}
+            title={
+              autoExportEnabled
+                ? `自動 XML エクスポート: ON\n${autoExportPath ?? ""}\n(変更時に約30分間隔＋終了時に自動書き出し)\nクリックで OFF`
+                : "iTunes 互換 XML を自動エクスポート (変更時のみ・約30分間隔＋終了時)"
+            }
+          >
+            <Icon name="clock" size={16} />
           </button>
         </div>
 

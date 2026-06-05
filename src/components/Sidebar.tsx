@@ -6,6 +6,7 @@ import type { Playlist, ViewMode } from "../types";
 
 interface SidebarProps {
   onPlaylistsChanged: () => void;
+  onEditSmart: (playlistId: number | null, name?: string) => void;
 }
 
 interface NavItem {
@@ -21,7 +22,7 @@ const NAV: NavItem[] = [
   { mode: "recent", icon: "clock", label: "Recently Played" },
 ];
 
-export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
+export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
   const {
     viewMode,
     playlists,
@@ -131,14 +132,21 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
           }}
           onContextMenu={(e) => {
             e.preventDefault();
-            const action = window.prompt(`"${pl.name}"\n\n[r] Rename  [d] Delete`, "");
+            const editable = pl.isSmart && !pl.isFolder;
+            const action = window.prompt(
+              `"${pl.name}"\n\n[r] Rename  [d] Delete${editable ? "  [e] Edit rules" : ""}`,
+              "",
+            );
             if (action === "r") startRename(pl);
             else if (action === "d") handleDelete(pl);
+            else if (action === "e" && editable) onEditSmart(pl.playlistId, pl.name);
           }}
           title={
             pl.isFolder
               ? "Click to collapse/expand, double-click to rename"
-              : "Double-click to rename, right-click for actions"
+              : pl.isSmart
+                ? "Smart playlist — right-click → [e] to edit rules"
+                : "Double-click to rename, right-click for actions"
           }
         >
           {pl.isFolder && (
@@ -173,7 +181,9 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
           ) : (
             <>
               <span className="cb-prow-label">{pl.name}</span>
-              {!pl.isFolder && <span className="ct">{pl.trackCount.toLocaleString()}</span>}
+              {!pl.isFolder && !pl.isSmart && (
+                <span className="ct">{pl.trackCount.toLocaleString()}</span>
+              )}
             </>
           )}
         </div>
@@ -219,6 +229,13 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
             onClick={() => handleCreatePlaylist(true)}
           >
             <Icon name="folderPlus" size={14} />
+          </button>
+          <button
+            className="cb-iconbtn"
+            title="New smart playlist"
+            onClick={() => onEditSmart(null)}
+          >
+            <Icon name="sliders" size={14} />
           </button>
         </span>
       </div>

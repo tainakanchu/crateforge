@@ -40,6 +40,7 @@ lofty = "0.21"
 rustfft = "6"
 ebur128 = "0.1"
 symphonia = { version = "0.5", features = ["all"] }
+tauri-plugin-clipboard-manager = "2.3.2"
 
 # === Unix-only: MusicBrainz disc id via libdiscid (C lib comes from Nix/Brew/apt). ===
 # Skipped on Windows because libdiscid isn't trivially available via the standard

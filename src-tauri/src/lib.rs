@@ -11,6 +11,7 @@ mod metadata;
 mod models;
 mod organizer;
 mod playlist_rules;
+mod smart;
 mod smtc;
 mod updater;
 
@@ -34,6 +35,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         // 埋め込みジャケットを `artwork://localhost/<percent-encoded path>` で配信。
         // <img> から遅延ロードされ、WebView がレスポンスをキャッシュする。
         .register_asynchronous_uri_scheme_protocol("artwork", |_ctx, request, responder| {
@@ -85,6 +87,9 @@ pub fn run() {
             commands::library::get_all_genre_tags,
             commands::library::get_library_root,
             commands::library::set_library_root,
+            // artwork
+            commands::artwork::set_artwork_from_data,
+            commands::artwork::set_artwork_from_file,
             // playlists
             commands::playlists::get_playlists,
             commands::playlists::get_playlist_tracks,
@@ -94,6 +99,10 @@ pub fn run() {
             commands::playlists::add_tracks_to_playlist,
             commands::playlists::remove_track_from_playlist,
             commands::playlists::reorder_playlist_tracks,
+            commands::playlists::create_smart_playlist,
+            commands::playlists::update_smart_criteria,
+            commands::playlists::get_smart_criteria,
+            commands::playlists::get_smart_playlist_tracks,
             // playback
             commands::playback::play_track,
             commands::playback::pause,

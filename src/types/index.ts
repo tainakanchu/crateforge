@@ -7,3 +7,4 @@ export * from "./rules";
 export * from "./edit";
 export * from "./analysis";
 export * from "./convert";
+export * from "./smart";

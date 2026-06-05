@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { TrackTable } from "./components/TrackTable";
 import { CoversView } from "./components/CoversView";
@@ -10,6 +11,7 @@ import { TrackEditor } from "./components/TrackEditor";
 import { RipDialog } from "./components/ripper/RipDialog";
 import { RulesPanel } from "./components/rules/RulesPanel";
 import { ConvertDialog } from "./components/ConvertDialog";
+import { SmartPlaylistEditor } from "./components/SmartPlaylistEditor";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useStore } from "./store/useStore";
 import * as libraryApi from "./api/library";
@@ -25,6 +27,7 @@ export default function App() {
   const {
     viewMode,
     selectedPlaylistId,
+    playlists,
     searchQuery,
     filterTags,
     setTracks,
@@ -56,11 +59,18 @@ export default function App() {
   const PAGE_SIZE = 500;
   const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
   const advanceRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  // 自動 XML エクスポート用: ライブラリに変更があったか。
+  const libraryDirtyRef = useRef(false);
   const [reloadCount, setReloadCount] = useState(0);
   const [ripOpen, setRipOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
-  const [editorTrack, setEditorTrack] = useState<Track | null>(null);
+  const [editorTracks, setEditorTracks] = useState<Track[] | null>(null);
   const [convertIds, setConvertIds] = useState<number[] | null>(null);
+  const [smartEditor, setSmartEditor] = useState<{
+    playlistId: number | null;
+    name?: string;
+  } | null>(null);
+  const [installing, setInstalling] = useState(false);
 
   const reloadPlaylists = useCallback(async () => {
     if (!isTauri) return;
@@ -110,13 +120,22 @@ export default function App() {
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
         } else if (viewMode === "playlist" && selectedPlaylistId !== null) {
-          result = await playlistsApi.getPlaylistTracks(
-            selectedPlaylistId,
-            PAGE_SIZE,
-            offset,
-            sortField,
-            sortOrder,
-          );
+          const pl = playlists.find((p) => p.playlistId === selectedPlaylistId);
+          result = pl?.isSmart
+            ? await playlistsApi.getSmartPlaylistTracks(
+                selectedPlaylistId,
+                PAGE_SIZE,
+                offset,
+                sortField,
+                sortOrder,
+              )
+            : await playlistsApi.getPlaylistTracks(
+                selectedPlaylistId,
+                PAGE_SIZE,
+                offset,
+                sortField,
+                sortOrder,
+              );
           if (reset) setTracks(result);
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
@@ -137,7 +156,7 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [viewMode, selectedPlaylistId, searchQuery, filterTags, sortField, sortOrder, tracks.length, setTracks, appendTracks, setHasMore, setIsLoading],
+    [viewMode, selectedPlaylistId, playlists, searchQuery, filterTags, sortField, sortOrder, tracks.length, setTracks, appendTracks, setHasMore, setIsLoading],
   );
 
   useEffect(() => {
@@ -263,6 +282,45 @@ export default function App() {
     };
   }, [loadAnalyses, setAnalysisActive]);
 
+  // 「閉じるときに更新」: 閉じる要求を捕まえ、予約があればインストーラを起動してから閉じる。
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      const win = getCurrentWindow();
+      unlisten = await win.onCloseRequested(async (event) => {
+        const st = useStore.getState();
+        const pending = st.pendingUpdate;
+        const needsExport =
+          st.autoExportEnabled && !!st.autoExportPath && libraryDirtyRef.current;
+        if (!pending && !needsExport) return; // 何も無ければ通常どおり閉じる
+        event.preventDefault();
+        // 閉じる前に最新のライブラリを書き出しておく。
+        if (needsExport && st.autoExportPath) {
+          try {
+            await libraryApi.exportLibrary(st.autoExportPath);
+            libraryDirtyRef.current = false;
+          } catch (e) {
+            console.error("auto-export on close failed:", e);
+          }
+        }
+        if (pending) {
+          setInstalling(true);
+          try {
+            await playbackApi.stop().catch(() => {});
+            await systemApi.downloadAndRunUpdate(pending.url);
+          } catch (e) {
+            console.error("update on close failed:", e);
+          }
+        }
+        await win.destroy();
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   // Advance queue when current track finishes.
   useEffect(() => {
     if (!isTauri) return;
@@ -277,9 +335,27 @@ export default function App() {
   }, []);
 
   const triggerReload = useCallback(() => {
+    libraryDirtyRef.current = true; // 変更があったので次回の自動エクスポート対象。
     setReloadCount((c) => c + 1);
     reloadPlaylists();
   }, [reloadPlaylists]);
+
+  // iTunes 互換 XML の自動エクスポート: 変更があったときだけ、適度な間隔で書き出す。
+  useEffect(() => {
+    if (!isTauri) return;
+    const INTERVAL_MS = 30 * 60 * 1000; // 30 分
+    const id = setInterval(async () => {
+      const { autoExportEnabled, autoExportPath } = useStore.getState();
+      if (!autoExportEnabled || !autoExportPath || !libraryDirtyRef.current) return;
+      try {
+        await libraryApi.exportLibrary(autoExportPath);
+        libraryDirtyRef.current = false;
+      } catch (e) {
+        console.error("auto-export failed:", e);
+      }
+    }, INTERVAL_MS);
+    return () => clearInterval(id);
+  }, []);
 
   const handleLoadMore = useCallback(() => {
     loadTracks(false);
@@ -309,9 +385,8 @@ export default function App() {
       }
       if (cmd && e.key.toLowerCase() === "i") {
         e.preventDefault();
-        const first = selectedTrackIds.size > 0 ? Array.from(selectedTrackIds)[0] : null;
-        const t = first != null ? tracks.find((x) => x.trackId === first) : null;
-        if (t) setEditorTrack(t);
+        const sel = tracks.filter((x) => selectedTrackIds.has(x.trackId));
+        if (sel.length > 0) setEditorTracks(sel);
         return;
       }
 
@@ -384,7 +459,10 @@ export default function App() {
 
   return (
     <div className="app">
-      <Sidebar onPlaylistsChanged={triggerReload} />
+      <Sidebar
+        onPlaylistsChanged={triggerReload}
+        onEditSmart={(id, name) => setSmartEditor({ playlistId: id, name })}
+      />
       <div className="cb-main">
         <UpdateBanner />
         <Toolbar
@@ -403,7 +481,7 @@ export default function App() {
           <TrackTable
             onLoadMore={handleLoadMore}
             onTracksChanged={triggerReload}
-            onEditTrack={(t) => setEditorTrack(t)}
+            onEditTrack={(ts) => setEditorTracks(ts)}
             onConvert={(ids) => setConvertIds(ids)}
           />
         )}
@@ -412,10 +490,10 @@ export default function App() {
       <PlayerBar />
       <RipDialog open={ripOpen} onClose={() => setRipOpen(false)} onLibraryChanged={triggerReload} />
       <RulesPanel open={rulesOpen} onClose={() => setRulesOpen(false)} onLibraryChanged={triggerReload} />
-      {editorTrack && (
+      {editorTracks && (
         <TrackEditor
-          track={editorTrack}
-          onClose={() => setEditorTrack(null)}
+          tracks={editorTracks}
+          onClose={() => setEditorTracks(null)}
           onSaved={triggerReload}
         />
       )}
@@ -425,6 +503,26 @@ export default function App() {
           onClose={() => setConvertIds(null)}
           onLibraryChanged={triggerReload}
         />
+      )}
+      {smartEditor && (
+        <SmartPlaylistEditor
+          playlistId={smartEditor.playlistId}
+          initialName={smartEditor.name}
+          onClose={() => setSmartEditor(null)}
+          onSaved={triggerReload}
+        />
+      )}
+      {installing && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ width: 380, padding: 28, textAlign: "center" }}>
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>
+              アップデートを準備しています…
+            </div>
+            <div style={{ fontSize: 13, color: "var(--mut)" }}>
+              インストーラをダウンロードして起動します。そのままお待ちください。
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

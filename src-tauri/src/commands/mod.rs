@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod artwork;
 pub mod convert;
 pub mod library;
 pub mod playback;

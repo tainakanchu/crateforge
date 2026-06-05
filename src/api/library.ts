@@ -81,3 +81,19 @@ export async function getLibraryRoot(): Promise<string | null> {
 export async function setLibraryRoot(path: string): Promise<void> {
   return invoke("set_library_root", { path });
 }
+
+/// base64 画像データ (クリップボード等) を指定トラックのカバーアートに設定。成功件数を返す。
+export async function setArtworkFromData(
+  trackIds: number[],
+  dataBase64: string,
+): Promise<number> {
+  return invoke("set_artwork_from_data", { trackIds, dataBase64 });
+}
+
+/// 画像ファイルを指定トラックのカバーアートに設定。成功件数を返す。
+export async function setArtworkFromFile(
+  trackIds: number[],
+  path: string,
+): Promise<number> {
+  return invoke("set_artwork_from_file", { trackIds, path });
+}
