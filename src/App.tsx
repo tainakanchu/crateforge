@@ -59,7 +59,7 @@ export default function App() {
   const [reloadCount, setReloadCount] = useState(0);
   const [ripOpen, setRipOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
-  const [editorTrack, setEditorTrack] = useState<Track | null>(null);
+  const [editorTracks, setEditorTracks] = useState<Track[] | null>(null);
   const [convertIds, setConvertIds] = useState<number[] | null>(null);
 
   const reloadPlaylists = useCallback(async () => {
@@ -309,9 +309,8 @@ export default function App() {
       }
       if (cmd && e.key.toLowerCase() === "i") {
         e.preventDefault();
-        const first = selectedTrackIds.size > 0 ? Array.from(selectedTrackIds)[0] : null;
-        const t = first != null ? tracks.find((x) => x.trackId === first) : null;
-        if (t) setEditorTrack(t);
+        const sel = tracks.filter((x) => selectedTrackIds.has(x.trackId));
+        if (sel.length > 0) setEditorTracks(sel);
         return;
       }
 
@@ -403,7 +402,7 @@ export default function App() {
           <TrackTable
             onLoadMore={handleLoadMore}
             onTracksChanged={triggerReload}
-            onEditTrack={(t) => setEditorTrack(t)}
+            onEditTrack={(ts) => setEditorTracks(ts)}
             onConvert={(ids) => setConvertIds(ids)}
           />
         )}
@@ -412,10 +411,10 @@ export default function App() {
       <PlayerBar />
       <RipDialog open={ripOpen} onClose={() => setRipOpen(false)} onLibraryChanged={triggerReload} />
       <RulesPanel open={rulesOpen} onClose={() => setRulesOpen(false)} onLibraryChanged={triggerReload} />
-      {editorTrack && (
+      {editorTracks && (
         <TrackEditor
-          track={editorTrack}
-          onClose={() => setEditorTrack(null)}
+          tracks={editorTracks}
+          onClose={() => setEditorTracks(null)}
           onSaved={triggerReload}
         />
       )}
