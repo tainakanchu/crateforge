@@ -9,7 +9,7 @@ use serde::Serialize;
 const RELEASES_API: &str =
     "https://api.github.com/repos/tainakanchu/itunes-playlist-viewer/releases/latest";
 const USER_AGENT: &str = concat!(
-    "iTunes-Playlist-Viewer/",
+    "Crateforge/",
     env!("CARGO_PKG_VERSION"),
     " (update-check)"
 );
@@ -152,7 +152,7 @@ pub async fn download_and_run(url: &str) -> Result<String, String> {
         .rsplit('/')
         .next()
         .filter(|s| !s.is_empty())
-        .unwrap_or("itunes-playlist-viewer-setup.exe");
+        .unwrap_or("crateforge-setup.exe");
     let path = std::env::temp_dir().join(fname);
     std::fs::write(&path, &bytes).map_err(|e| format!("Saving installer failed: {}", e))?;
 

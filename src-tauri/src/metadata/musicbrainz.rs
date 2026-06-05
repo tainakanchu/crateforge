@@ -1,7 +1,7 @@
 use crate::models::{ReleaseCandidate, ReleaseTrack};
 
 const USER_AGENT: &str = concat!(
-    "iTunes-Playlist-Viewer/",
+    "Crateforge/",
     env!("CARGO_PKG_VERSION"),
     " ( https://github.com/tainakanchu/itunes-playlist-viewer )"
 );

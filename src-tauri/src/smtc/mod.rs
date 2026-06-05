@@ -43,8 +43,8 @@ mod inner {
             .0 as *mut std::ffi::c_void;
 
         let config = PlatformConfig {
-            dbus_name: "com.tainakanchu.itunes_playlist_viewer",
-            display_name: "iTunes Playlist Viewer",
+            dbus_name: "com.tainakanchu.crateforge",
+            display_name: "Crateforge",
             hwnd: Some(hwnd),
         };
 

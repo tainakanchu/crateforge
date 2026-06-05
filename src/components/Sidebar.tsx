@@ -198,7 +198,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
         <div className="cb-logo">
           <Icon name="layers" size={14} />
         </div>
-        <b>Cratebox</b>
+        <b>Crateforge</b>
       </div>
 
       <div className="cb-lbl">Library</div>

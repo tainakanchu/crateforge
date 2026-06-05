@@ -1,5 +1,5 @@
 {
-  description = "iTunes Playlist Viewer - Tauri desktop app";
+  description = "Crateforge - Tauri desktop app";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -85,7 +85,7 @@
             export GDK_DPI_SCALE=''${GDK_DPI_SCALE:-1.5}
 
             echo ""
-            echo "iTunes Playlist Viewer dev shell ready."
+            echo "Crateforge dev shell ready."
             echo "  pnpm install      # install JS deps"
             echo "  pnpm tauri dev    # run desktop app"
             echo "  pnpm tauri build  # build release binary"
