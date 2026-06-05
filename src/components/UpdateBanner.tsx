@@ -8,6 +8,7 @@ const DISMISS_KEY = "itunes-viewer-update-dismissed";
 
 export function UpdateBanner() {
   const [info, setInfo] = useState<UpdateInfo | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -30,7 +31,7 @@ export function UpdateBanner() {
     };
   }, []);
 
-  const handleOpen = useCallback(async () => {
+  const openReleasePage = useCallback(async () => {
     if (!info) return;
     try {
       await openShell(info.releaseUrl);
@@ -39,6 +40,24 @@ export function UpdateBanner() {
       console.warn("openShell failed, fell back to window.open:", e);
     }
   }, [info]);
+
+  // 直接ダウンロードできるならインストーラを取得して起動。
+  // それが無い / 失敗したらリリースページを開く。
+  const handleDownload = useCallback(async () => {
+    if (!info) return;
+    if (info.downloadUrl) {
+      setBusy(true);
+      try {
+        await systemApi.downloadAndRunUpdate(info.downloadUrl);
+        return; // インストーラ起動 (アプリは閉じられる可能性あり)
+      } catch (e) {
+        console.warn("Direct download failed, opening release page:", e);
+      } finally {
+        setBusy(false);
+      }
+    }
+    await openReleasePage();
+  }, [info, openReleasePage]);
 
   const handleDismiss = useCallback(() => {
     if (!info) return;
@@ -55,10 +74,10 @@ export function UpdateBanner() {
         <strong>{info.latestVersion}</strong> is available
         <span className="update-banner-current"> (you're on v{info.currentVersion})</span>
       </span>
-      <button className="toolbar-btn primary" onClick={handleOpen}>
-        Download
+      <button className="toolbar-btn primary" onClick={handleDownload} disabled={busy}>
+        {busy ? "Downloading…" : info.downloadUrl ? "Download & Install" : "Download"}
       </button>
-      <button className="toolbar-btn" onClick={handleDismiss}>
+      <button className="toolbar-btn" onClick={handleDismiss} disabled={busy}>
         Skip this version
       </button>
     </div>

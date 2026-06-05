@@ -23,6 +23,8 @@ pub struct UpdateInfo {
     pub release_url: String,
     pub release_notes: String,
     pub published_at: Option<String>,
+    /// この OS 向けインストーラの直接ダウンロード URL (見つからなければ None)。
+    pub download_url: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -36,6 +38,30 @@ struct GhRelease {
     draft: bool,
     #[serde(default)]
     prerelease: bool,
+    #[serde(default)]
+    assets: Vec<GhAsset>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GhAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+/// この OS 向けのインストーラ資産を選ぶ。Windows のみ対応 (NSIS setup → msi → exe)。
+fn pick_installer_asset(assets: &[GhAsset]) -> Option<String> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    let find = |pred: &dyn Fn(&str) -> bool| {
+        assets
+            .iter()
+            .find(|a| pred(&a.name.to_lowercase()))
+            .map(|a| a.browser_download_url.clone())
+    };
+    find(&|n| n.ends_with("-setup.exe") || n.contains("setup"))
+        .or_else(|| find(&|n| n.ends_with(".msi")))
+        .or_else(|| find(&|n| n.ends_with(".exe")))
 }
 
 pub async fn check_for_update() -> Result<UpdateInfo, String> {
@@ -60,6 +86,7 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
             release_url: String::new(),
             release_notes: String::new(),
             published_at: None,
+            download_url: None,
         });
     }
     if !resp.status().is_success() {
@@ -79,12 +106,14 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
             release_url: rel.html_url,
             release_notes: rel.body.unwrap_or_default(),
             published_at: rel.published_at,
+            download_url: None,
         });
     }
 
     let current = env!("CARGO_PKG_VERSION").to_string();
     let latest_clean = rel.tag_name.trim_start_matches('v').to_string();
     let available = is_newer(&latest_clean, &current);
+    let download_url = pick_installer_asset(&rel.assets);
 
     Ok(UpdateInfo {
         available,
@@ -93,7 +122,62 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
         release_url: rel.html_url,
         release_notes: rel.name.unwrap_or_default() + "\n\n" + &rel.body.unwrap_or_default(),
         published_at: rel.published_at,
+        download_url,
     })
+}
+
+/// インストーラ資産をダウンロードして一時ファイルに保存し、起動する。
+/// 戻り値は保存先パス。Windows のみ対応 (download_url も Windows でしか返らない)。
+pub async fn download_and_run(url: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| format!("HTTP client init failed: {}", e))?;
+
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Download request failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("Download returned {}", resp.status()));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Reading download failed: {}", e))?;
+
+    let fname = url
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("itunes-playlist-viewer-setup.exe");
+    let path = std::env::temp_dir().join(fname);
+    std::fs::write(&path, &bytes).map_err(|e| format!("Saving installer failed: {}", e))?;
+
+    launch_installer(&path)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn launch_installer(path: &std::path::Path) -> Result<(), String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let spawn = if ext == "msi" {
+        std::process::Command::new("msiexec").arg("/i").arg(path).spawn()
+    } else {
+        std::process::Command::new(path).spawn()
+    };
+    spawn.map(|_| ()).map_err(|e| format!("Launching installer failed: {}", e))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn launch_installer(_path: &std::path::Path) -> Result<(), String> {
+    Err("Direct install is only supported on Windows".to_string())
 }
 
 /// `a > b` を SemVer 風の比較で判定 (suffix は無視)。
