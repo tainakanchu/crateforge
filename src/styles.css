@@ -848,6 +848,199 @@ input {
   outline: 2px solid var(--ac);
   outline-offset: 2px;
 }
+.cb-card.opened {
+  outline: 2px solid var(--ac);
+  outline-offset: 2px;
+}
+
+/* --- Covers: album card meta + expand --- */
+.cov-meta {
+  padding: 7px 3px 0;
+  cursor: pointer;
+}
+.cov-meta .cj {
+  font-size: 13px;
+  font-weight: 680;
+  color: var(--tx);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cov-meta .la {
+  font-size: 11.5px;
+  color: var(--mut);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+.cov-play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  transform: translate(-50%, -50%) scale(0.8);
+  border-radius: 50%;
+  background: var(--ac);
+  color: var(--on-ac);
+  display: grid;
+  place-items: center;
+  padding-left: 3px;
+  opacity: 0;
+  transition: 0.16s;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.cb-cardwrap:hover .cov-play {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+.cov-chev {
+  position: absolute;
+  right: 11px;
+  bottom: 10px;
+  color: rgba(255, 255, 255, 0.85);
+  display: grid;
+  place-items: center;
+  transition: transform 0.18s;
+  pointer-events: none;
+}
+.cov-chev[data-open="1"] {
+  transform: rotate(180deg);
+}
+
+.cov-exp {
+  background: var(--bg-side);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.cov-exp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--bd);
+}
+.cov-exp-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.cov-exp-title .t {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--tx);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cov-exp-title .s {
+  font-size: 11.5px;
+  color: var(--mut);
+  margin-top: 1px;
+}
+.cov-exp-close {
+  background: none;
+  border: none;
+  color: var(--mut);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  flex-shrink: 0;
+}
+.cov-exp-close:hover {
+  background: var(--hover);
+  color: var(--tx);
+}
+.cov-trks {
+  padding: 4px 0;
+}
+.cov-trk {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 14px;
+  cursor: default;
+}
+.cov-trk:hover {
+  background: var(--hover);
+}
+.cov-trk.play {
+  color: var(--ac);
+}
+.cov-trk.missing {
+  opacity: 0.5;
+}
+.cov-trk .n {
+  width: 26px;
+  text-align: right;
+  font: 12px var(--mono);
+  color: var(--mut);
+  flex-shrink: 0;
+}
+.cov-trk .nm {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  overflow: hidden;
+}
+.cov-trk .nm .ell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cov-trk .nm .sub {
+  color: var(--mut);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.cov-trk .cov-now {
+  color: var(--ac);
+  display: inline-grid;
+  place-items: center;
+}
+.cov-trk .bpm {
+  font-size: 12px;
+  font-weight: 650;
+  flex-shrink: 0;
+}
+.cov-trk .tm {
+  font-size: 12px;
+  color: var(--mut);
+  flex-shrink: 0;
+  width: 38px;
+  text-align: right;
+}
+.cov-trk-add {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: none;
+  color: var(--mut);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.cov-trk-add:hover {
+  background: var(--ac);
+  color: var(--on-ac);
+}
+.cov-trk-add.in {
+  color: var(--ac);
+  cursor: default;
+}
 
 /* ============================================================
    Right rail (Now Playing / Up Next / Crate)
