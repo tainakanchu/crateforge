@@ -10,6 +10,32 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-06-06
+
+### 日本語
+
+#### 追加
+- **設定（Preferences）画面**を新設しました。ツールバー右端の⚙から開け、**一般 / 変換(ffmpeg) / アップデート / 情報・ライセンス** の4セクションを備えます。
+- **ライセンス / クレジット表記**（情報タブ）。FFmpeg(GPL) や主要 OSS 依存を明記します。
+- **ポータブル版（zip）配布**。解凍して `crateforge.exe` を起動するだけ・インストール不要。アプリ内アップデートは exe を直接差し替えるので高速です。
+
+#### 変更
+- **変換用 ffmpeg を同梱から「初回利用時に自動取得＋キャッシュ」へ変更**。PATH → `%LOCALAPPDATA%` のキャッシュ → 無ければ上流(BtbN)から取得、の順で解決します。**アプリを更新しても ffmpeg は保持**され、毎回の再展開が無くなります。配布物も軽量化し、GPL バイナリの再配布も回避します（CLI 経由で外部プロセスとして利用）。
+- **インストーラからデスクトップショートカット作成を既定オフ**にしました。
+- インストーラから ffmpeg の同梱を取りやめました（上記の自動取得に統一）。
+
+### English
+
+#### Added
+- **Settings (Preferences) screen**, opened from the toolbar's gear, with four sections: **General / Conversion (ffmpeg) / Updates / About & licenses**.
+- **License / credits** listing (About tab), explicitly noting FFmpeg (GPL) and the main open-source dependencies.
+- **Portable build (zip)**: just unzip and run `crateforge.exe` — no installer. In-app updates swap the exe directly, so they're fast.
+
+#### Changed
+- **ffmpeg is no longer bundled** — it's fetched on first use and cached. Resolution order is PATH → `%LOCALAPPDATA%` cache → download from upstream (BtbN). **ffmpeg survives app updates** and is never re-extracted; downloads are smaller, and we avoid redistributing the GPL binary (it's used as an external CLI process).
+- **The installer no longer creates a desktop shortcut by default.**
+- Removed ffmpeg from the installer bundle (unified with the on-demand fetch above).
+
 ## [v0.2.1] - 2026-06-06
 
 ### 日本語
