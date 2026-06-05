@@ -8,10 +8,17 @@ export interface UpdateInfo {
   releaseUrl: string;
   releaseNotes: string;
   publishedAt: string | null;
+  /** この OS 向けインストーラの直接ダウンロード URL（無ければ null）。 */
+  downloadUrl: string | null;
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo> {
   return invoke("check_for_update");
+}
+
+/// インストーラを直接ダウンロードして起動する。戻り値は保存先パス。
+export async function downloadAndRunUpdate(url: string): Promise<string> {
+  return invoke("download_and_run_update", { url });
 }
 
 export async function updateSmtc(

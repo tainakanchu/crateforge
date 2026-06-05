@@ -81,7 +81,7 @@ impl Database {
                     t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count, t.total_time_ms,
                     t.date_added, t.date_modified, t.bpm, t.comments, t.location_raw, t.location_path,
                     t.track_type, t.disabled, t.compilation, t.disc_number, t.disc_count,
-                    t.track_number, t.track_count, t.file_exists
+                    t.track_number, t.track_count, t.file_exists, t.last_played
              FROM tracks t
              INNER JOIN playlist_tracks pt ON t.track_id = pt.track_id
              WHERE pt.playlist_id = ?1
@@ -316,5 +316,41 @@ impl Database {
         }
         tx.commit()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回帰防止: row_to_track を共有する全 SELECT の列が一致していること。
+    /// get_playlist_tracks の SELECT に last_played が欠けていると、row.get(28) が
+    /// InvalidColumnIndex で失敗し、プレイリスト選択時に絞り込みが効かなくなる。
+    #[test]
+    fn track_selects_match_row_mapper_columns() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, artist, file_exists) VALUES (1, 'Song', 'A', 1)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute("INSERT INTO playlists (playlist_id, name) VALUES (10, 'P')", [])
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES (10, 1, 0)",
+                [],
+            )
+            .unwrap();
+
+        let in_playlist = db.get_playlist_tracks(10, 100, 0, None, None).unwrap();
+        assert_eq!(in_playlist.len(), 1);
+        assert_eq!(in_playlist[0].track_id, 1);
+
+        // 同じ row_to_track を使う他経路も一緒に守る。
+        assert_eq!(db.get_tracks(100, 0, None, None).unwrap().len(), 1);
+        assert_eq!(db.search_tracks("Song", 100, 0, None, None).unwrap().len(), 1);
     }
 }

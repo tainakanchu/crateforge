@@ -134,6 +134,7 @@ pub fn run() {
             commands::rules::write_text_file,
             // updater
             commands::updater::check_for_update,
+            commands::updater::download_and_run_update,
             // smtc
             commands::smtc::update_smtc,
         ])

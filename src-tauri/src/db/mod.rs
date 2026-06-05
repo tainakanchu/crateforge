@@ -35,6 +35,21 @@ impl Database {
     }
 }
 
+#[cfg(test)]
+impl Database {
+    /// テスト用のインメモリ DB (スキーマ + マイグレーション適用済み)。
+    pub fn open_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        let db = Database {
+            conn,
+            path: ":memory:".to_string(),
+        };
+        schema::create_tables(&db.conn)?;
+        migrate(&db.conn)?;
+        Ok(db)
+    }
+}
+
 /// 指定テーブルに列が存在するか (PRAGMA table_info)。
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     // table 名はコード内リテラルのみ (ユーザー入力ではない) なので format! で安全。
