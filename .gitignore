@@ -29,6 +29,9 @@ dist-ssr
 src-tauri/target
 src-tauri/gen/schemas
 
+# Bundled ffmpeg for Windows builds (downloaded in CI, not committed)
+src-tauri/ffmpeg.exe
+
 # Build artifacts
 *.tsbuildinfo
 

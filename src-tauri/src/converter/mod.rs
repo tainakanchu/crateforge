@@ -31,6 +31,9 @@ pub fn convert_tracks(app: &AppHandle, db: &Database, req: ConvertRequest) -> Re
     let total = jobs.len();
     let _ = app.emit("convert-progress", ConvertProgress::Start { total });
 
+    // Windows ではバンドルした ffmpeg.exe を優先、無ければ PATH の `ffmpeg`。
+    let ffmpeg = ffmpeg_program(app);
+
     let mut converted = 0usize;
     let mut failed = 0usize;
     let mut added = 0usize;
@@ -41,7 +44,7 @@ pub fn convert_tracks(app: &AppHandle, db: &Database, req: ConvertRequest) -> Re
             .clone()
             .unwrap_or_else(|| format!("track {}", t.track_id));
 
-        let result = convert_one(&out_dir, t, req.format, req.bitrate_kbps);
+        let result = convert_one(&out_dir, t, req.format, req.bitrate_kbps, &ffmpeg);
         let ok = result.is_ok();
         match result {
             Ok(out_path) => {
@@ -78,11 +81,29 @@ pub fn convert_tracks(app: &AppHandle, db: &Database, req: ConvertRequest) -> Re
     Ok(())
 }
 
+/// 使用する ffmpeg のパスを解決する。Windows ではバンドルされた resource の
+/// ffmpeg.exe を優先し、無ければ PATH 上の `ffmpeg` にフォールバックする。
+fn ffmpeg_program(app: &AppHandle) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::Manager;
+        if let Ok(dir) = app.path().resource_dir() {
+            let p = dir.join("ffmpeg.exe");
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+    let _ = app;
+    PathBuf::from("ffmpeg")
+}
+
 fn convert_one(
     out_dir: &Path,
     t: &Track,
     format: ConvertFormat,
     bitrate: Option<u32>,
+    ffmpeg: &Path,
 ) -> Result<PathBuf, String> {
     let input = t.location_path.as_deref().ok_or("No file path for track")?;
     let input_path = Path::new(input);
@@ -97,11 +118,12 @@ fn convert_one(
     let out_path = unique_path(out_dir, stem, format.extension());
 
     // カバー対応フォーマットはまずカバー保持で試し、失敗したら無しで再試行。
-    if format.supports_cover() && run_ffmpeg(input_path, &out_path, format, bitrate, t, true).is_ok()
+    if format.supports_cover()
+        && run_ffmpeg(ffmpeg, input_path, &out_path, format, bitrate, t, true).is_ok()
     {
         return Ok(out_path);
     }
-    run_ffmpeg(input_path, &out_path, format, bitrate, t, false)?;
+    run_ffmpeg(ffmpeg, input_path, &out_path, format, bitrate, t, false)?;
     Ok(out_path)
 }
 
@@ -116,7 +138,9 @@ fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     p
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_ffmpeg(
+    ffmpeg: &Path,
     input: &Path,
     output: &Path,
     format: ConvertFormat,
@@ -124,7 +148,7 @@ fn run_ffmpeg(
     t: &Track,
     with_cover: bool,
 ) -> Result<(), String> {
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = Command::new(ffmpeg);
     cmd.arg("-y").arg("-loglevel").arg("error");
     cmd.arg("-i").arg(input);
 
