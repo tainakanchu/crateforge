@@ -70,5 +70,8 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "tracks", "last_played")? {
         conn.execute_batch("ALTER TABLE tracks ADD COLUMN last_played TEXT;")?;
     }
+    if !column_exists(conn, "playlists", "smart_criteria")? {
+        conn.execute_batch("ALTER TABLE playlists ADD COLUMN smart_criteria TEXT;")?;
+    }
     Ok(())
 }

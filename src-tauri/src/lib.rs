@@ -11,6 +11,7 @@ mod metadata;
 mod models;
 mod organizer;
 mod playlist_rules;
+mod smart;
 mod smtc;
 mod updater;
 
@@ -98,6 +99,10 @@ pub fn run() {
             commands::playlists::add_tracks_to_playlist,
             commands::playlists::remove_track_from_playlist,
             commands::playlists::reorder_playlist_tracks,
+            commands::playlists::create_smart_playlist,
+            commands::playlists::update_smart_criteria,
+            commands::playlists::get_smart_criteria,
+            commands::playlists::get_smart_playlist_tracks,
             // playback
             commands::playback::play_track,
             commands::playback::pause,

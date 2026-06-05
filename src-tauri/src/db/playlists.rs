@@ -1,9 +1,11 @@
-use rusqlite::{params, Result};
+use std::collections::HashMap;
+
+use rusqlite::{params, OptionalExtension, Result};
 
 use super::tracks::row_to_track;
 use super::Database;
 use crate::itunes_xml::parser::RawPlaylist;
-use crate::models::{Playlist, Track};
+use crate::models::{Playlist, SmartCriteria, Track, TrackAnalysis};
 
 impl Database {
     pub fn insert_playlist(&self, raw: &RawPlaylist, sort_order: i64) -> Result<()> {
@@ -316,6 +318,85 @@ impl Database {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    // ===== Smart playlists =====
+
+    pub fn get_smart_criteria(&self, playlist_id: i64) -> Result<Option<SmartCriteria>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT smart_criteria FROM playlists WHERE playlist_id = ?1",
+                params![playlist_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(json.and_then(|s| serde_json::from_str::<SmartCriteria>(&s).ok()))
+    }
+
+    pub fn set_smart_criteria(&self, playlist_id: i64, criteria: &SmartCriteria) -> Result<()> {
+        let json = serde_json::to_string(criteria).unwrap_or_else(|_| "{}".to_string());
+        self.conn.execute(
+            "UPDATE playlists SET smart_criteria = ?1, is_smart = 1 WHERE playlist_id = ?2",
+            params![json, playlist_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn create_smart_playlist(&self, name: &str, criteria: &SmartCriteria) -> Result<Playlist> {
+        let mut pl = self.create_playlist(name, None, false)?;
+        self.set_smart_criteria(pl.playlist_id, criteria)?;
+        pl.is_smart = true;
+        Ok(pl)
+    }
+
+    /// スマートプレイリストの曲をライブ評価で返す。criteria が無ければ
+    /// (iTunes 由来など) 従来のスナップショット表示にフォールバックする。
+    pub fn get_smart_playlist_tracks(
+        &self,
+        playlist_id: i64,
+        limit: i64,
+        offset: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<Vec<Track>> {
+        let Some(criteria) = self.get_smart_criteria(playlist_id)? else {
+            return self.get_playlist_tracks(playlist_id, limit, offset, sort_field, sort_order);
+        };
+
+        let all = self.get_all_tracks()?;
+        let amap: HashMap<i64, TrackAnalysis> = self
+            .get_all_analysis()?
+            .into_iter()
+            .map(|a| (a.track_id, a))
+            .collect();
+
+        let mut matched: Vec<Track> = all
+            .into_iter()
+            .filter(|t| crate::smart::track_matches(t, amap.get(&t.track_id), &criteria))
+            .collect();
+
+        // 並び替え: UI のソート優先、無ければ criteria のソート、無ければ name 昇順。
+        let (field, desc) = match sort_field {
+            Some(f) => (f.to_string(), matches!(sort_order, Some("desc"))),
+            None => (
+                criteria.sort_by.clone().unwrap_or_else(|| "name".to_string()),
+                criteria.sort_desc,
+            ),
+        };
+        crate::smart::sort_tracks(&mut matched, &field, desc);
+
+        if let Some(lim) = criteria.limit {
+            matched.truncate(lim);
+        }
+
+        let start = offset.max(0) as usize;
+        if start >= matched.len() {
+            return Ok(Vec::new());
+        }
+        let end = (start + limit.max(0) as usize).min(matched.len());
+        Ok(matched[start..end].to_vec())
     }
 }
 

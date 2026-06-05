@@ -44,7 +44,8 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
             is_folder INTEGER DEFAULT 0,
             is_smart INTEGER DEFAULT 0,
             is_user_created INTEGER DEFAULT 0,
-            sort_order INTEGER DEFAULT 0
+            sort_order INTEGER DEFAULT 0,
+            smart_criteria TEXT
         );
 
         CREATE TABLE IF NOT EXISTS playlist_tracks (

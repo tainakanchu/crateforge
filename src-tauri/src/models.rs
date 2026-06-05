@@ -289,6 +289,46 @@ pub struct ImportFileResult {
     pub skipped: usize,
 }
 
+// === Smart playlists ===
+
+/// スマートプレイリストの条件 (フラットなルール列 + 全/いずれか一致)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartCriteria {
+    /// true = すべての条件に一致 (AND)、false = いずれか (OR)。
+    pub match_all: bool,
+    pub rules: Vec<SmartRule>,
+    /// 上限曲数 (None で無制限)。
+    pub limit: Option<usize>,
+    /// 並び替えフィールド (UI 側 SortField 名)。
+    pub sort_by: Option<String>,
+    #[serde(default)]
+    pub sort_desc: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartRule {
+    pub field: String,
+    pub op: SmartOp,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SmartOp {
+    Is,
+    IsNot,
+    Contains,
+    NotContains,
+    Gt,
+    Lt,
+    Gte,
+    Lte,
+    Exists,
+    NotExists,
+}
+
 // === Audio file conversion ===
 
 /// 変換先の音声フォーマット (ffmpeg ベース)。
