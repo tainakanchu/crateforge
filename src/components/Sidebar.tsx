@@ -29,6 +29,8 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
     setViewMode,
     setSelectedPlaylistId,
     setSearchQuery,
+    collapsedFolders,
+    toggleFolder,
   } = useStore();
 
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -111,6 +113,7 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
     const children = childrenOf(pl.persistentId);
     const isActive = viewMode === "playlist" && selectedPlaylistId === pl.playlistId;
     const isEditing = editingId === pl.playlistId;
+    const isCollapsed = pl.isFolder && collapsedFolders.includes(pl.playlistId);
 
     return (
       <div key={pl.id}>
@@ -119,7 +122,9 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
             "cb-prow" + (isActive ? " on" : "") + (pl.isFolder ? " fold" : "")
           }
           style={{ paddingLeft: `${15 + depth * 14}px` }}
-          onClick={() => handlePlaylistClick(pl)}
+          onClick={() =>
+            pl.isFolder ? toggleFolder(pl.playlistId) : handlePlaylistClick(pl)
+          }
           onDoubleClick={(e) => {
             e.stopPropagation();
             startRename(pl);
@@ -130,8 +135,24 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
             if (action === "r") startRename(pl);
             else if (action === "d") handleDelete(pl);
           }}
-          title="Double-click to rename, right-click for actions"
+          title={
+            pl.isFolder
+              ? "Click to collapse/expand, double-click to rename"
+              : "Double-click to rename, right-click for actions"
+          }
         >
+          {pl.isFolder && (
+            <Icon
+              name="chevronR"
+              size={11}
+              style={{
+                flexShrink: 0,
+                opacity: 0.7,
+                transition: "transform .12s",
+                transform: isCollapsed ? undefined : "rotate(90deg)",
+              }}
+            />
+          )}
           <Icon
             name={pl.isFolder ? "folder" : pl.isSmart ? "sliders" : "music"}
             size={14}
@@ -156,7 +177,7 @@ export function Sidebar({ onPlaylistsChanged }: SidebarProps) {
             </>
           )}
         </div>
-        {children.map((c) => renderPlaylist(c, depth + 1))}
+        {!isCollapsed && children.map((c) => renderPlaylist(c, depth + 1))}
       </div>
     );
   };
