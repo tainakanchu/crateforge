@@ -10,6 +10,20 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-06-06
+
+### 日本語
+
+#### 変更
+- **アプリ名を「Crateforge」にリブランドしました**（旧 "iTunes Playlist Viewer"）。crate（掘る・集める）+ forge（鍛える・組み上げる）で、解析して選曲しセットを鍛える、という中身を表す名前です。機能は同じで、表示名・内部識別子・インストーラ名が新しくなりました。
+  - ⚠️ バンドル識別子（`com.tainakanchu.crateforge`）が変わったため、**旧版とは別アプリとしてインストールされます**。旧 "iTunes Playlist Viewer" のインストールからは自動更新で引き継がれないので、お手数ですが新しい Crateforge を入れ直してください（更新チェック自体は引き続き有効です）。
+
+### English
+
+#### Changed
+- **Renamed the app to "Crateforge"** (formerly "iTunes Playlist Viewer") — crate (dig/collect) + forge (craft/build) — the same app under a name that reflects its analyze-select-and-forge-a-set core. Display name, internal identifiers, and installer names are new.
+  - ⚠️ The bundle identifier (`com.tainakanchu.crateforge`) changed, so it **installs as a separate app** and won't auto-update from older "iTunes Playlist Viewer" installs — please install the new Crateforge once (update checks keep working from there).
+
 ## [v0.1.3] - 2026-06-06
 
 ### 日本語
