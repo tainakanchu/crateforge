@@ -10,6 +10,7 @@ import { TrackEditor } from "./components/TrackEditor";
 import { RipDialog } from "./components/ripper/RipDialog";
 import { RulesPanel } from "./components/rules/RulesPanel";
 import { ConvertDialog } from "./components/ConvertDialog";
+import { SmartPlaylistEditor } from "./components/SmartPlaylistEditor";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useStore } from "./store/useStore";
 import * as libraryApi from "./api/library";
@@ -25,6 +26,7 @@ export default function App() {
   const {
     viewMode,
     selectedPlaylistId,
+    playlists,
     searchQuery,
     filterTags,
     setTracks,
@@ -61,6 +63,10 @@ export default function App() {
   const [rulesOpen, setRulesOpen] = useState(false);
   const [editorTracks, setEditorTracks] = useState<Track[] | null>(null);
   const [convertIds, setConvertIds] = useState<number[] | null>(null);
+  const [smartEditor, setSmartEditor] = useState<{
+    playlistId: number | null;
+    name?: string;
+  } | null>(null);
 
   const reloadPlaylists = useCallback(async () => {
     if (!isTauri) return;
@@ -110,13 +116,22 @@ export default function App() {
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
         } else if (viewMode === "playlist" && selectedPlaylistId !== null) {
-          result = await playlistsApi.getPlaylistTracks(
-            selectedPlaylistId,
-            PAGE_SIZE,
-            offset,
-            sortField,
-            sortOrder,
-          );
+          const pl = playlists.find((p) => p.playlistId === selectedPlaylistId);
+          result = pl?.isSmart
+            ? await playlistsApi.getSmartPlaylistTracks(
+                selectedPlaylistId,
+                PAGE_SIZE,
+                offset,
+                sortField,
+                sortOrder,
+              )
+            : await playlistsApi.getPlaylistTracks(
+                selectedPlaylistId,
+                PAGE_SIZE,
+                offset,
+                sortField,
+                sortOrder,
+              );
           if (reset) setTracks(result);
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
@@ -137,7 +152,7 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [viewMode, selectedPlaylistId, searchQuery, filterTags, sortField, sortOrder, tracks.length, setTracks, appendTracks, setHasMore, setIsLoading],
+    [viewMode, selectedPlaylistId, playlists, searchQuery, filterTags, sortField, sortOrder, tracks.length, setTracks, appendTracks, setHasMore, setIsLoading],
   );
 
   useEffect(() => {
@@ -383,7 +398,10 @@ export default function App() {
 
   return (
     <div className="app">
-      <Sidebar onPlaylistsChanged={triggerReload} />
+      <Sidebar
+        onPlaylistsChanged={triggerReload}
+        onEditSmart={(id, name) => setSmartEditor({ playlistId: id, name })}
+      />
       <div className="cb-main">
         <UpdateBanner />
         <Toolbar
@@ -423,6 +441,14 @@ export default function App() {
           trackIds={convertIds}
           onClose={() => setConvertIds(null)}
           onLibraryChanged={triggerReload}
+        />
+      )}
+      {smartEditor && (
+        <SmartPlaylistEditor
+          playlistId={smartEditor.playlistId}
+          initialName={smartEditor.name}
+          onClose={() => setSmartEditor(null)}
+          onSaved={triggerReload}
         />
       )}
     </div>
