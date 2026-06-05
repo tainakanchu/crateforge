@@ -10,6 +10,20 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.1.2] - 2026-06-06
+
+### 日本語
+
+#### 追加
+- **曲のフォーマット変換**: 曲を右クリック →「Convert to…」で、**MP3 / FLAC / ALAC / AAC / Opus / WAV** に変換できるようになりました（ffmpeg 使用）。形式・ビットレート・出力先を選べ、変換後にライブラリへ追加できます。ライブラリのタグと埋め込みカバーを引き継ぎ、進捗を表示します。
+- Windows ビルドに **ffmpeg を同梱**したので、別途インストールしなくても変換が使えます（インストーラ版）。
+
+### English
+
+#### Added
+- **Audio format conversion**: right-click a track → "Convert to…" to re-encode to **MP3 / FLAC / ALAC / AAC / Opus / WAV** (via ffmpeg). Pick the format, bitrate, and output folder, and optionally add the results to the library; it carries over the library's tags and embedded cover art and shows progress.
+- Windows builds now **bundle ffmpeg**, so conversion works without installing it separately (installer builds).
+
 ## [v0.1.1] - 2026-06-06
 
 ### 日本語
