@@ -64,6 +64,8 @@ interface AppState extends PersistedSettings {
   analysisActive: { done: number; total: number } | null;
   // Similar タブの基準トラック。null なら再生中の曲を基準にする。
   similarBaseTrackId: number | null;
+  // 「閉じるときに更新」が予約されていれば、そのインストーラ URL とバージョン。
+  pendingUpdate: { url: string; version: string } | null;
 
   // Actions
   setViewMode: (mode: ViewMode) => void;
@@ -112,6 +114,7 @@ interface AppState extends PersistedSettings {
   setAnalyses: (list: TrackAnalysis[]) => void;
   setAnalysisActive: (v: { done: number; total: number } | null) => void;
   setSimilarBase: (trackId: number | null) => void;
+  setPendingUpdate: (v: { url: string; version: string } | null) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -137,6 +140,7 @@ export const useStore = create<AppState>()(
       analysisByTrack: new Map(),
       analysisActive: null,
       similarBaseTrackId: null,
+      pendingUpdate: null,
 
       // Persisted
       fields: DEFAULT_FIELDS,
@@ -272,6 +276,7 @@ export const useStore = create<AppState>()(
       setAnalysisActive: (v) => set({ analysisActive: v }),
       setSimilarBase: (trackId) =>
         set({ similarBaseTrackId: trackId, railTab: "similar" }),
+      setPendingUpdate: (pendingUpdate) => set({ pendingUpdate }),
     }),
     {
       name: "itunes-viewer-settings",

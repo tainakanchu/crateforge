@@ -11,6 +11,7 @@
     "fs:allow-mkdir",
     "fs:allow-exists",
     "clipboard-manager:allow-read-image",
+    "core:window:allow-destroy",
     {
       "identifier": "shell:allow-open",
       "allow": [

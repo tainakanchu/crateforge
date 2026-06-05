@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { open as openShell } from "@tauri-apps/plugin-shell";
 import * as systemApi from "../api/system";
+import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import type { UpdateInfo } from "../api/system";
 
 const DISMISS_KEY = "itunes-viewer-update-dismissed";
 
 export function UpdateBanner() {
+  const setPendingUpdate = useStore((s) => s.setPendingUpdate);
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [busy, setBusy] = useState(false);
+  const [scheduled, setScheduled] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -65,7 +68,33 @@ export function UpdateBanner() {
     setInfo(null);
   }, [info]);
 
+  // 「閉じるときに更新」: いまは使い続けて、アプリを閉じるタイミングで自動更新する。
+  const scheduleOnClose = useCallback(() => {
+    if (!info?.downloadUrl) return;
+    setPendingUpdate({ url: info.downloadUrl, version: info.latestVersion });
+    setScheduled(true);
+  }, [info, setPendingUpdate]);
+
+  const cancelSchedule = useCallback(() => {
+    setPendingUpdate(null);
+    setScheduled(false);
+  }, [setPendingUpdate]);
+
   if (!info) return null;
+
+  if (scheduled) {
+    return (
+      <div className="update-banner">
+        <Icon name="sparkle" size={16} />
+        <span className="update-banner-text">
+          アプリを閉じるときに <strong>{info.latestVersion}</strong> へ自動更新します
+        </span>
+        <button className="toolbar-btn" onClick={cancelSchedule}>
+          取り消す
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="update-banner">
@@ -75,8 +104,13 @@ export function UpdateBanner() {
         <span className="update-banner-current"> (you're on v{info.currentVersion})</span>
       </span>
       <button className="toolbar-btn primary" onClick={handleDownload} disabled={busy}>
-        {busy ? "Downloading…" : info.downloadUrl ? "Download & Install" : "Download"}
+        {busy ? "Downloading…" : info.downloadUrl ? "今すぐ更新" : "Download"}
       </button>
+      {info.downloadUrl && (
+        <button className="toolbar-btn" onClick={scheduleOnClose} disabled={busy}>
+          閉じるときに更新
+        </button>
+      )}
       <button className="toolbar-btn" onClick={handleDismiss} disabled={busy}>
         Skip this version
       </button>

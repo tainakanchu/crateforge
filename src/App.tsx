@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { TrackTable } from "./components/TrackTable";
 import { CoversView } from "./components/CoversView";
@@ -67,6 +68,7 @@ export default function App() {
     playlistId: number | null;
     name?: string;
   } | null>(null);
+  const [installing, setInstalling] = useState(false);
 
   const reloadPlaylists = useCallback(async () => {
     if (!isTauri) return;
@@ -278,6 +280,31 @@ export default function App() {
     };
   }, [loadAnalyses, setAnalysisActive]);
 
+  // 「閉じるときに更新」: 閉じる要求を捕まえ、予約があればインストーラを起動してから閉じる。
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      const win = getCurrentWindow();
+      unlisten = await win.onCloseRequested(async (event) => {
+        const pending = useStore.getState().pendingUpdate;
+        if (!pending) return; // 予約が無ければ通常どおり閉じる
+        event.preventDefault();
+        setInstalling(true);
+        try {
+          await playbackApi.stop().catch(() => {});
+          await systemApi.downloadAndRunUpdate(pending.url);
+        } catch (e) {
+          console.error("update on close failed:", e);
+        }
+        await win.destroy();
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   // Advance queue when current track finishes.
   useEffect(() => {
     if (!isTauri) return;
@@ -450,6 +477,18 @@ export default function App() {
           onClose={() => setSmartEditor(null)}
           onSaved={triggerReload}
         />
+      )}
+      {installing && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ width: 380, padding: 28, textAlign: "center" }}>
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>
+              アップデートを準備しています…
+            </div>
+            <div style={{ fontSize: 13, color: "var(--mut)" }}>
+              インストーラをダウンロードして起動します。そのままお待ちください。
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
