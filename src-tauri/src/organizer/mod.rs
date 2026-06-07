@@ -263,6 +263,7 @@ pub struct TagWrite<'a> {
     pub track_count: Option<i64>,
     pub disc_number: Option<i64>,
     pub disc_count: Option<i64>,
+    pub compilation: Option<bool>,
 }
 
 /// lofty で実ファイルのプライマリタグを更新して保存する。
@@ -321,6 +322,13 @@ pub fn write_tags(path: &Path, w: &TagWrite) -> Result<(), String> {
             tag.set_disk_total(n as u32);
         }
     }
+    if let Some(c) = w.compilation {
+        // Accessor が無いので ItemKey で直接挿入 ("1"/"0")。他アプリの判定に合わせる。
+        tag.insert_text(
+            ItemKey::FlagCompilation,
+            if c { "1" } else { "0" }.to_string(),
+        );
+    }
 
     tagged
         .save_to_path(path, WriteOptions::default())
@@ -337,11 +345,7 @@ mod tests {
     fn unique_tmp_dir() -> PathBuf {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "organizer_test_{}_{}",
-            std::process::id(),
-            n
-        ));
+        let dir = std::env::temp_dir().join(format!("organizer_test_{}_{}", std::process::id(), n));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -351,7 +355,10 @@ mod tests {
         // 実 iTunes は除去ではなく置換。
         assert_eq!(sanitize_component("5/10"), "5_10");
         assert_eq!(sanitize_component("Eutopia / EMOTION"), "Eutopia _ EMOTION");
-        assert_eq!(sanitize_component(r#"a:b*c?d"e<f>g|h\i"#), "a_b_c_d_e_f_g_h_i");
+        assert_eq!(
+            sanitize_component(r#"a:b*c?d"e<f>g|h\i"#),
+            "a_b_c_d_e_f_g_h_i"
+        );
     }
 
     #[test]
@@ -430,10 +437,7 @@ mod tests {
             "Just A Title.m4a"
         );
         // タイトルが空なら元ファイル名 stem にフォールバック。
-        assert_eq!(
-            build_file_name(None, None, None, None, src),
-            "orig.m4a"
-        );
+        assert_eq!(build_file_name(None, None, None, None, src), "orig.m4a");
         assert_eq!(
             build_file_name(Some("   "), Some(0), None, None, src),
             "orig.m4a"
@@ -464,7 +468,14 @@ mod tests {
     fn target_path_prefers_album_artist() {
         let root = Path::new("/lib");
         let src = Path::new("/in/raw.mp3");
-        let m = meta(Some("Song"), Some("Track Artist"), Some("Album Artist"), Some("My Album"), false, Some(1));
+        let m = meta(
+            Some("Song"),
+            Some("Track Artist"),
+            Some("Album Artist"),
+            Some("My Album"),
+            false,
+            Some(1),
+        );
         let p = target_path(root, &m, src);
         assert_eq!(p, Path::new("/lib/Album Artist/My Album/01 Song.mp3"));
     }
@@ -473,7 +484,14 @@ mod tests {
     fn target_path_falls_back_to_artist() {
         let root = Path::new("/lib");
         let src = Path::new("/in/raw.flac");
-        let m = meta(Some("Tune"), Some("Just Artist"), None, Some("Alb"), false, None);
+        let m = meta(
+            Some("Tune"),
+            Some("Just Artist"),
+            None,
+            Some("Alb"),
+            false,
+            None,
+        );
         let p = target_path(root, &m, src);
         assert_eq!(p, Path::new("/lib/Just Artist/Alb/Tune.flac"));
     }
@@ -497,7 +515,14 @@ mod tests {
         let root = Path::new("/lib");
         let src = Path::new("/in/x.mp3");
         // Compilation フラグは album_artist より優先される。
-        let m = meta(Some("Hit"), Some("A"), Some("Various Artists"), Some("Hits"), true, Some(3));
+        let m = meta(
+            Some("Hit"),
+            Some("A"),
+            Some("Various Artists"),
+            Some("Hits"),
+            true,
+            Some(3),
+        );
         let p = target_path(root, &m, src);
         assert_eq!(p, Path::new("/lib/Compilations/Hits/03 Hit.mp3"));
     }
@@ -537,7 +562,11 @@ mod tests {
         std::fs::write(&occupied, b"existing").unwrap();
         let dest = relocate(&src, &occupied, Mode::Copy).unwrap();
         assert_eq!(dest, dir.join("out/song (2).mp3"));
-        assert_eq!(std::fs::read(&occupied).unwrap(), b"existing", "既存は壊さない");
+        assert_eq!(
+            std::fs::read(&occupied).unwrap(),
+            b"existing",
+            "既存は壊さない"
+        );
         assert_eq!(std::fs::read(&dest).unwrap(), b"new");
     }
 

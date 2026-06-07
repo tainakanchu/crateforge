@@ -2,10 +2,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
+import * as playlistsApi from "../api/playlists";
+import * as libraryApi from "../api/library";
+import * as analysisApi from "../api/analysis";
 import { Icon } from "./Icon";
 import { ArtworkImg } from "./Cover";
+import { TrackContextMenu } from "./TrackContextMenu";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
-import type { Track } from "../types";
+import type { Track, Playlist } from "../types";
 
 const GAP = 18;
 const PAD_X = 20;
@@ -14,6 +18,23 @@ const META_H = 46; // カード下のアルバム名・曲数ラベルのおよ�
 
 interface CoversViewProps {
   onLoadMore: () => void;
+  onTracksChanged: () => void;
+  onEditTrack: (tracks: Track[]) => void;
+  onConvert: (trackIds: number[]) => void;
+}
+
+interface CoversCtxMenu {
+  x: number;
+  y: number;
+  album: AlbumGroup;
+  trackIds: number[];
+  primary: Track;
+  headerLabel: string;
+}
+
+function ratingToStars(rating: number | null): number {
+  if (!rating) return 0;
+  return Math.round(rating / 20);
 }
 
 interface AlbumGroup {
@@ -70,11 +91,27 @@ function groupAlbums(tracks: Track[]): AlbumGroup[] {
 }
 
 /// アート前面のブラウズビュー。アルバム単位でまとめ、クリックで曲一覧を展開する。
-export function CoversView({ onLoadMore }: CoversViewProps) {
-  const { tracks, isLoading, hasMore, playback, crate, addToCrate } = useStore();
+export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert }: CoversViewProps) {
+  const {
+    tracks,
+    isLoading,
+    hasMore,
+    playback,
+    crate,
+    addToCrate,
+    playlists,
+    viewMode,
+    selectedPlaylistId,
+    recentPlaylistIds,
+    pushRecentPlaylist,
+    setSimilarBase,
+  } = useStore();
   const parentRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [contextMenu, setContextMenu] = useState<CoversCtxMenu | null>(null);
+  const [showAddTagDialog, setShowAddTagDialog] = useState(false);
+  const [newTag, setNewTag] = useState("");
 
   useLayoutEffect(() => {
     const el = parentRef.current;
@@ -156,6 +193,173 @@ export function CoversView({ onLoadMore }: CoversViewProps) {
     [addToCrate],
   );
 
+  // ---- 右クリックメニュー ----
+  const closeMenu = useCallback(() => setContextMenu(null), []);
+
+  const openAlbumMenu = useCallback((e: React.MouseEvent, album: AlbumGroup) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      album,
+      trackIds: album.tracks.map((t) => t.trackId),
+      primary: album.tracks[0],
+      headerLabel:
+        album.tracks.length > 1 ? `${album.album} · ${album.tracks.length} tracks` : album.album,
+    });
+  }, []);
+
+  const openTrackMenu = useCallback(
+    (e: React.MouseEvent, album: AlbumGroup, track: Track) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        album,
+        trackIds: [track.trackId],
+        primary: track,
+        headerLabel: track.name || "(unknown)",
+      });
+    },
+    [],
+  );
+
+  const ctxTracks = useCallback(
+    (ids: number[]): Track[] => {
+      const set = new Set(ids);
+      return tracks.filter((t) => set.has(t.trackId));
+    },
+    [tracks],
+  );
+
+  const handleSetRating = useCallback(
+    async (stars: number) => {
+      if (!contextMenu) return;
+      const rating = stars * 20;
+      try {
+        for (const id of contextMenu.trackIds) await libraryApi.setTrackRating(id, rating);
+        onTracksChanged();
+      } catch (err) {
+        console.error("Failed to set rating:", err);
+      }
+    },
+    [contextMenu, onTracksChanged],
+  );
+
+  const handleAddToCrate = useCallback(() => {
+    if (!contextMenu) return;
+    ctxTracks(contextMenu.trackIds).forEach((t) => addToCrate(t));
+    closeMenu();
+  }, [contextMenu, ctxTracks, addToCrate, closeMenu]);
+
+  const handleEnqueue = useCallback(async () => {
+    if (!contextMenu) return;
+    for (const id of contextMenu.trackIds) await playbackApi.enqueueTrack(id);
+    closeMenu();
+  }, [contextMenu, closeMenu]);
+
+  const handleAnalyze = useCallback(async () => {
+    if (!contextMenu) return;
+    try {
+      await analysisApi.analyzeTracks(contextMenu.trackIds, true);
+    } catch (err) {
+      console.error("Failed to queue analysis:", err);
+    }
+    closeMenu();
+  }, [contextMenu, closeMenu]);
+
+  const handleFindSimilar = useCallback(() => {
+    if (!contextMenu) return;
+    setSimilarBase(contextMenu.primary.trackId);
+    closeMenu();
+  }, [contextMenu, setSimilarBase, closeMenu]);
+
+  const handleConvert = useCallback(() => {
+    if (!contextMenu) return;
+    onConvert(contextMenu.trackIds);
+    closeMenu();
+  }, [contextMenu, onConvert, closeMenu]);
+
+  const handleGetInfo = useCallback(() => {
+    if (!contextMenu) return;
+    const sel = ctxTracks(contextMenu.trackIds);
+    onEditTrack(sel.length > 0 ? sel : [contextMenu.primary]);
+    closeMenu();
+  }, [contextMenu, ctxTracks, onEditTrack, closeMenu]);
+
+  const handleAddToPlaylist = useCallback(
+    async (playlistId: number) => {
+      if (!contextMenu) return;
+      try {
+        await playlistsApi.addTracksToPlaylist(playlistId, contextMenu.trackIds);
+        pushRecentPlaylist(playlistId);
+        onTracksChanged();
+      } catch (err) {
+        alert(`Failed to add: ${err}`);
+      }
+      closeMenu();
+    },
+    [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu],
+  );
+
+  const handleRemoveFromPlaylist = useCallback(async () => {
+    if (!contextMenu || viewMode !== "playlist" || selectedPlaylistId === null) return;
+    try {
+      for (const id of contextMenu.trackIds) {
+        await playlistsApi.removeTrackFromPlaylist(selectedPlaylistId, id);
+      }
+      onTracksChanged();
+    } catch (err) {
+      alert(`Failed to remove: ${err}`);
+    }
+    closeMenu();
+  }, [contextMenu, viewMode, selectedPlaylistId, onTracksChanged, closeMenu]);
+
+  const handleApplyAddTag = useCallback(async () => {
+    const tag = newTag.trim();
+    if (!tag || !contextMenu) {
+      setShowAddTagDialog(false);
+      return;
+    }
+    try {
+      await libraryApi.addGenreTag(contextMenu.trackIds, tag);
+      onTracksChanged();
+    } catch (err) {
+      alert(`Failed: ${err}`);
+    }
+    setShowAddTagDialog(false);
+    setNewTag("");
+    closeMenu();
+  }, [newTag, contextMenu, onTracksChanged, closeMenu]);
+
+  const handleRemoveTag = useCallback(
+    async (tag: string) => {
+      if (!contextMenu) return;
+      try {
+        await libraryApi.removeGenreTag(contextMenu.trackIds, tag);
+        onTracksChanged();
+      } catch (err) {
+        alert(`Failed: ${err}`);
+      }
+      closeMenu();
+    },
+    [contextMenu, onTracksChanged, closeMenu],
+  );
+
+  // メニュー表示用の派生値（レーティングは最新の tracks から引き直す）。
+  const ctxPrimary = contextMenu
+    ? tracks.find((t) => t.trackId === contextMenu.primary.trackId) ?? contextMenu.primary
+    : null;
+  const targetPlaylists = playlists.filter((p) => !p.isFolder && !p.isSmart);
+  const recentPlaylists = recentPlaylistIds
+    .map((id) => targetPlaylists.find((p) => p.playlistId === id))
+    .filter((p): p is Playlist => Boolean(p));
+  const ctxGenreTags = ctxPrimary?.genre
+    ? ctxPrimary.genre.split(/\s+/).filter(Boolean)
+    : [];
+
   if (albums.length === 0 && !isLoading) {
     return (
       <div className="cb-grid-wrap">
@@ -169,7 +373,7 @@ export function CoversView({ onLoadMore }: CoversViewProps) {
   const items = rowVirtualizer.getVirtualItems();
 
   return (
-    <div className="cb-grid-wrap" ref={parentRef} onScroll={handleScroll}>
+    <div className="cb-grid-wrap" ref={parentRef} onScroll={handleScroll} onClick={closeMenu}>
       <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
         {items.map((vRow) => {
           const row = rows[vRow.index];
@@ -190,7 +394,9 @@ export function CoversView({ onLoadMore }: CoversViewProps) {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: `repeat(${cols}, 1fr)`,
+                    // minmax(0,1fr): 列がコンテンツ最小幅で膨張する grid blowout を防ぐ
+                    // （アルバム名ラベルの折り返さない CJK 文字で起きていた）。
+                    gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
                     gap: GAP,
                     padding: `0 ${PAD_X}px ${GAP}px`,
                   }}
@@ -210,9 +416,10 @@ export function CoversView({ onLoadMore }: CoversViewProps) {
                             (isCurrent ? " playing" : "") +
                             (isOpen ? " opened" : "")
                           }
-                          style={{ background: artGradient(al.album) }}
+                          style={{ background: artGradient(al.album), height: cardW }}
                           onClick={() => toggleExpand(al.key)}
                           onDoubleClick={() => playAlbum(al)}
+                          onContextMenu={(e) => openAlbumMenu(e, al)}
                         >
                           <span className="glyph">{leadingGlyph(al.album)}</span>
                           <ArtworkImg path={al.cover.fileExists ? al.cover.locationPath : null} />
@@ -261,6 +468,7 @@ export function CoversView({ onLoadMore }: CoversViewProps) {
                         <div
                           className="cov-meta"
                           onClick={() => toggleExpand(al.key)}
+                          onContextMenu={(e) => openAlbumMenu(e, al)}
                           title={`${al.album} — ${al.artist}`}
                         >
                           <div className="cj">{al.album}</div>
@@ -277,6 +485,7 @@ export function CoversView({ onLoadMore }: CoversViewProps) {
                   currentTrackId={playback.currentTrackId}
                   onPlayTrack={(id) => playAlbum(row.album, id)}
                   onAddTrack={addToCrate}
+                  onTrackContextMenu={(e, t) => openTrackMenu(e, row.album, t)}
                   onClose={() => toggleExpand(row.album.key)}
                 />
               )}
@@ -285,6 +494,75 @@ export function CoversView({ onLoadMore }: CoversViewProps) {
         })}
       </div>
       {isLoading && <div className="cb-loading">Loading…</div>}
+
+      {contextMenu && ctxPrimary && (
+        <TrackContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          headerLabel={contextMenu.headerLabel}
+          ratingStars={ratingToStars(ctxPrimary.rating)}
+          genreTags={ctxGenreTags}
+          playlists={playlists}
+          recentPlaylists={recentPlaylists}
+          showRemoveFromPlaylist={viewMode === "playlist"}
+          onClose={closeMenu}
+          onPlay={() => {
+            playAlbum(contextMenu.album, contextMenu.primary.trackId);
+            closeMenu();
+          }}
+          onSetRating={handleSetRating}
+          onAddToCrate={handleAddToCrate}
+          onEnqueue={handleEnqueue}
+          onAnalyze={handleAnalyze}
+          onFindSimilar={handleFindSimilar}
+          onConvert={handleConvert}
+          onGetInfo={handleGetInfo}
+          onRemoveFromPlaylist={handleRemoveFromPlaylist}
+          onAddToPlaylist={handleAddToPlaylist}
+          onAddTag={() => setShowAddTagDialog(true)}
+          onRemoveTag={handleRemoveTag}
+        />
+      )}
+
+      {showAddTagDialog && (
+        <div className="modal-overlay" onClick={() => setShowAddTagDialog(false)}>
+          <div className="modal" style={{ width: 360 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>
+                <Icon name="tag" size={16} /> Add genre tag
+              </h2>
+              <button className="modal-close" onClick={() => setShowAddTagDialog(false)}>
+                <Icon name="x" size={16} />
+              </button>
+            </div>
+            <div className="modal-body" style={{ padding: 16 }}>
+              <input
+                autoFocus
+                type="text"
+                className="rip-input"
+                placeholder="e.g. House"
+                value={newTag}
+                onChange={(e) => setNewTag(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleApplyAddTag();
+                  if (e.key === "Escape") setShowAddTagDialog(false);
+                }}
+                style={{ width: "100%" }}
+              />
+              <div
+                style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}
+              >
+                <button className="toolbar-btn" onClick={() => setShowAddTagDialog(false)}>
+                  Cancel
+                </button>
+                <button className="toolbar-btn primary" onClick={handleApplyAddTag}>
+                  Add
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -295,6 +573,7 @@ interface AlbumExpansionProps {
   currentTrackId: number | null;
   onPlayTrack: (trackId: number) => void;
   onAddTrack: (track: Track) => void;
+  onTrackContextMenu: (e: React.MouseEvent, track: Track) => void;
   onClose: () => void;
 }
 
@@ -304,6 +583,7 @@ function AlbumExpansion({
   currentTrackId,
   onPlayTrack,
   onAddTrack,
+  onTrackContextMenu,
   onClose,
 }: AlbumExpansionProps) {
   const totalMs = album.tracks.reduce((s, t) => s + (t.totalTimeMs ?? 0), 0);
@@ -333,6 +613,7 @@ function AlbumExpansion({
               key={t.id}
               className={"cov-trk" + (isCurrent ? " play" : "") + (!t.fileExists ? " missing" : "")}
               onDoubleClick={() => onPlayTrack(t.trackId)}
+              onContextMenu={(e) => onTrackContextMenu(e, t)}
             >
               <span className="n">{t.trackNumber ?? i + 1}</span>
               <span className="nm">

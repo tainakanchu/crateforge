@@ -1,6 +1,6 @@
 {
   "name": "crateforge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@9.15.4",
@@ -12,6 +12,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "gen:licenses": "node scripts/gen-licenses.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

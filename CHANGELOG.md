@@ -10,6 +10,38 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.3.1] - 2026-06-07
+
+### 日本語
+
+#### 追加
+- **Windows での CD 取り込みに対応**しました。TOC 検出と CDDA の読み取りを Windows の IOCTL で直接行い（外部ツール非依存）、エンコードは自動取得済みの ffmpeg を使います（FLAC / MP3 / ALAC / WAV）。MusicBrainz / freedb の disc id も自前計算します。
+- **メタデータ編集モーダルの拡充**：ジャンルを **タグチップ＋既存タグ補完** で編集できるようにし、**Compilation**（コンピレーション）トグルと、**詳細情報パネル**（形式 / 長さ / 再生回数 / スキップ回数 / 追加日 / 更新日 / 最終再生 / ファイル有無）を追加しました。
+- **一覧画面からジャンルを直接編集**できるようにしました（ジャンル列のえんぴつアイコン→チップ式エディタ）。
+- **サードパーティ・ライセンスの全文表示**。設定の「情報・ライセンス」から、**推移的依存を含む全パッケージ（Rust / JS）**とライセンス本文を表示します。本文を同梱していない依存にも、SPDX に応じた正規ライセンス全文を補完します。
+
+#### 変更
+- Compilation 編集はファイルのタグ（`cpil` 等）にも書き戻します。
+
+#### 修正
+- カバー（タイル）表示でカードが重なる／高さが揃わない不具合を修正しました。
+- アルバム単位のカバー表示で右クリックメニューが正しく出ない不具合を修正しました（一覧と同じトラック操作メニューを表示します）。
+
+### English
+
+#### Added
+- **CD ripping on Windows.** TOC detection and CDDA reads are done directly via Windows IOCTLs (no external tools); encoding uses the auto-downloaded ffmpeg (FLAC / MP3 / ALAC / WAV). MusicBrainz / freedb disc IDs are computed in-house.
+- **Richer metadata editor**: edit Genre as **tag chips with autocomplete** from existing tags, plus a **Compilation** toggle and a **details panel** (format / duration / play & skip counts / date added & modified / last played / file presence).
+- **Edit genre directly from the list view** (pencil icon on the Genre column → chip editor).
+- **Full third-party license texts**: the About & Licenses settings section now lists **every package including transitive deps (Rust / JS)** with full license texts, filling in canonical SPDX texts where a package didn't bundle one.
+
+#### Changed
+- Compilation edits are also written back to the file's tags (`cpil`, etc.).
+
+#### Fixed
+- Fixed overlapping / unevenly-sized cards in the covers (tile) view.
+- Fixed the right-click menu in the album-grouped covers view (now shows the same track-action menu as the list).
+
 ## [v0.3.0] - 2026-06-06
 
 ### 日本語

@@ -13,6 +13,7 @@ export interface TrackEdit {
   trackCount?: number | null;
   discNumber?: number | null;
   discCount?: number | null;
+  compilation?: boolean;
 }
 
 export interface GenreTagCount {

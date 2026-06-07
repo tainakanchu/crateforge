@@ -468,7 +468,12 @@ export default function App() {
             onTracksChanged={triggerReload}
           />
         ) : displayMode === "covers" ? (
-          <CoversView onLoadMore={handleLoadMore} />
+          <CoversView
+            onLoadMore={handleLoadMore}
+            onTracksChanged={triggerReload}
+            onEditTrack={(ts) => setEditorTracks(ts)}
+            onConvert={(ids) => setConvertIds(ids)}
+          />
         ) : (
           <TrackTable
             onLoadMore={handleLoadMore}

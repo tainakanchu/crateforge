@@ -13,21 +13,83 @@ pub struct EncodeMeta<'a> {
     pub date: Option<&'a str>,
 }
 
+/// WAV から各フォーマットへエンコードする。
+///
+/// `ffmpeg` に Some(パス) を渡すと、FLAC/MP3/ALAC をすべてその ffmpeg 経由で
+/// エンコードする（flac / lame CLI が無い Windows 向け。ffmpeg は別途自動 DL 済み）。
+/// None のときは従来どおり `flac` / `lame` / `ffmpeg` を PATH から呼ぶ（Unix）。
 pub fn encode(
     format: EncodeFormat,
     input: &Path,
     output: &Path,
     meta: &EncodeMeta,
+    ffmpeg: Option<&Path>,
 ) -> Result<(), String> {
+    if format == EncodeFormat::Wav {
+        std::fs::copy(input, output).map_err(|e| format!("Copy failed: {}", e))?;
+        return Ok(());
+    }
+    if let Some(ff) = ffmpeg {
+        return encode_with_ffmpeg(ff, format, input, output, meta);
+    }
     match format {
-        EncodeFormat::Wav => {
-            std::fs::copy(input, output).map_err(|e| format!("Copy failed: {}", e))?;
-            Ok(())
-        }
+        EncodeFormat::Wav => unreachable!(),
         EncodeFormat::Flac => encode_flac(input, output, meta),
         EncodeFormat::Mp3 => encode_mp3(input, output, meta),
         EncodeFormat::Alac => encode_alac(input, output, meta),
     }
+}
+
+/// 指定パスの ffmpeg で FLAC/MP3/ALAC へエンコードする。
+fn encode_with_ffmpeg(
+    ffmpeg: &Path,
+    format: EncodeFormat,
+    input: &Path,
+    output: &Path,
+    meta: &EncodeMeta,
+) -> Result<(), String> {
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-y").arg("-loglevel").arg("error");
+    cmd.arg("-i").arg(input);
+    match format {
+        EncodeFormat::Flac => {
+            cmd.arg("-c:a")
+                .arg("flac")
+                .arg("-compression_level")
+                .arg("8");
+        }
+        EncodeFormat::Mp3 => {
+            cmd.arg("-c:a").arg("libmp3lame").arg("-b:a").arg("320k");
+        }
+        EncodeFormat::Alac => {
+            cmd.arg("-c:a").arg("alac");
+        }
+        EncodeFormat::Wav => return Err("wav should be copied, not encoded".into()),
+    }
+    if let Some(t) = meta.title {
+        cmd.arg("-metadata").arg(format!("title={}", t));
+    }
+    if let Some(a) = meta.artist {
+        cmd.arg("-metadata").arg(format!("artist={}", a));
+    }
+    if let Some(al) = meta.album {
+        cmd.arg("-metadata").arg(format!("album={}", al));
+    }
+    if let Some(aa) = meta.album_artist {
+        cmd.arg("-metadata").arg(format!("album_artist={}", aa));
+    }
+    if let Some(d) = meta.date {
+        cmd.arg("-metadata").arg(format!("date={}", d));
+    }
+    if let Some(n) = meta.track_number {
+        let s = match meta.track_count {
+            Some(c) => format!("{}/{}", n, c),
+            None => n.to_string(),
+        };
+        cmd.arg("-metadata").arg(format!("track={}", s));
+    }
+    cmd.arg(output);
+    run(cmd, "ffmpeg")
 }
 
 fn encode_flac(input: &Path, output: &Path, meta: &EncodeMeta) -> Result<(), String> {

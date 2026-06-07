@@ -219,9 +219,11 @@ impl Database {
         location_path: &str,
         location_url: &str,
     ) -> Result<i64> {
-        let next_id: i64 = self
-            .conn
-            .query_row("SELECT COALESCE(MAX(track_id), 0) + 1 FROM tracks", [], |r| r.get(0))?;
+        let next_id: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(track_id), 0) + 1 FROM tracks",
+            [],
+            |r| r.get(0),
+        )?;
 
         let persistent_id = format!(
             "{:016X}",
@@ -297,7 +299,14 @@ impl Database {
     ) -> Result<Vec<Track>> {
         use rusqlite::types::Value;
 
-        const COLS: [&str; 6] = ["name", "artist", "album", "album_artist", "genre", "comments"];
+        const COLS: [&str; 6] = [
+            "name",
+            "artist",
+            "album",
+            "album_artist",
+            "genre",
+            "comments",
+        ];
         let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NOCASE ASC");
 
         // 各トークンを AND 結合。bpm:/key:/energy: は track_analysis への絞り込み、
@@ -429,6 +438,11 @@ impl Database {
         set_int_clear!(track_count, "track_count");
         set_int_clear!(disc_number, "disc_number");
         set_int_clear!(disc_count, "disc_count");
+
+        if let Some(v) = edits.compilation {
+            sets.push("compilation = ?");
+            values.push(rusqlite::types::Value::Integer(if v { 1 } else { 0 }));
+        }
 
         if sets.is_empty() {
             return Ok(());

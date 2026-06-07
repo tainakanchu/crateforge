@@ -103,10 +103,13 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
     let db = get_db(&app)?;
 
     // 1. 編集前のトラックを取得 (旧 location / 非編集フィールドの保持に使う)。
-    let before = db.get_track_by_track_id(track_id).map_err(|e| e.to_string())?;
+    let before = db
+        .get_track_by_track_id(track_id)
+        .map_err(|e| e.to_string())?;
 
     // 2. DB を更新 (ここまでは必ず確定させる)。
-    db.update_track(track_id, &edits).map_err(|e| e.to_string())?;
+    db.update_track(track_id, &edits)
+        .map_err(|e| e.to_string())?;
 
     // 3. 整理のガード: ルート未設定 / 整理 OFF / 旧トラックやファイルが無いなら終了。
     //    タグ書き戻し・移動の失敗は「整理失敗」の警告に留め、編集自体は成功扱いとする。
@@ -133,8 +136,8 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
     let track_count = resolve_int(&edits.track_count, before.track_count);
     let disc_number = resolve_int(&edits.disc_number, before.disc_number);
     let disc_count = resolve_int(&edits.disc_count, before.disc_count);
-    // Compilation は編集対象外なので旧値を引き継ぐ。
-    let compilation = before.compilation;
+    // Compilation は編集された場合は新値、なければ旧値を引き継ぐ。
+    let compilation = edits.compilation.unwrap_or(before.compilation);
 
     // 5. 実ファイルのタグを書き戻す (他アプリでも編集内容が見えるように)。
     let w = organizer::TagWrite {
@@ -148,6 +151,7 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
         track_count,
         disc_number,
         disc_count,
+        compilation: Some(compilation),
     };
     if let Err(e) = organizer::write_tags(src, &w) {
         eprintln!("write_tags failed for {}: {}", loc, e);
@@ -190,7 +194,8 @@ pub fn get_library_root(app: AppHandle) -> Result<Option<String>, String> {
 #[tauri::command]
 pub fn set_library_root(app: AppHandle, path: String) -> Result<(), String> {
     let db = get_db(&app)?;
-    db.set_state("library_root", &path).map_err(|e| e.to_string())
+    db.set_state("library_root", &path)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -200,11 +205,7 @@ pub fn set_track_rating(app: AppHandle, track_id: i64, rating: i64) -> Result<()
 }
 
 #[tauri::command]
-pub fn add_genre_tag(
-    app: AppHandle,
-    track_ids: Vec<i64>,
-    tag: String,
-) -> Result<(), String> {
+pub fn add_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
     let db = get_db(&app)?;
     for tid in track_ids {
         db.add_genre_tag(tid, &tag).map_err(|e| e.to_string())?;
@@ -213,11 +214,7 @@ pub fn add_genre_tag(
 }
 
 #[tauri::command]
-pub fn remove_genre_tag(
-    app: AppHandle,
-    track_ids: Vec<i64>,
-    tag: String,
-) -> Result<(), String> {
+pub fn remove_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
     let db = get_db(&app)?;
     for tid in track_ids {
         db.remove_genre_tag(tid, &tag).map_err(|e| e.to_string())?;

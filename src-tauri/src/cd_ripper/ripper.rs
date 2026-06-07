@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::Command;
 
 use tauri::{AppHandle, Emitter};
@@ -8,10 +9,27 @@ use crate::db::Database;
 use crate::itunes_xml::writer::path_to_file_url;
 use crate::models::{EncodeFormat, RipProgress, RipRequest};
 
-pub fn rip_cd(app: &AppHandle, db: &Database, req: RipRequest) -> Result<(), String> {
+/// CD を取り込む。
+///
+/// `ffmpeg` は Windows でのみ Some（自動 DL 済みパス）。FLAC/MP3/ALAC のエンコードに使う。
+/// Unix では None で、従来どおり cdparanoia + flac/lame を使う。
+pub fn rip_cd(
+    app: &AppHandle,
+    db: &Database,
+    req: RipRequest,
+    ffmpeg: Option<PathBuf>,
+) -> Result<(), String> {
     let output_dir = Path::new(&req.output_dir);
     std::fs::create_dir_all(output_dir)
         .map_err(|e| format!("Failed to create output dir: {}", e))?;
+
+    // Windows はドライブを 1 回開いて TOC を読み、以降ループ内で CDDA を直接読む。
+    #[cfg(windows)]
+    let (drive, win_toc) = {
+        let d = crate::cd_ripper::win_cd::open_drive(&req.device)?;
+        let t = d.read_toc()?;
+        (d, t)
+    };
 
     let mut written_files: Vec<String> = Vec::new();
     let mut added_tracks = 0usize;
@@ -46,26 +64,38 @@ pub fn rip_cd(app: &AppHandle, db: &Database, req: RipRequest) -> Result<(), Str
             },
         );
 
-        // 1. Rip to a temporary WAV via cdparanoia.
+        // 1. Rip to a temporary WAV.
         let wav_path = output_dir.join(format!(".tmp_track_{:02}.wav", track_num));
-        let cdp_status = Command::new("cdparanoia")
-            .arg("-d")
-            .arg(&req.device)
-            .arg("-w")
-            .arg(format!("{}", track_num))
-            .arg(&wav_path)
-            .status()
-            .map_err(|e| {
-                format!(
-                    "`cdparanoia` not found ({}). Use `nix develop` so the toolchain is in PATH.",
-                    e
-                )
-            })?;
-        if !cdp_status.success() {
-            return Err(format!(
-                "cdparanoia failed for track {} (device {})",
-                track_num, req.device
-            ));
+
+        // Unix: cdparanoia 経由で WAV を取得。
+        #[cfg(not(windows))]
+        {
+            let cdp_status = Command::new("cdparanoia")
+                .arg("-d")
+                .arg(&req.device)
+                .arg("-w")
+                .arg(format!("{}", track_num))
+                .arg(&wav_path)
+                .status()
+                .map_err(|e| {
+                    format!(
+                        "`cdparanoia` not found ({}). Use `nix develop` so the toolchain is in PATH.",
+                        e
+                    )
+                })?;
+            if !cdp_status.success() {
+                return Err(format!(
+                    "cdparanoia failed for track {} (device {})",
+                    track_num, req.device
+                ));
+            }
+        }
+
+        // Windows: IOCTL で CDDA 生データを読んで WAV を書き出す。
+        #[cfg(windows)]
+        {
+            let pcm = drive.read_track_pcm(&win_toc, track_num)?;
+            crate::cd_ripper::win_cd::write_wav(&wav_path, &pcm)?;
         }
 
         // 2. Determine final output path + metadata.
@@ -100,6 +130,7 @@ pub fn rip_cd(app: &AppHandle, db: &Database, req: RipRequest) -> Result<(), Str
                 track_count: track_count_meta,
                 date,
             },
+            ffmpeg.as_deref(),
         )?;
 
         if req.format != EncodeFormat::Wav {

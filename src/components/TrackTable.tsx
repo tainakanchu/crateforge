@@ -8,6 +8,7 @@ import * as analysisApi from "../api/analysis";
 import { Icon, Stars } from "./Icon";
 import { Cover } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
+import { GenreTagInput } from "./GenreTagInput";
 import { bpmColor } from "../lib/art";
 import { FIELD_DEFS } from "../types";
 import type { Track, FieldKey, Playlist } from "../types";
@@ -36,6 +37,13 @@ interface ContextMenuState {
   x: number;
   y: number;
   track: Track;
+}
+
+interface GenreEditState {
+  trackId: number;
+  x: number;
+  y: number;
+  tags: string[];
 }
 
 export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert }: TrackTableProps) {
@@ -72,6 +80,9 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [showAddTagDialog, setShowAddTagDialog] = useState(false);
   const [newTag, setNewTag] = useState("");
+  // 一覧からのジャンル直接編集（ポップオーバー）。
+  const [genreEdit, setGenreEdit] = useState<GenreEditState | null>(null);
+  const [genreSuggestions, setGenreSuggestions] = useState<string[]>([]);
 
   const inCrate = useMemo(() => new Set(crate.map((t) => t.trackId)), [crate]);
   const showArtist = rowH >= 50;
@@ -286,6 +297,40 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     setContextMenu(null);
   }, [contextMenu, ctxIds, tracks, onEditTrack]);
 
+  // === 一覧からのジャンル直接編集 ===
+  const loadGenreSuggestions = useCallback(() => {
+    libraryApi
+      .getAllGenreTags()
+      .then((tags) => setGenreSuggestions(tags.map((t) => t.tag)))
+      .catch(() => {});
+  }, []);
+
+  const openGenreEdit = useCallback(
+    (e: React.MouseEvent, track: Track) => {
+      e.stopPropagation();
+      loadGenreSuggestions();
+      setGenreEdit({
+        trackId: track.trackId,
+        x: e.clientX,
+        y: e.clientY,
+        tags: (track.genre || "").split(/\s+/).filter(Boolean),
+      });
+    },
+    [loadGenreSuggestions],
+  );
+
+  const saveGenreEdit = useCallback(async () => {
+    if (!genreEdit) return;
+    const next = genreEdit.tags.join(" ");
+    setGenreEdit(null);
+    try {
+      await libraryApi.updateTrack(genreEdit.trackId, { genre: next });
+      onTracksChanged();
+    } catch (err) {
+      alert(`ジャンルの保存に失敗: ${err}`);
+    }
+  }, [genreEdit, onTracksChanged]);
+
   // 右クリックした 1 曲を基準に右レールの Similar タブを開く。
   const handleFindSimilar = useCallback(() => {
     if (!contextMenu) return;
@@ -442,6 +487,13 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                   {g}
                 </span>
               ))}
+            <button
+              className="cb-tag-edit"
+              title="ジャンルを編集"
+              onClick={(e) => openGenreEdit(e, t)}
+            >
+              <Icon name="edit" size={11} />
+            </button>
           </span>
         );
       case "rating":
@@ -711,6 +763,39 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                   Add
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 一覧からのジャンル編集ポップオーバー（外側クリックで保存） */}
+      {genreEdit && (
+        <div className="genre-pop-overlay" onMouseDown={saveGenreEdit}>
+          <div
+            className="genre-pop"
+            style={{
+              left: Math.min(genreEdit.x, window.innerWidth - 300),
+              top: Math.min(genreEdit.y, window.innerHeight - 180),
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="genre-pop-head">
+              <Icon name="tag" size={13} /> ジャンルを編集
+            </div>
+            <GenreTagInput
+              autoFocus
+              value={genreEdit.tags}
+              suggestions={genreSuggestions}
+              placeholder="タグを入力して Enter / 候補から選択"
+              onChange={(tags) => setGenreEdit((g) => (g ? { ...g, tags } : g))}
+            />
+            <div className="genre-pop-foot">
+              <button className="toolbar-btn" onMouseDown={(e) => { e.stopPropagation(); setGenreEdit(null); }}>
+                キャンセル
+              </button>
+              <button className="toolbar-btn primary" onMouseDown={(e) => { e.stopPropagation(); saveGenreEdit(); }}>
+                保存
+              </button>
             </div>
           </div>
         </div>

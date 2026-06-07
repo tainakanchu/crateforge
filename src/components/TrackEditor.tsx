@@ -1,11 +1,35 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import * as libraryApi from "../api/library";
 import { Icon, Stars } from "./Icon";
 import { artworkUrl } from "./Cover";
+import { GenreTagInput } from "./GenreTagInput";
 import { artGradient, leadingGlyph } from "../lib/art";
 import type { Track, TrackEdit } from "../types";
+
+function formatDuration(ms: number | null | undefined): string {
+  if (!ms || ms <= 0) return "—";
+  const totalSec = Math.round(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return h > 0
+    ? `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`
+    : `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  // 保存形式は ISO 文字列。日付＋時刻の頭だけ見せる。
+  return iso.replace("T", " ").replace("Z", "").slice(0, 16);
+}
+
+function fileKind(path: string | null | undefined, trackType: string | null | undefined): string {
+  const ext = path?.split(".").pop();
+  if (ext && ext.length <= 5) return ext.toUpperCase();
+  return trackType || "—";
+}
 
 interface TrackEditorProps {
   /// 編集対象。1 曲なら通常編集、複数なら一括編集 (触ったフィールドのみ全曲へ適用)。
@@ -48,7 +72,12 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
       return { value: same ? vals[0] : "", mixed: !same };
     };
     const ratingVals = tracks.map((t) => t.rating ?? 0);
+    const compVals = tracks.map((t) => t.compilation);
     return {
+      compilation: {
+        value: compVals.every((v) => v === compVals[0]) ? compVals[0] : false,
+        mixed: !compVals.every((v) => v === compVals[0]),
+      },
       name: str((t) => t.name),
       artist: str((t) => t.artist),
       albumArtist: str((t) => t.albumArtist),
@@ -84,12 +113,22 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
     discNumber: initial.discNumber.value,
     discCount: initial.discCount.value,
     rating: initial.rating.value,
+    compilation: initial.compilation.value,
   }));
   const [dirty, setDirty] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [artVersion, setArtVersion] = useState(0);
   const [artMsg, setArtMsg] = useState("");
+  const [genreSuggestions, setGenreSuggestions] = useState<string[]>([]);
+
+  // 補完用に既知のジャンルタグを多い順で取得。
+  useEffect(() => {
+    libraryApi
+      .getAllGenreTags()
+      .then((tags) => setGenreSuggestions(tags.map((t) => t.tag)))
+      .catch(() => setGenreSuggestions([]));
+  }, []);
 
   const update = useCallback(
     <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => {
@@ -124,6 +163,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
       if (dirty.has("discNumber")) e.discNumber = parseInt2(form.discNumber);
       if (dirty.has("discCount")) e.discCount = parseInt2(form.discCount);
       if (dirty.has("rating")) e.rating = form.rating;
+      if (dirty.has("compilation")) e.compilation = form.compilation;
 
       for (const id of trackIds) {
         await libraryApi.updateTrack(id, e);
@@ -298,12 +338,16 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(e) => update("composer", e.target.value)}
             />
           </Field>
-          <Field label="Genre (space-separated tags)">
-            <input
-              className="rip-input"
-              value={form.genre}
-              placeholder={ph(initial.genre.mixed) ?? "e.g. House Techno Electronic"}
-              onChange={(e) => update("genre", e.target.value)}
+          <Field label="Genre tags">
+            <GenreTagInput
+              value={form.genre.split(/\s+/).filter(Boolean)}
+              suggestions={genreSuggestions}
+              placeholder={
+                initial.genre.mixed && !dirty.has("genre")
+                  ? "— 複数の値 — タグを足すと全曲へ適用"
+                  : "タグを入力して Enter / 候補から選択"
+              }
+              onChange={(tags) => update("genre", tags.join(" "))}
             />
           </Field>
 
@@ -387,6 +431,21 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
             </div>
           </Field>
 
+          <Field label="Compilation">
+            <label className="te-check">
+              <input
+                type="checkbox"
+                checked={form.compilation}
+                ref={(el) => {
+                  // 混在かつ未編集なら「不定」表示。
+                  if (el) el.indeterminate = initial.compilation.mixed && !dirty.has("compilation");
+                }}
+                onChange={(e) => update("compilation", e.target.checked)}
+              />
+              <span>コンピレーション（アーティストが曲ごとに異なるアルバム）</span>
+            </label>
+          </Field>
+
           <Field label="Comments">
             <textarea
               className="rip-input"
@@ -402,6 +461,28 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
             <Field label="Location">
               <div className="track-editor-readonly">{tracks[0].locationPath}</div>
             </Field>
+          )}
+
+          {single && (
+            <div className="te-info">
+              <div className="te-info-title">
+                <Icon name="info" size={13} /> 詳細情報
+              </div>
+              <div className="te-info-grid">
+                <InfoCell k="形式" v={fileKind(tracks[0].locationPath, tracks[0].trackType)} />
+                <InfoCell k="長さ" v={formatDuration(tracks[0].totalTimeMs)} />
+                <InfoCell k="再生回数" v={String(tracks[0].playCount ?? 0)} />
+                <InfoCell k="スキップ回数" v={String(tracks[0].skipCount ?? 0)} />
+                <InfoCell k="追加日" v={formatDate(tracks[0].dateAdded)} />
+                <InfoCell k="更新日" v={formatDate(tracks[0].dateModified)} />
+                <InfoCell k="最終再生" v={formatDate(tracks[0].lastPlayed)} />
+                <InfoCell
+                  k="ファイル"
+                  v={tracks[0].fileExists ? "存在します" : "見つかりません"}
+                  warn={!tracks[0].fileExists}
+                />
+              </div>
+            </div>
           )}
 
           {error && <div className="rip-error">{error}</div>}
@@ -426,5 +507,14 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="track-editor-label">{label}</span>
       {children}
     </label>
+  );
+}
+
+function InfoCell({ k, v, warn }: { k: string; v: string; warn?: boolean }) {
+  return (
+    <div className="te-info-cell">
+      <span className="te-info-k">{k}</span>
+      <span className={"te-info-v" + (warn ? " warn" : "")}>{v}</span>
+    </div>
   );
 }

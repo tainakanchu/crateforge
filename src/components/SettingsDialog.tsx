@@ -10,6 +10,7 @@ import * as ffmpegApi from "../api/ffmpeg";
 import type { FfmpegStatus } from "../api/ffmpeg";
 import type { UpdateInfo } from "../api/system";
 import { Icon } from "./Icon";
+import { LicenseList } from "./LicenseList";
 
 const REPO_URL = "https://github.com/tainakanchu/itunes-playlist-viewer";
 
@@ -59,6 +60,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [section, setSection] = useState<Section>("general");
   const [version, setVersion] = useState("");
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
+  const [showLicenses, setShowLicenses] = useState(false);
 
   // ffmpeg
   const [ffStatus, setFfStatus] = useState<FfmpegStatus | null>(null);
@@ -409,7 +411,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   </button>
                 </div>
 
-                <div className="settings-sectitle">ライセンス / クレジット</div>
+                <div className="settings-sectitle">主な構成（ハイライト）</div>
                 <div className="settings-credits">
                   {CREDITS.map((c) => (
                     <div key={c.name} className="settings-credit">
@@ -421,8 +423,23 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     </div>
                   ))}
                 </div>
+
+                <div className="settings-sectitle">サードパーティ・ライセンス（全文）</div>
+                {showLicenses ? (
+                  <LicenseList />
+                ) : (
+                  <div className="settings-actions">
+                    <button className="toolbar-btn primary" onClick={() => setShowLicenses(true)}>
+                      <Icon name="list" size={14} /> 全依存とライセンス全文を表示
+                    </button>
+                    <span className="settings-progress">
+                      推移的依存を含む全パッケージとライセンス本文を表示します。
+                    </span>
+                  </div>
+                )}
+
                 <p className="settings-fine">
-                  各ライブラリの著作権は各権利者に帰属します。FFmpeg は GPL-3.0 で配布されており、本アプリはこれを外部コマンドとして呼び出します（リンクはしていません）。
+                  各ライブラリの著作権は各権利者に帰属します。MIT / BSD / Apache-2.0 / MPL-2.0 などのライセンスは上記「全文」に同梱しています。FFmpeg は GPL-3.0 で配布されており、本アプリはこれを外部コマンドとして呼び出すだけ（リンクはしていません／配布物にも含めません）です。
                 </p>
               </>
             )}

@@ -752,6 +752,8 @@ input {
 }
 .cb-cardwrap {
   cursor: pointer;
+  /* グリッドアイテムが min-content(=折り返さないラベル幅) で膨らむのを防ぐ。 */
+  min-width: 0;
 }
 .cb-card {
   position: relative;
@@ -857,6 +859,8 @@ input {
 .cov-meta {
   padding: 7px 3px 0;
   cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
 }
 .cov-meta .cj {
   font-size: 13px;
@@ -2547,6 +2551,345 @@ input {
 }
 .track-editor-clear:hover {
   color: var(--warn);
+}
+
+/* Compilation チェック行 */
+.te-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--tx);
+  cursor: pointer;
+  padding: 2px 0;
+}
+.te-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--ac);
+  cursor: pointer;
+}
+
+/* 詳細情報パネル */
+.te-info {
+  margin-top: 2px;
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--bg2);
+}
+.te-info-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--mut);
+  margin-bottom: 8px;
+}
+.te-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 18px;
+}
+.te-info-cell {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.te-info-k {
+  font-size: 12px;
+  color: var(--mut);
+  white-space: nowrap;
+}
+.te-info-v {
+  font-size: 12px;
+  color: var(--tx);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.te-info-v.warn {
+  color: var(--warn);
+}
+
+/* === GenreTagInput（チップ＋補完） === */
+.gt-wrap {
+  position: relative;
+}
+.gt-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-height: 34px;
+  padding: 5px 8px;
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  cursor: text;
+}
+.gt-box:focus-within {
+  border-color: var(--ac);
+}
+.gt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--bg3);
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  padding: 2px 4px 2px 8px;
+  font-size: 12px;
+  color: var(--tx);
+  white-space: nowrap;
+}
+.gt-chipx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: var(--mut);
+  cursor: pointer;
+  padding: 1px;
+  border-radius: 4px;
+}
+.gt-chipx:hover {
+  color: var(--warn);
+  background: rgba(255, 255, 255, 0.06);
+}
+.gt-input {
+  flex: 1;
+  min-width: 90px;
+  border: none;
+  background: none;
+  outline: none;
+  color: var(--tx);
+  font-size: 13px;
+  padding: 2px;
+}
+.gt-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg3);
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+}
+.gt-opt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--tx);
+  font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.gt-opt.hi,
+.gt-opt:hover {
+  background: var(--hover);
+  color: var(--ac);
+}
+
+/* 一覧のジャンルセル編集ボタン */
+.cb-tag-edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--bd);
+  background: none;
+  color: var(--mut);
+  border-radius: 5px;
+  padding: 2px 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.cb-row:hover .cb-tag-edit {
+  opacity: 1;
+}
+.cb-tag-edit:hover {
+  color: var(--ac);
+  border-color: var(--ac);
+}
+
+/* 一覧ジャンル編集ポップオーバー */
+.genre-pop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+.genre-pop {
+  position: fixed;
+  width: 280px;
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.genre-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--mut);
+}
+.genre-pop-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* === ライセンス全文ビュー === */
+.lic-loading {
+  font-size: 13px;
+  color: var(--mut);
+  padding: 10px 2px;
+}
+.lic-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lic-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.lic-count {
+  font-size: 12px;
+  color: var(--mut);
+}
+.lic-search {
+  flex: 1;
+  min-width: 160px;
+}
+.lic-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  padding: 6px;
+  background: var(--bg2);
+}
+.lic-item {
+  border-radius: 8px;
+}
+.lic-item.open {
+  background: var(--bg3);
+}
+.lic-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--tx);
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.lic-head:hover {
+  background: var(--hover);
+}
+.lic-name {
+  font-weight: 600;
+}
+.lic-ver {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--mut);
+}
+.lic-kind {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  color: var(--mut);
+}
+.lic-kind.k-rust {
+  color: #d9a066;
+  border-color: #6b4f33;
+}
+.lic-kind.k-npm {
+  color: #6fb3d2;
+  border-color: #355a6b;
+}
+.lic-kind.k-runtime {
+  color: var(--warn);
+  border-color: #6b3a3a;
+}
+.lic-lic {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--tx2);
+  text-align: right;
+}
+.lic-body {
+  padding: 4px 10px 12px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lic-repo {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: none;
+  color: var(--ac);
+  cursor: pointer;
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 0;
+  word-break: break-all;
+  text-align: left;
+}
+.lic-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--tx2);
+  background: var(--bg);
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  padding: 10px;
+  max-height: 280px;
+  overflow-y: auto;
 }
 
 /* Rules panel */

@@ -120,6 +120,8 @@ pub struct TrackEdit {
     pub disc_number: Option<Option<i64>>,
     #[serde(default, deserialize_with = "double_option")]
     pub disc_count: Option<Option<i64>>,
+    /// コンピレーション・フラグ。`Some(true/false)` で設定、`None` で変更なし。
+    pub compilation: Option<bool>,
 }
 
 /// `null` を「明示的にクリア」と扱うために、二重 Option を必要とする。
@@ -171,9 +173,19 @@ pub struct TrackAnalysis {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum AnalysisProgress {
-    Start { total: usize },
-    Item { track_id: i64, done: usize, total: usize, ok: bool },
-    Finished { analyzed: usize, failed: usize },
+    Start {
+        total: usize,
+    },
+    Item {
+        track_id: i64,
+        done: usize,
+        total: usize,
+        ok: bool,
+    },
+    Finished {
+        analyzed: usize,
+        failed: usize,
+    },
 }
 
 /// 解析状況のサマリ (バッジ表示用)。
@@ -274,12 +286,29 @@ pub struct RipRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum RipProgress {
-    Start { total: usize },
-    TrackStart { index: usize, total: usize, label: String },
-    TrackProgress { index: usize, percent: u8 },
-    TrackDone { index: usize, output_path: String },
-    Done { written_files: Vec<String>, added_tracks: usize },
-    Error { message: String },
+    Start {
+        total: usize,
+    },
+    TrackStart {
+        index: usize,
+        total: usize,
+        label: String,
+    },
+    TrackProgress {
+        index: usize,
+        percent: u8,
+    },
+    TrackDone {
+        index: usize,
+        output_path: String,
+    },
+    Done {
+        written_files: Vec<String>,
+        added_tracks: usize,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,7 +407,18 @@ pub struct ConvertRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ConvertProgress {
-    Start { total: usize },
-    Item { index: usize, total: usize, name: String, ok: bool },
-    Done { converted: usize, failed: usize, added: usize },
+    Start {
+        total: usize,
+    },
+    Item {
+        index: usize,
+        total: usize,
+        name: String,
+        ok: bool,
+    },
+    Done {
+        converted: usize,
+        failed: usize,
+        added: usize,
+    },
 }
