@@ -166,7 +166,7 @@ jobs:
             librsvg2-dev \
             patchelf \
             libasound2-dev \
-            libdiscid0-dev \
+            libdiscid-dev \
             libxdo-dev \
             libssl-dev \
             pkg-config
@@ -196,6 +196,9 @@ jobs:
 
       - name: Tauri build (release)
         run: pnpm tauri build
+        env:
+          # GitHub ランナーは FUSE 無しのことがあるため、appimagetool を展開実行させる。
+          APPIMAGE_EXTRACT_AND_RUN: "1"
 
       - name: Show built artifacts
         run: |
