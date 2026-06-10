@@ -21,6 +21,7 @@ interface TrackContextMenuProps {
   onPlay: () => void;
   onSetRating: (stars: number) => void;
   onAddToCrate: () => void;
+  onPlayNext: () => void;
   onEnqueue: () => void;
   onAnalyze: () => void;
   onFindSimilar: () => void;
@@ -66,6 +67,7 @@ export function TrackContextMenu({
   onPlay,
   onSetRating,
   onAddToCrate,
+  onPlayNext,
   onEnqueue,
   onAnalyze,
   onFindSimilar,
@@ -99,7 +101,7 @@ export function TrackContextMenu({
 
   // ── メニュー項目（フォーカス可能なものだけ）を上から順に id 化 ──
   const navIds = useMemo(() => {
-    const ids = ["play", "rating", "crate", "queue", "analyze", "similar", "convert", "info"];
+    const ids = ["play", "rating", "crate", "playnext", "queue", "analyze", "similar", "convert", "info"];
     if (showRemoveFromPlaylist) ids.push("remove");
     for (const p of recentPlaylists) ids.push(`recent:${p.playlistId}`);
     ids.push("playlist");
@@ -158,6 +160,7 @@ export function TrackContextMenu({
     (id: string) => {
       if (id === "play") return run(onPlay)();
       if (id === "crate") return run(onAddToCrate)();
+      if (id === "playnext") return run(onPlayNext)();
       if (id === "queue") return run(onEnqueue)();
       if (id === "analyze") return run(onAnalyze)();
       if (id === "similar") return run(onFindSimilar)();
@@ -172,7 +175,7 @@ export function TrackContextMenu({
         return run(() => onRemoveTag(id.slice(4)))();
       }
     },
-    [run, onPlay, onAddToCrate, onEnqueue, onAnalyze, onFindSimilar, onConvert, onGetInfo, onRemoveFromPlaylist, onAddTag, onAddToPlaylist, onRemoveTag],
+    [run, onPlay, onAddToCrate, onPlayNext, onEnqueue, onAnalyze, onFindSimilar, onConvert, onGetInfo, onRemoveFromPlaylist, onAddTag, onAddToPlaylist, onRemoveTag],
   );
 
   const openSubmenu = useCallback(() => {
@@ -363,6 +366,9 @@ export function TrackContextMenu({
 
       <div {...itemProps("crate")} onClick={run(onAddToCrate)}>
         <Icon name="layers" size={14} /> Add to Crate
+      </div>
+      <div {...itemProps("playnext")} onClick={run(onPlayNext)}>
+        <Icon name="next" size={14} /> Play Next
       </div>
       <div {...itemProps("queue")} onClick={run(onEnqueue)}>
         <Icon name="queue" size={14} /> Add to Queue

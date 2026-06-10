@@ -83,6 +83,14 @@ pub fn search_tracks(
     .map_err(|e| e.to_string())
 }
 
+/// track_id 列を入力順のまま Track へ解決する。見つからない ID はスキップ。
+/// Up Next がフロントのロード済みページ (500件) を超える曲も表示できるようにするためのもの。
+#[tauri::command]
+pub fn get_tracks_by_ids(app: AppHandle, track_ids: Vec<i64>) -> Result<Vec<Track>, String> {
+    let db = get_db(&app)?;
+    db.get_tracks_by_ids(&track_ids).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_library_stats(app: AppHandle) -> Result<LibraryStats, String> {
     let db = get_db(&app)?;

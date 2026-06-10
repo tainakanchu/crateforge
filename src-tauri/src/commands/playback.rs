@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::audio::{AudioPlayer, PlayReport, RepeatMode};
 use crate::commands::library::open_db;
@@ -132,6 +132,46 @@ pub fn enqueue_track(
     Ok(())
 }
 
+/// 「次に再生」: 現在再生中の曲の直後に track_id を割り込ませる。
+#[tauri::command]
+pub fn enqueue_track_next(
+    player: tauri::State<'_, Mutex<AudioPlayer>>,
+    track_id: i64,
+) -> Result<(), String> {
+    player
+        .lock()
+        .map_err(|e| e.to_string())?
+        .enqueue_next(track_id);
+    Ok(())
+}
+
+/// Up Next (再生順) 上の指定位置の曲をキューから取り除く。
+/// 再生中の曲 (現在位置) は取り除けず false を返す。
+#[tauri::command]
+pub fn remove_queue_at(
+    player: tauri::State<'_, Mutex<AudioPlayer>>,
+    order_index: usize,
+) -> Result<bool, String> {
+    Ok(player
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove_at(order_index))
+}
+
+/// Up Next (再生順) 上の曲を並び替える。from・to とも現在位置より後ろのみ許可。
+/// 不可な場合は false を返す。
+#[tauri::command]
+pub fn move_queue_item(
+    player: tauri::State<'_, Mutex<AudioPlayer>>,
+    from_order_index: usize,
+    to_order_index: usize,
+) -> Result<bool, String> {
+    Ok(player
+        .lock()
+        .map_err(|e| e.to_string())?
+        .move_order(from_order_index, to_order_index))
+}
+
 #[tauri::command]
 pub fn clear_queue(player: tauri::State<'_, Mutex<AudioPlayer>>) -> Result<(), String> {
     player.lock().map_err(|e| e.to_string())?.clear_queue();
@@ -169,7 +209,7 @@ pub fn play_queue_at(
         .map_err(|e| e.to_string())?
         .jump_to(order_index);
     if let Some(tid) = tid {
-        play_track_by_id(&app, &player, tid)?;
+        play_track_by_id(&app, tid)?;
         Ok(Some(tid))
     } else {
         Ok(None)
@@ -183,7 +223,7 @@ pub fn play_next(
 ) -> Result<Option<i64>, String> {
     let next_id = player.lock().map_err(|e| e.to_string())?.advance_next(false);
     if let Some(tid) = next_id {
-        play_track_by_id(&app, &player, tid)?;
+        play_track_by_id(&app, tid)?;
         Ok(Some(tid))
     } else {
         let report = player.lock().map_err(|e| e.to_string())?.stop();
@@ -211,12 +251,12 @@ pub fn play_prev(
         }
     };
     if let Some(tid) = restart {
-        play_track_by_id(&app, &player, tid)?;
+        play_track_by_id(&app, tid)?;
         return Ok(Some(tid));
     }
     let prev_id = player.lock().map_err(|e| e.to_string())?.advance_prev();
     if let Some(tid) = prev_id {
-        play_track_by_id(&app, &player, tid)?;
+        play_track_by_id(&app, tid)?;
         Ok(Some(tid))
     } else {
         Ok(None)
@@ -268,36 +308,112 @@ pub fn set_replaygain(
     Ok(())
 }
 
-/// フロントの polling から「曲が終わったので次に進めて」と呼ばれる。
-/// is_finished で sentinel が立っていれば次の曲を再生し、track_id を返す。
-#[tauri::command]
-pub fn check_advance(
-    app: AppHandle,
-    player: tauri::State<'_, Mutex<AudioPlayer>>,
-) -> Result<Option<i64>, String> {
-    let finished = player.lock().map_err(|e| e.to_string())?.is_finished();
-    if !finished {
-        return Ok(None);
-    }
-    let next_id = player.lock().map_err(|e| e.to_string())?.advance_next(true);
-    if let Some(tid) = next_id {
-        play_track_by_id(&app, &player, tid)?;
-        Ok(Some(tid))
-    } else {
-        // キュー末尾の曲が再生し終わった: 停止しつつ最後の曲を再生実績に反映する。
-        let report = player.lock().map_err(|e| e.to_string())?.stop();
-        if let Ok(db) = open_db(&app) {
-            apply_report(&db, report);
+/// 曲の自動送りを駆動するバックグラウンドワーカー。
+///
+/// 従来はフロントが 500ms 間隔で `check_advance` をポーリングしていたが、WebView が
+/// バックグラウンドでスロットルされると再生が止まる問題があった。これを Rust 側の
+/// 専用スレッドに移し、WebView の状態に依存せず曲送りを続けられるようにする。
+///
+/// 100ms 間隔で `is_finished()` を確認し、終わっていたら次の曲へ進める。
+/// 進行・停止のいずれの場合も Tauri イベント `playback-advanced`
+/// (payload: `{ "trackId": number | null }`) を emit する。
+///
+/// デッドロック回避のため、ロックは「終了判定 → 次曲解決」の短いブロック内で完結させ、
+/// 解放してから `play_track_by_id` (内部で再ロック) を呼ぶ。
+pub fn advance_worker(app: AppHandle) {
+    use tauri::Emitter;
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // --- ロックを取り、終了判定と次曲解決をこのブロックで完結させる ---
+        // (DB アクセス・再生はロック外で行うため、ここで結論だけ取り出す)
+        let player = app.state::<Mutex<AudioPlayer>>();
+        let next_id = {
+            let mut guard = match player.lock() {
+                Ok(g) => g,
+                // ロックが poison しているなら他スレッドが panic 済み。次ループへ。
+                Err(_) => continue,
+            };
+            if !guard.is_finished() {
+                continue;
+            }
+            // 自動終了による遷移なので auto=true。
+            guard.advance_next(true)
+            // guard はここで drop され、ロックを解放する。
+        };
+
+        match next_id {
+            Some(_) => {
+                // 次曲を再生。ファイル欠損などで失敗したらさらに次へ進む
+                // (無限ループ防止に、試行回数はキュー長を上限とする)。
+                let played = play_with_skip_on_error(&app);
+                let _ = app.emit("playback-advanced", AdvancePayload { track_id: played });
+            }
+            None => {
+                // キュー末尾 + repeat off: 停止しつつ最後の曲を再生実績へ反映。
+                let report = match player.lock() {
+                    Ok(mut g) => g.stop(),
+                    Err(_) => None,
+                };
+                if let Ok(db) = open_db(&app) {
+                    apply_report(&db, report);
+                }
+                let _ = app.emit("playback-advanced", AdvancePayload { track_id: None });
+            }
         }
-        Ok(None)
     }
 }
 
-fn play_track_by_id(
-    app: &AppHandle,
-    player: &tauri::State<'_, Mutex<AudioPlayer>>,
-    track_id: i64,
-) -> Result<(), String> {
+/// `playback-advanced` イベントの payload。`trackId` は再生開始した曲、
+/// 停止した場合は null。
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AdvancePayload {
+    track_id: Option<i64>,
+}
+
+/// 直前に `advance_next` 済みの曲から順に再生を試み、失敗 (ファイル欠損など) したら
+/// さらに次の曲へ進む。再生できた track_id を返す。全滅なら停止して None を返す。
+///
+/// 無限ループ防止のため、試行回数はその時点のキュー長を上限とする。
+fn play_with_skip_on_error(app: &AppHandle) -> Option<i64> {
+    let player = app.state::<Mutex<AudioPlayer>>();
+
+    // その時点のキュー長を試行上限にする (repeat all で循環しても止まるように)、
+    // と同時に呼び出し元で advance 済みの 1 曲目を取り出す。
+    let (max_attempts, mut tid) = match player.lock() {
+        Ok(g) => (g.queue_len().max(1), g.current_track_id_in_order()),
+        Err(_) => return None,
+    };
+
+    for _ in 0..max_attempts {
+        let Some(id) = tid else { break };
+        if play_track_by_id(app, id).is_ok() {
+            return Some(id);
+        }
+        // 失敗: 次の曲へ (auto=true で repeat を尊重)。
+        tid = match player.lock() {
+            Ok(mut g) => g.advance_next(true),
+            Err(_) => return None,
+        };
+    }
+
+    // 全滅: 停止する。
+    if let Ok(mut g) = player.lock() {
+        g.stop();
+    }
+    None
+}
+
+/// track_id の曲を実際に再生する。コマンドからもワーカースレッドからも呼べるよう、
+/// `tauri::State` ではなく `&AppHandle` を受け取り、AudioPlayer の managed state は
+/// 内部で `app.state` から取得する。
+///
+/// DB アクセス (トラック解決・解析取得) はロックの外で行い、`play` を呼ぶ瞬間だけ
+/// 短時間ロックする。ワーカーとのデッドロックを避けるため、ロックを保持したまま
+/// DB に触れない。
+fn play_track_by_id(app: &AppHandle, track_id: i64) -> Result<(), String> {
     let db = open_db(app)?;
     let track = db
         .get_track_by_track_id(track_id)
@@ -313,6 +429,7 @@ fn play_track_by_id(
         .ok()
         .flatten()
         .and_then(|a| a.replaygain_db);
+    let player = app.state::<Mutex<AudioPlayer>>();
     let report = player
         .lock()
         .map_err(|e| e.to_string())?

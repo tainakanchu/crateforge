@@ -48,10 +48,15 @@ tauri-plugin-clipboard-manager = "2.3.2"
 [target.'cfg(unix)'.dependencies]
 discid = "0.6"
 
-# === Windows-only: System Media Transport Controls (Now Playing widget + media keys) ===
-# `zip` is used to unpack the on-demand ffmpeg download (BtbN win64 build).
+# === OS メディアコントロール連携 ===
+# Windows: SMTC (System Media Transport Controls)
+# Linux:   MPRIS (via zbus – 純 Rust, libdbus 不要)
+# macOS:   Now Playing Center
+# use_zbus を有効にすることで C ライブラリへの依存を排除し、全 OS で pure-Rust ビルドを実現。
+souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
+
+# === Windows-only: `zip` は on-demand ffmpeg ダウンロード解凍 (BtbN win64) に使用 ===
 [target.'cfg(target_os = "windows")'.dependencies]
-souvlaki = "0.8"
 zip = "2"
 
 [build-dependencies]

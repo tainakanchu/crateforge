@@ -169,7 +169,8 @@ jobs:
             libdiscid-dev \
             libxdo-dev \
             libssl-dev \
-            pkg-config
+            pkg-config \
+            libdbus-1-dev
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4

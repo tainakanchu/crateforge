@@ -246,6 +246,15 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     setContextMenu(null);
   }, [ctxIds]);
 
+  // 「次に再生」: 各曲を現在曲の直後へ割り込ませる。enqueueTrackNext は一曲ずつ
+  // 現在曲の直後に挿入するため、選択順のまま回すと後の曲ほど前へ来て逆順になる。
+  // ids を反転してから入れると、最終的な並びが選択順どおりになる。
+  const handlePlayNext = useCallback(async () => {
+    const ids = ctxIds();
+    for (const id of [...ids].reverse()) await playbackApi.enqueueTrackNext(id);
+    setContextMenu(null);
+  }, [ctxIds]);
+
   // 選択（or 右クリック対象）の曲を BPM/Key/Energy 解析キューへ投入（手動なので再解析強制）。
   const handleAnalyzeSelection = useCallback(async () => {
     const ids = ctxIds();
@@ -715,6 +724,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onPlay={() => handleDoubleClick(ctxTrack)}
           onSetRating={handleSetRatingForSelection}
           onAddToCrate={handleAddSelectionToCrate}
+          onPlayNext={handlePlayNext}
           onEnqueue={handleEnqueue}
           onAnalyze={handleAnalyzeSelection}
           onFindSimilar={handleFindSimilar}

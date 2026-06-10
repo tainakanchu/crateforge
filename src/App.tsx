@@ -44,6 +44,7 @@ export default function App() {
     setViewMode,
     setSelectedPlaylistId,
     volume,
+    setVolume,
     shuffle,
     setShuffle,
     repeat,
@@ -58,7 +59,6 @@ export default function App() {
 
   const PAGE_SIZE = 500;
   const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
-  const advanceRef = useRef<ReturnType<typeof setInterval>>(undefined);
   // 自動 XML エクスポート用: ライブラリに変更があったか。
   const libraryDirtyRef = useRef(false);
   const [reloadCount, setReloadCount] = useState(0);
@@ -322,18 +322,26 @@ export default function App() {
     };
   }, []);
 
-  // Advance queue when current track finishes.
+  // 曲送り(自動遷移)はバックエンドのワーカーが行う。
+  // ポーリングはやめ、`playback-advanced` イベントを購読して即時に再生状態を反映する。
+  // (250ms の状態ポーリングは位置表示用に残してあるが、それを待たずに UI を更新するため。)
   useEffect(() => {
     if (!isTauri) return;
-    advanceRef.current = setInterval(async () => {
-      try {
-        await playbackApi.checkAdvance();
-      } catch {
-        // ignore
-      }
-    }, 500);
-    return () => clearInterval(advanceRef.current);
-  }, []);
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await playbackApi.onPlaybackAdvanced(async () => {
+        try {
+          const state = await playbackApi.getPlaybackState();
+          setPlayback(state);
+        } catch {
+          // ignore
+        }
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [setPlayback]);
 
   const triggerReload = useCallback(() => {
     libraryDirtyRef.current = true; // 変更があったので次回の自動エクスポート対象。
@@ -390,6 +398,15 @@ export default function App() {
         if (sel.length > 0) setEditorTracks(sel);
         return;
       }
+      // Ctrl/Cmd+↑/↓ で音量 ±0.05(0〜1 にクランプ)。input にフォーカス中でも効く。
+      if (cmd && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        e.preventDefault();
+        const delta = e.key === "ArrowUp" ? 0.05 : -0.05;
+        const next = Math.min(1, Math.max(0, volume + delta));
+        setVolume(next);
+        if (isTauri) playbackApi.setVolume(next).catch(() => {});
+        return;
+      }
 
       // Other shortcuts: skip when typing in an input.
       if (isInput) {
@@ -439,6 +456,8 @@ export default function App() {
     tracks,
     shuffle,
     repeat,
+    volume,
+    setVolume,
     setShuffle,
     setRepeat,
     setSearchQuery,
