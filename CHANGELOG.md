@@ -10,6 +10,8 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.4.0] - 2026-06-11
+
 ### 日本語
 
 #### 変更
