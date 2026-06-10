@@ -41,10 +41,17 @@ pub struct AudioPlayer {
     /// いま再生中の曲の ReplayGain ゲイン (dB)。None なら未知。
     current_gain_db: Option<f64>,
 
+    // ===== キューの不変条件 (queue / order / order_pos は常にこれを満たす) =====
+    // - `order` は `0..queue.len()` の順列 (各 queue インデックスがちょうど 1 回ずつ現れる)。
+    // - `order_pos` は `order` へのインデックス (`Some(i)` なら `i < order.len()`)。
+    //   queue が空のときのみ `None`。
+    // これらを壊すと ordered_track_ids / advance_* が破綻するため、
+    // キューを変更する全メソッドはこの不変条件を維持しなければならない。
     queue: Vec<i64>,
     /// 再生順 = `queue` のインデックスの並べ替え (shuffle 時はシャッフルされた並び)。
+    /// 常に `0..queue.len()` の順列。
     order: Vec<usize>,
-    /// `order` 上の現在位置 (Up Next はここ以降を表示する)。
+    /// `order` 上の現在位置 (Up Next はここ以降を表示する)。`order` へのインデックス。
     order_pos: Option<usize>,
     shuffle: bool,
     repeat: RepeatMode,
@@ -294,6 +301,99 @@ impl AudioPlayer {
         }
     }
 
+    /// 「次に再生」: track_id を queue 末尾に積み、その queue インデックスを
+    /// `order` 上の現在位置の直後 (`order_pos + 1`) に挿入する。
+    /// `order_pos` が None (まだ何も再生していない) の場合は `enqueue` と同じく末尾に追加する。
+    ///
+    /// 不変条件は維持される: 新しい queue インデックスはちょうど 1 個増え、
+    /// それを order に 1 回だけ挿入するので order は引き続き順列。
+    /// 挿入位置は order_pos より後ろなので order_pos の指す要素は変わらない。
+    pub fn enqueue_next(&mut self, track_id: i64) {
+        self.queue.push(track_id);
+        let qi = self.queue.len() - 1;
+        match self.order_pos {
+            Some(pos) => {
+                // 現在位置の直後 (末尾を超える場合は push 相当) に挿入。
+                let insert_at = (pos + 1).min(self.order.len());
+                self.order.insert(insert_at, qi);
+            }
+            None => {
+                self.order.push(qi);
+                self.order_pos = Some(self.order.len() - 1);
+            }
+        }
+    }
+
+    /// `order` 上の指定位置の曲をキューから除去する。除去できたら true。
+    /// - `order_index == order_pos` (再生中の曲) は拒否して false を返す。
+    /// - `order_index` が範囲外でも false。
+    ///
+    /// queue から該当要素を取り除き、`order` 内に残る「除去した queue インデックスより
+    /// 大きい値」を 1 ずつ詰める (queue の Vec が縮むため)。order エントリ自体も除去し、
+    /// 除去位置が現在位置より前なら `order_pos` を 1 つ前へずらす。
+    /// これにより不変条件 (order は `0..queue.len()` の順列) が保たれる。
+    pub fn remove_at(&mut self, order_index: usize) -> bool {
+        if order_index >= self.order.len() {
+            return false;
+        }
+        if self.order_pos == Some(order_index) {
+            return false;
+        }
+        // 除去対象の queue インデックス。
+        let qi = self.order[order_index];
+
+        // queue から実体を除去。
+        self.queue.remove(qi);
+
+        // order エントリを除去。
+        self.order.remove(order_index);
+
+        // 縮んだ queue に合わせて、qi より大きいインデックスを 1 ずつ詰める。
+        for v in self.order.iter_mut() {
+            if *v > qi {
+                *v -= 1;
+            }
+        }
+
+        // 除去位置が現在位置より前なら order_pos を 1 つ前へ。
+        if let Some(pos) = self.order_pos {
+            if order_index < pos {
+                self.order_pos = Some(pos - 1);
+            }
+        }
+        // queue が空になったら状態をクリア。
+        if self.queue.is_empty() {
+            self.order_pos = None;
+        }
+        true
+    }
+
+    /// `order` 上の `from` の要素を `to` へ移動する (Up Next の並び替え用)。
+    /// 移動できたら true。`from`・`to` とも現在位置 (`order_pos`) より後ろの位置のみ許可し、
+    /// それ以外 (現在位置以前・範囲外) は false を返す。
+    ///
+    /// order の要素を入れ替えるだけなので順列性は保たれ、order_pos は動かさない。
+    pub fn move_order(&mut self, from: usize, to: usize) -> bool {
+        let len = self.order.len();
+        if from >= len || to >= len {
+            return false;
+        }
+        // order_pos より後ろ (Up Next の範囲) のみ許可。再生済み・再生中は不可。
+        let min_allowed = match self.order_pos {
+            Some(pos) => pos + 1,
+            None => 0,
+        };
+        if from < min_allowed || to < min_allowed {
+            return false;
+        }
+        if from == to {
+            return true;
+        }
+        let v = self.order.remove(from);
+        self.order.insert(to, v);
+        true
+    }
+
     pub fn clear_queue(&mut self) {
         self.queue.clear();
         self.order.clear();
@@ -311,6 +411,17 @@ impl AudioPlayer {
     /// 再生順上の現在位置 (`ordered_track_ids` に対するインデックス)。
     pub fn order_pos(&self) -> Option<usize> {
         self.order_pos
+    }
+
+    /// キューに積まれている曲数。
+    pub fn queue_len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// `order_pos` が指している現在の track_id (再生順ベース)。
+    /// ワーカーが advance 後の曲を再生するために使う。
+    pub fn current_track_id_in_order(&self) -> Option<i64> {
+        self.current_track_id_from_order()
     }
 
     pub fn set_shuffle(&mut self, on: bool) {
@@ -476,4 +587,210 @@ fn xorshift64(mut x: u64) -> u64 {
     x ^= x >> 7;
     x ^= x << 17;
     x
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 再生はせずキューロジックのみ検証する。`AudioPlayer::new()` はオーディオデバイスが
+    // 無くても stream/sink が None になるだけで、queue/order/order_pos の操作には影響しない。
+
+    /// order が `0..queue.len()` の順列であることを検証する (不変条件)。
+    fn assert_order_is_permutation(p: &AudioPlayer) {
+        let n = p.queue.len();
+        assert_eq!(p.order.len(), n, "order の長さは queue 長と一致するはず");
+        let mut seen = vec![false; n];
+        for &qi in &p.order {
+            assert!(qi < n, "order の値 {} が範囲外 (queue len {})", qi, n);
+            assert!(!seen[qi], "order の値 {} が重複している", qi);
+            seen[qi] = true;
+        }
+        // order_pos は order へのインデックス。
+        if let Some(pos) = p.order_pos {
+            assert!(pos < n.max(1), "order_pos {} が範囲外", pos);
+        }
+        if n == 0 {
+            assert_eq!(p.order_pos, None, "空キューでは order_pos は None");
+        }
+    }
+
+    fn make_player(ids: Vec<i64>, start: usize) -> AudioPlayer {
+        let mut p = AudioPlayer::new();
+        p.set_queue(ids, start);
+        p
+    }
+
+    #[test]
+    fn set_queue_initial_state() {
+        let p = make_player(vec![10, 20, 30], 1);
+        assert_eq!(p.order, vec![0, 1, 2]);
+        assert_eq!(p.order_pos, Some(1));
+        assert_eq!(p.current_track_id_from_order(), Some(20));
+        assert_order_is_permutation(&p);
+    }
+
+    #[test]
+    fn advance_next_repeat_off_stops_at_end() {
+        let mut p = make_player(vec![10, 20, 30], 0);
+        assert_eq!(p.advance_next(true), Some(20));
+        assert_eq!(p.advance_next(true), Some(30));
+        // 末尾 + repeat off → None。
+        assert_eq!(p.advance_next(true), None);
+    }
+
+    #[test]
+    fn advance_next_repeat_all_wraps() {
+        let mut p = make_player(vec![10, 20, 30], 2);
+        p.set_repeat(RepeatMode::All);
+        // 末尾 → 先頭へ折り返す。
+        assert_eq!(p.advance_next(true), Some(10));
+        assert_eq!(p.order_pos, Some(0));
+        assert_order_is_permutation(&p);
+    }
+
+    #[test]
+    fn advance_next_repeat_one_auto_vs_manual() {
+        let mut p = make_player(vec![10, 20, 30], 0);
+        p.set_repeat(RepeatMode::One);
+        // auto=true は同じ曲を繰り返す。
+        assert_eq!(p.advance_next(true), Some(10));
+        assert_eq!(p.order_pos, Some(0));
+        // auto=false (手動「次へ」) は One でも次の曲へ。
+        assert_eq!(p.advance_next(false), Some(20));
+        assert_eq!(p.order_pos, Some(1));
+    }
+
+    #[test]
+    fn shuffle_toggle_keeps_permutation() {
+        let mut p = make_player(vec![1, 2, 3, 4, 5], 0);
+        p.set_shuffle(true);
+        assert!(p.shuffle());
+        assert_order_is_permutation(&p);
+        // 現在の曲 (order_pos=0 の指す曲) は保持される。
+        assert_eq!(p.current_track_id_from_order(), Some(1));
+
+        p.set_shuffle(false);
+        assert!(!p.shuffle());
+        assert_eq!(p.order, vec![0, 1, 2, 3, 4]);
+        assert_order_is_permutation(&p);
+    }
+
+    #[test]
+    fn enqueue_next_inserts_after_current() {
+        let mut p = make_player(vec![10, 20, 30], 0);
+        // order_pos=0 (曲 10 再生中) の直後に 99 を割り込ませる。
+        p.enqueue_next(99);
+        assert_order_is_permutation(&p);
+        let ordered = p.ordered_track_ids();
+        assert_eq!(ordered, vec![10, 99, 20, 30]);
+        // 現在位置は動かない。
+        assert_eq!(p.order_pos, Some(0));
+        assert_eq!(p.current_track_id_from_order(), Some(10));
+        // 次に進むと割り込んだ曲が来る。
+        assert_eq!(p.advance_next(true), Some(99));
+    }
+
+    #[test]
+    fn enqueue_next_when_no_position_appends() {
+        let mut p = AudioPlayer::new();
+        // 空状態から enqueue_next → enqueue と同じく末尾追加・order_pos が立つ。
+        p.enqueue_next(42);
+        assert_eq!(p.queue, vec![42]);
+        assert_eq!(p.order_pos, Some(0));
+        assert_order_is_permutation(&p);
+    }
+
+    #[test]
+    fn enqueue_next_with_shuffle_inserts_after_current() {
+        let mut p = make_player(vec![1, 2, 3, 4, 5], 0);
+        p.set_shuffle(true);
+        let pos = p.order_pos.unwrap();
+        p.enqueue_next(99);
+        assert_order_is_permutation(&p);
+        // シャッフル中でも、割り込んだ曲は現在位置の直後に来る。
+        let ordered = p.ordered_track_ids();
+        assert_eq!(ordered[pos + 1], 99);
+    }
+
+    #[test]
+    fn remove_at_after_current_keeps_position() {
+        let mut p = make_player(vec![10, 20, 30, 40], 1);
+        // 現在位置は order_pos=1 (曲 20)。order_index=2 (曲 30) を除去。
+        assert!(p.remove_at(2));
+        assert_order_is_permutation(&p);
+        assert_eq!(p.ordered_track_ids(), vec![10, 20, 40]);
+        // 現在より後ろの除去なので order_pos は不変。
+        assert_eq!(p.order_pos, Some(1));
+        assert_eq!(p.current_track_id_from_order(), Some(20));
+    }
+
+    #[test]
+    fn remove_at_before_current_shifts_position() {
+        let mut p = make_player(vec![10, 20, 30, 40], 2);
+        // 現在位置は order_pos=2 (曲 30)。order_index=0 (曲 10) を除去。
+        assert!(p.remove_at(0));
+        assert_order_is_permutation(&p);
+        assert_eq!(p.ordered_track_ids(), vec![20, 30, 40]);
+        // 現在より前の除去なので order_pos は 1 つ前へ。指す曲は変わらない。
+        assert_eq!(p.order_pos, Some(1));
+        assert_eq!(p.current_track_id_from_order(), Some(30));
+    }
+
+    #[test]
+    fn remove_at_rejects_current() {
+        let mut p = make_player(vec![10, 20, 30], 1);
+        // 現在位置 (order_pos=1) の除去は拒否。
+        assert!(!p.remove_at(1));
+        assert_eq!(p.ordered_track_ids(), vec![10, 20, 30]);
+        assert_eq!(p.order_pos, Some(1));
+    }
+
+    #[test]
+    fn remove_at_out_of_range() {
+        let mut p = make_player(vec![10, 20], 0);
+        assert!(!p.remove_at(5));
+    }
+
+    #[test]
+    fn remove_at_handles_shuffled_indices() {
+        // shuffle で order が非自明な並びでも、queue インデックスの詰めが正しいこと。
+        let mut p = make_player(vec![10, 20, 30, 40, 50], 0);
+        p.set_shuffle(true);
+        // 現在位置以外を 1 つ除去しても順列性が保たれる。
+        let target = p.order_pos.unwrap() + 1;
+        assert!(p.remove_at(target));
+        assert_order_is_permutation(&p);
+        assert_eq!(p.queue.len(), 4);
+    }
+
+    #[test]
+    fn move_order_within_up_next() {
+        let mut p = make_player(vec![10, 20, 30, 40], 0);
+        // order_pos=0。Up Next は index 1,2,3。3 を 1 へ移動。
+        assert!(p.move_order(3, 1));
+        assert_order_is_permutation(&p);
+        assert_eq!(p.ordered_track_ids(), vec![10, 40, 20, 30]);
+        // order_pos は動かない。
+        assert_eq!(p.order_pos, Some(0));
+    }
+
+    #[test]
+    fn move_order_rejects_current_or_before() {
+        let mut p = make_player(vec![10, 20, 30, 40], 1);
+        // order_pos=1。現在位置 (1) や再生済み (0) を含む移動は拒否。
+        assert!(!p.move_order(1, 2), "現在位置 from は拒否");
+        assert!(!p.move_order(2, 1), "現在位置 to は拒否");
+        assert!(!p.move_order(0, 3), "再生済み from は拒否");
+        // 許可されるのは order_pos より後ろ同士のみ。
+        assert!(p.move_order(2, 3));
+        assert_order_is_permutation(&p);
+    }
+
+    #[test]
+    fn move_order_out_of_range() {
+        let mut p = make_player(vec![10, 20, 30], 0);
+        assert!(!p.move_order(5, 1));
+        assert!(!p.move_order(1, 5));
+    }
 }

@@ -260,6 +260,17 @@ export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     closeMenu();
   }, [contextMenu, closeMenu]);
 
+  // 「次に再生」: 各曲を現在曲の直後へ割り込ませる。enqueueTrackNext は一曲ずつ
+  // 現在曲の直後に挿入するため、選択順のまま回すと後の曲ほど前へ来て逆順になる。
+  // trackIds を反転してから入れると、最終的な並びが選択順どおりになる。
+  const handlePlayNext = useCallback(async () => {
+    if (!contextMenu) return;
+    for (const id of [...contextMenu.trackIds].reverse()) {
+      await playbackApi.enqueueTrackNext(id);
+    }
+    closeMenu();
+  }, [contextMenu, closeMenu]);
+
   const handleAnalyze = useCallback(async () => {
     if (!contextMenu) return;
     try {
@@ -512,6 +523,7 @@ export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           }}
           onSetRating={handleSetRating}
           onAddToCrate={handleAddToCrate}
+          onPlayNext={handlePlayNext}
           onEnqueue={handleEnqueue}
           onAnalyze={handleAnalyze}
           onFindSimilar={handleFindSimilar}

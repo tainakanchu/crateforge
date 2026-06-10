@@ -1538,6 +1538,18 @@ input {
 .cb-cx:hover {
   color: var(--warn);
 }
+/* Up Next 行: グリップは控えめに、削除ボタンはホバー時のみ表示する。 */
+.cb-qrow .cb-cgrip {
+  opacity: 0.5;
+}
+.cb-qx {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.cb-qrow:hover .cb-qx,
+.cb-qx:focus-visible {
+  opacity: 1;
+}
 .cb-rail-empty {
   padding: 30px 18px;
   text-align: center;

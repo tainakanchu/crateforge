@@ -52,6 +52,11 @@ export async function getLibraryStats(): Promise<LibraryStats> {
   return invoke("get_library_stats");
 }
 
+/// 指定 ID のトラックを入力順を保って取得（欠損 ID はスキップ）。
+export async function getTracksByIds(trackIds: number[]): Promise<Track[]> {
+  return invoke("get_tracks_by_ids", { trackIds });
+}
+
 export async function updateTrack(trackId: number, edits: TrackEdit): Promise<void> {
   return invoke("update_track", { trackId, edits });
 }

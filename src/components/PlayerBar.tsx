@@ -234,7 +234,7 @@ export function PlayerBar() {
         >
           <Icon name={volume === 0 ? "volumeX" : "volume"} size={16} />
         </button>
-        <div className="cb-vbar" onClick={handleVolumeClick} title="Volume (↑/↓)">
+        <div className="cb-vbar" onClick={handleVolumeClick} title="Volume (Ctrl+↑/↓)">
           <i style={{ right: `${(1 - volume) * 100}%` }} />
         </div>
       </div>

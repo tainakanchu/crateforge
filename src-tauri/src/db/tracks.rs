@@ -371,6 +371,19 @@ impl Database {
         }
     }
 
+    /// 指定した track_id 群を、**入力 ID の順序を保って** 解決する。
+    /// 見つからない ID はスキップする (Up Next 表示で、フロントの
+    /// ロード済みページに無い曲も解決できるようにするためのもの)。
+    pub fn get_tracks_by_ids(&self, track_ids: &[i64]) -> Result<Vec<Track>> {
+        let mut out = Vec::with_capacity(track_ids.len());
+        for &tid in track_ids {
+            if let Some(track) = self.get_track_by_track_id(tid)? {
+                out.push(track);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn get_all_tracks(&self) -> Result<Vec<Track>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,

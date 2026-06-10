@@ -69,6 +69,15 @@ pub fn run() {
             // バックグラウンド音声解析ワーカを起動して managed state に載せる。
             app.manage(analyzer::Analyzer::new(app.handle().clone()));
 
+            // 曲の自動送りを駆動するワーカースレッド。AudioPlayer の manage 後に起動する
+            // (ワーカーが app.state::<Mutex<AudioPlayer>> を参照するため)。
+            // フロントのポーリングではなく Rust 側で送るので、WebView がスロットルされても
+            // 再生が継続する。
+            let advance_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                commands::playback::advance_worker(advance_handle);
+            });
+
             // SMTC is best-effort: failure here shouldn't block app launch.
             let handle = app.handle().clone();
             if let Err(e) = smtc::init(&handle) {
@@ -82,6 +91,7 @@ pub fn run() {
             commands::library::export_library,
             commands::library::import_files,
             commands::library::get_tracks,
+            commands::library::get_tracks_by_ids,
             commands::library::search_tracks,
             commands::library::get_library_stats,
             commands::library::update_track,
@@ -117,6 +127,9 @@ pub fn run() {
             commands::playback::get_recent_tracks,
             commands::playback::set_queue,
             commands::playback::enqueue_track,
+            commands::playback::enqueue_track_next,
+            commands::playback::remove_queue_at,
+            commands::playback::move_queue_item,
             commands::playback::clear_queue,
             commands::playback::get_queue,
             commands::playback::play_queue_at,
@@ -126,7 +139,6 @@ pub fn run() {
             commands::playback::set_repeat,
             commands::playback::set_volume,
             commands::playback::set_replaygain,
-            commands::playback::check_advance,
             // ripping
             commands::ripping::detect_disc,
             commands::ripping::lookup_release_by_disc_id,
