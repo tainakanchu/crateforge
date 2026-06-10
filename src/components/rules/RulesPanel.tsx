@@ -224,13 +224,15 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
 
           {errorMsg && (
             <div className={`rules-msg ${errorMsg.startsWith("✓") || errorMsg.startsWith("Loaded") || errorMsg.startsWith("Saved") ? "ok" : "err"}`}>
-              {errorMsg}
+              {errorMsg.startsWith("✓")
+                ? <><Icon name="check" size={13} style={{ verticalAlign: "-2px" }} /> {errorMsg.slice(1).trimStart()}</>
+                : errorMsg}
             </div>
           )}
 
           {applyResult && (
-            <div className="rules-msg ok">
-              ✅ Applied: {applyResult.generatedPlaylistCount} playlists, {applyResult.generatedFolderCount} folders
+            <div className="rules-msg ok" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <Icon name="checkCircle" size={14} style={{ flexShrink: 0 }} /> Applied: {applyResult.generatedPlaylistCount} playlists, {applyResult.generatedFolderCount} folders
               {applyResult.removedExisting && " (replaced existing namespace)"}
             </div>
           )}

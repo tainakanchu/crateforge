@@ -10,6 +10,32 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+### 日本語
+
+#### 変更
+- **曲の自動送りを Rust 側のワーカースレッドに移行**しました。従来はフロントエンドの 500ms ポーリングが曲送りを駆動していたため、ウィンドウの最小化などで WebView がスロットルされると次の曲へ進まないことがありました。今後は UI の状態に関係なく再生が継続し、曲間の待ち時間も短くなります。次の曲のファイルが見つからない場合は自動でスキップして再生を続けます。
+
+#### 追加
+- **「Play Next（次に再生）」**をコンテキストメニューに追加しました。選択した曲（複数可・選択順を保持）を再生中の曲の直後に割り込ませます。
+- **Up Next（再生キュー）の編集**：行のホバーで表示される「×」でキューから削除、ドラッグ＆ドロップで並び替えができるようになりました。
+- **Up Next がライブラリの全曲を表示できるように**なりました（従来は読み込み済みページ内の曲しかタイトル解決できませんでした）。
+- **OS のメディアコントロール連携を macOS / Linux にも拡張**しました（Windows: SMTC / Linux: MPRIS / macOS: Now Playing）。メディアキーと「再生中」表示が全 OS で機能します。
+- **音量のキーボードショートカット**（Ctrl/Cmd+↑/↓）を追加しました。
+- 残っていた Unicode 文字アイコン（CD 取り込み進捗・ルール適用結果・再生中レーティングの ★ など）を SVG アイコンに置き換えました。
+
+### English
+
+#### Changed
+- **Track auto-advance now runs in a Rust-side worker thread.** Previously a 500ms frontend poll drove advancement, so playback could stall at track end while the window was minimized (WebView throttling). Playback now continues regardless of UI state, with shorter gaps between tracks. Missing files are skipped automatically.
+
+#### Added
+- **"Play Next"** context menu action — inserts the selected tracks (multi-select keeps selection order) right after the current track.
+- **Up Next queue editing**: remove rows via the hover "×" button, reorder via drag & drop.
+- **Up Next now resolves any track in the library** (previously only tracks on the loaded page could be displayed).
+- **OS media controls extended to macOS / Linux** (Windows: SMTC / Linux: MPRIS / macOS: Now Playing) — media keys and Now Playing work on all platforms.
+- **Volume keyboard shortcut** (Ctrl/Cmd+↑/↓).
+- Replaced the remaining Unicode glyph icons (rip progress, rules result, now-playing rating ★) with SVG icons.
+
 ## [v0.3.2] - 2026-06-07
 
 ### 日本語

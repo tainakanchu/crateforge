@@ -60,6 +60,8 @@ export const ICON_PATHS: Record<string, string> = {
     '<path d="M4 19l2.5-7h15l-2.5 7z"/><path d="M4 19V6a2 2 0 012-2h4l2 2h6a2 2 0 012 2v3"/>',
   queue: '<path d="M3 6h11M3 12h11M3 18h7"/><path d="M16 13l5 3-5 3z"/>',
   sparkle: '<path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/>',
+  checkCircle: '<circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-5"/>',
+  xCircle: '<circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/>',
 };
 
 export interface IconProps {

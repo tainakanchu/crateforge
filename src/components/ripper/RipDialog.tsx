@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as ripperApi from "../../api/ripper";
 import { Icon } from "../Icon";
@@ -41,7 +41,7 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
   const [selectedTracks, setSelectedTracks] = useState<Set<number>>(new Set());
   const [addToLibrary, setAddToLibrary] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
-  const [progressLines, setProgressLines] = useState<string[]>([]);
+  const [progressLines, setProgressLines] = useState<ReactNode[]>([]);
   const unlistenRef = useRef<(() => void) | null>(null);
 
   const resetState = useCallback(() => {
@@ -340,7 +340,9 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
             <>
               <div className="rip-section-title">Progress</div>
               <pre className="rip-log">
-                {progressLines.join("\n")}
+                {progressLines.map((line, i) => (
+                  <span key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>{line}{"\n"}</span>
+                ))}
               </pre>
               {stage === "done" && (
                 <div className="rip-actions">
@@ -355,19 +357,19 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
   );
 }
 
-function formatProgress(p: RipProgress): string {
+function formatProgress(p: RipProgress): ReactNode {
   switch (p.kind) {
     case "start":
-      return `▶ Starting (${p.total} tracks)`;
+      return <><Icon name="play" size={12} fill="currentColor" stroke={0} /> Starting ({p.total} tracks)</>;
     case "trackStart":
       return `  [${p.index + 1}/${p.total}] ripping: ${p.label}`;
     case "trackProgress":
       return `      ${p.percent}%`;
     case "trackDone":
-      return `      ✓ → ${p.outputPath}`;
+      return <>{"      "}<Icon name="check" size={12} /> {"→"} {p.outputPath}</>;
     case "done":
-      return `✅ Done. ${p.writtenFiles.length} file(s), ${p.addedTracks} added to library.`;
+      return <><Icon name="checkCircle" size={12} /> Done. {p.writtenFiles.length} file(s), {p.addedTracks} added to library.</>;
     case "error":
-      return `❌ ${p.message}`;
+      return <><Icon name="xCircle" size={12} /> {p.message}</>;
   }
 }
