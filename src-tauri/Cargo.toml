@@ -1,6 +1,6 @@
 [package]
 name = "crateforge"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 
 [lib]
@@ -42,18 +42,22 @@ ebur128 = "0.1"
 symphonia = { version = "0.5", features = ["all"] }
 tauri-plugin-clipboard-manager = "2.3.2"
 
+# === OS メディアコントロール連携（全 OS 共通） ===
+# Windows: SMTC (System Media Transport Controls)
+# Linux:   MPRIS (via zbus – 純 Rust, libdbus 不要)
+# macOS:   Now Playing Center
+# use_zbus を有効にすることで C ライブラリへの依存を排除し、全 OS で pure-Rust ビルドを実現。
+# （use_zbus が有効化する zbus 等の optional deps は souvlaki 側で unix target に gate
+#  されているため、Windows/macOS では何も引き込まれず無害。）
+# NOTE: ここは必ず無条件の [dependencies] に置くこと。`cfg(unix)` 等の target セクション
+#       配下に置くと smtc モジュールが使う souvlaki が Windows でリンクされず E0432 になる。
+souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
+
 # === Unix-only: MusicBrainz disc id via libdiscid (C lib comes from Nix/Brew/apt). ===
 # Skipped on Windows because libdiscid isn't trivially available via the standard
 # Windows toolchain. CD ripping commands return a friendly error on Windows.
 [target.'cfg(unix)'.dependencies]
 discid = "0.6"
-
-# === OS メディアコントロール連携 ===
-# Windows: SMTC (System Media Transport Controls)
-# Linux:   MPRIS (via zbus – 純 Rust, libdbus 不要)
-# macOS:   Now Playing Center
-# use_zbus を有効にすることで C ライブラリへの依存を排除し、全 OS で pure-Rust ビルドを実現。
-souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
 
 # === Windows-only: `zip` は on-demand ffmpeg ダウンロード解凍 (BtbN win64) に使用 ===
 [target.'cfg(target_os = "windows")'.dependencies]

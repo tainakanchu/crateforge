@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.4.1] - 2026-06-13
+
+### 日本語
+
+#### 修正
+- **Windows 版のリリースビルドが失敗していた問題を修正**しました。v0.4.0 で追加した OS メディアコントロール連携用クレート `souvlaki` の依存定義が、誤って `cfg(unix)` 限定のセクション配下に置かれていたため、Windows ターゲットではリンクされず `error[E0432]: unresolved import souvlaki` でビルドが落ちていました。全 OS 共通の依存として宣言し直し、Windows の SMTC を含めて正しくビルドされるようにしました（アプリの挙動に変更はありません）。
+
+### English
+
+#### Fixed
+- **Fixed the broken Windows release build.** The `souvlaki` crate (added in v0.4.0 for OS media controls) was accidentally declared under a `cfg(unix)`-only dependency section, so it was never linked for the Windows target and the build failed with `error[E0432]: unresolved import souvlaki`. It is now declared as an all-platform dependency, so Windows (SMTC) builds correctly again. No behavioral change.
+
 ## [v0.4.0] - 2026-06-11
 
 ### 日本語

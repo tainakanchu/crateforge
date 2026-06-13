@@ -226,9 +226,11 @@ jobs:
           draft: false
           prerelease: false
 
-  # === macOS: arm64 / Intel をそれぞれネイティブビルド（未署名・手動 DL 用）===
+  # === macOS: Apple Silicon (arm64) をネイティブビルド（未署名・手動 DL 用）===
+  # Intel (macos-13) は GitHub ホストランナーの枯渇でキュー待ちのまま 24h ハングして
+  # cancelled になる事象が頻発するため配布対象から外した（Intel Mac 自体も EOL 進行中）。
   # ユニバーサルにしないのは、libdiscid が brew で片アーキしか入らずクロスリンクが
-  # 失敗するため。各アーキをネイティブに作れば一致する libdiscid をリンクできる。
+  # 失敗するため。ネイティブビルドなら一致する libdiscid をリンクできる。
   build-macos:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     timeout-minutes: 60
@@ -237,7 +239,6 @@ jobs:
       matrix:
         include:
           - runner: macos-14   # Apple Silicon (arm64)
-          - runner: macos-13   # Intel (x86_64)
     runs-on: ${{ matrix.runner }}
 
     steps:
