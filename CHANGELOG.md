@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.5.1] - 2026-06-18
+
+### 日本語
+
+#### 修正
+- **内蔵 API 経由で作成・変更したプレイリストが、起動中アプリの UI に即時反映されない問題を修正**しました。API がライブラリを変更した際に `library-changed` イベントを発火し、UI 側がプレイリスト一覧と表示中のトラックを再読み込みするようにしました。
+
+### English
+
+#### Fixed
+- **Fixed playlists created/modified via the built-in API not appearing in the running app immediately.** The API now emits a `library-changed` event on writes, and the UI reloads the playlist list and the current track view in response.
+
 ## [v0.5.0] - 2026-06-18
 
 ### 日本語
