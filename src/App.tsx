@@ -343,6 +343,21 @@ export default function App() {
     };
   }, [setPlayback]);
 
+  // 内蔵 API 経由の変更（プレイリスト作成・曲追加/削除）を即時反映する。
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await playlistsApi.onLibraryChanged(() => {
+        reloadPlaylists();
+        setReloadCount((c) => c + 1);
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [reloadPlaylists]);
+
   const triggerReload = useCallback(() => {
     libraryDirtyRef.current = true; // 変更があったので次回の自動エクスポート対象。
     setReloadCount((c) => c + 1);

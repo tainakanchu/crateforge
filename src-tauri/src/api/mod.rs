@@ -22,11 +22,14 @@ use axum::Router;
 
 use error::ApiError;
 
-/// ハンドラ間で共有する状態。`app_data_dir` のみを持ち、
+/// ハンドラ間で共有する状態。`app_data_dir` と (アプリ起動時のみ) `AppHandle` を持ち、
 /// リクエスト毎に新しい `Database` を開く (rusqlite + WAL なので接続共有は不要)。
+/// `app` は WebView への通知に使う。API サーバー単体起動 (テスト) では `None`。
 #[derive(Clone)]
 pub struct ApiState {
     pub app_data_dir: PathBuf,
+    /// 書き込み後の通知先。テストでは `None` (emit は no-op)。
+    pub app: Option<tauri::AppHandle>,
 }
 
 impl ApiState {
@@ -34,6 +37,15 @@ impl ApiState {
     fn db(&self) -> Result<crate::db::Database, ApiError> {
         crate::db::Database::open(&self.app_data_dir)
             .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    }
+
+    /// 書き込み後に WebView へ「ライブラリが変わった」と通知する。
+    /// API サーバー単体起動 (テスト) では app=None なので何もしない。emit 失敗は無視。
+    pub(crate) fn notify_library_changed(&self, playlist_id: Option<i64>) {
+        if let Some(app) = &self.app {
+            use tauri::Emitter; // v2 では emit は Emitter トレイト経由。
+            let _ = app.emit("library-changed", serde_json::json!({ "playlistId": playlist_id }));
+        }
     }
 }
 
@@ -93,7 +105,7 @@ impl ServerControl {
 /// `127.0.0.1:port` で bind して serve を Tauri のランタイムに spawn する。
 /// bind 失敗 (ポート使用中など) は同期的にエラーを返すので、呼び出し側で
 /// ユーザーへ通知できる。serve 自体は非同期に走る。
-pub fn start(app_data_dir: PathBuf, port: u16) -> Result<ServerControl, String> {
+pub fn start(app_data_dir: PathBuf, port: u16, app: tauri::AppHandle) -> Result<ServerControl, String> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     // bind は同期的に確定させたいので block_on で待つ (tauri は内部で tokio を使う)。
     let listener = tauri::async_runtime::block_on(async move {
@@ -103,9 +115,12 @@ pub fn start(app_data_dir: PathBuf, port: u16) -> Result<ServerControl, String> 
     let local = listener.local_addr().map_err(|e| e.to_string())?;
 
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    let app = router(ApiState { app_data_dir });
+    let router = router(ApiState {
+        app_data_dir,
+        app: Some(app),
+    });
     tauri::async_runtime::spawn(async move {
-        let _ = axum::serve(listener, app)
+        let _ = axum::serve(listener, router)
             .with_graceful_shutdown(async move {
                 let _ = rx.await;
             })
@@ -134,6 +149,7 @@ mod tests {
         seed(&db);
         let app = router(ApiState {
             app_data_dir: dir.path().to_path_buf(),
+            app: None,
         });
         (dir, app)
     }

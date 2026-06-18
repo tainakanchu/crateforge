@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Playlist, Track, SortField, SortOrder, SmartCriteria } from "../types";
 
 export async function getPlaylists(): Promise<Playlist[]> {
@@ -99,4 +100,15 @@ export async function getSmartPlaylistTracks(
     sortField,
     sortOrder,
   });
+}
+
+// ===== ライブラリ変更通知 =====
+
+/// API 経由などライブラリ変更時に発火するイベントを購読する。
+export function onLibraryChanged(
+  cb: (playlistId: number | null) => void,
+): Promise<UnlistenFn> {
+  return listen<{ playlistId: number | null }>("library-changed", (e) =>
+    cb(e.payload?.playlistId ?? null),
+  );
 }

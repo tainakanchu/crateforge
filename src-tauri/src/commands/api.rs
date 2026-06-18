@@ -111,7 +111,7 @@ pub fn set_api_server_config(
     // 3. enabled なら起動する。失敗時は running=false でエラーを返す。
     if enabled {
         let dir = app_data_dir(&app)?;
-        match api::start(dir, port) {
+        match api::start(dir, port, app.clone()) {
             Ok(ctrl) => {
                 let mut guard = server.lock().map_err(|e| e.to_string())?;
                 *guard = Some(ctrl);
@@ -135,7 +135,7 @@ pub fn start_if_enabled(
         return Ok(());
     }
     let dir = app_data_dir(app)?;
-    let ctrl = api::start(dir, port)?;
+    let ctrl = api::start(dir, port, app.clone())?;
     let mut guard = server.lock().map_err(|e| e.to_string())?;
     *guard = Some(ctrl);
     Ok(())
