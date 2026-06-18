@@ -281,6 +281,8 @@ pub async fn create_playlist(
         body.parent_persistent_id.as_deref(),
         body.is_folder.unwrap_or(false),
     )?;
+    // 作成成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
+    state.notify_library_changed(Some(playlist.playlist_id));
     Ok((StatusCode::CREATED, Json(playlist)))
 }
 
@@ -292,6 +294,8 @@ pub async fn add_tracks(
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
     let added = db.add_tracks_to_playlist(playlist_id, &body.track_ids)?;
+    // 追加成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
+    state.notify_library_changed(Some(playlist_id));
     Ok(Json(json!({ "added": added })))
 }
 
@@ -302,5 +306,7 @@ pub async fn remove_track(
 ) -> Result<StatusCode, ApiError> {
     let db = state.db()?;
     db.remove_track_from_playlist(playlist_id, track_id)?;
+    // 削除成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
+    state.notify_library_changed(Some(playlist_id));
     Ok(StatusCode::NO_CONTENT)
 }
