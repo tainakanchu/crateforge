@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "crateforge",
+  "owner": {
+    "name": "tainakanchu"
+  },
+  "description": "Crateforge 連携プラグイン (ローカル API を使った AI 選曲ツール)。",
+  "plugins": [
+    {
+      "name": "dj-curator",
+      "source": "./plugins/dj-curator",
+      "description": "イベントのフライヤーやテーマなどのインプットから、Crateforge ライブラリを使って DJ 選曲の叩き台 (新規プレイリスト + 根拠レポート) を作る。",
+      "version": "0.1.0"
+    }
+  ]
+}
