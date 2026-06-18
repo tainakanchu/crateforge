@@ -2,6 +2,7 @@
 name = "crateforge"
 version = "0.5.1"
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "crateforge_lib"

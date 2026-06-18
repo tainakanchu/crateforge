@@ -1,6 +1,7 @@
 {
   "name": "crateforge",
   "version": "0.5.1",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@9.15.4",
