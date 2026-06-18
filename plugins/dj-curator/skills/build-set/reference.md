@@ -3,6 +3,8 @@
 ベース URL: `http://127.0.0.1:8787`（既定。`CRATEFORGE_API` で上書き可）。
 すべて JSON。エラーは `4xx/5xx` + `{ "error": "..." }`。
 呼び出しは `${CLAUDE_SKILL_DIR}/scripts/crate-api.sh <METHOD> <path> [json-body]` を使う。
+GET/DELETE では `<path>` の後ろに `key=value` を並べると `curl -G --data-urlencode` で安全にクエリ化される。
+**非 ASCII（日本語・中国語など）・空白・`&`・`#` を含む検索は、必ずこの `key=value` 形式で渡すこと**（`?...` に直書きするとエンコードされず壊れる）。
 
 レーティングは **0–100 スケール**（★1=20, ★3=60, ★4=80, ★5=100）。
 
@@ -13,7 +15,7 @@
 
 ### `GET /api/tracks`
 候補集めの主力。クエリ（すべて任意, camelCase）:
-- `q` — フリーテキスト検索。テキスト6列(name/artist/album/albumArtist/genre/comments)の部分一致に加え、解析トークン `bpm:120-128` / `key:8A` / `energy:0.6-0.9` が使える。
+- `q` — フリーテキスト検索。テキスト6列(name/artist/album/albumArtist/genre/comments)の部分一致に加え、解析トークン `bpm:120-128` / `key:8A` / `energy:0.6-0.9` が使える。日本語・中国語など非 ASCII や空白を含む値は **`key=value` 形式**（`crate-api.sh GET /api/tracks q="..."`）で渡す（自動 URL エンコード）。
 - `ratingMin` / `ratingMax` — 0–100。例: ★3 以上は `ratingMin=60`。
 - `genre` — ジャンル部分一致（大小無視）。
 - `yearFrom` / `yearTo` — 年代範囲。
@@ -25,6 +27,8 @@
 ```
 crate-api.sh GET "/api/tracks?genre=House&ratingMin=60&yearFrom=2015&limit=300"
 crate-api.sh GET "/api/tracks?q=energy:0.6-0.9 bpm:120-126&limit=200"
+# 非 ASCII・空白・特殊文字は key=value 形式で渡す（自動 URL エンコード）:
+crate-api.sh GET /api/tracks q=有你的世界 genre=House limit=200
 ```
 返り値: `Track[]`。`Track` の主なフィールド: `trackId, name, artist, albumArtist, album, genre, year, rating(0-100), bpm, totalTimeMs, locationPath, fileExists` ほか。
 

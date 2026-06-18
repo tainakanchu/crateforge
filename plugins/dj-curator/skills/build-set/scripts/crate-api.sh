@@ -10,6 +10,8 @@
 #   crate-api.sh health
 #   crate-api.sh GET    "/api/tracks?genre=House&ratingMin=60&limit=200"
 #   crate-api.sh GET    "/api/tracks/123/similar?limit=10&keyCompatible=true"
+#   # 非 ASCII / 空白 / & / # を含むクエリは key=value 形式で渡すと安全 (自動 URL エンコード):
+#   crate-api.sh GET    /api/tracks q="有你的世界" genre=House ratingMin=60 limit=200
 #   crate-api.sh POST   /api/playlists            '{"name":"夏の夕暮れ 2026"}'
 #   crate-api.sh POST   /api/playlists/45/tracks  '{"trackIds":[12,7,30]}'
 #   crate-api.sh DELETE /api/playlists/45/tracks/7
@@ -24,7 +26,7 @@ set -euo pipefail
 BASE="${CRATEFORGE_API:-http://127.0.0.1:8787}"
 
 usage() {
-  sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # curl を実行する。DRYRUN 時は実行せずコマンド列を表示。
@@ -65,6 +67,10 @@ case "$cmd" in
         echo "Crateforge アプリを起動し、設定 → 「AI 連携 / API」で" >&2
         echo "API サーバーを有効化してください (既定ポート 8787)。" >&2
         echo "別ポートの場合は CRATEFORGE_API を設定してください。" >&2
+        echo "" >&2
+        echo "WSL/Docker など別ネットワークから叩く場合、127.0.0.1 はホストと" >&2
+        echo "別物です。WSL2 はミラーモード化 (.wslconfig に networkingMode=mirrored)" >&2
+        echo "するか、CRATEFORGE_API=http://<ホストIP>:8787 を指定してください。" >&2
       }
       exit 1
     fi
@@ -76,7 +82,19 @@ case "$cmd" in
       echo "error: $cmd にはパスが必要です (例: $cmd /api/tracks)" >&2
       exit 2
     fi
-    run_curl -fsS -X "$cmd" "$BASE$path"
+    # 3 番目以降に key=value を渡すと、curl -G --data-urlencode で安全にクエリ化する。
+    # 非 ASCII (中国語/日本語など)・空白・& ・# を含む検索でも壊れない。
+    # 従来形 (path に ?query を直接埋め込む) も後方互換で使える。
+    if [ "$#" -gt 2 ]; then
+      shift 2
+      q_args=()
+      for kv in "$@"; do
+        q_args+=(--data-urlencode "$kv")
+      done
+      run_curl -fsS -G -X "$cmd" "${q_args[@]}" "$BASE$path"
+    else
+      run_curl -fsS -X "$cmd" "$BASE$path"
+    fi
     ;;
 
   POST|PUT)
