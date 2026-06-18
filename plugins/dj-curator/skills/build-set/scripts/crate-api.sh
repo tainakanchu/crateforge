@@ -15,6 +15,10 @@
 #   crate-api.sh POST   /api/playlists            '{"name":"夏の夕暮れ 2026"}'
 #   crate-api.sh POST   /api/playlists/45/tracks  '{"trackIds":[12,7,30]}'
 #   crate-api.sh DELETE /api/playlists/45/tracks/7
+#   # 曲メタデータ書き込み (DB + 実ファイルの ID3/タグへ反映):
+#   crate-api.sh POST   /api/tracks/genre-tags/add    '{"trackIds":[12,7],"tag":"台語"}'
+#   crate-api.sh POST   /api/tracks/genre-tags/remove '{"trackIds":[12],"tag":"台語"}'
+#   crate-api.sh PATCH  /api/tracks/12                '{"genre":"Disco Funk","rating":100}'
 #
 # 環境変数:
 #   CRATEFORGE_API    ベース URL を上書き (既定 http://127.0.0.1:8787)
@@ -26,7 +30,7 @@ set -euo pipefail
 BASE="${CRATEFORGE_API:-http://127.0.0.1:8787}"
 
 usage() {
-  sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,27p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # curl を実行する。DRYRUN 時は実行せずコマンド列を表示。
@@ -97,7 +101,7 @@ case "$cmd" in
     fi
     ;;
 
-  POST|PUT)
+  POST|PUT|PATCH)
     path="${2:-}"
     body="${3:-}"
     if [ -z "$path" ]; then

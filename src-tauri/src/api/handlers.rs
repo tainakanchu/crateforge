@@ -310,3 +310,135 @@ pub async fn remove_track(
     state.notify_library_changed(Some(playlist_id));
     Ok(StatusCode::NO_CONTENT)
 }
+
+// ===== 曲メタデータ書き込み =====
+
+/// 実ファイルのタグへ書き戻す。`location_path` が無い / ファイルが存在しない場合は
+/// 何もしない (= 失敗ではない)。書き込みを試みて失敗したときだけ true を返す。
+/// 整理 (フォルダ移動) はせず、その場でタグだけ更新する (rekordbox 等 他アプリへ反映)。
+fn writeback(loc: Option<&str>, w: &crate::organizer::TagWrite) -> bool {
+    let Some(loc) = loc else { return false };
+    if loc.is_empty() {
+        return false;
+    }
+    let path = std::path::Path::new(loc);
+    if !path.exists() {
+        return false;
+    }
+    crate::organizer::write_tags(path, w).is_err()
+}
+
+/// `POST /api/tracks/genre-tags/{add,remove}` のボディ。
+/// genre を空白区切りタグ集合として扱い、複数曲に対し 1 つのタグを一括追記/除去する。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenreTagBody {
+    pub track_ids: Vec<i64>,
+    pub tag: String,
+}
+
+/// `POST /api/tracks/genre-tags/add` — 指定タグを各曲の genre 末尾に一括追記 (重複回避)。
+/// DB 更新後、その曲の genre のみを実ファイルにも書き戻す (他タグは保持)。空タグは 400。
+/// 返り値 `{ "updated": n, "fileWriteFailed": m }`。
+pub async fn add_genre_tags(
+    State(state): State<ApiState>,
+    ExtractJson(body): ExtractJson<GenreTagBody>,
+) -> Result<Json<Value>, ApiError> {
+    let tag = body.tag.trim();
+    if tag.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "tag is empty"));
+    }
+    let db = state.db()?;
+    let mut updated = 0_i64;
+    let mut file_failed = 0_i64;
+    for &id in &body.track_ids {
+        // 存在しない id は db 側で 0 行更新 (エラーにならない)。Ok なら計上する。
+        if db.add_genre_tag(id, tag).is_ok() {
+            updated += 1;
+            if let Ok(Some(t)) = db.get_track_by_track_id(id) {
+                let w = crate::organizer::TagWrite {
+                    genre: t.genre.as_deref(),
+                    ..Default::default()
+                };
+                if writeback(t.location_path.as_deref(), &w) {
+                    file_failed += 1;
+                }
+            }
+        }
+    }
+    if updated > 0 {
+        state.notify_library_changed(None);
+    }
+    Ok(Json(json!({ "updated": updated, "fileWriteFailed": file_failed })))
+}
+
+/// `POST /api/tracks/genre-tags/remove` — 指定タグを各曲の genre から一括除去。
+/// `add_genre_tags` と対称 (除去後の genre をファイルへ反映、空なら空文字)。空タグは 400。
+pub async fn remove_genre_tags(
+    State(state): State<ApiState>,
+    ExtractJson(body): ExtractJson<GenreTagBody>,
+) -> Result<Json<Value>, ApiError> {
+    let tag = body.tag.trim();
+    if tag.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "tag is empty"));
+    }
+    let db = state.db()?;
+    let mut updated = 0_i64;
+    let mut file_failed = 0_i64;
+    for &id in &body.track_ids {
+        if db.remove_genre_tag(id, tag).is_ok() {
+            updated += 1;
+            if let Ok(Some(t)) = db.get_track_by_track_id(id) {
+                let w = crate::organizer::TagWrite {
+                    genre: Some(t.genre.as_deref().unwrap_or("")),
+                    ..Default::default()
+                };
+                if writeback(t.location_path.as_deref(), &w) {
+                    file_failed += 1;
+                }
+            }
+        }
+    }
+    if updated > 0 {
+        state.notify_library_changed(None);
+    }
+    Ok(Json(json!({ "updated": updated, "fileWriteFailed": file_failed })))
+}
+
+/// `PATCH /api/tracks/:trackId` — 指定フィールドを置換 (未指定は据え置き)、
+/// 更新後の現在値を実ファイルのタグへも書き戻す。対象が存在しなければ 404。
+/// 返り値 `{ "track": Track, "fileWriteFailed": bool }`。
+pub async fn patch_track(
+    State(state): State<ApiState>,
+    Path(track_id): Path<i64>,
+    ExtractJson(edit): ExtractJson<crate::models::TrackEdit>,
+) -> Result<Json<Value>, ApiError> {
+    let db = state.db()?;
+    db.update_track(track_id, &edit)?;
+    // 更新後の Track を取得。存在しない id は 0 行更新なので空 → 404。
+    let track: Track = match db.get_tracks_by_ids(&[track_id])?.into_iter().next() {
+        Some(t) => t,
+        None => return Err(ApiError::not_found("track not found")),
+    };
+    let track_val = serde_json::to_value(&track)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // 現在の DB 値を実ファイルのタグへ書き戻す (GUI の update_track と同様、他アプリにも反映)。
+    let file_failed = {
+        let w = crate::organizer::TagWrite {
+            title: track.name.as_deref(),
+            artist: track.artist.as_deref(),
+            album_artist: track.album_artist.as_deref(),
+            album: track.album.as_deref(),
+            genre: track.genre.as_deref(),
+            year: track.year,
+            track_number: track.track_number,
+            track_count: track.track_count,
+            disc_number: track.disc_number,
+            disc_count: track.disc_count,
+            compilation: Some(track.compilation),
+        };
+        writeback(track.location_path.as_deref(), &w)
+    };
+    state.notify_library_changed(None);
+    Ok(Json(json!({ "track": track_val, "fileWriteFailed": file_failed })))
+}

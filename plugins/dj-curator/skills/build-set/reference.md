@@ -70,6 +70,33 @@ crate-api.sh GET /api/tracks q=有你的世界 genre=House limit=200
 ### `DELETE /api/playlists/{playlistId}/tracks/{trackId}`
 1 曲外す → `204`。
 
+## 曲メタデータ書き込み
+
+DB を更新したうえで、**実ファイルの ID3 / Vorbis / MP4 タグにも書き戻す**（フォルダ整理＝移動はせず、その場でタグだけ更新。rekordbox など他アプリにも反映される）。書き込み後は GUI に即時反映（`library-changed`）。
+ファイル書き込みは **ベストエフォート**: `locationPath` が無い / ファイルが存在しない場合はスキップ（失敗扱いではない）。実際に書き込みを試みて失敗した件数を `fileWriteFailed` で返す（DB 更新自体は成功している）。
+
+ジャンルは**空白区切りのタグ集合**として扱う。「末尾にタグを 1 個足す/外す」は genre-tags、「genre 文字列をまるごと置換」「rating 等の他フィールド更新」は PATCH を使う。
+
+### `POST /api/tracks/genre-tags/add`
+ボディ `{ "trackIds": [i64,...], "tag": String }` → 各曲の genre 末尾に `tag` を追記（重複は付かない）。
+→ `{ "updated": n, "fileWriteFailed": m }`。`tag` が空白のみなら `400`。
+```
+crate-api.sh POST /api/tracks/genre-tags/add '{"trackIds":[12,7],"tag":"台語"}'
+```
+
+### `POST /api/tracks/genre-tags/remove`
+ボディ `{ "trackIds": [i64,...], "tag": String }` → 各曲の genre から `tag` を除去（add と対称）。
+→ `{ "updated": n, "fileWriteFailed": m }`。`tag` が空白のみなら `400`。
+
+### `PATCH /api/tracks/{trackId}`
+ボディ = 更新したいフィールドだけ（camelCase, **部分更新**＝未指定は据え置き）。
+`name` / `artist` / `albumArtist` / `album` / `genre` / `year` / `bpm` / `rating`(0-100) / `trackNumber` / `discNumber` / `compilation` など。
+→ `{ "track": Track, "fileWriteFailed": bool }`（更新後の全フィールド）。存在しない id は `404`。
+```
+# genre をまるごと置換 + ★5 を付ける
+crate-api.sh PATCH /api/tracks/12 '{"genre":"Disco Funk","rating":100}'
+```
+
 ## 使い分けメモ
 - **候補集めはメタデータ主体**（`ratingMin`/`genre`/`yearFrom`/`q`）。解析は「あれば使う」程度に `analyzed=true` や `similar` で補助。
 - **曲順は付けない**。並べ替え用エンドポイントは敢えて使わない（人間が GUI で詰める）。

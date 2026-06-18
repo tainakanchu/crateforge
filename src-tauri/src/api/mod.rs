@@ -56,7 +56,12 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/health", get(handlers::health))
         .route("/api/tracks", get(handlers::list_tracks))
         .route("/api/tracks/by-ids", post(handlers::tracks_by_ids))
-        .route("/api/tracks/{trackId}", get(handlers::get_track))
+        // GET と PATCH を 1 つの MethodRouter に合流させる (axum 0.8 は同一パスを
+        // 別 .route で重ねると panic するため)。PATCH ハンドラは下の「書き込み」節参照。
+        .route(
+            "/api/tracks/{trackId}",
+            get(handlers::get_track).patch(handlers::patch_track),
+        )
         .route(
             "/api/tracks/{trackId}/analysis",
             get(handlers::get_track_analysis),
@@ -81,6 +86,16 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/api/playlists/{playlistId}/tracks/{trackId}",
             delete(handlers::remove_track),
+        )
+        // 曲メタデータ書き込み。静的セグメント genre-tags は動的 {trackId} と
+        // 衝突しない (axum 0.8 は静的セグメントを優先解決する)。
+        .route(
+            "/api/tracks/genre-tags/add",
+            post(handlers::add_genre_tags),
+        )
+        .route(
+            "/api/tracks/genre-tags/remove",
+            post(handlers::remove_genre_tags),
         )
         .with_state(state)
 }
@@ -547,5 +562,202 @@ mod tests {
         let arr = body.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["trackId"], 1);
+    }
+
+    // ===== メタデータ書き込み: ジャンルタグ追記 (#39-1) =====
+    #[tokio::test]
+    async fn case_genre_tag_add() {
+        let (_dir, app) = setup();
+        let (status, body) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/genre-tags/add",
+            Some(json!({ "trackIds": [1], "tag": "台語" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["updated"], 1);
+
+        // GET で genre に台語が追記されていること (元の House は残す)。
+        let (status, track) = req(app, "GET", "/api/tracks/1", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let genre = track["genre"].as_str().unwrap();
+        assert!(genre.contains("台語"), "genre should contain 台語: {genre}");
+        assert!(genre.contains("House"), "genre should keep House: {genre}");
+    }
+
+    // ===== メタデータ書き込み: 重複 add は 1 回のまま (#39-2) =====
+    #[tokio::test]
+    async fn case_genre_tag_add_dedup() {
+        let (_dir, app) = setup();
+        let add = |a: Router| async move {
+            req(
+                a,
+                "POST",
+                "/api/tracks/genre-tags/add",
+                Some(json!({ "trackIds": [1], "tag": "台語" })),
+            )
+            .await
+        };
+        let (s1, _) = add(app.clone()).await;
+        assert_eq!(s1, StatusCode::OK);
+        let (s2, _) = add(app.clone()).await;
+        assert_eq!(s2, StatusCode::OK);
+
+        let (_, track) = req(app, "GET", "/api/tracks/1", None).await;
+        let genre = track["genre"].as_str().unwrap();
+        let occurrences = genre.matches("台語").count();
+        assert_eq!(occurrences, 1, "台語 should appear once: {genre}");
+    }
+
+    // ===== メタデータ書き込み: 複数曲一括 add (#39-3) =====
+    #[tokio::test]
+    async fn case_genre_tag_add_bulk() {
+        let (_dir, app) = setup();
+        let (status, body) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/genre-tags/add",
+            Some(json!({ "trackIds": [1, 2], "tag": "#fav" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["updated"], 2);
+
+        for id in [1, 2] {
+            let (_, track) = req(app.clone(), "GET", &format!("/api/tracks/{id}"), None).await;
+            let genre = track["genre"].as_str().unwrap();
+            assert!(genre.contains("#fav"), "track {id} genre missing #fav: {genre}");
+        }
+    }
+
+    // ===== メタデータ書き込み: タグ除去 (#39-4) =====
+    #[tokio::test]
+    async fn case_genre_tag_remove() {
+        let (_dir, app) = setup();
+        // 先に付ける。
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/genre-tags/add",
+            Some(json!({ "trackIds": [1], "tag": "台語" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // 除去。
+        let (status, body) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/genre-tags/remove",
+            Some(json!({ "trackIds": [1], "tag": "台語" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["updated"], 1);
+
+        let (_, track) = req(app, "GET", "/api/tracks/1", None).await;
+        let genre = track["genre"].as_str().unwrap();
+        assert!(!genre.contains("台語"), "台語 should be removed: {genre}");
+        assert!(genre.contains("House"), "House should remain: {genre}");
+    }
+
+    // ===== メタデータ書き込み: 空タグは 400 (#39-5) =====
+    #[tokio::test]
+    async fn case_genre_tag_empty_is_400() {
+        let (_dir, app) = setup();
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/genre-tags/add",
+            Some(json!({ "trackIds": [1], "tag": " " })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // remove も対称に 400。
+        let (status, _) = req(
+            app,
+            "POST",
+            "/api/tracks/genre-tags/remove",
+            Some(json!({ "trackIds": [1], "tag": " " })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // ===== メタデータ書き込み: PATCH で genre 置換 (#39-6) =====
+    #[tokio::test]
+    async fn case_patch_genre() {
+        let (_dir, app) = setup();
+        let (status, patched) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "genre": "Disco Funk" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(patched["track"]["genre"], "Disco Funk");
+        // テストのトラックは location_path 無し → ファイル書き込みは試みず失敗 0。
+        assert_eq!(patched["fileWriteFailed"], false);
+
+        // GET でも反映。
+        let (_, track) = req(app, "GET", "/api/tracks/1", None).await;
+        assert_eq!(track["genre"], "Disco Funk");
+    }
+
+    // ===== メタデータ書き込み: PATCH で rating 置換 (#39-7) =====
+    #[tokio::test]
+    async fn case_patch_rating() {
+        let (_dir, app) = setup();
+        let (status, patched) = req(
+            app,
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "rating": 100 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(patched["track"]["rating"], 100);
+    }
+
+    // ===== メタデータ書き込み: PATCH は他フィールドを据え置く (#39-8) =====
+    #[tokio::test]
+    async fn case_patch_keeps_other_fields() {
+        let (_dir, app) = setup();
+        // 事前の name を控える。
+        let (_, before) = req(app.clone(), "GET", "/api/tracks/1", None).await;
+        let name_before = before["name"].clone();
+
+        let (status, patched) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "genre": "Disco Funk" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // name は不変。
+        assert_eq!(patched["track"]["name"], name_before);
+
+        let (_, after) = req(app, "GET", "/api/tracks/1", None).await;
+        assert_eq!(after["name"], name_before);
+        assert_eq!(after["genre"], "Disco Funk");
+    }
+
+    // ===== メタデータ書き込み: 存在しない id への PATCH は 404 (#39-9) =====
+    #[tokio::test]
+    async fn case_patch_missing_is_404() {
+        let (_dir, app) = setup();
+        let (status, body) = req(
+            app,
+            "PATCH",
+            "/api/tracks/9999",
+            Some(json!({ "genre": "Whatever" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "track not found");
     }
 }
