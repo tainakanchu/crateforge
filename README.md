@@ -41,19 +41,22 @@ pnpm tauri build           # OS ネイティブパッケージを生成
 ### Windows ビルド (.exe / .msi / .nsis)
 
 Tauri は **OS 上で直接ビルドする方式が前提** です (Windows ビルドは Windows、macOS ビルドは macOS で)。
-このリポジトリには `.github/workflows/build-windows.yml` が入っているので、GitHub にリポジトリを push すると Windows runner で自動ビルドされます。
+CI は 2 つに分かれています:
+
+- `.github/workflows/ci.yml` — PR / main への push で走る**軽量チェック**（フロントの型チェック + `cargo test`、Windows は `cargo check`）。インストーラ生成や成果物アップロードはしません。アプリコードに無関係な変更 (docs / plugins) では走りません。
+- `.github/workflows/release.yml` — **タグ `v*` を push したとき (または手動実行) だけ** Windows / macOS / Linux のフルビルドを行い、全成果物を添付した GitHub Release を自動作成します。
 
 ```bash
 # 初回
 git remote add origin git@github.com:<you>/itunes-playlist-viewer.git
 git push -u origin main
-# ↑ push すると Actions が走り、artifacts に下記が上がります:
-#   - crateforge-windows-exe         (単体 .exe)
-#   - crateforge-windows-installers  (.msi + setup .exe)
+# ↑ push / PR では ci.yml の軽量チェックのみ (フルビルド・成果物生成はしない)。
 
-# リリースを作りたいとき
+# リリース (フルビルド + GitHub Release) を作りたいとき
 git tag v0.1.0 && git push --tags
-# ↑ tag を push すると GitHub Release も自動作成 (artifacts 同梱)
+# ↑ tag を push すると release.yml が走り、下記を添付した GitHub Release を自動作成:
+#   - Windows: 単体 .exe / portable .zip / .msi + setup .exe
+#   - macOS:   .dmg  /  Linux: .AppImage + .deb
 ```
 
 ローカル Windows で直接ビルドしたい場合:

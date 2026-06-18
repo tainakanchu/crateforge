@@ -1,11 +1,10 @@
-name: Build (Windows / macOS / Linux)
+name: Release (full build + GitHub Release)
 
+# tag (v*) と手動実行のときだけフル多 OS ビルド + インストーラ生成 + GitHub Release を行う。
+# PR / main push の軽量チェック (コンパイル + テスト) は ci.yml が担当する。
 on:
   push:
-    branches: [main, master]
-    tags: ['v*']
-  pull_request:
-    branches: [main, master]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
