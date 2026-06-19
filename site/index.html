@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crateforge — 爆速 iTunes 風 音楽管理 / DJ 選曲デスクトップアプリ</title>
+    <meta
+      name="description"
+      content="Crateforge は Tauri 2 + React 19 + Rust 製の爆速 iTunes 風音楽管理デスクトップアプリ。DJ 解析・類似度選曲・iTunes XML 互換・CD リッピング・ローカル再生・AI 選曲まで 1 本で完結。"
+    />
+    <link rel="icon" type="image/png" href="./assets/icon.png" />
+
+    <!-- Open Graph / Twitter -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Crateforge" />
+    <meta
+      property="og:description"
+      content="爆速 iTunes 風 音楽管理デスクトップアプリ。DJ 解析・類似度選曲・iTunes XML 互換・CD リッピング・ローカル再生まで、この 1 本で完結。"
+    />
+    <meta property="og:image" content="./assets/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Crateforge" />
+    <meta
+      name="twitter:description"
+      content="爆速 iTunes 風 音楽管理 / DJ 選曲デスクトップアプリ"
+    />
+    <meta name="twitter:image" content="./assets/og.png" />
+
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <!-- ===================== NAV ===================== -->
+    <header class="nav" id="top">
+      <div class="nav-inner">
+        <a class="nav-brand" href="#top" aria-label="Crateforge">
+          <img src="./assets/logo.png" alt="" class="nav-logo" />
+          <span>Crateforge</span>
+        </a>
+
+        <button
+          class="nav-toggle"
+          aria-label="メニュー"
+          aria-expanded="false"
+          aria-controls="nav-links"
+        >
+          <span></span><span></span><span></span>
+        </button>
+
+        <nav class="nav-links" id="nav-links">
+          <a href="#features" data-i18n="nav.features">特徴</a>
+          <a href="#analysis" data-i18n="nav.analysis">DJ 解析</a>
+          <a href="#ai" data-i18n="nav.ai">AI 選曲</a>
+          <a href="#download" data-i18n="nav.download">ダウンロード</a>
+
+          <div class="lang-switch" role="group" aria-label="Language">
+            <button type="button" data-lang="ja">日本語</button>
+            <button type="button" data-lang="en">EN</button>
+            <button type="button" data-lang="zh-Hant">繁中</button>
+          </div>
+
+          <a
+            class="nav-gh"
+            href="https://github.com/tainakanchu/itunes-playlist-viewer"
+            target="_blank"
+            rel="noopener"
+            aria-label="GitHub"
+          >
+            <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+          </a>
+
+          <a class="btn btn-primary nav-dl" href="#download" data-i18n="nav.downloadBtn"
+            >ダウンロード</a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <!-- ===================== HERO ===================== -->
+      <section class="hero">
+        <div class="hero-glow" aria-hidden="true"></div>
+        <div class="hero-grid" aria-hidden="true"></div>
+        <div class="hero-inner">
+          <img src="./assets/logo.png" alt="" class="hero-logo reveal" />
+          <span class="hero-badge reveal" data-i18n="hero.badge"
+            >Tauri 2 + React 19 + Rust 製デスクトップアプリ</span
+          >
+          <h1 class="hero-title reveal">Crateforge</h1>
+          <p class="hero-subtitle reveal" data-i18n="hero.subtitle">
+            爆速 iTunes 風 音楽管理デスクトップアプリ。DJ のための解析・類似度選曲・iTunes
+            XML 互換・CD リッピング・ローカル再生まで、この 1 本で完結。
+          </p>
+          <div class="hero-badges reveal">
+            <span class="tech-badge">Tauri 2</span>
+            <span class="tech-badge">React 19</span>
+            <span class="tech-badge">Rust</span>
+            <span class="tech-badge">SQLite</span>
+            <span class="tech-badge">MIT License</span>
+          </div>
+          <div class="hero-cta reveal">
+            <a
+              class="btn btn-primary btn-lg"
+              href="https://github.com/tainakanchu/itunes-playlist-viewer/releases/latest"
+              target="_blank"
+              rel="noopener"
+              data-i18n="hero.download"
+              >ダウンロード</a
+            >
+            <a
+              class="btn btn-ghost btn-lg"
+              href="https://github.com/tainakanchu/itunes-playlist-viewer"
+              target="_blank"
+              rel="noopener"
+              data-i18n="hero.github"
+              >GitHub で見る</a
+            >
+          </div>
+          <p class="hero-platforms reveal" data-i18n="hero.platforms">
+            Windows · macOS · Linux 対応
+          </p>
+
+          <figure class="shot shot-hero reveal" data-shot>
+            <img
+              src="./assets/screenshots/hero.png"
+              alt="Crateforge app screenshot"
+              loading="lazy"
+              onerror="this.closest('[data-shot]').classList.add('is-empty')"
+            />
+            <figcaption class="shot-ph" data-i18n="shot.coming">
+              スクリーンショットは近日公開
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- ===================== FEATURES ===================== -->
+      <section class="section" id="features">
+        <div class="container">
+          <div class="section-head reveal">
+            <h2 class="section-title" data-i18n="features.title">
+              必要な機能を、ぜんぶ 1 本に
+            </h2>
+            <p class="section-sub" data-i18n="features.subtitle">
+              ライブラリ管理から DJ 解析、AI 選曲まで。外部アプリに頼らず完結します。
+            </p>
+          </div>
+
+          <div class="feature-grid">
+            <article class="card reveal">
+              <div class="card-icon">🚀</div>
+              <h3 data-i18n="features.fast.title">爆速</h3>
+              <p data-i18n="features.fast.desc">
+                SQLite (WAL) + 索引で 10,000+ トラックでも快適。React 側は行を仮想化。
+              </p>
+            </article>
+            <article class="card reveal">
+              <div class="card-icon">📥</div>
+              <h3 data-i18n="features.xml.title">iTunes Library.xml 互換</h3>
+              <p data-i18n="features.xml.desc">
+                入出力とも Apple plist 形式。rekordbox / Serato / Traktor が読める出力。
+              </p>
+            </article>
+            <article class="card reveal">
+              <div class="card-icon">💿</div>
+              <h3 data-i18n="features.cd.title">CD リッピング</h3>
+              <p data-i18n="features.cd.desc">
+                cdparanoia + flac/lame/ffmpeg。MusicBrainz で曲情報、Cover Art Archive
+                でジャケット自動取得。
+              </p>
+            </article>
+            <article class="card reveal">
+              <div class="card-icon">🎵</div>
+              <h3 data-i18n="features.files.title">ファイル取り込み</h3>
+              <p data-i18n="features.files.desc">
+                FLAC / MP3 / M4A / WAV / Ogg / Opus / AIFF のタグを読み取り。
+              </p>
+            </article>
+            <article class="card reveal">
+              <div class="card-icon">📋</div>
+              <h3 data-i18n="features.playlist.title">プレイリスト編集</h3>
+              <p data-i18n="features.playlist.desc">
+                作成・リネーム・削除・フォルダ階層・複数選択追加・並び替え・スマートプレイリスト。
+              </p>
+            </article>
+            <article class="card reveal">
+              <div class="card-icon">▶</div>
+              <h3 data-i18n="features.playback.title">ローカル再生</h3>
+              <p data-i18n="features.playback.desc">
+                rodio (symphonia) で各種フォーマットを直接デコード。
+              </p>
+            </article>
+            <article class="card reveal">
+              <div class="card-icon">🤖</div>
+              <h3 data-i18n="features.ai.title">AI 選曲</h3>
+              <p data-i18n="features.ai.desc">
+                ローカル HTTP API 内蔵。Claude Code プラグイン dj-curator から選曲の叩き台を生成。
+              </p>
+            </article>
+            <article class="card reveal">
+              <div class="card-icon">📦</div>
+              <h3 data-i18n="features.nix.title">Nix 完結</h3>
+              <p data-i18n="features.nix.desc">
+                flake.nix で Rust / Node / GTK / WebKit / CD ツール / エンコーダを宣言。
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== DJ ANALYSIS ===================== -->
+      <section class="section section-alt" id="analysis">
+        <div class="container analysis-layout">
+          <div class="analysis-text reveal">
+            <span class="eyebrow" data-i18n="analysis.tag">DJ ANALYSIS</span>
+            <h2 class="section-title" data-i18n="analysis.title">DJ のための解析</h2>
+            <p class="section-sub" data-i18n="analysis.subtitle">
+              BPM・Key・Energy を解析し、似た曲をすばやく手繰り寄せる。純 Rust の DSP で高速に。
+            </p>
+            <ul class="analysis-list">
+              <li>
+                <strong data-i18n="analysis.bpm.title">BPM</strong>
+                <span data-i18n="analysis.bpm.desc"
+                  >テンポを自動検出。つなぎやすい曲を把握。</span
+                >
+              </li>
+              <li>
+                <strong data-i18n="analysis.key.title">Key (Camelot)</strong>
+                <span data-i18n="analysis.key.desc"
+                  >ハーモニックミックス向けに Camelot 表記で調を表示。</span
+                >
+              </li>
+              <li>
+                <strong data-i18n="analysis.energy.title">Energy</strong>
+                <span data-i18n="analysis.energy.desc"
+                  >曲の勢いを数値化。セットの流れを設計。</span
+                >
+              </li>
+              <li>
+                <strong data-i18n="analysis.similar.title">類似度選曲</strong>
+                <span data-i18n="analysis.similar.desc"
+                  >解析値をもとに似た雰囲気の曲を提案。</span
+                >
+              </li>
+            </ul>
+          </div>
+          <figure class="shot reveal" data-shot>
+            <img
+              src="./assets/screenshots/analysis.png"
+              alt="DJ analysis screenshot"
+              loading="lazy"
+              onerror="this.closest('[data-shot]').classList.add('is-empty')"
+            />
+            <figcaption class="shot-ph" data-i18n="shot.coming">
+              スクリーンショットは近日公開
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- ===================== GALLERY ===================== -->
+      <section class="section" id="gallery">
+        <div class="container">
+          <div class="section-head reveal">
+            <h2 class="section-title" data-i18n="gallery.title">スクリーンショット</h2>
+            <p class="section-sub" data-i18n="gallery.subtitle">
+              アートワーク主導の UI で、ライブラリを心地よく。
+            </p>
+          </div>
+          <div class="gallery-grid">
+            <figure class="shot reveal" data-shot>
+              <img src="./assets/screenshots/library.png" alt="Library view" loading="lazy"
+                onerror="this.closest('[data-shot]').classList.add('is-empty')" />
+              <figcaption class="shot-cap" data-i18n="gallery.library">ライブラリ表示</figcaption>
+              <span class="shot-ph" data-i18n="shot.coming">スクリーンショットは近日公開</span>
+            </figure>
+            <figure class="shot reveal" data-shot>
+              <img src="./assets/screenshots/playlists.png" alt="Playlists" loading="lazy"
+                onerror="this.closest('[data-shot]').classList.add('is-empty')" />
+              <figcaption class="shot-cap" data-i18n="gallery.playlists">プレイリスト</figcaption>
+              <span class="shot-ph" data-i18n="shot.coming">スクリーンショットは近日公開</span>
+            </figure>
+            <figure class="shot reveal" data-shot>
+              <img src="./assets/screenshots/ripping.png" alt="CD ripping" loading="lazy"
+                onerror="this.closest('[data-shot]').classList.add('is-empty')" />
+              <figcaption class="shot-cap" data-i18n="gallery.ripping">CD リッピング</figcaption>
+              <span class="shot-ph" data-i18n="shot.coming">スクリーンショットは近日公開</span>
+            </figure>
+            <figure class="shot reveal" data-shot>
+              <img src="./assets/screenshots/analysis.png" alt="DJ analysis" loading="lazy"
+                onerror="this.closest('[data-shot]').classList.add('is-empty')" />
+              <figcaption class="shot-cap" data-i18n="gallery.analysis">DJ 解析</figcaption>
+              <span class="shot-ph" data-i18n="shot.coming">スクリーンショットは近日公開</span>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== AI CURATION ===================== -->
+      <section class="section section-alt" id="ai">
+        <div class="container ai-layout">
+          <div class="ai-text reveal">
+            <span class="eyebrow" data-i18n="ai.tag">AI CURATION</span>
+            <h2 class="section-title" data-i18n="ai.title">AI と組む DJ 選曲</h2>
+            <p class="section-sub" data-i18n="ai.desc">
+              ローカル HTTP API サーバーを内蔵。Claude Code プラグイン dj-curator
+              から「インプット → コンセプト → DJ 選曲の叩き台」を生成します。AI
+              は候補プールの選定に集中し、曲順は GUI で人間が詰める方針です。
+            </p>
+            <a
+              class="btn btn-ghost"
+              href="https://github.com/tainakanchu/itunes-playlist-viewer/tree/main/plugins/dj-curator"
+              target="_blank"
+              rel="noopener"
+              data-i18n="ai.readme"
+              >dj-curator の詳細を見る</a
+            >
+          </div>
+          <div class="ai-code reveal">
+            <div class="code-block">
+              <div class="code-head">
+                <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              </div>
+              <pre><code><span class="c-step" data-i18n="ai.step1"># プラグインマーケットプレイスを追加</span>
+<span class="c-cmd">/plugin marketplace add tainakanchu/itunes-playlist-viewer</span>
+
+<span class="c-step" data-i18n="ai.step2"># dj-curator プラグインを導入</span>
+<span class="c-cmd">/plugin install dj-curator@crateforge</span>
+
+<span class="c-step" data-i18n="ai.step3"># コンセプトから選曲の叩き台を生成</span>
+<span class="c-cmd">/dj-curator:build-set 夏の夕暮れの chill house、90分、ゆるめスタート</span></code></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== DOWNLOAD ===================== -->
+      <section class="section" id="download">
+        <div class="container">
+          <div class="section-head reveal">
+            <h2 class="section-title" data-i18n="download.title">ダウンロード</h2>
+            <p class="section-sub" data-i18n="download.subtitle">
+              Windows / macOS / Linux に対応。最新リリースから入手できます。
+            </p>
+          </div>
+          <div class="platform-grid">
+            <article class="platform-card reveal">
+              <div class="platform-icon">🪟</div>
+              <h3>Windows</h3>
+              <p data-i18n="download.win.desc">.exe / portable .zip / .msi / setup .exe</p>
+            </article>
+            <article class="platform-card reveal">
+              <div class="platform-icon">🍎</div>
+              <h3>macOS</h3>
+              <p data-i18n="download.mac.desc">.dmg (Apple Silicon)</p>
+            </article>
+            <article class="platform-card reveal">
+              <div class="platform-icon">🐧</div>
+              <h3>Linux</h3>
+              <p data-i18n="download.linux.desc">.AppImage / .deb</p>
+            </article>
+          </div>
+          <div class="download-cta reveal">
+            <a
+              class="btn btn-primary btn-lg"
+              href="https://github.com/tainakanchu/itunes-playlist-viewer/releases/latest"
+              target="_blank"
+              rel="noopener"
+              data-i18n="download.cta"
+              >最新リリースをダウンロード</a
+            >
+            <p class="download-note" data-i18n="download.note">
+              ビルドは Nix (flake.nix) で完結します。
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ===================== FOOTER ===================== -->
+    <footer class="footer">
+      <div class="container footer-inner">
+        <div class="footer-brand">
+          <img src="./assets/logo.png" alt="" class="footer-logo" />
+          <div>
+            <strong>Crateforge</strong>
+            <span class="footer-tagline" data-i18n="footer.tagline"
+              >爆速 iTunes 風 音楽管理デスクトップアプリ</span
+            >
+          </div>
+        </div>
+        <div class="footer-meta">
+          <a
+            href="https://github.com/tainakanchu/itunes-playlist-viewer"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+          >
+          <span class="footer-license" data-i18n="footer.license"
+            >MIT License © 2026 tainakanchu</span
+          >
+          <span class="footer-built" data-i18n="footer.built"
+            >Tauri 2 + React 19 + Vite 6 + Rust 製</span
+          >
+        </div>
+      </div>
+    </footer>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
