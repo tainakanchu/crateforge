@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.6.4] - 2026-06-19
+
+### 日本語
+
+#### 修正
+- **一覧の曲をダブルクリックした際にアプリがまれにクラッシュする問題を修正**。音声デコーダ（一部の壊れた / 特殊なファイル）で起きうる内部エラーを捕捉し、該当曲の再生だけを失敗扱いにしてアプリ全体が落ちないようにしました。(#49)
+
+### English
+
+#### Fixed
+- **Fixed a rare crash when double-clicking a track in the list.** Internal errors from the audio decoder (on certain corrupt / edge-case files) are now caught so that only that track fails to play, instead of crashing the whole app. (#49)
+
 ## [v0.6.3] - 2026-06-19
 
 ### 日本語
