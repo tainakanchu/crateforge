@@ -56,8 +56,56 @@ pub async fn serve_webplayer() -> axum::response::Html<&'static str> {
     axum::response::Html(include_str!("webplayer.html"))
 }
 
+/// PWA manifest を配信する。
+pub async fn serve_manifest() -> impl axum::response::IntoResponse {
+    const MANIFEST: &str = r##"{"name":"Crateforge","short_name":"Crateforge","start_url":"/","scope":"/","display":"standalone","background_color":"#141618","theme_color":"#6CA1B5","icons":[{"src":"/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]}"##;
+    (
+        [("content-type", "application/manifest+json")],
+        MANIFEST,
+    )
+}
+
+/// 512x512 アイコン (PWA)。
+pub async fn serve_icon_512() -> impl axum::response::IntoResponse {
+    static BYTES: &[u8] = include_bytes!("../../icons/icon.png");
+    ([("content-type", "image/png")], BYTES)
+}
+
+/// 192x192 アイコン (PWA, 実体は 256x256 だがブラウザが縮小)。
+pub async fn serve_icon_192() -> impl axum::response::IntoResponse {
+    static BYTES: &[u8] = include_bytes!("../../icons/256x256.png");
+    ([("content-type", "image/png")], BYTES)
+}
+
+/// Apple Touch アイコン (iOS ホーム画面)。
+pub async fn serve_apple_touch_icon() -> impl axum::response::IntoResponse {
+    static BYTES: &[u8] = include_bytes!("../../icons/icon.png");
+    ([("content-type", "image/png")], BYTES)
+}
+
+/// Favicon (ブラウザタブ用。64x64 PNG を返す)。
+pub async fn serve_favicon() -> impl axum::response::IntoResponse {
+    static BYTES: &[u8] = include_bytes!("../../icons/64x64.png");
+    ([("content-type", "image/png")], BYTES)
+}
+
+/// LAN アクセスでもトークン不要な "public" パス判定。
+/// これらはライブラリデータを含まないため安全。
+/// PWA インストール・起動に必要な最小限のリソースのみ公開する。
+pub(crate) fn is_public_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/" | "/manifest.webmanifest"
+            | "/apple-touch-icon.png"
+            | "/icon-192.png"
+            | "/icon-512.png"
+            | "/favicon.ico"
+    )
+}
+
 /// LAN からのリクエストを認証するミドルウェア。
 /// - ループバック (127.x, ::1) は無条件通過。
+/// - public パス (PWA 資産) はトークン不要で通過。
 /// - それ以外は token クエリパラメータまたは X-API-Token ヘッダを照合する。
 /// - GET メソッドと /api/remote/* のみ LAN から許可 (それ以外の書き込みは 403)。
 async fn auth_guard(
@@ -78,6 +126,13 @@ async fn auth_guard(
         return next.run(req).await;
     }
 
+    // LAN リクエスト: public パスはトークン不要で通す。
+    let uri = req.uri().clone();
+    let path = uri.path().to_string();
+    if is_public_path(&path) {
+        return next.run(req).await;
+    }
+
     // LAN リクエスト: トークンを検証する。
     let expected_token = match &state.token {
         Some(t) => t.clone(),
@@ -85,7 +140,6 @@ async fn auth_guard(
     };
 
     // クエリパラメータまたはヘッダからトークンを取り出す。
-    let uri = req.uri().clone();
     let query_token = uri.query().and_then(|q| {
         q.split('&').find_map(|part| {
             let mut kv = part.splitn(2, '=');
@@ -109,12 +163,10 @@ async fn auth_guard(
 
     // LAN からの書き込みは /api/remote/* と GET のみ許可する。
     let method = req.method().clone();
-    let path = uri.path().to_string();
     let is_read_only_method = method == axum::http::Method::GET;
     let is_remote_path = path.starts_with("/api/remote");
-    let is_root = path == "/";
 
-    if !is_read_only_method && !is_remote_path && !is_root {
+    if !is_read_only_method && !is_remote_path {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -126,6 +178,12 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         // ウェブプレイヤー
         .route("/", get(serve_webplayer))
+        // PWA 資産 (public: トークン不要)
+        .route("/manifest.webmanifest", get(serve_manifest))
+        .route("/icon-512.png", get(serve_icon_512))
+        .route("/icon-192.png", get(serve_icon_192))
+        .route("/apple-touch-icon.png", get(serve_apple_touch_icon))
+        .route("/favicon.ico", get(serve_favicon))
         // 読み取り
         .route("/api/health", get(handlers::health))
         .route("/api/tracks", get(handlers::list_tracks))
@@ -147,6 +205,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/api/tracks/{trackId}/stream",
             get(handlers::stream_track),
+        )
+        .route(
+            "/api/tracks/{trackId}/artwork",
+            get(handlers::stream_artwork),
         )
         .route("/api/stats", get(handlers::get_stats))
         .route("/api/genres", get(handlers::get_genres))
@@ -177,6 +239,7 @@ pub fn router(state: ApiState) -> Router {
             post(handlers::remove_genre_tags),
         )
         // リモートコントロール
+        .route("/api/remote/queue", get(handlers::remote_get_queue))
         .route("/api/remote/state", get(handlers::remote_get_state))
         .route("/api/remote/play", post(handlers::remote_play))
         .route("/api/remote/pause", post(handlers::remote_pause))
@@ -906,6 +969,23 @@ mod tests {
         let (status, body) = req(app, "GET", "/api/playlists/999999", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"], "playlist not found");
+    }
+
+    // ===== is_public_path ヘルパのユニットテスト =====
+    #[test]
+    fn test_is_public_path() {
+        // public であるべきパス
+        assert!(is_public_path("/"));
+        assert!(is_public_path("/manifest.webmanifest"));
+        assert!(is_public_path("/apple-touch-icon.png"));
+        assert!(is_public_path("/icon-192.png"));
+        assert!(is_public_path("/icon-512.png"));
+        assert!(is_public_path("/favicon.ico"));
+        // public でないパス (データ系 / 未知)
+        assert!(!is_public_path("/api/tracks"));
+        assert!(!is_public_path("/api/health"));
+        assert!(!is_public_path("/api/remote/state"));
+        assert!(!is_public_path("/icon-192.png/extra"));
     }
 
     // ===== is_browser_native ヘルパのユニットテスト =====

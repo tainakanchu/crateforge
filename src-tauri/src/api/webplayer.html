@@ -4,6 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Crateforge Web Player</title>
+  <!-- PWA meta tags -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Crateforge">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#6CA1B5">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -21,6 +28,7 @@
       --success: #81c784;
       --bar-h: 76px;
       --side-w: 220px;
+      --tab-h: 52px;
     }
 
     html, body { height: 100%; overflow: hidden; }
@@ -238,6 +246,27 @@
       flex-shrink: 0;
     }
 
+    /* ── Similar button ── */
+    .track-sim-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity 0.15s, color 0.15s;
+    }
+    .track-row:hover .track-sim-btn { opacity: 1; }
+    .track-sim-btn:hover { color: var(--accent); }
+
+    /* Always show on mobile */
+    @media (max-width: 600px) {
+      .track-sim-btn { opacity: 0.5; }
+    }
+
     #empty-msg {
       padding: 48px 20px;
       text-align: center;
@@ -383,6 +412,98 @@
       color: var(--text-muted);
     }
 
+    /* ── Tab bar ── */
+    #tab-bar {
+      position: fixed;
+      bottom: var(--bar-h);
+      left: 0; right: 0;
+      height: var(--tab-h);
+      background: var(--bg2);
+      border-top: 1px solid var(--bg4);
+      display: flex;
+      z-index: 15;
+    }
+
+    .tab-btn {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 10px;
+      cursor: pointer;
+      padding: 6px 4px;
+      transition: color 0.15s;
+    }
+    .tab-btn.active { color: var(--accent); }
+    .tab-btn svg { display: block; }
+
+    /* On desktop (wide), hide the tab bar — sidebar handles navigation */
+    @media (min-width: 601px) {
+      #tab-bar { display: none; }
+    }
+
+    /* On mobile, adjust bottom padding for both player bar + tab bar */
+    @media (max-width: 600px) {
+      #main { padding-bottom: calc(var(--bar-h) + var(--tab-h) + 4px); }
+      /* Toast above tab bar */
+      #toast { bottom: calc(var(--bar-h) + var(--tab-h) + 12px); }
+    }
+
+    /* ── Panel header ── */
+    .panel-header {
+      padding: 10px 14px 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border-bottom: 1px solid var(--bg4);
+    }
+
+    /* ── Queue panel ── */
+    #queue-panel {
+      position: fixed;
+      bottom: calc(var(--bar-h) + var(--tab-h, 0px));
+      left: 0; right: 0;
+      max-height: 50vh;
+      background: var(--bg2);
+      border-top: 1px solid var(--bg4);
+      overflow-y: auto;
+      z-index: 18;
+      display: none;
+      flex-direction: column;
+    }
+    #queue-panel.open { display: flex; }
+    #queue-panel-header {
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--bg4);
+      flex-shrink: 0;
+    }
+    #queue-list { list-style: none; }
+    .queue-row {
+      padding: 8px 14px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      font-size: 13px;
+    }
+    .queue-row.current { color: var(--accent); }
+
+    @media (max-width: 600px) {
+      #queue-panel { bottom: calc(var(--bar-h) + var(--tab-h)); }
+    }
+
     /* ── Mobile: collapse sidebar ── */
     @media (max-width: 600px) {
       #sidebar {
@@ -452,6 +573,8 @@
   <nav id="sidebar" aria-label="プレイリスト">
     <div id="sidebar-header">プレイリスト</div>
     <ul id="playlist-list"></ul>
+    <div id="sidebar-genre-header" style="padding:10px 12px 6px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;margin-top:8px;">ジャンル</div>
+    <ul id="sidebar-genre-list"></ul>
   </nav>
 
   <!-- Main -->
@@ -463,6 +586,47 @@
     <ul id="track-list"></ul>
     <div id="empty-msg" style="display:none">曲が見つかりません</div>
   </main>
+
+  <!-- Mobile playlist panel (tab view) -->
+  <div id="mobile-playlist-panel" style="display:none; flex:1; overflow-y:auto; padding-bottom: calc(var(--bar-h) + var(--tab-h) + 4px);">
+    <div class="panel-header">プレイリスト</div>
+    <ul id="mobile-playlist-list"></ul>
+  </div>
+
+  <!-- Mobile genre panel (tab view) -->
+  <div id="mobile-genre-panel" style="display:none; flex:1; overflow-y:auto; padding-bottom: calc(var(--bar-h) + var(--tab-h) + 4px);">
+    <div class="panel-header">ジャンル</div>
+    <div id="filter-row" style="padding:8px 14px; display:flex; gap:8px; flex-wrap:wrap; border-bottom:1px solid var(--bg4);">
+      <input type="number" id="year-from" placeholder="年代(from)" min="1900" max="2099" style="width:110px;background:var(--bg3);border:1px solid var(--bg4);border-radius:6px;padding:6px 8px;color:var(--text);font-size:13px;">
+      <input type="number" id="year-to" placeholder="年代(to)" min="1900" max="2099" style="width:110px;background:var(--bg3);border:1px solid var(--bg4);border-radius:6px;padding:6px 8px;color:var(--text);font-size:13px;">
+      <select id="rating-min" style="background:var(--bg3);border:1px solid var(--bg4);border-radius:6px;padding:6px 8px;color:var(--text);font-size:13px;">
+        <option value="">評価(all)</option>
+        <option value="20">★</option>
+        <option value="40">★★</option>
+        <option value="60">★★★</option>
+        <option value="80">★★★★</option>
+        <option value="100">★★★★★</option>
+      </select>
+      <button id="filter-apply-btn" style="background:var(--accent);border:none;border-radius:6px;padding:6px 12px;color:#fff;font-size:13px;cursor:pointer;">適用</button>
+    </div>
+    <ul id="genre-list"></ul>
+  </div>
+</div>
+
+<!-- Bottom tab bar (mobile primary nav) -->
+<div id="tab-bar">
+  <button class="tab-btn active" data-tab="tracks" aria-label="曲">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+    <span>曲</span>
+  </button>
+  <button class="tab-btn" data-tab="playlists" aria-label="プレイリスト">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5h12v2H3zm0 4h12v2H3zm0 4h7v2H3zm14-4v8l6-4z"/></svg>
+    <span>プレイリスト</span>
+  </button>
+  <button class="tab-btn" data-tab="genres" aria-label="ジャンル">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+    <span>ジャンル</span>
+  </button>
 </div>
 
 <!-- Player bar -->
@@ -473,10 +637,14 @@
     <span id="time-tot">0:00</span>
   </div>
   <div id="controls-row">
+    <img id="now-artwork" src="" alt="" style="width:44px;height:44px;border-radius:4px;object-fit:cover;flex-shrink:0;display:none;" onerror="this.style.display='none'">
     <div id="now-playing">
       <div id="now-name" style="color:var(--text-muted)">—</div>
       <div id="now-artist"></div>
     </div>
+    <button class="ctrl-btn" id="queue-btn" aria-label="Up Next" title="Up Next">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+    </button>
     <button class="ctrl-btn" id="prev-btn" aria-label="前の曲">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
         <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/>
@@ -504,12 +672,41 @@
 <!-- Toast -->
 <div id="toast" role="alert" aria-live="polite"></div>
 
+<!-- Up Next queue panel -->
+<div id="queue-panel" aria-label="Up Next">
+  <div id="queue-panel-header">
+    <span>Up Next</span>
+    <button id="queue-close-btn" class="ctrl-btn" aria-label="閉じる">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+    </button>
+  </div>
+  <ul id="queue-list"></ul>
+</div>
+
+<!-- Similar tracks modal -->
+<div id="similar-modal" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.7);overflow-y:auto;">
+  <div style="max-width:480px;margin:40px auto;background:var(--bg2);border-radius:12px;overflow:hidden;">
+    <div style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--bg4);">
+      <span id="similar-title" style="font-size:15px;font-weight:600">似た曲</span>
+      <button id="similar-close" class="ctrl-btn" aria-label="閉じる">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+    <ul id="similar-list" style="list-style:none;"></ul>
+  </div>
+</div>
+
 <script>
 (function () {
   "use strict";
 
-  /* ── Token ── */
-  const token = new URLSearchParams(location.search).get("token");
+  /* ── Token (localStorage persistence for PWA) ── */
+  let token = new URLSearchParams(location.search).get("token");
+  if (token) {
+    localStorage.setItem("cf_token", token);
+  } else {
+    token = localStorage.getItem("cf_token") || "";
+  }
 
   function api(path) {
     if (!token) return path;
@@ -532,7 +729,7 @@
     el.textContent = msg;
     el.className = "show" + (type === "error" ? " error" : "");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.className = ""; }, duration || 3000);
+    toastTimer = setTimeout(function () { el.className = ""; }, duration || 3000);
   }
 
   /* ── Helpers ── */
@@ -541,6 +738,14 @@
     const s = Math.floor(ms / 1000);
     const m = Math.floor(s / 60);
     return m + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  function esc(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
 
   /* ── State ── */
@@ -601,6 +806,40 @@
     sidebarOverlay.classList.remove("open");
   });
 
+  /* ── Tab bar ── */
+  function switchTab(tabName) {
+    var isMobile = window.innerWidth <= 600;
+    document.querySelectorAll(".tab-btn").forEach(function (btn) {
+      btn.classList.toggle("active", btn.dataset.tab === tabName);
+    });
+
+    if (!isMobile) return; // On desktop, tabs don't control visibility
+
+    var mainEl = document.getElementById("main");
+    var ppanel = document.getElementById("mobile-playlist-panel");
+    var gpanel = document.getElementById("mobile-genre-panel");
+
+    if (tabName === "tracks") {
+      mainEl.style.display = "";
+      if (ppanel) ppanel.style.display = "none";
+      if (gpanel) gpanel.style.display = "none";
+    } else if (tabName === "playlists") {
+      mainEl.style.display = "none";
+      if (ppanel) ppanel.style.display = "";
+      if (gpanel) gpanel.style.display = "none";
+    } else if (tabName === "genres") {
+      mainEl.style.display = "none";
+      if (ppanel) ppanel.style.display = "none";
+      if (gpanel) gpanel.style.display = "";
+    }
+  }
+
+  document.querySelectorAll(".tab-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      switchTab(btn.dataset.tab);
+    });
+  });
+
   /* ── Playlist load ── */
   async function loadPlaylists() {
     try {
@@ -617,31 +856,43 @@
 
   function renderPlaylists(list) {
     playlistList.innerHTML = "";
+    var mobilePL = document.getElementById("mobile-playlist-list");
+    if (mobilePL) mobilePL.innerHTML = "";
 
-    // "すべての曲" item
-    const allItem = document.createElement("li");
-    allItem.className = "playlist-item active";
-    allItem.dataset.id = "";
-    allItem.innerHTML =
-      '<span class="playlist-name">すべての曲</span>';
-    allItem.addEventListener("click", function () {
-      selectPlaylist(null, "すべての曲", allItem);
-    });
-    playlistList.appendChild(allItem);
+    // Helper to make "すべての曲" item
+    function makeAllItem(forMobile) {
+      const allItem = document.createElement("li");
+      allItem.className = "playlist-item active";
+      allItem.dataset.id = "";
+      allItem.innerHTML = '<span class="playlist-name">すべての曲</span>';
+      allItem.addEventListener("click", function () {
+        selectPlaylist(null, "すべての曲", allItem);
+        if (forMobile) switchTab("tracks");
+      });
+      return allItem;
+    }
+
+    playlistList.appendChild(makeAllItem(false));
+    if (mobilePL) mobilePL.appendChild(makeAllItem(true));
 
     list.forEach(function (pl) {
-      const li = document.createElement("li");
-      li.className = "playlist-item" + (pl.isFolder ? " folder" : "");
-      li.dataset.id = pl.playlistId;
-      const cnt = pl.isFolder ? "" :
-        '<span class="playlist-count">' + (pl.trackCount || "") + '</span>';
-      li.innerHTML = '<span class="playlist-name">' + esc(pl.name) + '</span>' + cnt;
-      if (!pl.isFolder) {
-        li.addEventListener("click", function () {
-          selectPlaylist(pl.playlistId, pl.name, li);
-        });
+      function makeItem(forMobile) {
+        const li = document.createElement("li");
+        li.className = "playlist-item" + (pl.isFolder ? " folder" : "");
+        li.dataset.id = pl.playlistId;
+        const cnt = pl.isFolder ? "" :
+          '<span class="playlist-count">' + (pl.trackCount || "") + '</span>';
+        li.innerHTML = '<span class="playlist-name">' + esc(pl.name) + '</span>' + cnt;
+        if (!pl.isFolder) {
+          li.addEventListener("click", function () {
+            selectPlaylist(pl.playlistId, pl.name, li);
+            if (forMobile) switchTab("tracks");
+          });
+        }
+        return li;
       }
-      playlistList.appendChild(li);
+      playlistList.appendChild(makeItem(false));
+      if (mobilePL) mobilePL.appendChild(makeItem(true));
     });
   }
 
@@ -660,6 +911,78 @@
   function closeSidebarMobile() {
     sidebar.classList.remove("open");
     sidebarOverlay.classList.remove("open");
+  }
+
+  /* ── Genre load ── */
+  async function loadGenres() {
+    try {
+      const res = await apiFetch("/api/genres");
+      if (!res.ok) return;
+      const genres = await res.json();
+      renderGenres(genres);
+    } catch (e) { /* silent */ }
+  }
+
+  function renderGenres(genres) {
+    function mkItem(g) {
+      const li = document.createElement("li");
+      li.className = "playlist-item";
+      li.innerHTML = '<span class="playlist-name">' + esc(g.tag) + '</span><span class="playlist-count">' + (g.count || "") + '</span>';
+      li.addEventListener("click", function () {
+        selectGenre(g.tag);
+      });
+      return li;
+    }
+
+    const gList = document.getElementById("genre-list");
+    const sidebarGList = document.getElementById("sidebar-genre-list");
+    if (gList) { gList.innerHTML = ""; genres.forEach(function (g) { gList.appendChild(mkItem(g)); }); }
+    if (sidebarGList) { sidebarGList.innerHTML = ""; genres.forEach(function (g) { sidebarGList.appendChild(mkItem(g)); }); }
+  }
+
+  function selectGenre(tag) {
+    let url = "/api/tracks?genre=" + encodeURIComponent(tag) + "&limit=500";
+    const yf = document.getElementById("year-from");
+    const yt = document.getElementById("year-to");
+    const rm = document.getElementById("rating-min");
+    if (yf && yf.value) url += "&yearFrom=" + yf.value;
+    if (yt && yt.value) url += "&yearTo=" + yt.value;
+    if (rm && rm.value) url += "&ratingMin=" + rm.value;
+
+    trackListTitle.textContent = "ジャンル: " + tag;
+    activePlaylistId = null;
+    switchTab("tracks");
+    loadTracksWithUrl(url);
+  }
+
+  async function loadTracksWithUrl(url) {
+    showLoading();
+    try {
+      const res = await apiFetch(url);
+      if (!res.ok) { showToast("曲の読み込みに失敗しました", "error"); return; }
+      tracks = await res.json();
+      currentQueue = tracks.map(function (t) { return t.trackId; });
+      renderTracks(tracks);
+    } catch (e) {
+      if (!String(e).startsWith("Error: auth:")) showToast("曲の読み込みに失敗しました", "error");
+    }
+  }
+
+  // Filter apply button
+  var filterApplyBtn = document.getElementById("filter-apply-btn");
+  if (filterApplyBtn) {
+    filterApplyBtn.addEventListener("click", function () {
+      let url = "/api/tracks?limit=500";
+      const yf = document.getElementById("year-from");
+      const yt = document.getElementById("year-to");
+      const rm = document.getElementById("rating-min");
+      if (yf && yf.value) url += "&yearFrom=" + yf.value;
+      if (yt && yt.value) url += "&yearTo=" + yt.value;
+      if (rm && rm.value) url += "&ratingMin=" + rm.value;
+      trackListTitle.textContent = "フィルタ結果";
+      switchTab("tracks");
+      loadTracksWithUrl(url);
+    });
   }
 
   /* ── Track load ── */
@@ -730,13 +1053,24 @@
           '<div class="track-name">' + esc(t.name || "(不明)") + '</div>' +
           '<div class="track-sub">' + esc(t.artist || "") + (t.artist && t.album ? " — " : "") + esc(t.album || "") + '</div>' +
         '</div>' +
-        '<span class="track-duration">' + fmtTime(t.totalTimeMs) + '</span>';
+        '<span class="track-duration">' + fmtTime(t.totalTimeMs) + '</span>' +
+        '<button class="track-sim-btn" title="似た曲">≈</button>';
 
       if (t.fileExists !== false) {
         li.addEventListener("click", function () {
           playTrackAt(i, t);
         });
       }
+
+      // Similar button
+      const simBtn = li.querySelector(".track-sim-btn");
+      if (simBtn) {
+        simBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          showSimilar(t);
+        });
+      }
+
       frag.appendChild(li);
     });
     trackList.appendChild(frag);
@@ -783,6 +1117,12 @@
     nowName.textContent = t.name || "(不明)";
     nowName.style.color = "";
     nowArtist.textContent = t.artist || "";
+    // Artwork
+    const aw = document.getElementById("now-artwork");
+    if (aw) {
+      aw.src = api("/api/tracks/" + t.trackId + "/artwork");
+      aw.style.display = "block";
+    }
   }
 
   function updateActiveRow() {
@@ -962,18 +1302,179 @@
     searchTimer = setTimeout(function () { searchTracks(q); }, 400);
   });
 
-  /* ── Escape helper ── */
-  function esc(str) {
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+  /* ── Up Next queue panel ── */
+  const queuePanel    = document.getElementById("queue-panel");
+  const queueList     = document.getElementById("queue-list");
+  const queueBtn      = document.getElementById("queue-btn");
+  const queueCloseBtn = document.getElementById("queue-close-btn");
+
+  queueBtn.addEventListener("click", async function () {
+    if (queuePanel.classList.contains("open")) {
+      queuePanel.classList.remove("open");
+      return;
+    }
+    queuePanel.classList.add("open");
+
+    if (remoteMode) {
+      try {
+        const res = await apiFetch("/api/remote/queue");
+        if (res.ok) {
+          const data = await res.json();
+          renderRemoteQueue(data);
+          return;
+        }
+      } catch (e) { /* fall through to local queue */ }
+    }
+    renderLocalQueue();
+  });
+
+  queueCloseBtn.addEventListener("click", function () {
+    queuePanel.classList.remove("open");
+  });
+
+  function renderLocalQueue() {
+    queueList.innerHTML = "";
+    const start = currentQueueIdx;
+    const slice = tracks.slice(start >= 0 ? start : 0);
+    if (slice.length === 0) {
+      queueList.innerHTML = '<li class="queue-row" style="color:var(--text-muted)">キューは空です</li>';
+      return;
+    }
+    slice.forEach(function (t, i) {
+      const li = document.createElement("li");
+      li.className = "queue-row" + (i === 0 ? " current" : "");
+      li.innerHTML =
+        '<span style="color:var(--text-muted);width:20px;flex-shrink:0">' + (i === 0 ? "▶" : (i + 1)) + '</span>' +
+        '<div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.name || "(不明)") + '</div>' +
+        '<div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.artist || "") + '</div></div>' +
+        '<span style="font-size:11px;color:var(--text-muted)">' + fmtTime(t.totalTimeMs) + '</span>';
+      const absIdx = (start >= 0 ? start : 0) + i;
+      li.addEventListener("click", function () {
+        playTrackAt(absIdx, t);
+        queuePanel.classList.remove("open");
+      });
+      queueList.appendChild(li);
+    });
+  }
+
+  async function renderRemoteQueue(data) {
+    const trackIds = data.trackIds;
+    const currentIndex = data.currentIndex;
+    if (!trackIds || trackIds.length === 0) {
+      queueList.innerHTML = '<li class="queue-row" style="color:var(--text-muted)">キューは空です</li>';
+      return;
+    }
+
+    const ci = currentIndex || 0;
+    const upNextIds = trackIds.slice(ci);
+
+    queueList.innerHTML = '<li class="queue-row loading-row">読み込み中...</li>';
+
+    // Try to resolve from already-loaded tracks first
+    var resolvedMap = {};
+    tracks.forEach(function (t) { resolvedMap[t.trackId] = t; });
+
+    // Check if we need to fetch additional tracks
+    const missing = upNextIds.filter(function (id) { return !resolvedMap[id]; });
+    if (missing.length > 0) {
+      try {
+        const res = await apiFetch("/api/tracks/by-ids", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trackIds: missing })
+        });
+        if (res.ok) {
+          const fetched = await res.json();
+          fetched.forEach(function (t) { resolvedMap[t.trackId] = t; });
+        }
+      } catch (e) { /* proceed with what we have */ }
+    }
+
+    queueList.innerHTML = "";
+    upNextIds.forEach(function (id, i) {
+      const t = resolvedMap[id];
+      const li = document.createElement("li");
+      li.className = "queue-row" + (i === 0 ? " current" : "");
+      li.innerHTML =
+        '<span style="color:var(--text-muted);width:20px;flex-shrink:0">' + (i === 0 ? "▶" : (i + 1)) + '</span>' +
+        '<div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t ? (t.name || "(不明)") : id) + '</div>' +
+        '<div style="font-size:11px;color:var(--text-muted)">' + esc(t ? (t.artist || "") : "") + '</div></div>' +
+        '<span style="font-size:11px;color:var(--text-muted)">' + (t ? fmtTime(t.totalTimeMs) : "") + '</span>';
+      queueList.appendChild(li);
+    });
+  }
+
+  /* ── Similar tracks ── */
+  const similarModal = document.getElementById("similar-modal");
+  document.getElementById("similar-close").addEventListener("click", function () {
+    similarModal.style.display = "none";
+  });
+  similarModal.addEventListener("click", function (e) {
+    if (e.target === similarModal) similarModal.style.display = "none";
+  });
+
+  async function showSimilar(t) {
+    document.getElementById("similar-title").textContent = "似た曲: " + (t.name || "(不明)");
+    document.getElementById("similar-list").innerHTML = '<li class="loading-row">読み込み中...</li>';
+    similarModal.style.display = "";
+
+    try {
+      const res = await apiFetch("/api/tracks/" + t.trackId + "/similar");
+      if (!res.ok) {
+        document.getElementById("similar-list").innerHTML = '<li class="loading-row" style="color:var(--danger)">読み込み失敗</li>';
+        return;
+      }
+      const items = await res.json();
+      const list = document.getElementById("similar-list");
+      list.innerHTML = "";
+      if (!items || items.length === 0) {
+        list.innerHTML = '<li class="loading-row" style="color:var(--text-muted)">似た曲が見つかりません</li>';
+        return;
+      }
+      items.forEach(function (item) {
+        const s = item.track || item;
+        const li = document.createElement("li");
+        li.className = "track-row";
+        li.style.cursor = "pointer";
+        li.innerHTML =
+          '<div class="track-info"><div class="track-name">' + esc(s.name || "(不明)") + '</div>' +
+          '<div class="track-sub">' + esc(s.artist || "") + (s.artist && s.album ? " — " : "") + esc(s.album || "") + '</div></div>' +
+          (item.distance != null ? '<span class="track-duration">' + Math.round((1 - item.distance) * 100) + '%</span>' : '');
+        li.addEventListener("click", function () {
+          similarModal.style.display = "none";
+          const idx = tracks.findIndex(function (x) { return x.trackId === s.trackId; });
+          if (idx >= 0) {
+            playTrackAt(idx);
+          } else {
+            currentTrackId = s.trackId;
+            currentQueueIdx = -1;
+            updateNowPlaying(s);
+            if (remoteMode) {
+              apiFetch("/api/remote/play", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ trackId: s.trackId })
+              }).catch(function () {});
+            } else {
+              audio.src = api("/api/tracks/" + s.trackId + "/stream");
+              audio.play().catch(function () {});
+            }
+            setPlayingUI(true);
+          }
+        });
+        list.appendChild(li);
+      });
+    } catch (e) {
+      if (!String(e).startsWith("Error: auth:")) {
+        document.getElementById("similar-list").innerHTML = '<li class="loading-row" style="color:var(--danger)">読み込み失敗</li>';
+      }
+    }
   }
 
   /* ── Init ── */
   loadPlaylists();
   loadTracksForPlaylist(null);
+  loadGenres();
 })();
 </script>
 </body>

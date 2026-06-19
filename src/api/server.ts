@@ -33,3 +33,8 @@ export async function setApiLanEnabled(enabled: boolean): Promise<ApiServerStatu
 export async function regenerateApiToken(): Promise<ApiServerStatus> {
   return invoke("regenerate_api_token");
 }
+
+/// QR コードを SVG 文字列として生成する。
+export async function lanQrSvg(data: string): Promise<string> {
+  return invoke("lan_qr_svg", { data });
+}

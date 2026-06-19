@@ -428,7 +428,42 @@ pub async fn remove_genre_tags(
     Ok(Json(json!({ "updated": updated, "fileWriteFailed": file_failed })))
 }
 
-// ===== ストリーミング =====
+// ===== ストリーミング / アートワーク =====
+
+/// `GET /api/tracks/{trackId}/artwork` — 曲の埋め込みアートワークを配信する。
+/// アートワークが存在する場合は `Content-Type: <mime>` + `Cache-Control: max-age=86400` で 200。
+/// 存在しない / 取得失敗時は 404。
+pub async fn stream_artwork(
+    State(state): State<ApiState>,
+    Path(track_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    use axum::response::IntoResponse;
+
+    let db = state.db()?;
+    let track = db
+        .get_track_by_track_id(track_id)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| ApiError::not_found("track not found"))?;
+
+    let path_str = track.location_path.as_deref().unwrap_or("");
+    if path_str.is_empty() {
+        return Err(ApiError::not_found("no file path for this track"));
+    }
+
+    match crate::artwork::extract_picture(path_str) {
+        Some((bytes, mime)) => {
+            Ok((
+                [
+                    ("content-type", mime.as_str()),
+                    ("cache-control", "max-age=86400"),
+                ],
+                bytes,
+            )
+                .into_response())
+        }
+        None => Err(ApiError::not_found("artwork not found")),
+    }
+}
 
 /// ブラウザがネイティブ再生できる拡張子かどうかを判定する。
 pub fn is_browser_native(ext: &str) -> bool {
@@ -542,6 +577,25 @@ fn play_by_id_for_remote(state: &ApiState, app: &tauri::AppHandle, track_id: i64
     apply_play_report(&db, report);
     let _ = db.add_recent_track(track_id);
     Ok(())
+}
+
+/// `GET /api/remote/queue` — 現在の再生キューを返す。
+/// `trackIds` は `ordered_track_ids()` の順序 (シャッフル込みの再生順)、
+/// `currentIndex` は `order_pos()` (再生中ならその位置、無ければ null)。
+pub async fn remote_get_queue(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
+    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let player = app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>();
+    let guard = player.lock()
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let track_ids = guard.ordered_track_ids();
+    let current_index: Value = match guard.order_pos() {
+        Some(pos) => Value::Number(serde_json::Number::from(pos as i64)),
+        None => Value::Null,
+    };
+    Ok(Json(json!({
+        "trackIds": track_ids,
+        "currentIndex": current_index,
+    })))
 }
 
 /// `GET /api/remote/state` — 現在の再生状態を返す。

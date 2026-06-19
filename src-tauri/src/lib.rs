@@ -233,6 +233,7 @@ pub fn run() {
             commands::api::set_api_server_config,
             commands::api::set_api_lan_enabled,
             commands::api::regenerate_api_token,
+            commands::api::lan_qr_svg,
             // フォント
             commands::fonts::list_system_fonts,
             commands::fonts::get_ui_font,

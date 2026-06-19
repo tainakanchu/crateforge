@@ -76,6 +76,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [portInput, setPortInput] = useState<string>("8787");
   // LAN 公開 URL コピー済みフラグ（URL → タイムアウト ID）
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  // LAN 公開のおすすめ接続先 QR コード（SVG 文字列）
+  const [qrSvg, setQrSvg] = useState<string>("");
 
   // fonts
   const [fontList, setFontList] = useState<string[]>([]);
@@ -149,6 +151,26 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // おすすめ接続先の QR コードを生成する。
+  const recommendedUrl =
+    apiStatus?.lanEnabled && apiStatus.running && apiStatus.lanUrls[0] && apiStatus.token
+      ? `${apiStatus.lanUrls[0]}/?token=${apiStatus.token}`
+      : null;
+
+  useEffect(() => {
+    if (!recommendedUrl) {
+      setQrSvg("");
+      return;
+    }
+    let cancelled = false;
+    serverApi.lanQrSvg(recommendedUrl).then((svg) => {
+      if (!cancelled) setQrSvg(svg);
+    }).catch(() => {
+      if (!cancelled) setQrSvg("");
+    });
+    return () => { cancelled = true; };
+  }, [recommendedUrl]);
 
   // API サーバーの有効化トグル。
   const handleToggleApiServer = useCallback(async () => {
@@ -644,23 +666,23 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 {apiStatus?.lanEnabled && apiStatus.running && (
                   <>
                     {apiStatus.lanUrls.length > 0 ? (
-                      <div className="settings-kv">
-                        <div>
-                          <span className="k">接続 URL（スマホ/TV で開く）</span>
-                        </div>
-                        {apiStatus.lanUrls.map((u) => {
-                          const fullUrl = `${u}/?token=${apiStatus.token}`;
-                          return (
-                            <div key={u} style={{ alignItems: "center" }}>
-                              <span className="v mono" style={{ flex: 1, wordBreak: "break-all" }}>
-                                {fullUrl}
+                      <>
+                        {/* おすすめ接続先 */}
+                        <div className="settings-kv">
+                          <div>
+                            <span className="k">接続 URL（おすすめ）</span>
+                          </div>
+                          <div style={{ alignItems: "flex-start", flexDirection: "column", gap: 8 }}>
+                            <div style={{ display: "flex", alignItems: "center", width: "100%", gap: 6 }}>
+                              <span className="v mono" style={{ flex: 1, wordBreak: "break-all", fontSize: "0.9em" }}>
+                                {recommendedUrl}
                               </span>
                               <button
                                 className="toolbar-btn"
-                                onClick={() => handleCopyUrl(fullUrl)}
-                                style={{ marginLeft: 6, flexShrink: 0 }}
+                                onClick={() => recommendedUrl && handleCopyUrl(recommendedUrl)}
+                                style={{ flexShrink: 0 }}
                               >
-                                {copiedUrl === fullUrl ? (
+                                {copiedUrl === recommendedUrl ? (
                                   <>
                                     <Icon name="check" size={13} /> コピーしました
                                   </>
@@ -671,9 +693,57 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                                 )}
                               </button>
                             </div>
-                          );
-                        })}
-                      </div>
+                            {qrSvg && (
+                              <div
+                                className="lan-qr"
+                                dangerouslySetInnerHTML={{ __html: qrSvg }}
+                                style={{ background: "#fff", padding: 8, width: "fit-content", borderRadius: 8 }}
+                              />
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="settings-note">
+                          <Icon name="info" size={14} />
+                          <span>同じ Wi-Fi のスマホ/TV でこの QR を読むか URL を開いてください。</span>
+                        </div>
+
+                        {/* その他の接続先（折りたたみ） */}
+                        {apiStatus.lanUrls.slice(1).length > 0 && (
+                          <details style={{ marginTop: 4 }}>
+                            <summary style={{ cursor: "pointer", fontSize: "0.85em", opacity: 0.7, userSelect: "none" }}>
+                              その他の接続先（うまく繋がらないとき）
+                            </summary>
+                            <div className="settings-kv" style={{ marginTop: 6 }}>
+                              {apiStatus.lanUrls.slice(1).map((u) => {
+                                const fullUrl = `${u}/?token=${apiStatus.token}`;
+                                return (
+                                  <div key={u} style={{ alignItems: "center" }}>
+                                    <span className="v mono" style={{ flex: 1, wordBreak: "break-all", fontSize: "0.85em" }}>
+                                      {fullUrl}
+                                    </span>
+                                    <button
+                                      className="toolbar-btn"
+                                      onClick={() => handleCopyUrl(fullUrl)}
+                                      style={{ marginLeft: 6, flexShrink: 0 }}
+                                    >
+                                      {copiedUrl === fullUrl ? (
+                                        <>
+                                          <Icon name="check" size={13} /> コピーしました
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Icon name="filePlus" size={13} /> コピー
+                                        </>
+                                      )}
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        )}
+                      </>
                     ) : (
                       <div className="settings-note">
                         <Icon name="warning" size={14} />

@@ -83,19 +83,30 @@ pub fn get_api_server_status(
         None
     };
     // LAN IPv4 アドレスを列挙して URL を組み立てる。
+    // - リンクローカル (169.254.x.x) とループバックを除外する。
+    // - local_ip() で得た主 IP を先頭に並べ替える (フロントが [0] を推奨表示)。
     let lan_urls: Vec<String> = if running && lan_enabled {
-        local_ip_address::list_afinet_netifas()
+        let primary_ip = local_ip_address::local_ip().ok();
+        let mut addrs: Vec<std::net::Ipv4Addr> = local_ip_address::list_afinet_netifas()
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(_, ip)| {
                 if let std::net::IpAddr::V4(v4) = ip {
-                    if !v4.is_loopback() {
-                        return Some(format!("http://{}:{}", v4, port));
+                    // ループバックとリンクローカル (169.254.x.x) を除外する。
+                    if !v4.is_loopback() && !v4.is_link_local() {
+                        return Some(v4);
                     }
                 }
                 None
             })
-            .collect()
+            .collect();
+        // 主 IP が先頭に来るように並べ替える。
+        if let Some(std::net::IpAddr::V4(primary_v4)) = primary_ip {
+            if let Some(pos) = addrs.iter().position(|&a| a == primary_v4) {
+                addrs.swap(0, pos);
+            }
+        }
+        addrs.into_iter().map(|v4| format!("http://{}:{}", v4, port)).collect()
     } else {
         Vec::new()
     };
@@ -264,4 +275,18 @@ pub fn regenerate_api_token(
     }
 
     get_api_server_status(app, server)
+}
+
+/// 指定文字列 (URL など) から QR コードの SVG 文字列を生成して返す。
+/// フロントが `<img src="data:image/svg+xml,...">` などとして表示する用途を想定。
+#[tauri::command]
+pub fn lan_qr_svg(data: String) -> Result<String, String> {
+    use qrcode::render::svg;
+    let code = qrcode::QrCode::new(data.as_bytes())
+        .map_err(|e| format!("QR encode failed: {e}"))?;
+    let svg_str = code
+        .render::<svg::Color>()
+        .min_dimensions(180, 180)
+        .build();
+    Ok(svg_str)
 }
