@@ -64,9 +64,15 @@ body {
 }
 
 body {
+  /* 3層: ①var(--ui-font)=設定で選んだOSフォント / ②OS別のラテン系既定(CJKを持たない
+     フォントのみ先に置く) / ③"NotoCjkApp"=アプリDL同梱のCJK統一フォント(これより前に
+     CJKを持つOSフォントを置かないことで、簡体字も日本語も Noto に統一される) /
+     ④未DL時のOS CJKフォールバック / sans-serif。--ui-font 未設定時は ① のフォール
+     バックとして mac の既定が入る。 */
   font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans",
-    "Noto Sans CJK JP", "Noto Sans CJK SC", "Helvetica Neue", sans-serif;
+    var(--ui-font, -apple-system), BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", "NotoCjkApp", "Hiragino Sans", "Yu Gothic UI",
+    "Noto Sans CJK JP", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
   font-size: 13px;
   line-height: 1.4;
   letter-spacing: 0.1px;
@@ -771,7 +777,8 @@ input {
   font-size: 62px;
   font-weight: 800;
   color: rgba(255, 255, 255, 0.92);
-  font-family: "Hiragino Sans", "Noto Sans CJK SC", sans-serif;
+  font-family: "NotoCjkApp", "Hiragino Sans", "Yu Gothic UI", "Noto Sans CJK SC",
+    "Microsoft YaHei", sans-serif;
   text-shadow: 0 3px 14px rgba(0, 0, 0, 0.4);
 }
 .cb-card .grad {
@@ -1376,7 +1383,8 @@ input {
   font-size: 96px;
   font-weight: 800;
   color: rgba(255, 255, 255, 0.92);
-  font-family: "Hiragino Sans", "Noto Sans CJK SC", sans-serif;
+  font-family: "NotoCjkApp", "Hiragino Sans", "Yu Gothic UI", "Noto Sans CJK SC",
+    "Microsoft YaHei", sans-serif;
   text-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
 }
 .cb-nowart .ov {

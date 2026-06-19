@@ -11,15 +11,18 @@ import type { FfmpegStatus } from "../api/ffmpeg";
 import type { UpdateInfo } from "../api/system";
 import * as serverApi from "../api/server";
 import type { ApiServerStatus } from "../api/server";
+import * as fontsApi from "../api/fonts";
+import type { CjkFontStatus } from "../api/fonts";
 import { Icon } from "./Icon";
 import { LicenseList } from "./LicenseList";
 
 const REPO_URL = "https://github.com/tainakanchu/itunes-playlist-viewer";
 
-type Section = "general" | "ffmpeg" | "api" | "updates" | "about";
+type Section = "general" | "fonts" | "ffmpeg" | "api" | "updates" | "about";
 
 const SECTIONS: { key: Section; label: string; icon: string }[] = [
   { key: "general", label: "一般", icon: "sliders" },
+  { key: "fonts", label: "フォント", icon: "sliders" },
   { key: "ffmpeg", label: "変換 (ffmpeg)", icon: "waveform" },
   { key: "api", label: "AI 連携 / API", icon: "info" },
   { key: "updates", label: "アップデート", icon: "download" },
@@ -72,6 +75,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   // ポート入力の一時 state（フォーカス中の未確定値）
   const [portInput, setPortInput] = useState<string>("8787");
 
+  // fonts
+  const [fontList, setFontList] = useState<string[]>([]);
+  const [uiFont, setUiFont] = useState<string>("");
+  const [cjkStatus, setCjkStatus] = useState<CjkFontStatus | null>(null);
+  const [cjkBusy, setCjkBusy] = useState(false);
+  const [cjkProgress, setCjkProgress] = useState<string>("");
+
   // ffmpeg
   const [ffStatus, setFfStatus] = useState<FfmpegStatus | null>(null);
   const [ffBusy, setFfBusy] = useState(false);
@@ -102,6 +112,10 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       setApiStatus(s);
       setPortInput(String(s.port));
     }).catch(() => {});
+    // フォント設定の初期読み込み。
+    fontsApi.listSystemFonts().then(setFontList).catch(() => setFontList([]));
+    fontsApi.getUiFont().then((f) => setUiFont(f ?? "")).catch(() => setUiFont(""));
+    fontsApi.cjkFontStatus().then(setCjkStatus).catch(() => setCjkStatus(null));
   }, [refreshFfmpeg]);
 
   // ffmpeg 取得の進捗購読。
@@ -248,6 +262,30 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     }
   }, [refreshFfmpeg]);
 
+  const handleDownloadCjk = useCallback(async () => {
+    setCjkBusy(true);
+    setCjkProgress("");
+    const un = await fontsApi.onCjkFontProgress((p) => {
+      const mbStr = (n: number) => (n / 1048576).toFixed(1);
+      setCjkProgress(
+        p.total > 0
+          ? `${Math.round((p.downloaded / p.total) * 100)}% (${mbStr(p.downloaded)}/${mbStr(p.total)}MB)`
+          : `${mbStr(p.downloaded)}MB`,
+      );
+    });
+    try {
+      await fontsApi.downloadCjkFont();
+      await fontsApi.loadCjkFont(true);
+      setCjkStatus(await fontsApi.cjkFontStatus());
+    } catch (err) {
+      alert(`CJK フォントの取得に失敗しました: ${err}`);
+    } finally {
+      un();
+      setCjkBusy(false);
+      setCjkProgress("");
+    }
+  }, []);
+
   const handleCheckUpdate = useCallback(async () => {
     setChecking(true);
     setUpdateMsg("");
@@ -361,6 +399,66 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     <option value="off">オフ（完全一致・最速）</option>
                   </select>
                 </Row>
+              </>
+            )}
+
+            {section === "fonts" && (
+              <>
+                <Row
+                  title="表示フォント"
+                  desc="アプリ全体の基本フォント。CJK（漢字・かな）はこの後ろで Noto CJK に統一されます。"
+                >
+                  <select
+                    value={uiFont}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setUiFont(v);
+                      fontsApi.setUiFont(v || null);
+                      fontsApi.applyUiFont(v || null);
+                    }}
+                  >
+                    <option value="">（システム既定）</option>
+                    {fontList.map((f) => (
+                      <option key={f} value={f}>
+                        {f}
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+
+                <Row
+                  title="CJK フォント (Noto Sans CJK)"
+                  desc="簡体字・繁体字・日本語を1つのフォントに統一します。約31MB を初回のみダウンロードします（インストーラには同梱しません）。"
+                >
+                  <span className={"settings-badge" + (cjkStatus?.installed ? " ok" : " warn")}>
+                    {cjkStatus?.installed ? (
+                      <>
+                        <Icon name="check" size={13} /> 適用済み
+                      </>
+                    ) : (
+                      <>
+                        <Icon name="warning" size={13} /> 未ダウンロード
+                      </>
+                    )}
+                  </span>
+                </Row>
+
+                <div className="settings-actions">
+                  <button
+                    className="toolbar-btn primary"
+                    onClick={handleDownloadCjk}
+                    disabled={cjkBusy}
+                  >
+                    <Icon name="download" size={14} />
+                    ダウンロード
+                  </button>
+                  {cjkProgress && <span className="settings-progress">{cjkProgress}</span>}
+                </div>
+
+                <div className="settings-note">
+                  <Icon name="info" size={14} />
+                  <span>Noto Sans CJK © Google — SIL Open Font License 1.1</span>
+                </div>
               </>
             )}
 

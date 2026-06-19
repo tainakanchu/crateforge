@@ -20,6 +20,7 @@ import * as playlistsApi from "./api/playlists";
 import * as playbackApi from "./api/playback";
 import * as systemApi from "./api/system";
 import * as analysisApi from "./api/analysis";
+import * as fontsApi from "./api/fonts";
 import type { Track } from "./types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -168,6 +169,12 @@ export default function App() {
   useEffect(() => {
     reloadPlaylists();
   }, [reloadPlaylists]);
+
+  // フォント設定の初期適用（保存済みフォント + CJK フォントの読み込み）。
+  useEffect(() => {
+    if (!isTauri) return;
+    fontsApi.initFonts().catch(() => {});
+  }, []);
 
   // Sync persisted volume / shuffle / repeat to the Rust player on mount.
   useEffect(() => {

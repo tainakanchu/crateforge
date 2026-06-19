@@ -44,6 +44,8 @@ rustfft = "6"
 ebur128 = "0.1"
 symphonia = { version = "0.5", features = ["all"] }
 tauri-plugin-clipboard-manager = "2.3.2"
+# システムフォント列挙 + CJK フォント管理。
+fontdb = "0.23"
 
 # 内蔵 HTTP API サーバー (AI エージェント連携用、127.0.0.1 のみで待受)。
 # tauri は内部で tokio をランタイムに使うため、tauri::async_runtime 経由で

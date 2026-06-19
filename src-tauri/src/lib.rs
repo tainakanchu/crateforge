@@ -7,6 +7,7 @@ mod commands;
 mod converter;
 mod db;
 mod ffmpeg;
+mod fonts;
 mod importer;
 mod itunes_xml;
 mod logging;
@@ -63,6 +64,40 @@ pub fn run() {
                         .header(tauri::http::header::CACHE_CONTROL, "max-age=86400")
                         .body(data)
                         .unwrap_or_else(|_| not_found()),
+                    None => not_found(),
+                };
+                responder.respond(resp);
+            });
+        })
+        // キャッシュ済み CJK フォントを `font://localhost/<filename>` で配信。
+        // フロントエンドは CSS の @font-face src に convertFileSrc で生成した URL を渡す。
+        .register_asynchronous_uri_scheme_protocol("font", |ctx, request, responder| {
+            // AppHandle をクローンして spawn に移動する。
+            let app = ctx.app_handle().clone();
+            let raw = request.uri().path();
+            let filename_enc = raw.strip_prefix('/').unwrap_or(raw).to_string();
+            std::thread::spawn(move || {
+                let filename = percent_encoding::percent_decode_str(&filename_enc)
+                    .decode_utf8_lossy()
+                    .into_owned();
+                // セキュリティ: パス区切りを含むリクエストは拒否する。
+                if filename.contains('/') || filename.contains('\\') {
+                    responder.respond(not_found());
+                    return;
+                }
+                let resp = match fonts::cache_path(&app) {
+                    Some(dir) => {
+                        let font_path = dir.parent().unwrap_or(&dir).join(&filename);
+                        match std::fs::read(&font_path) {
+                            Ok(data) => tauri::http::Response::builder()
+                                .status(200)
+                                .header(tauri::http::header::CONTENT_TYPE, "font/otf")
+                                .header(tauri::http::header::CACHE_CONTROL, "max-age=86400")
+                                .body(data)
+                                .unwrap_or_else(|_| not_found()),
+                            Err(_) => not_found(),
+                        }
+                    }
                     None => not_found(),
                 };
                 responder.respond(resp);
@@ -196,6 +231,12 @@ pub fn run() {
             // 内蔵 API サーバー
             commands::api::get_api_server_status,
             commands::api::set_api_server_config,
+            // フォント
+            commands::fonts::list_system_fonts,
+            commands::fonts::get_ui_font,
+            commands::fonts::set_ui_font,
+            commands::fonts::cjk_font_status,
+            commands::fonts::download_cjk_font,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
