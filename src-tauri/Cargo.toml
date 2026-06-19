@@ -91,5 +91,8 @@ custom-protocol = ["tauri/custom-protocol"]
 opt-level = 3
 lto = true
 codegen-units = 1
-panic = "abort"
+# unwind (abort ではなく) にして、再生時のデコーダ等で起きうる依存クレートの
+# panic を catch_unwind で捕捉し、アプリごと落とさず「その曲だけ失敗」に留める。
+# panic フック (logging) は unwind でも発火するのでログには残る。
+panic = "unwind"
 strip = true

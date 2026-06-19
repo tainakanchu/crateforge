@@ -113,17 +113,31 @@ impl AudioPlayer {
             return Err(format!("File not found: {}", file_path));
         }
 
-        let file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
-        let reader = BufReader::new(file);
-        let source = Decoder::new(reader).map_err(|e| format!("Failed to decode audio: {}", e))?;
-
-        // Prefer the decoded source's reported duration when available.
-        let actual_duration = source.total_duration().map(|d| d.as_millis() as u64);
-
         self.current_gain_db = gain_db;
-        let sink = Sink::try_new(handle).map_err(|e| format!("Failed to create sink: {}", e))?;
-        sink.set_volume(self.effective_volume());
-        sink.append(source);
+        let volume = self.effective_volume();
+
+        // デコード (rodio → symphonia) は壊れた / エッジケースなファイルで内部 panic する
+        // ことがある。これは Result::Err ではなく panic なので map_err では捕まらない。
+        // catch_unwind で囲い、アプリごと abort させず「その曲だけ再生失敗」に留める。
+        // (panic フック=logging は unwind 中に走るので crateforge.log には残り原因追跡できる。)
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
+            let reader = BufReader::new(file);
+            let source =
+                Decoder::new(reader).map_err(|e| format!("Failed to decode audio: {}", e))?;
+            // Prefer the decoded source's reported duration when available.
+            let actual_duration = source.total_duration().map(|d| d.as_millis() as u64);
+            let sink = Sink::try_new(handle).map_err(|e| format!("Failed to create sink: {}", e))?;
+            sink.set_volume(volume);
+            sink.append(source);
+            Ok::<(Sink, Option<u64>), String>((sink, actual_duration))
+        }));
+        let (sink, actual_duration) = match built {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(e),
+            // デコーダ等が panic した場合: その曲だけ失敗扱いにしてアプリは継続。
+            Err(_) => return Err(format!("Failed to play (decoder crashed): {}", file_path)),
+        };
 
         self.sink = Some(sink);
         self.current_track_id = Some(track_id);
