@@ -53,10 +53,19 @@ crate-api.sh GET /api/tracks q=有你的世界 genre=House limit=200
 `{ "tag": "House", "count": 42 }[]`（ジャンルタグの頻度）。
 
 ### `GET /api/playlists`
-`Playlist[]`。`{ playlistId, name, isFolder, isSmart, isUserCreated, trackCount }`。
+`Playlist[]`。`{ playlistId, name, isFolder, isSmart, isUserCreated, parentPersistentId, trackCount }`。
+**インポートした iTunes のプレイリストも含む全件**。`parentPersistentId` でフォルダ階層が辿れる。
+
+### `GET /api/playlists/{playlistId}`
+プレイリスト単体のメタ + スマート条件。無ければ 404。
+返り値: `Playlist` の各フィールド + `smartCriteria`（`SmartCriteria | null`）。
+`smartCriteria` は **アプリのルール機能で設定された場合のみ非 null**（iTunes インポート由来のスマートプレイリストや手動プレイリストは `null`。`isSmart=true` でも条件本体が無いことはある）。
+構造: `{ matchAll: bool, rules: [{ field, op, value }], limit, sortBy, sortDesc }`。「かっちりルールで自動生成 vs 手選び」の判定材料。
 
 ### `GET /api/playlists/{playlistId}/tracks`
 クエリ: `limit`(既定500), `offset`, `sort`, `order`。返り値: `Track[]`。
+**`sort` 未指定なら登録順（＝キュレーション順）**で返る。プレイリスト内の曲の並び＝セットの流れをそのまま分析に使える。
+注意: プレイリストへの**追加日時は保持していない**（「少しずつ足した vs 一気に作った」の時系列は復元不可）。
 
 ## 書き込み
 
@@ -101,3 +110,4 @@ crate-api.sh PATCH /api/tracks/12 '{"genre":"Disco Funk","rating":100}'
 - **候補集めはメタデータ主体**（`ratingMin`/`genre`/`yearFrom`/`q`）。解析は「あれば使う」程度に `analyzed=true` や `similar` で補助。
 - **曲順は付けない**。並べ替え用エンドポイントは敢えて使わない（人間が GUI で詰める）。
 - 既存プレイリストは触らず、常に**新規**を `POST /api/playlists` で作る。
+- **既存プレイリストは"お手本"として読む**：`GET /api/playlists` → 関連プレイリストを選び、`GET /api/playlists/{id}/tracks`（キュレーション順）と `GET /api/playlists/{id}`（`smartCriteria`）で**選曲傾向**（ジャンルの混ぜ方・年代/レート分布・1セットの曲数・解析があれば BPM/Key/Energy の並びの締まり具合・smart か手選びか）を読み取り、新規セットの方向付けに使う。読み取り専用で、既存は改変しない。
