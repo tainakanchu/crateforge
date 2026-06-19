@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.6.3] - 2026-06-19
+
+### 日本語
+
+#### 変更
+- **アップデートをインストーラ無しで適用**：Windows のインストール版でも、更新時に exe をその場で差し替えて再起動するだけになりました（これまではインストーラの起動が必要でした）。ポータブル版と同じシームレスな更新体験です。SmartScreen の警告も出ません。※この挙動は本バージョン以降が行う更新チェックから有効です。(#47)
+
+### English
+
+#### Changed
+- **Updates apply without the installer**: on Windows, the installed build now updates by swapping the exe in place and relaunching instead of launching the installer — the same seamless experience as the portable build (and no SmartScreen prompt). Effective for update checks performed by this version onward. (#47)
+
 ## [v0.6.2] - 2026-06-19
 
 ### 日本語
