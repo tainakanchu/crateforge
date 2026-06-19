@@ -3,7 +3,7 @@
   "name": "dj-curator",
   "displayName": "DJ Curator (Crateforge)",
   "description": "何らかのインプット (フライヤー / テーマ / 参照曲) から、Crateforge のローカル API を叩いて DJ 選曲の叩き台を作る。コンセプトをヒアリングし、候補プールを選定して新規プレイリストを作成、根拠レポートを返す。曲順は人間が GUI で詰める。",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": {
     "name": "tainakanchu"
   },

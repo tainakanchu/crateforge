@@ -10,6 +10,20 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.6.2] - 2026-06-19
+
+### 日本語
+
+#### 追加
+- **プレイリスト単体取得 API `GET /api/playlists/{playlistId}` を追加**：プレイリストのメタ情報に加えて、スマートプレイリストの条件 `smartCriteria` を返します。これにより dj-curator スキルが既存プレイリスト（過去のセット）を“お手本”として読み、選曲傾向（ジャンルの混ぜ方・並びの締まり具合・かっちり/アドリブ など）を分析に活かせるようになりました。(#43)
+- **クラッシュ調査用のログ基盤を追加**：パニック発生時にメッセージと発生箇所（ファイル名・行番号）を `crateforge.log`（アプリデータフォルダ）に記録します。GUI 起動では標準エラー出力が残らないため、これまで原因を追えなかったクラッシュの発生箇所を特定できるようになります。(#45)
+
+### English
+
+#### Added
+- **Single-playlist endpoint `GET /api/playlists/{playlistId}`**: returns the playlist's metadata plus its smart-playlist `smartCriteria`. This lets the dj-curator skill read existing playlists (past sets) as references and analyze curation tendencies (genre mixing, how tightly tracks are sequenced, rule-based vs. hand-picked, etc.). (#43)
+- **Crash logging**: on panic, the message and location (file:line) are written to `crateforge.log` in the app data folder. Since stderr is not retained for a GUI launch, this makes it possible to pinpoint where previously-untraceable crashes occur. (#45)
+
 ## [v0.6.1] - 2026-06-19
 
 ### 日本語

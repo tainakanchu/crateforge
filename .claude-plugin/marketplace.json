@@ -10,7 +10,7 @@
       "name": "dj-curator",
       "source": "./plugins/dj-curator",
       "description": "イベントのフライヤーやテーマなどのインプットから、Crateforge ライブラリを使って DJ 選曲の叩き台 (新規プレイリスト + 根拠レポート) を作る。",
-      "version": "0.3.0"
+      "version": "0.4.0"
     }
   ]
 }
