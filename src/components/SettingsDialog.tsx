@@ -270,6 +270,21 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     }
   }, []);
 
+  // 既存トラックのパスから整理先を自動推定して設定する。
+  const handleDetectLibraryRoot = useCallback(async () => {
+    try {
+      const detected = await libraryApi.detectLibraryRoot();
+      if (!detected) {
+        alert("既存の曲から共通フォルダを推定できませんでした（曲が少ない / パスがばらばら）。");
+        return;
+      }
+      await libraryApi.setLibraryRoot(detected);
+      setLibraryRoot(detected);
+    } catch (err) {
+      alert(`自動検出に失敗: ${err}`);
+    }
+  }, []);
+
   const handleToggleReplayGain = useCallback(() => {
     const next = !replayGain;
     setReplayGain(next);
@@ -409,6 +424,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     <span className="settings-path" title={libraryRoot ?? ""}>
                       {libraryRoot || "未設定（自動整理オフ）"}
                     </span>
+                    <button
+                      className="toolbar-btn"
+                      onClick={handleDetectLibraryRoot}
+                      title="既存の曲のパスから整理先フォルダを推定して設定します"
+                    >
+                      <Icon name="sparkle" size={14} /> 自動検出
+                    </button>
                     <button className="toolbar-btn" onClick={handleSetLibraryRoot}>
                       <Icon name="folderOpen" size={14} /> 選択
                     </button>

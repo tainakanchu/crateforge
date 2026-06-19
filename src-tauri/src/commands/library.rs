@@ -206,6 +206,14 @@ pub fn set_library_root(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// 既存トラックのパスから整理先(ライブラリルート)を自動推定する。推定不可なら None。
+/// 設定 UI の「自動検出」から呼ぶ(検出のみ。確定は呼び出し側で set_library_root)。
+#[tauri::command]
+pub fn detect_library_root(app: AppHandle) -> Result<Option<String>, String> {
+    let db = get_db(&app)?;
+    db.detect_library_root().map_err(|e| e.to_string())
+}
+
 /// 検索・スマプレの字体ゆれ吸収レベルを取得する。未設定なら "standard"。
 #[tauri::command]
 pub fn get_search_fold_level(app: AppHandle) -> Result<String, String> {

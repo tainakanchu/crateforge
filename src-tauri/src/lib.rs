@@ -159,6 +159,7 @@ pub fn run() {
             commands::library::get_all_genre_tags,
             commands::library::get_library_root,
             commands::library::set_library_root,
+            commands::library::detect_library_root,
             commands::library::get_search_fold_level,
             commands::library::set_search_fold_level,
             // artwork

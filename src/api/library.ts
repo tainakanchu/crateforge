@@ -87,6 +87,11 @@ export async function setLibraryRoot(path: string): Promise<void> {
   return invoke("set_library_root", { path });
 }
 
+/// 既存トラックのパスから整理先を自動推定。推定不可なら null。
+export async function detectLibraryRoot(): Promise<string | null> {
+  return invoke("detect_library_root");
+}
+
 /// 検索・スマートプレイリストの CJK 字体ゆれ吸収レベルを取得。未設定時は "standard"。
 export async function getSearchFoldLevel(): Promise<string> {
   return invoke("get_search_fold_level");

@@ -647,6 +647,50 @@ impl Database {
         let rows = stmt.query_map(params![limit], row_to_track)?;
         rows.collect()
     }
+
+    /// 既存トラックの `location_path` から共通の親フォルダ(= ライブラリルート)を推定する。
+    /// 実在ファイルのみ対象。曲数が十分にあれば、各アーティスト/アルバムで分岐するため
+    /// 共通プレフィックスは音楽ルート(例 `…/iTunes Media/Music`)に収束する。
+    /// 推定できない(曲が少ない/共通部が短すぎる)場合は `None`。
+    pub fn detect_library_root(&self) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT location_path FROM tracks
+             WHERE location_path IS NOT NULL AND location_path != '' AND file_exists = 1",
+        )?;
+        let paths: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(common_dir_prefix(&paths))
+    }
+}
+
+/// パス群の最長共通文字プレフィックスを取り、最後のパス区切り(`/` か `\`)で切って
+/// 共通ディレクトリを返す。2件未満・共通ディレクトリが短すぎ(<3)・区切り無しは `None`。
+/// Windows(`\`)/Unix(`/`) 双方を扱える。
+fn common_dir_prefix(paths: &[String]) -> Option<String> {
+    let paths: Vec<&String> = paths.iter().filter(|p| !p.is_empty()).collect();
+    if paths.len() < 2 {
+        return None;
+    }
+    let mut prefix: String = paths[0].clone();
+    for p in &paths[1..] {
+        let n = prefix
+            .chars()
+            .zip(p.chars())
+            .take_while(|(a, b)| a == b)
+            .count();
+        prefix = prefix.chars().take(n).collect();
+        if prefix.is_empty() {
+            return None;
+        }
+    }
+    let cut = prefix.rfind(['/', '\\'])?;
+    let dir = &prefix[..cut];
+    if dir.len() < 3 {
+        return None;
+    }
+    Some(dir.to_string())
 }
 
 pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
@@ -681,4 +725,40 @@ pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
         file_exists: row.get::<_, i32>(27)? != 0,
         last_played: row.get(28)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::common_dir_prefix;
+
+    #[test]
+    fn windows_library_root() {
+        let paths = vec![
+            r"C:\Users\me\Music\iTunes\iTunes Media\Music\Alpha\A1\01.mp3".to_string(),
+            r"C:\Users\me\Music\iTunes\iTunes Media\Music\Beta\B1\02.m4a".to_string(),
+            r"C:\Users\me\Music\iTunes\iTunes Media\Music\Gamma\G1\03.flac".to_string(),
+        ];
+        assert_eq!(
+            common_dir_prefix(&paths).as_deref(),
+            Some(r"C:\Users\me\Music\iTunes\iTunes Media\Music")
+        );
+    }
+
+    #[test]
+    fn unix_library_root() {
+        let paths = vec![
+            "/home/me/Music/Artist1/Album/1.flac".to_string(),
+            "/home/me/Music/Artist2/Album/2.flac".to_string(),
+        ];
+        assert_eq!(common_dir_prefix(&paths).as_deref(), Some("/home/me/Music"));
+    }
+
+    #[test]
+    fn none_when_too_few_or_divergent() {
+        assert_eq!(common_dir_prefix(&[]), None);
+        assert_eq!(common_dir_prefix(&["/a/b/c.mp3".to_string()]), None); // 1件
+        // 異なるドライブ → 共通プレフィックス無し。
+        let p = vec!["C:\\x\\1.mp3".to_string(), "D:\\y\\2.mp3".to_string()];
+        assert_eq!(common_dir_prefix(&p), None);
+    }
 }
