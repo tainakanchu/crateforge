@@ -9,6 +9,7 @@ mod db;
 mod ffmpeg;
 mod importer;
 mod itunes_xml;
+mod logging;
 mod metadata;
 mod models;
 mod organizer;
@@ -71,6 +72,12 @@ pub fn run() {
         .manage(smtc_state)
         .manage(api_server)
         .setup(|app| {
+            // クラッシュ痕跡を残すためのファイルロガー + panic フックを最初に仕込む
+            // (GUI 起動で stderr が残らない。panic=abort でも abort 前にフックが走る)。
+            if let Ok(dir) = app.path().app_data_dir() {
+                logging::install(&dir);
+            }
+
             // バックグラウンド音声解析ワーカを起動して managed state に載せる。
             app.manage(analyzer::Analyzer::new(app.handle().clone()));
 
@@ -87,6 +94,7 @@ pub fn run() {
             let handle = app.handle().clone();
             if let Err(e) = smtc::init(&handle) {
                 eprintln!("SMTC init failed (non-fatal): {}", e);
+                logging::write_line("warn", &format!("SMTC init failed (non-fatal): {}", e));
             }
 
             // 前回 enabled だった場合のみ内蔵 API サーバーを自動起動する。
@@ -95,6 +103,7 @@ pub fn run() {
                 let server_state = app.state::<Mutex<Option<api::ServerControl>>>();
                 if let Err(e) = commands::api::start_if_enabled(app.handle(), &server_state) {
                     eprintln!("API server auto-start failed (non-fatal): {}", e);
+                    logging::write_line("warn", &format!("API server auto-start failed (non-fatal): {}", e));
                 }
             }
             Ok(())
