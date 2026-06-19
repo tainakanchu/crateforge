@@ -68,6 +68,32 @@ impl Database {
         rows.collect()
     }
 
+    pub fn get_playlist(&self, playlist_id: i64) -> Result<Option<Playlist>> {
+        self.conn
+            .query_row(
+                "SELECT p.id, p.playlist_id, p.persistent_id, p.parent_persistent_id,
+                        p.name, p.is_folder, p.is_smart, p.is_user_created,
+                        (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = p.playlist_id) as track_count
+                 FROM playlists p
+                 WHERE p.playlist_id = ?1",
+                params![playlist_id],
+                |row| {
+                    Ok(Playlist {
+                        id: row.get(0)?,
+                        playlist_id: row.get(1)?,
+                        persistent_id: row.get(2)?,
+                        parent_persistent_id: row.get(3)?,
+                        name: row.get(4)?,
+                        is_folder: row.get::<_, i32>(5)? != 0,
+                        is_smart: row.get::<_, i32>(6)? != 0,
+                        is_user_created: row.get::<_, i32>(7)? != 0,
+                        track_count: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
     pub fn get_playlist_tracks(
         &self,
         playlist_id: i64,

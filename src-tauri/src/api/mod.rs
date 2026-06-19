@@ -73,6 +73,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/stats", get(handlers::get_stats))
         .route("/api/genres", get(handlers::get_genres))
         .route("/api/playlists", get(handlers::list_playlists))
+        .route("/api/playlists/{playlistId}", get(handlers::get_playlist))
         .route(
             "/api/playlists/{playlistId}/tracks",
             get(handlers::playlist_tracks),
@@ -759,5 +760,56 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"], "track not found");
+    }
+
+    // ===== ケース: GET /api/playlists/{playlistId} — メタ取得 =====
+    #[tokio::test]
+    async fn case_get_playlist_meta() {
+        let (_dir, app) = setup();
+        let (status, body) = req(app, "GET", "/api/playlists/100", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["playlistId"], 100);
+        assert_eq!(body["name"], "My List");
+        // プレーンなプレイリストは smartCriteria が null。
+        assert!(body["smartCriteria"].is_null());
+    }
+
+    // ===== ケース: GET /api/playlists/{playlistId} — スマート条件付き =====
+    #[tokio::test]
+    async fn case_get_playlist_smart_criteria() {
+        use crate::models::{SmartCriteria, SmartOp, SmartRule};
+
+        let (dir, app) = setup();
+        // seed のプレイリスト 100 にスマート条件をセットする。
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        let criteria = SmartCriteria {
+            match_all: true,
+            rules: vec![SmartRule {
+                field: "genre".into(),
+                op: SmartOp::Contains,
+                value: "House".into(),
+            }],
+            limit: None,
+            sort_by: None,
+            sort_desc: false,
+        };
+        db.set_smart_criteria(100, &criteria).unwrap();
+
+        let (status, body) = req(app, "GET", "/api/playlists/100", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["smartCriteria"]["matchAll"], true);
+        let rules = body["smartCriteria"]["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["field"], "genre");
+        assert_eq!(rules[0]["value"], "House");
+    }
+
+    // ===== ケース: GET /api/playlists/{playlistId} — 存在しない → 404 =====
+    #[tokio::test]
+    async fn case_get_playlist_missing_404() {
+        let (_dir, app) = setup();
+        let (status, body) = req(app, "GET", "/api/playlists/999999", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "playlist not found");
     }
 }

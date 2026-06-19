@@ -230,6 +230,25 @@ pub async fn list_playlists(State(state): State<ApiState>) -> Result<Json<Vec<Pl
     Ok(Json(db.get_playlists()?))
 }
 
+/// `GET /api/playlists/{playlistId}` — プレイリスト単体のメタ + スマート条件。
+/// `smartCriteria` はアプリのルール機能で設定された場合のみ非 null (iTunes インポートでは null)。
+pub async fn get_playlist(
+    State(state): State<ApiState>,
+    Path(playlist_id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let db = state.db()?;
+    let pl = match db.get_playlist(playlist_id)? {
+        Some(p) => p,
+        None => return Err(ApiError::not_found("playlist not found")),
+    };
+    let criteria = db.get_smart_criteria(playlist_id)?;
+    let mut val = serde_json::to_value(&pl)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    val["smartCriteria"] = serde_json::to_value(&criteria)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(val))
+}
+
 /// `GET /api/playlists/:playlistId/tracks` のクエリ。
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
