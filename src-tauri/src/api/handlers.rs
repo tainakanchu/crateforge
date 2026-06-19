@@ -464,7 +464,7 @@ pub async fn stream_track(
 
     if is_browser_native(&ext) {
         // ブラウザネイティブ: tower-http ServeFile で Range リクエストも処理する。
-        use tower::ServiceExt;
+        use tower::util::ServiceExt;
         use tower_http::services::ServeFile;
 
         let service = ServeFile::new(path_str);

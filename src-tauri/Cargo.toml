@@ -53,6 +53,8 @@ fontdb = "0.23"
 axum = "0.8"
 tokio = { version = "1", features = ["net", "sync", "rt", "macros", "io-util", "process"] }
 tower-http = { version = "0.6", features = ["fs"] }
+# ServeFile を 1 リクエストに oneshot で適用する (ストリーミング配信)。tests でも使う。
+tower = { version = "0.5", features = ["util"] }
 local-ip-address = "0.6"
 getrandom = "0.2"
 
@@ -81,9 +83,8 @@ zip = "2"
 # 内蔵 API サーバーのハンドラテスト用。
 #   tempfile = ファイルベースの一時 DB (インメモリは接続ごとに別物になり、
 #             ハンドラ内の Database::open と共有できないため不可)。
-#   tower    = ServiceExt::oneshot で Router にリクエストを直接流し込む。
+#   (tower は本体依存へ移動済み: ServiceExt::oneshot を tests でも使う。)
 tempfile = "3"
-tower = { version = "0.5", features = ["util"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
