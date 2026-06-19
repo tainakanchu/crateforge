@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.7.1] - 2026-06-20
+
+### 日本語
+
+#### 変更
+- **リポジトリ名を `crateforge` に変更**。アプリ内アップデートのエンドポイント・各種 GitHub リンク・dj-curator プラグインのメタデータを新リポジトリ名へ更新しました。GitHub の自動リダイレクトにより旧 URL も当面動作します。(#60)
+
+### English
+
+#### Changed
+- **Renamed the repository to `crateforge`.** Updated the in-app updater endpoint, GitHub links, and dj-curator plugin metadata to the new name. Old URLs keep working for now via GitHub's automatic redirects. (#60)
+
 ## [v0.7.0] - 2026-06-20
 
 ### 日本語
