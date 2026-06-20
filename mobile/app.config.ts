@@ -11,6 +11,13 @@ const config: ExpoConfig = {
   name: "Crateforge",
   slug: "crateforge",
   version: "0.1.0",
+  // EAS プロジェクト（@tainakanchu/crateforge）。動的設定なので projectId は手動で持つ。
+  owner: "tainakanchu",
+  extra: {
+    eas: {
+      projectId: "e7530a3f-f8cd-4569-a543-58469097cb3e",
+    },
+  },
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: "crateforge",
