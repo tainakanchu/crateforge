@@ -66,6 +66,10 @@ export class ExpoAudioEngine implements AudioEngine {
     this.player.volume = volume;
   }
 
+  setRate(rate: number): void {
+    this.player.setPlaybackRate(rate);
+  }
+
   setHandlers(handlers: EngineHandlers): void {
     this.handlers = handlers;
   }

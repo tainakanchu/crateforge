@@ -2,7 +2,7 @@
 // その下に「Up Next」（残りキュー）と「Similar」（現在曲の類似曲）を並べる。
 // 依存追加禁止のため、シークバーは Pressable のレイアウト幅から位置を計算する自作。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -10,6 +10,8 @@ import {
   FlatList,
   StyleSheet,
   ActivityIndicator,
+  TouchableOpacity,
+  Modal,
 } from "react-native";
 import type { LayoutChangeEvent, GestureResponderEvent } from "react-native";
 import { useRouter } from "expo-router";
@@ -21,6 +23,20 @@ import Artwork from "@/components/Artwork";
 import IconButton from "@/components/IconButton";
 import TrackRow from "@/components/TrackRow";
 
+// 再生速度の選択肢
+const RATE_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] as const;
+type RateOption = (typeof RATE_OPTIONS)[number];
+
+// スリープタイマーの選択肢（ms | "trackEnd" | null）
+type SleepTimerOption = number | "trackEnd" | null;
+const SLEEP_TIMER_OPTIONS: { label: string; value: SleepTimerOption }[] = [
+  { label: "オフ", value: null },
+  { label: "15分", value: 15 * 60 * 1000 },
+  { label: "30分", value: 30 * 60 * 1000 },
+  { label: "60分", value: 60 * 60 * 1000 },
+  { label: "曲の終わりで", value: "trackEnd" },
+];
+
 export default function PlayerScreen() {
   const router = useRouter();
   const current = usePlayer((s) => s.current());
@@ -31,6 +47,36 @@ export default function PlayerScreen() {
   const durationMs = usePlayer((s) => s.durationMs);
   const repeat = usePlayer((s) => s.repeat);
   const shuffle = usePlayer((s) => s.shuffle);
+  const playbackRate = usePlayer((s) => s.playbackRate);
+  const sleepTimerMs = usePlayer((s) => s.sleepTimerMs);
+  const stopAtTrackEnd = usePlayer((s) => s.stopAtTrackEnd);
+
+  // スリープタイマー実装：ms モードは setTimeout で自動停止
+  useEffect(() => {
+    if (sleepTimerMs == null) return;
+    const id = setTimeout(() => {
+      usePlayer.getState().pause();
+      usePlayer.getState().setSleepTimer(null);
+    }, sleepTimerMs);
+    return () => clearTimeout(id);
+  }, [sleepTimerMs]);
+
+  // 「曲の終わりで停止」モード：
+  // _onFinished → next(true) が呼ばれると index が変わり isPlaying が一瞬 true になる。
+  // index の変化を検知してその直後に pause/フラグクリアする。
+  const prevIndexRef = useRef(index);
+  useEffect(() => {
+    if (!stopAtTrackEnd) {
+      prevIndexRef.current = index;
+      return;
+    }
+    if (index !== prevIndexRef.current) {
+      // 曲が変わった＝トラック終了後に next が走った。すぐ停止。
+      usePlayer.getState().pause();
+      usePlayer.getState().setStopAtTrackEnd(false);
+    }
+    prevIndexRef.current = index;
+  }, [index, stopAtTrackEnd]);
 
   if (!current) {
     return (
@@ -65,19 +111,27 @@ export default function PlayerScreen() {
       </View>
 
       <FlatList<ListItem>
-        data={buildList(upNext)}
+        data={buildList(upNext, index)}
         keyExtractor={(item) =>
           item.kind === "section"
             ? `section-${item.title}`
             : item.kind === "similar"
               ? "similar-section"
-              : `track-${item.track.id}`
+              : item.kind === "upnext-track"
+                ? `upnext-${item.queueIndex}`
+                : `track-${item.track.id}`
         }
         renderItem={({ item }) =>
           item.kind === "section" ? (
             <Text style={styles.sectionTitle}>{item.title}</Text>
           ) : item.kind === "similar" ? (
             <SimilarSection trackId={current.trackId} />
+          ) : item.kind === "upnext-track" ? (
+            <UpNextRow
+              track={item.track}
+              queueIndex={item.queueIndex}
+              onPress={item.onPress}
+            />
           ) : (
             <TrackRow track={item.track} onPress={item.onPress} />
           )
@@ -91,12 +145,61 @@ export default function PlayerScreen() {
             isPlaying={isPlaying}
             repeat={repeat}
             shuffle={shuffle}
+            playbackRate={playbackRate}
+            sleepTimerMs={sleepTimerMs}
+            stopAtTrackEnd={stopAtTrackEnd}
           />
         }
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
       />
     </Screen>
+  );
+}
+
+// Up Next の各行（削除＋並べ替えボタン付き）
+interface UpNextRowProps {
+  track: Track;
+  queueIndex: number;
+  onPress: () => void;
+}
+
+function UpNextRow({ track, queueIndex, onPress }: UpNextRowProps) {
+  const queue = usePlayer((s) => s.queue);
+  const removeQueueAt = usePlayer((s) => s.removeQueueAt);
+  const moveQueueItem = usePlayer((s) => s.moveQueueItem);
+
+  return (
+    <View style={styles.upNextRow}>
+      <View style={styles.upNextArrows}>
+        <TouchableOpacity
+          onPress={() => moveQueueItem(queueIndex, queueIndex - 1)}
+          disabled={queueIndex <= 0}
+          accessibilityLabel="上へ移動"
+          style={styles.arrowBtn}
+        >
+          <Text style={[styles.arrowText, queueIndex <= 0 && styles.arrowDisabled]}>▲</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => moveQueueItem(queueIndex, queueIndex + 1)}
+          disabled={queueIndex >= queue.length - 1}
+          accessibilityLabel="下へ移動"
+          style={styles.arrowBtn}
+        >
+          <Text style={[styles.arrowText, queueIndex >= queue.length - 1 && styles.arrowDisabled]}>▼</Text>
+        </TouchableOpacity>
+      </View>
+      <View style={styles.upNextTrack}>
+        <TrackRow track={track} onPress={onPress} />
+      </View>
+      <TouchableOpacity
+        onPress={() => removeQueueAt(queueIndex)}
+        accessibilityLabel="キューから削除"
+        style={styles.removeBtn}
+      >
+        <Text style={styles.removeText}>✕</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -108,6 +211,9 @@ interface NowPlayingProps {
   isPlaying: boolean;
   repeat: "off" | "all" | "one";
   shuffle: boolean;
+  playbackRate: number;
+  sleepTimerMs: number | null;
+  stopAtTrackEnd: boolean;
 }
 
 function NowPlaying({
@@ -118,6 +224,9 @@ function NowPlaying({
   isPlaying,
   repeat,
   shuffle,
+  playbackRate,
+  sleepTimerMs,
+  stopAtTrackEnd,
 }: NowPlayingProps) {
   const toggle = usePlayer((s) => s.toggle);
   const next = usePlayer((s) => s.next);
@@ -125,9 +234,40 @@ function NowPlaying({
   const seek = usePlayer((s) => s.seek);
   const setRepeat = usePlayer((s) => s.setRepeat);
   const setShuffle = usePlayer((s) => s.setShuffle);
+  const setRate = usePlayer((s) => s.setRate);
+  const setSleepTimer = usePlayer((s) => s.setSleepTimer);
+  const setStopAtTrackEnd = usePlayer((s) => s.setStopAtTrackEnd);
+
+  const [showRatePicker, setShowRatePicker] = useState(false);
+  const [showSleepPicker, setShowSleepPicker] = useState(false);
 
   const cycleRepeat = () => {
     setRepeat(repeat === "off" ? "all" : repeat === "all" ? "one" : "off");
+  };
+
+  const skip = useCallback(
+    (ms: number) => {
+      seek(Math.max(0, positionMs + ms));
+    },
+    [seek, positionMs],
+  );
+
+  const rateLabel = playbackRate === 1 ? "1.0x" : `${playbackRate}x`;
+
+  const hasSleepTimer = sleepTimerMs != null || stopAtTrackEnd;
+  const sleepLabel = stopAtTrackEnd
+    ? "曲末"
+    : sleepTimerMs != null
+      ? `${Math.round(sleepTimerMs / 60000)}分`
+      : null;
+
+  const handleSleepChoice = (value: SleepTimerOption) => {
+    setShowSleepPicker(false);
+    if (value === "trackEnd") {
+      setStopAtTrackEnd(true);
+    } else {
+      setSleepTimer(value);
+    }
   };
 
   return (
@@ -149,6 +289,7 @@ function NowPlaying({
         <Text style={styles.time}>{formatDuration(durationMs)}</Text>
       </View>
 
+      {/* メインコントロール行：-15s / prev / play / next / +15s */}
       <View style={styles.controls}>
         <IconButton
           name="shuffle"
@@ -191,6 +332,113 @@ function NowPlaying({
         />
       </View>
       {repeat === "one" ? <Text style={styles.repeatHint}>1曲リピート</Text> : null}
+
+      {/* ±15秒スキップ行 */}
+      <View style={styles.skipRow}>
+        <TouchableOpacity
+          onPress={() => skip(-15000)}
+          accessibilityLabel="-15秒"
+          style={styles.skipBtn}
+        >
+          <Text style={styles.skipText}>-15s</Text>
+        </TouchableOpacity>
+        <View style={styles.skipCenter} />
+        <TouchableOpacity
+          onPress={() => skip(15000)}
+          accessibilityLabel="+15秒"
+          style={styles.skipBtn}
+        >
+          <Text style={styles.skipText}>+15s</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* 再生速度 + スリープタイマー行 */}
+      <View style={styles.secondaryRow}>
+        {/* 再生速度 */}
+        <TouchableOpacity
+          onPress={() => setShowRatePicker(true)}
+          accessibilityLabel="再生速度"
+          style={[styles.secondaryBtn, playbackRate !== 1 && styles.secondaryBtnActive]}
+        >
+          <Text style={[styles.secondaryBtnText, playbackRate !== 1 && styles.secondaryBtnTextActive]}>
+            {rateLabel}
+          </Text>
+        </TouchableOpacity>
+
+        <View style={styles.secondaryCenter} />
+
+        {/* スリープタイマー */}
+        <TouchableOpacity
+          onPress={() => setShowSleepPicker(true)}
+          accessibilityLabel="スリープタイマー"
+          style={[styles.secondaryBtn, hasSleepTimer && styles.secondaryBtnActive]}
+        >
+          <Text style={[styles.secondaryBtnText, hasSleepTimer && styles.secondaryBtnTextActive]}>
+            🌙{sleepLabel ? ` ${sleepLabel}` : ""}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* 再生速度ピッカー モーダル */}
+      <Modal
+        visible={showRatePicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowRatePicker(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setShowRatePicker(false)}>
+          <View style={styles.pickerSheet}>
+            <Text style={styles.pickerTitle}>再生速度</Text>
+            {RATE_OPTIONS.map((r) => (
+              <TouchableOpacity
+                key={r}
+                onPress={() => {
+                  setRate(r);
+                  setShowRatePicker(false);
+                }}
+                style={[styles.pickerRow, r === playbackRate && styles.pickerRowActive]}
+              >
+                <Text style={[styles.pickerRowText, r === playbackRate && styles.pickerRowTextActive]}>
+                  {r === 1 ? "1.0x（標準）" : `${r}x`}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </Pressable>
+      </Modal>
+
+      {/* スリープタイマーピッカー モーダル */}
+      <Modal
+        visible={showSleepPicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowSleepPicker(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setShowSleepPicker(false)}>
+          <View style={styles.pickerSheet}>
+            <Text style={styles.pickerTitle}>スリープタイマー</Text>
+            {SLEEP_TIMER_OPTIONS.map((opt) => {
+              const isActive =
+                opt.value === "trackEnd"
+                  ? stopAtTrackEnd
+                  : opt.value === null
+                    ? sleepTimerMs == null && !stopAtTrackEnd
+                    : sleepTimerMs === opt.value;
+              return (
+                <TouchableOpacity
+                  key={String(opt.value)}
+                  onPress={() => handleSleepChoice(opt.value)}
+                  style={[styles.pickerRow, isActive && styles.pickerRowActive]}
+                >
+                  <Text style={[styles.pickerRowText, isActive && styles.pickerRowTextActive]}>
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -289,14 +537,22 @@ function SimilarSection({ trackId }: { trackId: number }) {
 type ListItem =
   | { kind: "section"; title: string }
   | { kind: "similar" }
+  | { kind: "upnext-track"; track: Track; queueIndex: number; onPress: () => void }
   | { kind: "track"; track: Track; onPress: () => void };
 
-function buildList(upNext: Track[]): ListItem[] {
+function buildList(upNext: Track[], currentIndex: number): ListItem[] {
   const items: ListItem[] = [];
   if (upNext.length > 0) {
     items.push({ kind: "section", title: "Up Next" });
-    for (const track of upNext) {
-      items.push({ kind: "track", track, onPress: () => playFromUpNext(track) });
+    for (let i = 0; i < upNext.length; i++) {
+      const track = upNext[i];
+      const queueIndex = currentIndex + 1 + i;
+      items.push({
+        kind: "upnext-track",
+        track,
+        queueIndex,
+        onPress: () => playFromUpNext(track),
+      });
     }
   }
   items.push({ kind: "section", title: "Similar" });
@@ -408,6 +664,125 @@ const styles = StyleSheet.create({
     fontSize: 11,
     textAlign: "center",
     marginTop: 8,
+  },
+
+  // ±15秒スキップ行
+  skipRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 8,
+  },
+  skipBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+  },
+  skipText: {
+    color: PALETTE.textDim,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  skipCenter: { flex: 1 },
+
+  // 再生速度・スリープタイマー行
+  secondaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 12,
+    marginBottom: 8,
+  },
+  secondaryCenter: { flex: 1 },
+  secondaryBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+  },
+  secondaryBtnActive: {
+    borderColor: PALETTE.accent,
+    backgroundColor: PALETTE.surfaceAlt,
+  },
+  secondaryBtnText: {
+    color: PALETTE.textDim,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  secondaryBtnTextActive: {
+    color: PALETTE.accent,
+  },
+
+  // Up Next 行
+  upNextRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingRight: 8,
+  },
+  upNextArrows: {
+    flexDirection: "column",
+    alignItems: "center",
+    paddingLeft: 8,
+    paddingRight: 4,
+    gap: 2,
+  },
+  arrowBtn: {
+    padding: 4,
+  },
+  arrowText: {
+    color: PALETTE.textDim,
+    fontSize: 11,
+  },
+  arrowDisabled: {
+    color: PALETTE.border,
+  },
+  upNextTrack: {
+    flex: 1,
+  },
+  removeBtn: {
+    padding: 10,
+  },
+  removeText: {
+    color: PALETTE.textFaint,
+    fontSize: 16,
+  },
+
+  // モーダル
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    justifyContent: "flex-end",
+  },
+  pickerSheet: {
+    backgroundColor: PALETTE.surface,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingBottom: 32,
+    paddingTop: 16,
+  },
+  pickerTitle: {
+    color: PALETTE.textDim,
+    fontSize: 13,
+    fontWeight: "700",
+    textAlign: "center",
+    marginBottom: 8,
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  pickerRow: {
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+  },
+  pickerRowActive: {
+    backgroundColor: PALETTE.surfaceAlt,
+  },
+  pickerRowText: {
+    color: PALETTE.text,
+    fontSize: 16,
+  },
+  pickerRowTextActive: {
+    color: PALETTE.accent,
+    fontWeight: "700",
   },
 
   sectionTitle: {

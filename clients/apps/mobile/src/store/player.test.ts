@@ -19,6 +19,7 @@ class FakeEngine implements AudioEngine {
     this.seeked.push(s);
   }
   setVolume() {}
+  setRate(_rate: number) {}
   setHandlers(h: EngineHandlers) {
     this.handlers = h;
   }
@@ -152,5 +153,168 @@ describe("toggle / pause / play", () => {
     expect(engine.pauseCount).toBe(1);
     s().toggle();
     expect(s().isPlaying).toBe(true);
+  });
+});
+
+describe("removeQueueAt", () => {
+  it("removes a track after current without changing index", () => {
+    s().setQueue([track(1), track(2), track(3)]); // index 0 → track 1
+    s().removeQueueAt(2); // remove track 3
+    expect(s().queue.map((t) => t.id)).toEqual([1, 2]);
+    expect(s().current()?.id).toBe(1); // still playing track 1
+    expect(s().index).toBe(0);
+  });
+
+  it("removes a track before current and decrements index", () => {
+    s().setQueue([track(1), track(2), track(3)], 2); // index 2 → track 3
+    s().removeQueueAt(0); // remove track 1
+    expect(s().queue.map((t) => t.id)).toEqual([2, 3]);
+    expect(s().index).toBe(1); // still points at track 3
+    expect(s().current()?.id).toBe(3);
+  });
+
+  it("removes the current track and plays the next one", () => {
+    s().setQueue([track(1), track(2), track(3)]); // index 0 → track 1
+    s().removeQueueAt(0); // remove currently playing track
+    expect(s().queue.map((t) => t.id)).toEqual([2, 3]);
+    // Should now be playing at index 0 (next track = track 2)
+    expect(s().current()?.id).toBe(2);
+    expect(s().isPlaying).toBe(true);
+  });
+
+  it("removes the last current track and plays the previous (now last)", () => {
+    s().setQueue([track(1), track(2), track(3)], 2); // index 2 → track 3
+    s().removeQueueAt(2); // remove currently playing last track
+    expect(s().queue.map((t) => t.id)).toEqual([1, 2]);
+    // Should now be at end → plays last remaining
+    expect(s().current()?.id).toBe(2);
+    expect(s().isPlaying).toBe(true);
+  });
+
+  it("clears queue when last remaining track is removed", () => {
+    s().setQueue([track(1)]); // single track
+    s().removeQueueAt(0);
+    expect(s().queue).toHaveLength(0);
+    expect(s().index).toBe(-1);
+    expect(s().isPlaying).toBe(false);
+  });
+
+  it("is a no-op for out-of-bounds index", () => {
+    s().setQueue([track(1), track(2)]);
+    s().removeQueueAt(5);
+    expect(s().queue).toHaveLength(2);
+    s().removeQueueAt(-1);
+    expect(s().queue).toHaveLength(2);
+  });
+});
+
+describe("moveQueueItem", () => {
+  it("moves a track forward and keeps index on same track", () => {
+    s().setQueue([track(1), track(2), track(3), track(4)]); // index 0 → track 1
+    s().moveQueueItem(3, 1); // move track 4 to position 1
+    expect(s().queue.map((t) => t.id)).toEqual([1, 4, 2, 3]);
+    expect(s().index).toBe(0); // track 1 still at 0
+    expect(s().current()?.id).toBe(1);
+  });
+
+  it("moves a track backward and keeps index on same track", () => {
+    s().setQueue([track(1), track(2), track(3), track(4)], 2); // index 2 → track 3
+    s().moveQueueItem(0, 2); // move track 1 to position 2
+    // [2, 3, 1, 4] — but 'from < index' and 'to >= index' so index goes from 2 to 1
+    expect(s().queue.map((t) => t.id)).toEqual([2, 3, 1, 4]);
+    expect(s().index).toBe(1); // adjusted: track 3 is now at 1
+    expect(s().current()?.id).toBe(3);
+  });
+
+  it("moves the current track itself and index follows", () => {
+    s().setQueue([track(1), track(2), track(3)], 1); // index 1 → track 2
+    s().moveQueueItem(1, 2); // move current to end
+    expect(s().queue.map((t) => t.id)).toEqual([1, 3, 2]);
+    expect(s().index).toBe(2); // track 2 is now at index 2
+    expect(s().current()?.id).toBe(2);
+  });
+
+  it("is a no-op for same from/to", () => {
+    s().setQueue([track(1), track(2), track(3)]);
+    s().moveQueueItem(1, 1);
+    expect(s().queue.map((t) => t.id)).toEqual([1, 2, 3]);
+  });
+
+  it("is a no-op for out-of-bounds indices", () => {
+    s().setQueue([track(1), track(2)]);
+    s().moveQueueItem(0, 5);
+    expect(s().queue.map((t) => t.id)).toEqual([1, 2]);
+    s().moveQueueItem(-1, 0);
+    expect(s().queue.map((t) => t.id)).toEqual([1, 2]);
+  });
+});
+
+describe("setRate", () => {
+  it("sets playback rate within valid range", () => {
+    s().setQueue([track(1)]);
+    s().setRate(1.5);
+    expect(s().playbackRate).toBe(1.5);
+  });
+
+  it("clamps rate to minimum 0.5", () => {
+    s().setRate(0.1);
+    expect(s().playbackRate).toBe(0.5);
+  });
+
+  it("clamps rate to maximum 2.0", () => {
+    s().setRate(5.0);
+    expect(s().playbackRate).toBe(2.0);
+  });
+
+  it("calls engine.setRate with clamped value", () => {
+    const rates: number[] = [];
+    // FakeEngine already has setRate; spy on the current engine instance
+    const rateSpy = jest.spyOn(engine, "setRate").mockImplementation((r) => {
+      rates.push(r);
+    });
+    usePlayer.getState().setRate(1.25);
+    expect(rates).toContain(1.25);
+    usePlayer.getState().setRate(0.1);
+    expect(rates).toContain(0.5); // clamped
+    rateSpy.mockRestore();
+  });
+
+  it("initializes playbackRate to 1", () => {
+    expect(s().playbackRate).toBe(1);
+  });
+});
+
+describe("setSleepTimer", () => {
+  it("stores sleep timer value", () => {
+    s().setSleepTimer(15 * 60 * 1000);
+    expect(s().sleepTimerMs).toBe(15 * 60 * 1000);
+    expect(s().stopAtTrackEnd).toBe(false);
+  });
+
+  it("clears sleep timer with null", () => {
+    s().setSleepTimer(15 * 60 * 1000);
+    s().setSleepTimer(null);
+    expect(s().sleepTimerMs).toBeNull();
+  });
+
+  it("setSleepTimer clears stopAtTrackEnd", () => {
+    s().setStopAtTrackEnd(true);
+    expect(s().stopAtTrackEnd).toBe(true);
+    s().setSleepTimer(30 * 60 * 1000);
+    expect(s().stopAtTrackEnd).toBe(false);
+    expect(s().sleepTimerMs).toBe(30 * 60 * 1000);
+  });
+
+  it("setStopAtTrackEnd clears sleepTimerMs", () => {
+    s().setSleepTimer(15 * 60 * 1000);
+    expect(s().sleepTimerMs).toBe(15 * 60 * 1000);
+    s().setStopAtTrackEnd(true);
+    expect(s().stopAtTrackEnd).toBe(true);
+    expect(s().sleepTimerMs).toBeNull();
+  });
+
+  it("initializes sleepTimerMs to null and stopAtTrackEnd to false", () => {
+    expect(s().sleepTimerMs).toBeNull();
+    expect(s().stopAtTrackEnd).toBe(false);
   });
 });

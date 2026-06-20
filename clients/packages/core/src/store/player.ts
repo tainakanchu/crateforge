@@ -21,6 +21,7 @@ export interface AudioEngine {
   /** ストアへ進捗/完了/再生状態を返すハンドラを登録。 */
   setHandlers(handlers: EngineHandlers): void;
   release(): void;
+  setRate(rate: number): void;
 }
 
 export interface EngineHandlers {
@@ -38,6 +39,7 @@ export class NoopAudioEngine implements AudioEngine {
   setVolume(_volume: number): void {}
   setHandlers(_handlers: EngineHandlers): void {}
   release(): void {}
+  setRate(_rate: number): void {}
 }
 
 export interface PlayerState {
@@ -49,6 +51,9 @@ export interface PlayerState {
   durationMs: number;
   repeat: RepeatMode;
   shuffle: boolean;
+  playbackRate: number;
+  sleepTimerMs: number | null;
+  stopAtTrackEnd: boolean;
   engine: AudioEngine;
 
   /** 現在トラック（無ければ null）。 */
@@ -76,6 +81,11 @@ export interface PlayerState {
   seek: (positionMs: number) => void;
   setRepeat: (mode: RepeatMode) => void;
   setShuffle: (shuffle: boolean) => void;
+  removeQueueAt: (index: number) => void;
+  moveQueueItem: (from: number, to: number) => void;
+  setRate: (rate: number) => void;
+  setSleepTimer: (ms: number | null) => void;
+  setStopAtTrackEnd: (v: boolean) => void;
   /** 末尾に追加。 */
   enqueue: (track: Track) => void;
   /** 「次に再生」（現在の直後に挿入）。 */
@@ -104,6 +114,9 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   durationMs: 0,
   repeat: "off",
   shuffle: false,
+  playbackRate: 1,
+  sleepTimerMs: null,
+  stopAtTrackEnd: false,
   engine: new NoopAudioEngine(),
 
   current: () => {
@@ -195,6 +208,65 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   setRepeat: (mode) => set({ repeat: mode }),
   setShuffle: (shuffle) => set({ shuffle }),
 
+  removeQueueAt: (removeIdx) => {
+    const { queue, index } = get();
+    if (removeIdx < 0 || removeIdx >= queue.length) return;
+    const nextQueue = queue.filter((_, i) => i !== removeIdx);
+    if (nextQueue.length === 0) {
+      get().engine.pause();
+      set({ queue: [], index: -1, isPlaying: false, positionMs: 0, durationMs: 0 });
+      return;
+    }
+    if (removeIdx < index) {
+      // 現在より前を削除→インデックスを 1 減らす（同じ曲を維持）。
+      set({ queue: nextQueue, index: index - 1 });
+    } else if (removeIdx === index) {
+      // 現在曲を削除→次の曲へ（末尾なら 1 つ前）。
+      const nextIdx = removeIdx < nextQueue.length ? removeIdx : nextQueue.length - 1;
+      get().engine.pause();
+      set({ queue: nextQueue });
+      get().playAt(nextIdx);
+    } else {
+      set({ queue: nextQueue });
+    }
+  },
+
+  moveQueueItem: (from, to) => {
+    const { queue, index } = get();
+    if (
+      from < 0 || from >= queue.length ||
+      to < 0 || to >= queue.length ||
+      from === to
+    ) return;
+    const nextQueue = [...queue];
+    const [item] = nextQueue.splice(from, 1);
+    nextQueue.splice(to, 0, item);
+    // index が指す「再生中の曲」が移動後も同じトラックを指すよう調整。
+    let nextIndex = index;
+    if (from === index) {
+      nextIndex = to;
+    } else if (from < index && to >= index) {
+      nextIndex = index - 1;
+    } else if (from > index && to <= index) {
+      nextIndex = index + 1;
+    }
+    set({ queue: nextQueue, index: nextIndex });
+  },
+
+  setRate: (rate) => {
+    const clamped = Math.max(0.5, Math.min(2.0, rate));
+    get().engine.setRate(clamped);
+    set({ playbackRate: clamped });
+  },
+
+  setSleepTimer: (ms) => {
+    set({ sleepTimerMs: ms, stopAtTrackEnd: false });
+  },
+
+  setStopAtTrackEnd: (v) => {
+    set({ stopAtTrackEnd: v, sleepTimerMs: null });
+  },
+
   enqueue: (track) => {
     const { queue } = get();
     const nextQueue = [...queue, track];
@@ -230,6 +302,9 @@ export function resetPlayer(): void {
     durationMs: 0,
     repeat: "off",
     shuffle: false,
+    playbackRate: 1,
+    sleepTimerMs: null,
+    stopAtTrackEnd: false,
     engine: new NoopAudioEngine(),
   });
 }
