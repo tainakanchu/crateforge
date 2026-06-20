@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import type {
   Album,
+  Artist,
   GenreTagCount,
   Playlist,
   PlaylistDetail,
@@ -13,6 +14,7 @@ import type {
   Track,
   TracksQuery,
 } from "@/lib/types";
+import { trackArtist } from "@/lib/format";
 import { useConnection } from "@/store/connection";
 
 /** 大規模ライブラリでも全件取得（仮想リスト前提）。500/200 上限の撤廃。 */
@@ -85,6 +87,43 @@ export function useAlbumTracks(album: string | null) {
     queryKey: ["album-tracks", album],
     enabled: !!client && album != null,
     queryFn: () => client!.listTracks({ album: album!, limit: BROWSE_LIMIT }),
+  });
+}
+
+/** アーティスト一覧（クライアント側で全曲から集計）。 */
+export function useArtists() {
+  const client = useConnection((s) => s.client);
+  return useQuery<Track[], Error, Artist[]>({
+    queryKey: ["tracks", { limit: BROWSE_LIMIT }],
+    enabled: !!client,
+    queryFn: ({ signal }) => client!.listTracks({ limit: BROWSE_LIMIT }, signal),
+    select: (tracks: Track[]): Artist[] => {
+      const map = new Map<string, { trackCount: number; sampleTrackId: number }>();
+      for (const t of tracks) {
+        const name = trackArtist(t);
+        const entry = map.get(name);
+        if (entry) {
+          entry.trackCount += 1;
+        } else {
+          map.set(name, { trackCount: 1, sampleTrackId: t.trackId });
+        }
+      }
+      return [...map.entries()]
+        .map(([artist, { trackCount, sampleTrackId }]) => ({ artist, trackCount, sampleTrackId }))
+        .sort((a, b) => a.artist.localeCompare(b.artist, undefined, { sensitivity: "base" }));
+    },
+  });
+}
+
+/** 指定アーティストの曲（artist が null のときは無効）。 */
+export function useArtistTracks(artist: string | null) {
+  const client = useConnection((s) => s.client);
+  return useQuery<Track[], Error, Track[]>({
+    queryKey: ["tracks", { limit: BROWSE_LIMIT }],
+    enabled: !!client && artist != null,
+    queryFn: ({ signal }) => client!.listTracks({ limit: BROWSE_LIMIT }, signal),
+    select: (tracks: Track[]): Track[] =>
+      tracks.filter((t) => trackArtist(t) === artist),
   });
 }
 

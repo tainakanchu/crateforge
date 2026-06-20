@@ -69,6 +69,9 @@ export interface Album {
   sampleTrackId: number;
 }
 
+/** クライアント側で全曲から集計したアーティスト 1 件。 */
+export interface Artist { artist: string; trackCount: number; sampleTrackId: number; }
+
 /** デスクトップ側の再生状態（`/api/remote/state`）。 */
 export interface PlaybackState {
   isPlaying: boolean;

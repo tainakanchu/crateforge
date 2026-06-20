@@ -1,17 +1,14 @@
-// Library 画面。上部の「曲」/「アルバム」トグルで表示を切替える。
-// 曲モード: 検索 + ジャンルチップで曲を絞り込み、タップで「現在のリストを
-//   キューにして」その位置から再生。各行に単曲ダウンロード、長押しで
-//   「次に再生 / アルバムを保存」。
-// アルバムモード: distinct アルバムを一覧。検索でアルバム名をクライアント絞り込み。
-//   タップでアルバム詳細へ。
-// プレイリストは専用タブへ移した。
+// Library 画面。「アルバム」/「アーティスト」/「曲」トグルで表示を切替える。
+// 曲モード: 検索 + ジャンルチップで絞り込み、タップで再生。長押しで追加アクション。
+// アルバムモード: distinct アルバムを一覧。検索でクライアント絞り込み。タップで詳細へ。
+// アーティストモード: クライアント側集計のアーティスト一覧。タップで詳細へ。
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, FlatList, Pressable, Text, TextInput, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
-import type { Album, Track } from "@/lib/types";
+import type { Album, Artist, Track } from "@/lib/types";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import TrackRow from "@/components/TrackRow";
@@ -21,17 +18,18 @@ import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { useConnection } from "@/store/connection";
 import { usePlayer } from "@/store/player";
 import { useDownloads } from "@/store/downloads";
-import { useTracks, useGenres, useAlbums, BROWSE_LIMIT } from "@/features/browse/hooks";
+import { useTracks, useGenres, useAlbums, useArtists, BROWSE_LIMIT } from "@/features/browse/hooks";
 import GenreChips from "@/features/browse/GenreChips";
 import AlbumRow from "@/features/browse/AlbumRow";
+import ArtistRow from "@/features/browse/ArtistRow";
 
-type Mode = "tracks" | "albums";
+type Mode = "tracks" | "albums" | "artists";
 
 export default function LibraryScreen() {
   const router = useRouter();
   const client = useConnection((s) => s.client);
 
-  const [mode, setMode] = useState<Mode>("tracks");
+  const [mode, setMode] = useState<Mode>("albums");
 
   // 検索はデバウンス（入力ごとに叩かない）。
   const [search, setSearch] = useState("");
@@ -50,6 +48,7 @@ export default function LibraryScreen() {
   });
   const genresQuery = useGenres();
   const albumsQuery = useAlbums();
+  const artistsQuery = useArtists();
 
   const tracks = tracksQuery.data ?? [];
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
@@ -62,6 +61,14 @@ export default function LibraryScreen() {
     if (!q) return all;
     return all.filter((a) => a.album.toLowerCase().includes(q));
   }, [albumsQuery.data, debounced]);
+
+  // アーティストモードは検索でアーティスト名をクライアント側で絞り込む。
+  const artists = useMemo((): Artist[] => {
+    const all: Artist[] = artistsQuery.data ?? [];
+    const q = debounced.toLowerCase();
+    if (!q) return all;
+    return all.filter((a) => a.artist.toLowerCase().includes(q));
+  }, [artistsQuery.data, debounced]);
 
   const onPressTrack = (index: number) => {
     usePlayer.getState().setQueue(tracks, index);
@@ -83,6 +90,13 @@ export default function LibraryScreen() {
     Alert.alert(track.name || "この曲", undefined, buttons);
   };
 
+  const searchPlaceholder =
+    mode === "albums"
+      ? "アルバムを検索"
+      : mode === "artists"
+        ? "アーティストを検索"
+        : "曲・アーティストを検索";
+
   if (!client) {
     return (
       <Screen>
@@ -100,7 +114,7 @@ export default function LibraryScreen() {
         <TextInput
           value={search}
           onChangeText={setSearch}
-          placeholder={mode === "albums" ? "アルバムを検索" : "曲・アーティストを検索"}
+          placeholder={searchPlaceholder}
           placeholderTextColor={PALETTE.textFaint}
           style={styles.searchInput}
           autoCapitalize="none"
@@ -152,7 +166,7 @@ export default function LibraryScreen() {
             keyboardShouldPersistTaps="handled"
           />
         </>
-      ) : (
+      ) : mode === "albums" ? (
         <FlatList
           data={albums}
           keyExtractor={(a) => a.album}
@@ -177,22 +191,51 @@ export default function LibraryScreen() {
           contentContainerStyle={albums.length === 0 ? styles.emptyContent : styles.listContent}
           keyboardShouldPersistTaps="handled"
         />
+      ) : (
+        <FlatList
+          data={artists}
+          keyExtractor={(a) => a.artist}
+          renderItem={({ item }: { item: Artist }) => (
+            <ArtistRow
+              artist={item}
+              onPress={() => router.push(`/artist/${encodeURIComponent(item.artist)}`)}
+            />
+          )}
+          ListEmptyComponent={
+            artistsQuery.isLoading ? (
+              <Loading />
+            ) : artistsQuery.isError ? (
+              <ErrorView
+                message={errorText(artistsQuery.error)}
+                onRetry={() => artistsQuery.refetch()}
+              />
+            ) : (
+              <EmptyView message="アーティストが見つかりません" icon="person-outline" />
+            )
+          }
+          contentContainerStyle={artists.length === 0 ? styles.emptyContent : styles.listContent}
+          keyboardShouldPersistTaps="handled"
+        />
       )}
     </Screen>
   );
 }
 
-/** 「曲」/「アルバム」のセグメント切替。 */
+/** 「アルバム」/「アーティスト」/「曲」のセグメント切替。 */
 function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) {
+  const OPTIONS: { value: Mode; label: string }[] = [
+    { value: "albums", label: "アルバム" },
+    { value: "artists", label: "アーティスト" },
+    { value: "tracks", label: "曲" },
+  ];
   return (
     <View style={styles.toggle}>
-      {(["tracks", "albums"] as const).map((m) => {
-        const active = mode === m;
-        const label = m === "tracks" ? "曲" : "アルバム";
+      {OPTIONS.map(({ value, label }) => {
+        const active = mode === value;
         return (
           <Pressable
-            key={m}
-            onPress={() => onChange(m)}
+            key={value}
+            onPress={() => onChange(value)}
             accessibilityRole="button"
             accessibilityState={{ selected: active }}
             style={[styles.segment, active && styles.segmentActive]}

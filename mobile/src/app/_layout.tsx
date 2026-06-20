@@ -14,7 +14,18 @@ import { useConnection } from "@/store/connection";
 import { usePlayer } from "@/store/player";
 import { createAudioEngine, initPlayback } from "@/features/playback/engine";
 
-const queryClient = new QueryClient();
+// ライブラリは頻繁に変わらないので staleTime を長めに取り、タブ/モード切替のたびの
+// 再取得を抑える。全曲取得（曲/アーティストモード）は重いので特に効く。
+// stale でもキャッシュを即表示し、必要時のみ裏で更新する（stale-while-revalidate）。
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000, // 5分は再取得しない
+      gcTime: 30 * 60 * 1000, // 30分メモリ保持
+      retry: 1,
+    },
+  },
+});
 
 export default function RootLayout() {
   useEffect(() => {
