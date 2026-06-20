@@ -40,6 +40,7 @@
     "@types/jest": "^29.5.14",
     "@types/node": "^26.0.0",
     "@types/react": "~19.2.2",
+    "eas-cli": "^20.3.0",
     "react-test-renderer": "19.2.3",
     "typescript": "~6.0.3"
   },
@@ -52,7 +53,12 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "eas:login": "eas login",
+    "eas:whoami": "eas whoami",
+    "eas:init": "eas init",
+    "build:android": "eas build --platform android --profile preview",
+    "build:android:prod": "eas build --platform android --profile production"
   },
   "jest": {
     "preset": "jest-expo",
