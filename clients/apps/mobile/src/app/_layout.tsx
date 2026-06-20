@@ -9,6 +9,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import * as Updates from "expo-updates";
 
 import { PALETTE } from "@/constants/brand";
 import { createFilePersister } from "@/lib/queryPersister";
@@ -30,11 +31,27 @@ const queryClient = new QueryClient({
 // アプリ再起動後も即座に前回キャッシュを表示するためのディスク永続化設定。
 const persister = createFilePersister();
 
+// 起動時に OTA を確認し、あれば取得して即リロード（次回起動を待たずその場で反映）。
+// dev / 無効時は何もしない。best-effort なので失敗しても通常起動を続ける。
+async function checkForOtaUpdate(): Promise<void> {
+  if (__DEV__ || !Updates.isEnabled) return;
+  try {
+    const result = await Updates.checkForUpdateAsync();
+    if (result.isAvailable) {
+      await Updates.fetchUpdateAsync();
+      await Updates.reloadAsync();
+    }
+  } catch {
+    // ignore（次回起動でまた試みる）
+  }
+}
+
 export default function RootLayout() {
   useEffect(() => {
     void useConnection.getState().hydrate();
     usePlayer.getState().setEngine(createAudioEngine());
     void initPlayback();
+    void checkForOtaUpdate();
   }, []);
 
   return (
