@@ -485,6 +485,19 @@ mod tests {
         assert!(ids.contains(&3));
     }
 
+    // ===== 追加: album 部分一致フィルタ =====
+    #[tokio::test]
+    async fn case_tracks_album_filter() {
+        let (_dir, app) = setup();
+        // album に "Da" を含むのは "Dawn" (track 1) と "Day" (track 3)。大小無視。
+        let (status, body) = req(app, "GET", "/api/tracks?album=da", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().unwrap();
+        let ids: Vec<i64> = arr.iter().map(|t| t["trackId"].as_i64().unwrap()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&1) && ids.contains(&3));
+    }
+
     // ===== ケース 6: year 範囲 =====
     #[tokio::test]
     async fn case06_tracks_year_range() {
