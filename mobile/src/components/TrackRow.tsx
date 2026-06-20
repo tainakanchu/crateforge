@@ -1,12 +1,14 @@
 // 曲一覧の 1 行。アートワーク + タイトル/サブタイトル + 任意の trailing。
 // active=true で再生中などをアクセント表示する。
+// rowMetaFields（Settings 設定）が有効なフィールドの値を小さく 3 行目に表示する。
 
 import type { ReactNode } from "react";
 import { Pressable, Text, View, StyleSheet } from "react-native";
 
 import type { Track } from "@/lib/types";
 import { PALETTE } from "@/constants/brand";
-import { trackTitle, trackSubtitle } from "@/lib/format";
+import { trackTitle, trackSubtitle, trackMetaText } from "@/lib/format";
+import { useSettings } from "@/store/settings";
 import Artwork from "@/components/Artwork";
 
 export interface TrackRowProps {
@@ -27,6 +29,12 @@ export default function TrackRow({
   active = false,
   index,
 }: TrackRowProps) {
+  const fields = useSettings((s) => s.rowMetaFields);
+  const metaParts = fields
+    .map((f) => trackMetaText(track, f))
+    .filter((v): v is string => v !== null);
+  const metaLine = metaParts.length > 0 ? metaParts.join(" · ") : null;
+
   return (
     <Pressable
       onPress={onPress}
@@ -54,6 +62,11 @@ export default function TrackRow({
         <Text style={styles.subtitle} numberOfLines={1}>
           {trackSubtitle(track)}
         </Text>
+        {metaLine != null ? (
+          <Text style={styles.meta} numberOfLines={1}>
+            {metaLine}
+          </Text>
+        ) : null}
       </View>
       {trailing != null ? <View style={styles.trailing}>{trailing}</View> : null}
     </Pressable>
@@ -96,6 +109,11 @@ const styles = StyleSheet.create({
   subtitle: {
     color: PALETTE.textDim,
     fontSize: 13,
+    marginTop: 2,
+  },
+  meta: {
+    color: PALETTE.textFaint,
+    fontSize: 11,
     marginTop: 2,
   },
   trailing: {

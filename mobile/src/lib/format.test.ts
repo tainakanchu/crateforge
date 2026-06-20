@@ -3,6 +3,7 @@ import {
   formatSeconds,
   ratingToStars,
   trackArtist,
+  trackMetaText,
   trackSubtitle,
   trackTitle,
 } from "@/lib/format";
@@ -63,5 +64,52 @@ describe("track display helpers", () => {
     expect(trackSubtitle({ artist: "A", albumArtist: null, album: "Alb" })).toBe("A — Alb");
     expect(trackSubtitle({ artist: null, albumArtist: "B", album: null })).toBe("B");
     expect(trackSubtitle({ artist: null, albumArtist: null, album: null })).toBe("Unknown Artist");
+  });
+});
+
+describe("trackMetaText", () => {
+  const baseTrack = {
+    bpm: null as number | null,
+    year: null as number | null,
+    genre: null as string | null,
+    rating: null as number | null,
+    playCount: null as number | null,
+  };
+
+  it("bpm フィールド: 値ありで '128 BPM'", () => {
+    expect(trackMetaText({ ...baseTrack, bpm: 128 }, "bpm")).toBe("128 BPM");
+  });
+
+  it("bpm フィールド: null なら null", () => {
+    expect(trackMetaText({ ...baseTrack, bpm: null }, "bpm")).toBeNull();
+  });
+
+  it("year フィールド: 値ありで文字列化", () => {
+    expect(trackMetaText({ ...baseTrack, year: 2020 }, "year")).toBe("2020");
+  });
+
+  it("year フィールド: null なら null", () => {
+    expect(trackMetaText({ ...baseTrack, year: null }, "year")).toBeNull();
+  });
+
+  it("genre フィールド: 空文字は null", () => {
+    expect(trackMetaText({ ...baseTrack, genre: "" }, "genre")).toBeNull();
+    expect(trackMetaText({ ...baseTrack, genre: "Jazz" }, "genre")).toBe("Jazz");
+  });
+
+  it("rating フィールド: 80 = ★★★★", () => {
+    expect(trackMetaText({ ...baseTrack, rating: 80 }, "rating")).toBe("★★★★");
+  });
+
+  it("rating フィールド: 0 は null", () => {
+    expect(trackMetaText({ ...baseTrack, rating: 0 }, "rating")).toBeNull();
+  });
+
+  it("playCount フィールド: 5 回なら '▶ 5'", () => {
+    expect(trackMetaText({ ...baseTrack, playCount: 5 }, "playCount")).toBe("▶ 5");
+  });
+
+  it("playCount フィールド: 0 は null", () => {
+    expect(trackMetaText({ ...baseTrack, playCount: 0 }, "playCount")).toBeNull();
   });
 });

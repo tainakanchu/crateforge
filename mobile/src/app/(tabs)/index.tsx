@@ -1,5 +1,6 @@
 // Library 画面。「アルバム」/「アーティスト」/「曲」トグルで表示を切替える。
 // 曲モード: 検索 + ジャンルチップで絞り込み、タップで再生。長押しで追加アクション。
+//           ソートコントロールで並び順を変更できる。
 // アルバムモード: distinct アルバムを一覧。検索でクライアント絞り込み。タップで詳細へ。
 // アーティストモード: クライアント側集計のアーティスト一覧。タップで詳細へ。
 
@@ -8,7 +9,7 @@ import { Alert, FlatList, Pressable, Text, TextInput, View, StyleSheet } from "r
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
-import type { Album, Artist, Track } from "@/lib/types";
+import type { Album, Artist, SortField, Track } from "@/lib/types";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import TrackRow from "@/components/TrackRow";
@@ -18,12 +19,27 @@ import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { useConnection } from "@/store/connection";
 import { usePlayer } from "@/store/player";
 import { useDownloads } from "@/store/downloads";
+import { useSettings } from "@/store/settings";
 import { useTracks, useGenres, useAlbums, useArtists, BROWSE_LIMIT } from "@/features/browse/hooks";
 import GenreChips from "@/features/browse/GenreChips";
 import AlbumRow from "@/features/browse/AlbumRow";
 import ArtistRow from "@/features/browse/ArtistRow";
 
 type Mode = "tracks" | "albums" | "artists";
+
+/** ソートフィールドの日本語ラベル。 */
+const SORT_FIELD_LABELS: Record<SortField, string> = {
+  name: "名前",
+  artist: "アーティスト",
+  album: "アルバム",
+  dateAdded: "追加日",
+  year: "年",
+  bpm: "BPM",
+  rating: "レート",
+  playCount: "再生回数",
+};
+
+const SORT_FIELDS: SortField[] = ["name", "artist", "album", "dateAdded", "year", "bpm", "rating", "playCount"];
 
 export default function LibraryScreen() {
   const router = useRouter();
@@ -41,10 +57,16 @@ export default function LibraryScreen() {
     return () => clearTimeout(t);
   }, [search]);
 
+  // 曲ソート設定。
+  const trackSort = useSettings((s) => s.trackSort);
+  const setTrackSort = useSettings((s) => s.setTrackSort);
+
   const tracksQuery = useTracks({
     q: debounced || undefined,
     genre: genre ?? undefined,
     limit: BROWSE_LIMIT,
+    sort: trackSort.field,
+    order: trackSort.order,
   });
   const genresQuery = useGenres();
   const albumsQuery = useAlbums();
@@ -88,6 +110,24 @@ export default function LibraryScreen() {
     }
     buttons.push({ text: "キャンセル", style: "cancel" });
     Alert.alert(track.name || "この曲", undefined, buttons);
+  };
+
+  /** ソートフィールド選択ダイアログを開く。 */
+  const openSortPicker = () => {
+    const buttons: Parameters<typeof Alert.alert>[2] = SORT_FIELDS.map((field) => ({
+      text:
+        trackSort.field === field
+          ? `✓ ${SORT_FIELD_LABELS[field]}`
+          : SORT_FIELD_LABELS[field],
+      onPress: () => setTrackSort({ field, order: trackSort.order }),
+    }));
+    buttons.push({ text: "キャンセル", style: "cancel" });
+    Alert.alert("並び順", undefined, buttons);
+  };
+
+  /** asc/desc トグル。 */
+  const toggleOrder = () => {
+    setTrackSort({ field: trackSort.field, order: trackSort.order === "asc" ? "desc" : "asc" });
   };
 
   const searchPlaceholder =
@@ -136,6 +176,26 @@ export default function LibraryScreen() {
       {mode === "tracks" ? (
         <>
           <GenreChips genres={genresQuery.data ?? []} selected={genre} onSelect={setGenre} />
+
+          {/* 曲モードのソートコントロール */}
+          <View style={styles.sortBar}>
+            <Pressable
+              onPress={openSortPicker}
+              accessibilityRole="button"
+              accessibilityLabel="ソートフィールドを選択"
+              style={({ pressed }) => [styles.sortFieldBtn, pressed && styles.pressed]}
+            >
+              <Ionicons name="swap-vertical" size={15} color={PALETTE.textDim} />
+              <Text style={styles.sortFieldText}>{SORT_FIELD_LABELS[trackSort.field]}</Text>
+            </Pressable>
+            <IconButton
+              name={trackSort.order === "asc" ? "arrow-up" : "arrow-down"}
+              onPress={toggleOrder}
+              size={16}
+              color={PALETTE.textDim}
+              accessibilityLabel={trackSort.order === "asc" ? "昇順" : "降順"}
+            />
+          </View>
 
           <FlatList
             ref={listRef}
@@ -300,6 +360,31 @@ const styles = StyleSheet.create({
     color: PALETTE.text,
     fontSize: 15,
     padding: 0,
+  },
+  sortBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginHorizontal: 16,
+    marginTop: 4,
+  },
+  sortFieldBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    backgroundColor: PALETTE.surface,
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+  },
+  sortFieldText: {
+    color: PALETTE.textDim,
+    fontSize: 13,
+  },
+  pressed: {
+    opacity: 0.7,
   },
   listContent: {
     paddingBottom: 96,

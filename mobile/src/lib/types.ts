@@ -129,6 +129,11 @@ export interface TracksQuery {
   order?: string;
 }
 
+export type TrackMetaField = "bpm" | "year" | "genre" | "rating" | "playCount";
+export type SortField = "name" | "artist" | "album" | "year" | "rating" | "playCount" | "bpm" | "dateAdded";
+export type SortOrder = "asc" | "desc";
+export interface TrackSort { field: SortField; order: SortOrder; }
+
 /** オフラインダウンロードの音質。`original` は無変換、それ以外は AAC への再エンコード。 */
 export type DownloadQuality = "original" | "aac256" | "aac192" | "aac128";
 

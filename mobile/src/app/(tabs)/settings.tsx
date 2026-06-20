@@ -9,6 +9,7 @@ import { Pressable, ScrollView, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 import Screen from "@/components/Screen";
+import type { TrackMetaField } from "@/lib/types";
 import QualityPicker from "@/features/offline/QualityPicker";
 import { formatBytes } from "@/features/offline/format";
 import { BRAND, PALETTE } from "@/constants/brand";
@@ -31,6 +32,14 @@ const STATUS_LABEL: Record<string, string> = {
   error: "エラー",
 };
 
+const META_FIELD_OPTIONS: { field: TrackMetaField; label: string }[] = [
+  { field: "bpm", label: "BPM" },
+  { field: "year", label: "年" },
+  { field: "genre", label: "ジャンル" },
+  { field: "rating", label: "レート" },
+  { field: "playCount", label: "再生回数" },
+];
+
 export default function SettingsScreen() {
   const router = useRouter();
   const baseUrl = useConnection((s) => s.baseUrl);
@@ -45,6 +54,8 @@ export default function SettingsScreen() {
   // オフライン関連ストア。
   const downloadQuality = useSettings((s) => s.downloadQuality);
   const setDownloadQuality = useSettings((s) => s.setDownloadQuality);
+  const rowMetaFields = useSettings((s) => s.rowMetaFields);
+  const toggleRowMetaField = useSettings((s) => s.toggleRowMetaField);
   const downloadEntries = useDownloads((s) => s.entries);
   const downloadCount = Object.keys(downloadEntries).length;
   const downloadBytes = Object.values(downloadEntries).reduce(
@@ -194,6 +205,27 @@ export default function SettingsScreen() {
             <Ionicons name="chevron-forward" size={18} color={PALETTE.textDim} />
           </Pressable>
         </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>行に表示する情報</Text>
+          <View style={styles.chipRow}>
+            {META_FIELD_OPTIONS.map(({ field, label }) => {
+              const active = rowMetaFields.includes(field);
+              return (
+                <Pressable
+                  key={field}
+                  onPress={() => toggleRowMetaField(field)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: active }}
+                  accessibilityLabel={label}
+                  style={[styles.chip, active && styles.chipActive]}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
       </ScrollView>
     </Screen>
   );
@@ -329,5 +361,31 @@ const styles = StyleSheet.create({
     color: PALETTE.textDim,
     fontSize: 13,
     marginTop: 2,
+  },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 4,
+  },
+  chip: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+    backgroundColor: PALETTE.surfaceAlt,
+  },
+  chipActive: {
+    backgroundColor: PALETTE.accent,
+    borderColor: PALETTE.accent,
+  },
+  chipText: {
+    color: PALETTE.textDim,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  chipTextActive: {
+    color: BRAND.accentText,
   },
 });

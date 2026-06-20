@@ -1,6 +1,6 @@
 // 表示用の純粋関数群（UI から切り離してテストしやすくする）。
 
-import type { Track } from "@/lib/types";
+import type { Track, TrackMetaField } from "@/lib/types";
 
 /** ミリ秒を mm:ss / h:mm:ss に整形。null/負値は "0:00"。 */
 export function formatDuration(ms: number | null | undefined): string {
@@ -51,4 +51,27 @@ export function trackSubtitle(t: Pick<Track, "artist" | "albumArtist" | "album">
   const album = t.album || "";
   if (artist && album) return `${artist} — ${album}`;
   return artist || album || "Unknown Artist";
+}
+
+/** 指定フィールドのメタテキストを生成する。値がない場合は null を返す。 */
+export function trackMetaText(
+  track: Pick<Track, "bpm" | "year" | "genre" | "rating" | "playCount">,
+  field: TrackMetaField,
+): string | null {
+  switch (field) {
+    case "bpm":
+      return track.bpm != null ? `${track.bpm} BPM` : null;
+    case "year":
+      return track.year != null ? `${track.year}` : null;
+    case "genre":
+      return track.genre || null;
+    case "rating": {
+      const stars = ratingToStars(track.rating);
+      return stars > 0 ? "★".repeat(stars) : null;
+    }
+    case "playCount":
+      return track.playCount != null && track.playCount > 0
+        ? `▶ ${track.playCount}`
+        : null;
+  }
 }
