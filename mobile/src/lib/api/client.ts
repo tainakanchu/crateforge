@@ -5,6 +5,7 @@
 // React Native の URL/searchParams 実装は不完全なので、クエリ文字列は手組みする。
 
 import type {
+  Album,
   DownloadQuality,
   GenreTagCount,
   Health,
@@ -147,6 +148,9 @@ export class ApiClient {
   }
   genres(): Promise<GenreTagCount[]> {
     return this.get<GenreTagCount[]>("/api/genres");
+  }
+  albums(): Promise<Album[]> {
+    return this.get<Album[]>("/api/albums");
   }
   playlists(): Promise<Playlist[]> {
     return this.get<Playlist[]>("/api/playlists");

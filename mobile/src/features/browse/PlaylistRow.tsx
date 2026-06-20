@@ -35,8 +35,8 @@ export default function PlaylistRow({ playlist, onPress }: PlaylistRowProps) {
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
           {playlist.isFolder ? "フォルダ" : playlist.isSmart ? "スマート" : "プレイリスト"}
-          {" ・ "}
-          {playlist.trackCount}曲
+          {/* フォルダは曲数を持たない（子を含む）ので曲数は出さない。 */}
+          {playlist.isFolder ? null : ` ・ ${playlist.trackCount}曲`}
         </Text>
       </View>
       <Ionicons name="chevron-forward" size={18} color={PALETTE.textFaint} />

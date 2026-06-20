@@ -5,6 +5,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import type {
+  Album,
   GenreTagCount,
   Playlist,
   PlaylistDetail,
@@ -13,6 +14,9 @@ import type {
   TracksQuery,
 } from "@/lib/types";
 import { useConnection } from "@/store/connection";
+
+/** 大規模ライブラリでも全件取得（仮想リスト前提）。500/200 上限の撤廃。 */
+export const BROWSE_LIMIT = 100000;
 
 /** 曲一覧（検索/ジャンル等のクエリで絞り込み）。 */
 export function useTracks(query?: TracksQuery) {
@@ -60,7 +64,27 @@ export function usePlaylistTracks(playlistId: number) {
   return useQuery<Track[]>({
     queryKey: ["playlist-tracks", playlistId],
     enabled: !!client,
-    queryFn: () => client!.playlistTracks(playlistId),
+    queryFn: () => client!.playlistTracks(playlistId, { limit: BROWSE_LIMIT }),
+  });
+}
+
+/** アルバム一覧（distinct）。 */
+export function useAlbums() {
+  const client = useConnection((s) => s.client);
+  return useQuery<Album[]>({
+    queryKey: ["albums"],
+    enabled: !!client,
+    queryFn: () => client!.albums(),
+  });
+}
+
+/** 指定アルバムの曲（album が null のときは無効）。 */
+export function useAlbumTracks(album: string | null) {
+  const client = useConnection((s) => s.client);
+  return useQuery<Track[]>({
+    queryKey: ["album-tracks", album],
+    enabled: !!client && album != null,
+    queryFn: () => client!.listTracks({ album: album!, limit: BROWSE_LIMIT }),
   });
 }
 

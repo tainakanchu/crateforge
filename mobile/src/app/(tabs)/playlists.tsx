@@ -1,6 +1,6 @@
-// Playlists タブ。プレイリストを縦に一覧する読みやすいリスト。
-// 各行: 名前（太字）+ 曲数 + スマート/フォルダのアイコン。タップで詳細へ。
-// 横スクロールの PlaylistsBar を置き換える。
+// Playlists タブ。フォルダ階層のルート項目だけを縦に一覧する。
+// 各行: 名前（太字）+ 種別/曲数 + アイコン。フォルダはフォルダ画面へ、プレイリストは詳細へ遷移。
+// フォルダは子を含むので trackCount で落とさない。空のプレイリスト（非フォルダ）だけ間引く。
 
 import { useMemo } from "react";
 import { FlatList } from "react-native";
@@ -11,6 +11,7 @@ import Screen from "@/components/Screen";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { useConnection } from "@/store/connection";
 import { usePlaylists } from "@/features/browse/hooks";
+import { rootItems } from "@/features/browse/playlistTree";
 import PlaylistRow from "@/features/browse/PlaylistRow";
 
 export default function PlaylistsScreen() {
@@ -18,12 +19,21 @@ export default function PlaylistsScreen() {
   const client = useConnection((s) => s.client);
   const query = usePlaylists();
 
-  // フォルダ自身は曲を持たないので、中身のあるプレイリストとフォルダだけを残す。
-  // 空フォルダ（trackCount 0）はノイズになるので除外する。
+  // 階層のルート項目だけを表示する。フォルダは中身を持つので残し、
+  // 空の通常プレイリスト（trackCount 0）だけノイズとして間引く。
   const rows = useMemo(() => {
     const all = query.data ?? [];
-    return all.filter((p) => (p.isFolder ? p.trackCount > 0 : true));
+    return rootItems(all).filter((p) => (p.isFolder ? true : p.trackCount > 0));
   }, [query.data]);
+
+  const onPress = (p: Playlist) => {
+    if (p.isFolder) {
+      const pid = p.persistentId ?? String(p.playlistId);
+      router.push(`/folder/${encodeURIComponent(pid)}`);
+    } else {
+      router.push(`/playlist/${p.playlistId}`);
+    }
+  };
 
   if (!client) {
     return (
@@ -39,10 +49,7 @@ export default function PlaylistsScreen() {
         data={rows}
         keyExtractor={(p) => String(p.playlistId)}
         renderItem={({ item }: { item: Playlist }) => (
-          <PlaylistRow
-            playlist={item}
-            onPress={() => router.push(`/playlist/${item.playlistId}`)}
-          />
+          <PlaylistRow playlist={item} onPress={() => onPress(item)} />
         )}
         ListEmptyComponent={
           query.isLoading ? (

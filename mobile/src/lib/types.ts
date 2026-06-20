@@ -61,6 +61,14 @@ export interface GenreTagCount {
   count: number;
 }
 
+/** `GET /api/albums` の 1 件（distinct アルバム）。sampleTrackId はアートワーク取得用の代表トラック。 */
+export interface Album {
+  album: string;
+  albumArtist: string | null;
+  trackCount: number;
+  sampleTrackId: number;
+}
+
 /** デスクトップ側の再生状態（`/api/remote/state`）。 */
 export interface PlaybackState {
   isPlaying: boolean;
