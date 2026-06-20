@@ -23,6 +23,7 @@
     "expo-status-bar": "~56.0.4",
     "expo-symbols": "~56.0.6",
     "expo-system-ui": "~56.0.5",
+    "expo-updates": "~56.0.19",
     "expo-web-browser": "~56.0.5",
     "jest-expo": "~56.0.5",
     "react": "19.2.3",
@@ -59,7 +60,9 @@
     "eas:whoami": "eas whoami",
     "eas:init": "eas init",
     "build:android": "eas build --platform android --profile preview",
-    "build:android:prod": "eas build --platform android --profile production"
+    "build:android:prod": "eas build --platform android --profile production",
+    "ota:preview": "eas update --branch preview",
+    "ota:prod": "eas update --branch production"
   },
   "jest": {
     "preset": "jest-expo",

@@ -22,6 +22,13 @@ const config: ExpoConfig = {
   icon: "./assets/images/icon.png",
   scheme: "crateforge",
   userInterfaceStyle: "dark",
+  // EAS Update（OTA）。JS/アセットの変更は再ビルド無しで配信。
+  // fingerprint ポリシー = ネイティブ構成のフィンガープリントから runtimeVersion を自動算出し、
+  // ネイティブが変わった時だけ OTA を無効化（=再ビルド必須）にする安全な方式。
+  runtimeVersion: { policy: "fingerprint" },
+  updates: {
+    url: "https://u.expo.dev/e7530a3f-f8cd-4569-a543-58469097cb3e",
+  },
   ios: {
     bundleIdentifier: "com.tainakanchu.crateforge",
     supportsTablet: true,
