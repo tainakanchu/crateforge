@@ -121,11 +121,18 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       setApiStatus(s);
       setPortInput(String(s.port));
     }).catch(() => {});
-    // フォント設定の初期読み込み。
-    fontsApi.listSystemFonts().then(setFontList).catch(() => setFontList([]));
+    // フォント設定の初期読み込み（重い OS フォント列挙 listSystemFonts は
+    // 「表示(fonts)」セクションを開いた時に遅延ロードする＝設定を開くだけでは走らせない）。
     fontsApi.getUiFont().then((f) => setUiFont(f ?? "")).catch(() => setUiFont(""));
     fontsApi.cjkFontStatus().then(setCjkStatus).catch(() => setCjkStatus(null));
   }, [refreshFfmpeg]);
+
+  // OS フォント全列挙は重いので、fonts セクションを開いた時に一度だけ読み込む。
+  useEffect(() => {
+    if (section === "fonts" && fontList.length === 0) {
+      fontsApi.listSystemFonts().then(setFontList).catch(() => setFontList([]));
+    }
+  }, [section, fontList.length]);
 
   // ffmpeg 取得の進捗購読。
   useEffect(() => {
