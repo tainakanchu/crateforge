@@ -10,6 +10,24 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.8.0] - 2026-06-21
+
+### 日本語
+
+#### 追加
+- **モバイル / Android TV クライアント向けに内蔵 HTTP API を拡張**（クライアント本体は EAS で別途配布）。(#56, #57)
+  - `GET /api/albums`（アルバム一覧）。`GET /api/tracks` に `?album` / `?artist` 部分一致フィルタを追加。
+  - `GET /api/tracks/{id}/stream` にクライアント向けパラメータ：`?native=1`（端末が再生できる形式は無変換で配信＝ALAC/FLAC 等をロスレスのまま）・`?original=1`（常に原本）・`?fmt=aac&br=N`（AAC-LC へ再エンコード。オフライン保存の容量節約用）。
+  - **デバイスペアリング**：`POST /api/pair/start`・`GET /api/pair/poll`（いずれも token 不要）＋設定に「端末を承認」UI。カメラの無い端末（Android TV 等）が長いトークンを手入力せずに接続できます。
+
+### English
+
+#### Added
+- **Extended the built-in HTTP API for the mobile / Android TV clients** (the client apps ship separately via EAS). (#56, #57)
+  - `GET /api/albums` (album list); `?album` / `?artist` substring filters on `GET /api/tracks`.
+  - Client-aware streaming on `GET /api/tracks/{id}/stream`: `?native=1` (serve original bytes for device-playable formats — ALAC/FLAC stay lossless), `?original=1` (always original), `?fmt=aac&br=N` (transcode to AAC-LC for compact offline downloads).
+  - **Device pairing**: `POST /api/pair/start` + `GET /api/pair/poll` (no token) plus an "approve device" UI in Settings, so cameraless devices (Android TV, etc.) can connect without typing a long token.
+
 ## [v0.7.1] - 2026-06-20
 
 ### 日本語
