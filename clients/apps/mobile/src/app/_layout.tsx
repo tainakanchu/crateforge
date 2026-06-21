@@ -64,8 +64,14 @@ export default function RootLayout() {
             maxAge: 24 * 60 * 60 * 1000, // 24時間でディスクキャッシュ破棄
             buster: "v1", // 破壊的変更時にここを変えてキャッシュを無効化
             dehydrateOptions: {
-              // 成功クエリのみ永続化（loading/error は保存しない）
-              shouldDehydrateQuery: (q) => q.state.status === "success",
+              // 永続化は「小さく・再起動時に即出したい」クエリだけに限定する。
+              // 全曲リスト(["tracks",{limit}]) は数万件になり得て、丸ごと同期 file.write すると
+              // メインスレッドが固まる（= アプリが激重になる原因）。これは永続化しない。
+              shouldDehydrateQuery: (q) => {
+                if (q.state.status !== "success") return false;
+                const key = q.queryKey[0];
+                return key === "genres" || key === "playlists" || key === "albums";
+              },
             },
           }}
         >

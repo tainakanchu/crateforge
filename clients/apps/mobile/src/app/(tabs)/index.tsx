@@ -57,16 +57,20 @@ export default function LibraryScreen() {
   const trackSort = useSettings((s) => s.trackSort);
   const setTrackSort = useSettings((s) => s.setTrackSort);
 
-  const tracksQuery = useTracks({
-    q: debounced || undefined,
-    genre: genre ?? undefined,
-    limit: BROWSE_LIMIT,
-    sort: trackSort.field,
-    order: trackSort.order,
-  });
+  // アクティブなモードだけ取得する（既定アルバム時に全曲フェッチしない＝重さ回避）。
+  const tracksQuery = useTracks(
+    {
+      q: debounced || undefined,
+      genre: genre ?? undefined,
+      limit: BROWSE_LIMIT,
+      sort: trackSort.field,
+      order: trackSort.order,
+    },
+    mode === "tracks",
+  );
   const genresQuery = useGenres();
-  const albumsQuery = useAlbums();
-  const artistsQuery = useArtists();
+  const albumsQuery = useAlbums(mode === "albums");
+  const artistsQuery = useArtists(mode === "artists");
 
   const tracks = tracksQuery.data ?? [];
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);

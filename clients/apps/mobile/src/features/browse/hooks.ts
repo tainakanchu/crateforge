@@ -9,12 +9,12 @@ import { type Album, type Artist, type GenreTagCount, type Playlist, type Playli
 /** 大規模ライブラリでも全件取得（仮想リスト前提）。500/200 上限の撤廃。 */
 export const BROWSE_LIMIT = 100000;
 
-/** 曲一覧（検索/ジャンル等のクエリで絞り込み）。 */
-export function useTracks(query?: TracksQuery) {
+/** 曲一覧（検索/ジャンル等のクエリで絞り込み）。enabled=false で取得抑止（非表示モード時）。 */
+export function useTracks(query?: TracksQuery, enabled = true) {
   const client = useConnection((s) => s.client);
   return useQuery<Track[]>({
     queryKey: ["tracks", query ?? {}],
-    enabled: !!client,
+    enabled: !!client && enabled,
     queryFn: ({ signal }) => client!.listTracks(query, signal),
   });
 }
@@ -59,12 +59,12 @@ export function usePlaylistTracks(playlistId: number) {
   });
 }
 
-/** アルバム一覧（distinct）。 */
-export function useAlbums() {
+/** アルバム一覧（distinct）。enabled=false で取得抑止。 */
+export function useAlbums(enabled = true) {
   const client = useConnection((s) => s.client);
   return useQuery<Album[]>({
     queryKey: ["albums"],
-    enabled: !!client,
+    enabled: !!client && enabled,
     queryFn: () => client!.albums(),
   });
 }
@@ -79,12 +79,12 @@ export function useAlbumTracks(album: string | null) {
   });
 }
 
-/** アーティスト一覧（クライアント側で全曲から集計）。 */
-export function useArtists() {
+/** アーティスト一覧（クライアント側で全曲から集計）。enabled=false で取得抑止。 */
+export function useArtists(enabled = true) {
   const client = useConnection((s) => s.client);
   return useQuery<Track[], Error, Artist[]>({
     queryKey: ["tracks", { limit: BROWSE_LIMIT }],
-    enabled: !!client,
+    enabled: !!client && enabled,
     queryFn: ({ signal }) => client!.listTracks({ limit: BROWSE_LIMIT }, signal),
     select: (tracks: Track[]): Artist[] => {
       const map = new Map<string, { trackCount: number; sampleTrackId: number }>();
