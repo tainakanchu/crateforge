@@ -1,8 +1,20 @@
 use rusqlite::{params, Result};
+use serde::Serialize;
 
 use super::Database;
 use crate::itunes_xml::parser::RawTrack;
 use crate::models::{GenreTagCount, Track, TrackEdit};
+
+/// `/api/albums` で返す、ライブラリ内の distinct なアルバム 1 件分の情報。
+/// `sample_track_id` はアートワーク表示用の代表トラック (アルバム内最小 track_id)。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlbumInfo {
+    pub album: String,
+    pub album_artist: Option<String>,
+    pub track_count: i64,
+    pub sample_track_id: i64,
+}
 
 /// 既存 genre 文字列 (空白区切り) に tag を追加。重複は無視。
 fn merge_tag(current: &str, tag: &str) -> String {
@@ -619,6 +631,25 @@ impl Database {
         Ok(out)
     }
 
+    /// ライブラリ内の distinct なアルバム一覧を album 名 (NOCASE) 昇順で返す。
+    /// album が NULL/空 の曲は除外。`sample_track_id` はアルバム内最小 track_id (代表曲)。
+    pub fn get_albums(&self) -> Result<Vec<AlbumInfo>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT album, MAX(album_artist), COUNT(*), MIN(track_id) FROM tracks
+             WHERE album IS NOT NULL AND album != '' GROUP BY album ORDER BY album COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(AlbumInfo {
+                // WHERE 句で album の非 NULL を保証済み。
+                album: r.get(0)?,
+                album_artist: r.get(1)?,
+                track_count: r.get(2)?,
+                sample_track_id: r.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     pub fn add_recent_track(&self, track_id: i64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO recent_tracks (track_id) VALUES (?1)",
@@ -730,6 +761,45 @@ pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
 #[cfg(test)]
 mod tests {
     use super::common_dir_prefix;
+    use crate::db::Database;
+
+    /// get_albums は album ごとに distinct 集約し、track_count と最小 track_id を返す。
+    /// album が NULL/空 の曲は除外し、album 名 (NOCASE) 昇順で並ぶ。
+    #[test]
+    fn get_albums_groups_by_album() {
+        let db = Database::open_memory().unwrap();
+        let rows = [
+            // (track_id, album, album_artist)
+            (10, Some("Beta"), Some("AA1")),
+            (11, Some("Beta"), Some("AA1")),
+            (12, Some("alpha"), Some("AA2")),
+            (13, Some(""), None),  // 空 album → 除外
+            (14, None, None),      // NULL album → 除外
+        ];
+        for (tid, album, aa) in rows {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, album, album_artist, file_exists)
+                     VALUES (?1, ?2, ?3, ?4, 1)",
+                    rusqlite::params![tid, format!("t{tid}"), album, aa],
+                )
+                .unwrap();
+        }
+
+        let albums = db.get_albums().unwrap();
+        // distinct な album は 2 件 ("alpha", "Beta")。NOCASE 昇順なので alpha が先。
+        assert_eq!(albums.len(), 2);
+        assert_eq!(albums[0].album, "alpha");
+        assert_eq!(albums[0].track_count, 1);
+        assert_eq!(albums[0].sample_track_id, 12);
+        assert_eq!(albums[0].album_artist.as_deref(), Some("AA2"));
+
+        assert_eq!(albums[1].album, "Beta");
+        assert_eq!(albums[1].track_count, 2);
+        // 同一 album 内の最小 track_id が代表曲。
+        assert_eq!(albums[1].sample_track_id, 10);
+        assert_eq!(albums[1].album_artist.as_deref(), Some("AA1"));
+    }
 
     #[test]
     fn windows_library_root() {

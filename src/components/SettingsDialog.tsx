@@ -78,6 +78,11 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   // LAN 公開のおすすめ接続先 QR コード（SVG 文字列）
   const [qrSvg, setQrSvg] = useState<string>("");
+  // ペアリング UI
+  const [pairingCode, setPairingCode] = useState<string>("");
+  const [pairingMsg, setPairingMsg] = useState<{ type: "ok" | "err" | "info"; text: string } | null>(null);
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [pendingPairings, setPendingPairings] = useState<serverApi.PairingInfo[]>([]);
 
   // fonts
   const [fontList, setFontList] = useState<string[]>([]);
@@ -237,6 +242,50 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       alert(`トークンの再生成に失敗しました: ${err}`);
     }
   }, []);
+
+  // ペアリングコード承認。
+  const handleApprovePairing = useCallback(async () => {
+    const code = pairingCode.trim();
+    if (!code) {
+      setPairingMsg({ type: "err", text: "コードを入力してください。" });
+      return;
+    }
+    setPairingBusy(true);
+    setPairingMsg(null);
+    try {
+      const ok = await serverApi.approvePairing(code);
+      if (ok) {
+        setPairingMsg({ type: "ok", text: "承認しました。端末がトークンを受け取ります。" });
+        setPairingCode("");
+        // 承認後にリストを更新。
+        const list = await serverApi.listPendingPairings().catch(() => []);
+        setPendingPairings(list);
+      } else {
+        setPairingMsg({ type: "err", text: "コードが見つかりません。期限切れか、入力ミスの可能性があります。" });
+      }
+    } catch (err) {
+      setPairingMsg({ type: "err", text: `承認に失敗しました: ${err}` });
+    } finally {
+      setPairingBusy(false);
+    }
+  }, [pairingCode]);
+
+  // ペアリング待ち端末一覧を更新。
+  const refreshPendingPairings = useCallback(async () => {
+    try {
+      const list = await serverApi.listPendingPairings();
+      setPendingPairings(list);
+    } catch {
+      setPendingPairings([]);
+    }
+  }, []);
+
+  // API セクションを開いたときに待ち端末リストを取得。
+  useEffect(() => {
+    if (section === "api" && apiStatus?.lanEnabled && apiStatus.running) {
+      refreshPendingPairings();
+    }
+  }, [section, apiStatus?.lanEnabled, apiStatus?.running, refreshPendingPairings]);
 
   // URL をクリップボードにコピーし、一時的に「コピーしました」を表示。
   const handleCopyUrl = useCallback((url: string) => {
@@ -795,6 +844,74 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                         同じネットワークの端末からアクセスできます。信頼できる Wi-Fi のみで有効にしてください。通信は暗号化されません（HTTP）。
                       </span>
                     </div>
+
+                    {/* ペアリングセクション */}
+                    <div className="settings-sectitle">端末をペアリング</div>
+
+                    <div className="settings-note">
+                      <Icon name="info" size={14} />
+                      <span>
+                        TV やモバイル端末の画面に表示された 6 文字のコードを入力して「承認」してください。端末がトークンを自動取得し、トークンなしで操作できます。
+                      </span>
+                    </div>
+
+                    <Row title="ペアリングコード" desc="端末の画面に表示されたコードを入力して承認します。">
+                      <div className="settings-pathrow">
+                        <input
+                          type="text"
+                          maxLength={8}
+                          placeholder="例: AB2C3D"
+                          value={pairingCode}
+                          onChange={(e) => {
+                            setPairingCode(e.target.value.toUpperCase());
+                            setPairingMsg(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !pairingBusy) handleApprovePairing();
+                          }}
+                          style={{ width: 110, textTransform: "uppercase", fontFamily: "monospace", letterSpacing: "0.1em" }}
+                        />
+                        <button
+                          className="toolbar-btn primary"
+                          onClick={handleApprovePairing}
+                          disabled={pairingBusy || !pairingCode.trim()}
+                        >
+                          <Icon name="check" size={14} /> 承認
+                        </button>
+                      </div>
+                    </Row>
+
+                    {pairingMsg && (
+                      <div className={`settings-note${pairingMsg.type === "err" ? " warn" : ""}`}>
+                        <Icon name={pairingMsg.type === "ok" ? "check" : "warning"} size={14} />
+                        <span>{pairingMsg.text}</span>
+                      </div>
+                    )}
+
+                    {pendingPairings.length > 0 && (
+                      <>
+                        <div style={{ marginTop: 8, fontSize: "0.85em", opacity: 0.7 }}>
+                          承認待ちの端末（{pendingPairings.length} 件）：
+                        </div>
+                        {pendingPairings.map((p) => (
+                          <div key={p.code} className="settings-kv" style={{ marginTop: 4 }}>
+                            <span className="k mono" style={{ fontFamily: "monospace", letterSpacing: "0.1em" }}>
+                              {p.code}
+                            </span>
+                            <span style={{ fontSize: "0.85em", opacity: 0.6 }}>
+                              {Math.round(p.ageSecs / 60)} 分前にリクエスト
+                            </span>
+                          </div>
+                        ))}
+                        <button
+                          className="toolbar-btn"
+                          onClick={refreshPendingPairings}
+                          style={{ marginTop: 4, alignSelf: "flex-start" }}
+                        >
+                          更新
+                        </button>
+                      </>
+                    )}
                   </>
                 )}
               </>

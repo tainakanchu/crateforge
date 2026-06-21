@@ -14,6 +14,7 @@ mod logging;
 mod metadata;
 mod models;
 mod organizer;
+mod pairing;
 mod playlist_rules;
 mod smart;
 mod smtc;
@@ -40,6 +41,8 @@ pub fn run() {
     let smtc_state = Mutex::new(smtc::SmtcState::new());
     // 内蔵 API サーバーの稼働ハンドル。setup / コマンドから差し替える。
     let api_server: Mutex<Option<api::ServerControl>> = Mutex::new(None);
+    // デバイスペアリング レジストリ。axum ハンドラと Tauri コマンドで共有する。
+    let pairing_registry = pairing::PairingRegistry::default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -106,6 +109,7 @@ pub fn run() {
         .manage(audio_player)
         .manage(smtc_state)
         .manage(api_server)
+        .manage(pairing_registry)
         .setup(|app| {
             // クラッシュ痕跡を残すためのファイルロガー + panic フックを最初に仕込む
             // (GUI 起動で stderr が残らない。panic=abort でも abort 前にフックが走る)。
@@ -136,7 +140,8 @@ pub fn run() {
             // bind 失敗 (ポート使用中など) は非致命: 警告だけ出して起動はブロックしない。
             {
                 let server_state = app.state::<Mutex<Option<api::ServerControl>>>();
-                if let Err(e) = commands::api::start_if_enabled(app.handle(), &server_state) {
+                let pairing_reg = app.state::<pairing::PairingRegistry>();
+                if let Err(e) = commands::api::start_if_enabled(app.handle(), &server_state, &pairing_reg) {
                     eprintln!("API server auto-start failed (non-fatal): {}", e);
                     logging::write_line("warn", &format!("API server auto-start failed (non-fatal): {}", e));
                 }
@@ -235,6 +240,9 @@ pub fn run() {
             commands::api::set_api_lan_enabled,
             commands::api::regenerate_api_token,
             commands::api::lan_qr_svg,
+            // デバイスペアリング
+            commands::pairing::approve_pairing,
+            commands::pairing::list_pending_pairings,
             // フォント
             commands::fonts::list_system_fonts,
             commands::fonts::get_ui_font,

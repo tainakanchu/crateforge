@@ -19,6 +19,7 @@ use tauri::Manager;
 use super::error::ApiError;
 use super::ApiState;
 use crate::analyzer::similarity::{rank_similar, SimilarOpts};
+use crate::db::tracks::AlbumInfo;
 use crate::models::{GenreTagCount, LibraryStats, Playlist, SimilarHit, Track, TrackAnalysis};
 
 /// `get_tracks` / `search_tracks` は `limit: i64` を直値で要求する。
@@ -50,6 +51,8 @@ pub struct TracksQuery {
     pub rating_max: Option<i64>,
     /// genre 部分一致 (小文字化して比較)。
     pub genre: Option<String>,
+    /// album 部分一致 (小文字化して比較)。
+    pub album: Option<String>,
     /// year 下限。
     pub year_from: Option<i64>,
     /// year 上限。
@@ -97,6 +100,16 @@ pub async fn list_tracks(
             t.genre
                 .as_deref()
                 .map(|g| g.to_lowercase().contains(&needle))
+                .unwrap_or(false)
+        });
+    }
+    // album: genre と同様に小文字化して部分一致。
+    if let Some(album) = q.album.as_deref() {
+        let needle = album.to_lowercase();
+        tracks.retain(|t| {
+            t.album
+                .as_deref()
+                .map(|a| a.to_lowercase().contains(&needle))
                 .unwrap_or(false)
         });
     }
@@ -226,6 +239,11 @@ pub async fn get_genres(
 ) -> Result<Json<Vec<GenreTagCount>>, ApiError> {
     let db = state.db()?;
     Ok(Json(db.get_all_genre_tags()?))
+}
+
+/// `GET /api/albums` — distinct なアルバム一覧 (album 名昇順)。
+pub async fn get_albums(State(state): State<ApiState>) -> Result<Json<Vec<AlbumInfo>>, ApiError> {
+    Ok(Json(state.db()?.get_albums()?))
 }
 
 /// `GET /api/playlists` — 全プレイリスト。
@@ -470,11 +488,105 @@ pub fn is_browser_native(ext: &str) -> bool {
     matches!(ext, "mp3" | "m4a" | "mp4" | "aac" | "m4b" | "ogg" | "oga" | "opus" | "flac" | "wav" | "weba" | "webm")
 }
 
+/// モバイル端末 (iOS/Android のネイティブプレイヤー) がそのまま再生できる拡張子か。
+/// ブラウザネイティブに加え、AIFF 系 / ALAC / CAF を端末側で直再生できる。
+pub fn is_device_native(ext: &str) -> bool {
+    is_browser_native(ext) || matches!(ext, "aiff" | "aif" | "aifc" | "alac" | "caf")
+}
+
+/// `GET /api/tracks/{trackId}/stream` のクエリパラメータ (すべて任意, camelCase)。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamQuery {
+    /// "aac" を指定すると AAC へトランスコードして配信する。
+    pub fmt: Option<String>,
+    /// AAC ビットレート (kbps)。64..320 にクランプ。既定 192。
+    pub br: Option<u32>,
+    /// 端末ネイティブ判定で配信する (オフライン保存等。RN/モバイル向け)。
+    pub native: Option<bool>,
+    /// 強制的に原本バイトを配信する (トランスコードしない)。
+    pub original: Option<bool>,
+}
+
+/// ストリーム配信モード。原本配信か、指定ビットレートの AAC トランスコードか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamMode {
+    /// 原本バイトをそのまま配信 (ServeFile)。
+    Original,
+    /// AAC へトランスコード (引数はビットレート kbps)。
+    Aac(u32),
+}
+
+/// クエリパラメータと拡張子から配信モードを純粋に決定する (テスト可能)。
+/// 優先順位:
+/// 1. fmt=aac        → 常に AAC (br を 64..320 にクランプ、既定 192)。
+/// 2. original=true  → 原本配信 (拡張子問わず)。
+/// 3. native=true    → 端末ネイティブなら原本、そうでなければ AAC(192)。
+/// 4. 既定 (ブラウザ) → ブラウザネイティブなら原本、そうでなければ AAC(192)。
+pub fn decide_stream_mode(
+    ext: &str,
+    fmt: Option<&str>,
+    br: Option<u32>,
+    native: bool,
+    original: bool,
+) -> StreamMode {
+    if fmt == Some("aac") {
+        return StreamMode::Aac(br.unwrap_or(192).clamp(64, 320));
+    }
+    if original {
+        return StreamMode::Original;
+    }
+    if native {
+        return if is_device_native(ext) {
+            StreamMode::Original
+        } else {
+            StreamMode::Aac(192)
+        };
+    }
+    if is_browser_native(ext) {
+        StreamMode::Original
+    } else {
+        StreamMode::Aac(192)
+    }
+}
+
+/// ffmpeg で音声ファイルを AAC (ADTS) へトランスコードしてバイト列を返す。
+/// 既存の "-c:a aac -b:a {br}k -f adts -" パイプラインを共通化したもの。
+async fn transcode_aac(
+    ffmpeg_path: &std::path::Path,
+    path_str: &str,
+    br_kbps: u32,
+) -> Result<Vec<u8>, ApiError> {
+    use tokio::io::AsyncReadExt;
+
+    let bitrate = format!("{br_kbps}k");
+    let mut child = tokio::process::Command::new(ffmpeg_path)
+        .args([
+            "-hide_banner", "-loglevel", "error",
+            "-i", path_str,
+            "-vn", "-c:a", "aac", "-b:a", &bitrate, "-f", "adts", "-",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut stdout = child.stdout.take()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no stdout from ffmpeg"))?;
+    let mut buf = Vec::new();
+    stdout.read_to_end(&mut buf).await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = child.wait().await;
+    Ok(buf)
+}
+
 /// `GET /api/tracks/{trackId}/stream` — 音声ファイルをストリーミング配信する。
-/// ブラウザがネイティブ再生できる形式はそのまま配信し、それ以外は ffmpeg で AAC にトランスコードする。
+/// クエリパラメータ (fmt/br/native/original) で配信モードを切り替える。
+/// パラメータが無い既定動作は従来どおり (ブラウザネイティブは原本、それ以外は AAC192)。
 pub async fn stream_track(
     State(state): State<ApiState>,
     Path(track_id): Path<i64>,
+    Query(q): Query<StreamQuery>,
     req: axum::extract::Request,
 ) -> Result<Response, ApiError> {
     let db = state.db()?;
@@ -497,50 +609,42 @@ pub async fn stream_track(
         .unwrap_or("")
         .to_lowercase();
 
-    if is_browser_native(&ext) {
-        // ブラウザネイティブ: tower-http ServeFile で Range リクエストも処理する。
-        use tower::util::ServiceExt;
-        use tower_http::services::ServeFile;
+    let mode = decide_stream_mode(
+        &ext,
+        q.fmt.as_deref(),
+        q.br,
+        q.native.unwrap_or(false),
+        q.original.unwrap_or(false),
+    );
 
-        let service = ServeFile::new(path_str);
-        let result = service.oneshot(req).await;
-        match result {
-            Ok(resp) => Ok(resp.map(axum::body::Body::new).into_response()),
-            Err(_) => Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to serve file")),
+    match mode {
+        StreamMode::Original => {
+            // 原本配信: tower-http ServeFile で Range リクエストも処理する。
+            use tower::util::ServiceExt;
+            use tower_http::services::ServeFile;
+
+            let service = ServeFile::new(path_str);
+            let result = service.oneshot(req).await;
+            match result {
+                Ok(resp) => Ok(resp.map(axum::body::Body::new).into_response()),
+                Err(_) => Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to serve file")),
+            }
         }
-    } else {
-        // 非ネイティブ形式: ffmpeg で AAC にトランスコードしてバッファリング配信する。
-        use tokio::io::AsyncReadExt;
+        StreamMode::Aac(br_kbps) => {
+            // AAC へトランスコードしてバッファリング配信する。
+            let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+            let ffmpeg_path = crate::ffmpeg::resolve(app)
+                .map(|(p, _)| p)
+                .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "ffmpeg not found"))?;
 
-        let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
-        let ffmpeg_path = crate::ffmpeg::resolve(app)
-            .map(|(p, _)| p)
-            .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "ffmpeg not found"))?;
+            let buf = transcode_aac(&ffmpeg_path, path_str, br_kbps).await?;
 
-        let mut child = tokio::process::Command::new(&ffmpeg_path)
-            .args([
-                "-hide_banner", "-loglevel", "error",
-                "-i", path_str,
-                "-vn", "-c:a", "aac", "-b:a", "192k", "-f", "adts", "-",
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        let stdout = child.stdout.take()
-            .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no stdout from ffmpeg"))?;
-        let mut buf = Vec::new();
-        let mut reader = stdout;
-        reader.read_to_end(&mut buf).await
-            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let _ = child.wait().await;
-
-        Ok(axum::response::Response::builder()
-            .header("content-type", "audio/aac")
-            .body(axum::body::Body::from(buf))
-            .unwrap()
-            .into_response())
+            Ok(axum::response::Response::builder()
+                .header("content-type", "audio/aac")
+                .body(axum::body::Body::from(buf))
+                .unwrap()
+                .into_response())
+        }
     }
 }
 
@@ -786,4 +890,111 @@ pub async fn patch_track(
     };
     state.notify_library_changed(None);
     Ok(Json(json!({ "track": track_val, "fileWriteFailed": file_failed })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== decide_stream_mode: fmt=aac は常に AAC (br クランプ) =====
+    #[test]
+    fn fmt_aac_forces_aac_with_clamped_br() {
+        // 既定 br=192。
+        assert_eq!(
+            decide_stream_mode("mp3", Some("aac"), None, false, false),
+            StreamMode::Aac(192)
+        );
+        // 指定 br はそのまま。
+        assert_eq!(
+            decide_stream_mode("flac", Some("aac"), Some(128), false, false),
+            StreamMode::Aac(128)
+        );
+        // 下限/上限へクランプ。
+        assert_eq!(
+            decide_stream_mode("wav", Some("aac"), Some(32), false, false),
+            StreamMode::Aac(64)
+        );
+        assert_eq!(
+            decide_stream_mode("wav", Some("aac"), Some(512), false, false),
+            StreamMode::Aac(320)
+        );
+        // fmt=aac は original/native より優先 (端末ネイティブな m4a でも AAC)。
+        assert_eq!(
+            decide_stream_mode("m4a", Some("aac"), Some(96), true, true),
+            StreamMode::Aac(96)
+        );
+    }
+
+    // ===== decide_stream_mode: original=true は常に原本 =====
+    #[test]
+    fn original_forces_original_any_ext() {
+        assert_eq!(
+            decide_stream_mode("dsf", None, None, false, true),
+            StreamMode::Original
+        );
+        assert_eq!(
+            decide_stream_mode("flac", None, None, false, true),
+            StreamMode::Original
+        );
+    }
+
+    // ===== decide_stream_mode: native — 端末ネイティブは原本、非ネイティブは AAC(192) =====
+    #[test]
+    fn native_serves_device_native_as_original() {
+        // flac / aiff は端末ネイティブ → 原本。
+        assert_eq!(
+            decide_stream_mode("flac", None, None, true, false),
+            StreamMode::Original
+        );
+        assert_eq!(
+            decide_stream_mode("aiff", None, None, true, false),
+            StreamMode::Original
+        );
+        // dsf は端末ネイティブでない → AAC(192)。
+        assert_eq!(
+            decide_stream_mode("dsf", None, None, true, false),
+            StreamMode::Aac(192)
+        );
+    }
+
+    // ===== decide_stream_mode: 既定 (ブラウザ) =====
+    #[test]
+    fn default_browser_mode() {
+        // m4a はブラウザネイティブ → 原本。
+        assert_eq!(
+            decide_stream_mode("m4a", None, None, false, false),
+            StreamMode::Original
+        );
+        // aiff はブラウザネイティブでない → AAC(192)。
+        assert_eq!(
+            decide_stream_mode("aiff", None, None, false, false),
+            StreamMode::Aac(192)
+        );
+    }
+
+    // ===== is_device_native =====
+    #[test]
+    fn device_native_matrix() {
+        assert!(is_device_native("aiff"));
+        assert!(is_device_native("alac"));
+        assert!(is_device_native("caf"));
+        // ブラウザネイティブも端末ネイティブ。
+        assert!(is_device_native("mp3"));
+        assert!(is_device_native("flac"));
+        // dsf は対象外。
+        assert!(!is_device_native("dsf"));
+    }
+
+    // ===== album フィルタロジック (genre と同じ「小文字化して部分一致」) =====
+    #[test]
+    fn album_filter_substring_case_insensitive() {
+        let albums = ["Greatest Hits", "Night Drive", "Daydream", ""];
+        let needle = "night".to_lowercase();
+        let matched: Vec<&str> = albums
+            .iter()
+            .copied()
+            .filter(|a| a.to_lowercase().contains(&needle))
+            .collect();
+        assert_eq!(matched, vec!["Night Drive"]);
+    }
 }

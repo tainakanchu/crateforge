@@ -1,0 +1,17 @@
+{
+  "name": "@crateforge/core",
+  "version": "0.0.0",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "zustand": "^5.0.14",
+    "@tanstack/react-query": "^5.101.0",
+    "expo-secure-store": "~56.0.4",
+    "expo-file-system": "~56.0.8",
+    "expo-audio": "~56.0.12"
+  },
+  "peerDependencies": {
+    "react": "*"
+  }
+}

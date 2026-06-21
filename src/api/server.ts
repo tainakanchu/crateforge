@@ -38,3 +38,21 @@ export async function regenerateApiToken(): Promise<ApiServerStatus> {
 export async function lanQrSvg(data: string): Promise<string> {
   return invoke("lan_qr_svg", { data });
 }
+
+/// ペアリングコードを入力して TV/モバイル端末を承認する。
+/// - true: 承認成功。
+/// - false: コードが見つからない / 有効期限切れ。
+/// - throws: LAN トークンが無効（LAN 無効時）。
+export async function approvePairing(code: string): Promise<boolean> {
+  return invoke("approve_pairing", { code });
+}
+
+/// 未承認ペアリングセッション一覧を返す（デスクトップ UI 向け）。
+export interface PairingInfo {
+  code: string;
+  ageSecs: number;
+}
+
+export async function listPendingPairings(): Promise<PairingInfo[]> {
+  return invoke("list_pending_pairings");
+}

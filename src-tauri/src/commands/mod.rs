@@ -5,6 +5,7 @@ pub mod convert;
 pub mod ffmpeg;
 pub mod fonts;
 pub mod library;
+pub mod pairing;
 pub mod playback;
 pub mod playlists;
 pub mod ripping;

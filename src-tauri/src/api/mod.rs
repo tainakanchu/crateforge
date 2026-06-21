@@ -32,6 +32,8 @@ pub struct ApiState {
     pub app: Option<tauri::AppHandle>,
     /// LAN アクセストークン。None = LAN 無効またはトークン未生成。
     pub token: Option<String>,
+    /// デバイスペアリング レジストリ。axum ハンドラと Tauri コマンドで Arc を共有する。
+    pub pairings: crate::pairing::PairingRegistry,
 }
 
 impl ApiState {
@@ -91,7 +93,7 @@ pub async fn serve_favicon() -> impl axum::response::IntoResponse {
 
 /// LAN アクセスでもトークン不要な "public" パス判定。
 /// これらはライブラリデータを含まないため安全。
-/// PWA インストール・起動に必要な最小限のリソースのみ公開する。
+/// PWA インストール・起動に必要な最小限のリソース + ペアリングエンドポイントを公開する。
 pub(crate) fn is_public_path(path: &str) -> bool {
     matches!(
         path,
@@ -100,7 +102,56 @@ pub(crate) fn is_public_path(path: &str) -> bool {
             | "/icon-192.png"
             | "/icon-512.png"
             | "/favicon.ico"
+            | "/api/pair/start"
+            | "/api/pair/poll"
     )
+}
+
+// ────────────────────── ペアリングエンドポイント ──────────────────────────
+
+/// POST /api/pair/start — ペアリングセッションを開始する。
+/// レスポンス: `{ "session": String, "code": String }`
+pub(crate) async fn pair_start(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+) -> impl axum::response::IntoResponse {
+    let (session, code) = state.pairings.create_session();
+    axum::Json(serde_json::json!({ "session": session, "code": code }))
+}
+
+/// GET /api/pair/poll?session=<id> — ペアリング結果をポーリングする。
+/// レスポンス:
+///   - `{ "status": "pending" }` — 未承認。
+///   - `{ "status": "approved", "token": String }` — 承認済み。
+///   - 404 `{ "error": "not found" }` — セッション不明 / 有効期限切れ。
+pub(crate) async fn pair_poll(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let session = match params.get("session") {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": "missing session parameter" })),
+            )
+                .into_response();
+        }
+    };
+    match state.pairings.poll(&session) {
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "status": "expired" })),
+        )
+            .into_response(),
+        Some((false, _)) => {
+            axum::Json(serde_json::json!({ "status": "pending" })).into_response()
+        }
+        Some((true, token)) => axum::Json(
+            serde_json::json!({ "status": "approved", "token": token }),
+        )
+        .into_response(),
+    }
 }
 
 /// LAN からのリクエストを認証するミドルウェア。
@@ -212,6 +263,7 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/stats", get(handlers::get_stats))
         .route("/api/genres", get(handlers::get_genres))
+        .route("/api/albums", get(handlers::get_albums))
         .route("/api/playlists", get(handlers::list_playlists))
         .route("/api/playlists/{playlistId}", get(handlers::get_playlist))
         .route(
@@ -238,6 +290,9 @@ pub fn router(state: ApiState) -> Router {
             "/api/tracks/genre-tags/remove",
             post(handlers::remove_genre_tags),
         )
+        // ペアリング (public: トークン不要)
+        .route("/api/pair/start", post(pair_start))
+        .route("/api/pair/poll", get(pair_poll))
         // リモートコントロール
         .route("/api/remote/queue", get(handlers::remote_get_queue))
         .route("/api/remote/state", get(handlers::remote_get_state))
@@ -275,7 +330,14 @@ impl ServerControl {
 /// `lan=true` のときは `0.0.0.0` で待受し LAN に公開する (既定は `127.0.0.1`)。
 /// bind 失敗 (ポート使用中など) は同期的にエラーを返すので、呼び出し側で
 /// ユーザーへ通知できる。serve 自体は非同期に走る。
-pub fn start(app_data_dir: PathBuf, port: u16, app: tauri::AppHandle, lan: bool, token: Option<String>) -> Result<ServerControl, String> {
+pub fn start(
+    app_data_dir: PathBuf,
+    port: u16,
+    app: tauri::AppHandle,
+    lan: bool,
+    token: Option<String>,
+    pairings: crate::pairing::PairingRegistry,
+) -> Result<ServerControl, String> {
     let ip = if lan { [0, 0, 0, 0] } else { [127, 0, 0, 1] };
     let addr = SocketAddr::from((ip, port));
     // bind は同期的に確定させたいので block_on で待つ (tauri は内部で tokio を使う)。
@@ -290,6 +352,7 @@ pub fn start(app_data_dir: PathBuf, port: u16, app: tauri::AppHandle, lan: bool,
         app_data_dir,
         app: Some(app),
         token,
+        pairings,
     };
     let svc = router(state).into_make_service_with_connect_info::<SocketAddr>();
     tauri::async_runtime::spawn(async move {
@@ -324,6 +387,7 @@ mod tests {
             app_data_dir: dir.path().to_path_buf(),
             app: None,
             token: None,
+            pairings: crate::pairing::PairingRegistry::default(),
         });
         (dir, app)
     }
@@ -485,6 +549,19 @@ mod tests {
         assert!(ids.contains(&3));
     }
 
+    // ===== 追加: album 部分一致フィルタ =====
+    #[tokio::test]
+    async fn case_tracks_album_filter() {
+        let (_dir, app) = setup();
+        // album に "Da" を含むのは "Dawn" (track 1) と "Day" (track 3)。大小無視。
+        let (status, body) = req(app, "GET", "/api/tracks?album=da", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().unwrap();
+        let ids: Vec<i64> = arr.iter().map(|t| t["trackId"].as_i64().unwrap()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&1) && ids.contains(&3));
+    }
+
     // ===== ケース 6: year 範囲 =====
     #[tokio::test]
     async fn case06_tracks_year_range() {
@@ -611,6 +688,24 @@ mod tests {
         assert!(!arr.is_empty());
         let tags: Vec<&str> = arr.iter().map(|g| g["tag"].as_str().unwrap()).collect();
         assert!(tags.contains(&"House"));
+    }
+
+    // ===== ケース: albums (distinct アルバム一覧) =====
+    #[tokio::test]
+    async fn case_albums() {
+        let (_dir, app) = setup();
+        let (status, body) = req(app, "GET", "/api/albums", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().unwrap();
+        // seed の 5 曲はすべて別 album → distinct 5 件。
+        assert_eq!(arr.len(), 5);
+        // album 名 (NOCASE) 昇順: Bright, Dawn, Day, Dusk, Night。
+        let albums: Vec<&str> = arr.iter().map(|a| a["album"].as_str().unwrap()).collect();
+        assert_eq!(albums, vec!["Bright", "Dawn", "Day", "Dusk", "Night"]);
+        // 各アルバム 1 曲。sampleTrackId / trackCount のキー (camelCase) が出ること。
+        let dawn = arr.iter().find(|a| a["album"] == "Dawn").unwrap();
+        assert_eq!(dawn["trackCount"], 1);
+        assert_eq!(dawn["sampleTrackId"], 1);
     }
 
     // ===== ケース 12: playlists =====
@@ -981,6 +1076,9 @@ mod tests {
         assert!(is_public_path("/icon-192.png"));
         assert!(is_public_path("/icon-512.png"));
         assert!(is_public_path("/favicon.ico"));
+        // ペアリングエンドポイントも public
+        assert!(is_public_path("/api/pair/start"));
+        assert!(is_public_path("/api/pair/poll"));
         // public でないパス (データ系 / 未知)
         assert!(!is_public_path("/api/tracks"));
         assert!(!is_public_path("/api/health"));

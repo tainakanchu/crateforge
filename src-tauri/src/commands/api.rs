@@ -12,6 +12,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::api;
 use crate::commands::library::open_db;
+use crate::pairing::PairingRegistry;
 
 /// API サーバーの設定キー: 有効フラグ。
 pub const KEY_ENABLED: &str = "api_server_enabled";
@@ -131,6 +132,7 @@ pub fn get_api_server_status(
 pub fn set_api_server_config(
     app: AppHandle,
     server: State<'_, Mutex<Option<api::ServerControl>>>,
+    pairings: State<'_, PairingRegistry>,
     enabled: bool,
     port: u16,
 ) -> Result<ApiServerStatus, String> {
@@ -155,7 +157,7 @@ pub fn set_api_server_config(
     if enabled {
         let dir = app_data_dir(&app)?;
         let (_, _, lan_enabled, token) = read_full_config(&app)?;
-        match api::start(dir, port, app.clone(), lan_enabled, token) {
+        match api::start(dir, port, app.clone(), lan_enabled, token, pairings.inner().clone()) {
             Ok(ctrl) => {
                 let mut guard = server.lock().map_err(|e| e.to_string())?;
                 *guard = Some(ctrl);
@@ -173,6 +175,7 @@ pub fn set_api_server_config(
 pub fn start_if_enabled(
     app: &AppHandle,
     server: &Mutex<Option<api::ServerControl>>,
+    pairings: &PairingRegistry,
 ) -> Result<(), String> {
     let (enabled, port, lan_enabled, token) = read_full_config(app)?;
     if !enabled {
@@ -188,7 +191,7 @@ pub fn start_if_enabled(
         token
     };
     let dir = app_data_dir(app)?;
-    let ctrl = api::start(dir, port, app.clone(), lan_enabled, token)?;
+    let ctrl = api::start(dir, port, app.clone(), lan_enabled, token, pairings.clone())?;
     let mut guard = server.lock().map_err(|e| e.to_string())?;
     *guard = Some(ctrl);
     Ok(())
@@ -199,6 +202,7 @@ pub fn start_if_enabled(
 pub fn set_api_lan_enabled(
     app: AppHandle,
     server: State<'_, Mutex<Option<api::ServerControl>>>,
+    pairings: State<'_, PairingRegistry>,
     enabled: bool,
 ) -> Result<ApiServerStatus, String> {
     // 1. 設定を永続化。
@@ -228,7 +232,7 @@ pub fn set_api_lan_enabled(
     let (api_enabled, port, lan_enabled, token) = read_full_config(&app)?;
     if api_enabled {
         let dir = app_data_dir(&app)?;
-        match api::start(dir, port, app.clone(), lan_enabled, token) {
+        match api::start(dir, port, app.clone(), lan_enabled, token, pairings.inner().clone()) {
             Ok(ctrl) => {
                 let mut guard = server.lock().map_err(|e| e.to_string())?;
                 *guard = Some(ctrl);
@@ -245,6 +249,7 @@ pub fn set_api_lan_enabled(
 pub fn regenerate_api_token(
     app: AppHandle,
     server: State<'_, Mutex<Option<api::ServerControl>>>,
+    pairings: State<'_, PairingRegistry>,
 ) -> Result<ApiServerStatus, String> {
     // 1. 新トークンを生成して永続化。
     {
@@ -265,7 +270,7 @@ pub fn regenerate_api_token(
     let (api_enabled, port, lan_enabled, token) = read_full_config(&app)?;
     if api_enabled {
         let dir = app_data_dir(&app)?;
-        match api::start(dir, port, app.clone(), lan_enabled, token) {
+        match api::start(dir, port, app.clone(), lan_enabled, token, pairings.inner().clone()) {
             Ok(ctrl) => {
                 let mut guard = server.lock().map_err(|e| e.to_string())?;
                 *guard = Some(ctrl);
