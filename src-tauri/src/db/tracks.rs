@@ -16,6 +16,42 @@ pub struct AlbumInfo {
     pub sample_track_id: i64,
 }
 
+/// 検索対象のテキスト列 (name/artist/album/album_artist/genre/comments)。
+/// `search_text` の計算 (Rust 側 compute_search_text) と SQL 側 SEARCH_TEXT_EXPR で
+/// 同じ列・同じ順序を使い、両者が必ず一致するようにする。
+const SEARCH_COLS: [&str; 6] = [
+    "name",
+    "artist",
+    "album",
+    "album_artist",
+    "genre",
+    "comments",
+];
+
+/// `search_text` を **SQL 側で** 計算する式。各列を `fold(col, 2)` (Standard) で畳み、
+/// NULL は空文字に倒して改行で連結する。マイグレーションのバックフィルや、
+/// 既存行を直接 UPDATE するパス (`recompute_search_text`) で単一の真実の源として使う。
+/// Rust 側 `compute_search_text` と必ず同じ結果になること (列・順序・区切り・fold レベル)。
+/// NULL 列は `fold(NULL,2)` が NULL を返し、SQLite では `NULL||x` が全体 NULL に伝播するため、
+/// 必ず `COALESCE(...,'')` で空文字に倒してから連結する (Rust 側の None→"" と一致させる)。
+pub(crate) const SEARCH_TEXT_EXPR: &str = "COALESCE(fold(name,2),'')||char(10)||\
+     COALESCE(fold(artist,2),'')||char(10)||COALESCE(fold(album,2),'')||char(10)||\
+     COALESCE(fold(album_artist,2),'')||char(10)||COALESCE(fold(genre,2),'')||char(10)||\
+     COALESCE(fold(comments,2),'')";
+
+/// `search_text` を **Rust 側で** 計算する。insert 経路で、まだ DB に行が無い段階の
+/// 値から `search_text` を組み立てるのに使う。SQL 側 `SEARCH_TEXT_EXPR` と等価:
+/// 各フィールドを Standard で fold し、NULL/None は空文字、改行 (`\n`) で連結する。
+/// (SQL の `fold(NULL,2)` は NULL を返し `COALESCE` 相当に空へ倒れる ── ここでも None→"" と揃える。)
+fn compute_search_text(fields: [Option<&str>; 6]) -> String {
+    use crate::text_fold::{fold, FoldLevel};
+    fields
+        .iter()
+        .map(|f| fold(f.unwrap_or(""), FoldLevel::Standard))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// 既存 genre 文字列 (空白区切り) に tag を追加。重複は無視。
 fn merge_tag(current: &str, tag: &str) -> String {
     let tag = tag.trim();
@@ -172,13 +208,22 @@ impl Database {
         location_path: &str,
         file_exists: bool,
     ) -> Result<()> {
+        // 検索高速パス用の正規化済みテキスト (compute_search_text が単一の真実の源)。
+        let search_text = compute_search_text([
+            raw.get_str("Name"),
+            raw.get_str("Artist"),
+            raw.get_str("Album"),
+            raw.get_str("Album Artist"),
+            raw.get_str("Genre"),
+            raw.get_str("Comments"),
+        ]);
         self.conn.execute(
             "INSERT OR REPLACE INTO tracks (track_id, persistent_id, name, artist, album_artist, composer,
              album, genre, year, rating, play_count, skip_count, total_time_ms,
              date_added, date_modified, bpm, comments, location_raw, location_path,
              track_type, disabled, compilation, disc_number, disc_count,
-             track_number, track_count, file_exists)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
+             track_number, track_count, file_exists, search_text)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
             params![
                 raw.get_int("Track ID").unwrap_or(0),
                 raw.get_str("Persistent ID"),
@@ -207,6 +252,7 @@ impl Database {
                 raw.get_int("Track Number"),
                 raw.get_int("Track Count"),
                 file_exists as i32,
+                search_text,
             ],
         )?;
         Ok(())
@@ -247,12 +293,16 @@ impl Database {
         );
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
+        // 検索高速パス用の正規化済みテキスト (comments は取り込み時に無いので None)。
+        let search_text =
+            compute_search_text([name, artist, album, album_artist, genre, None]);
+
         self.conn.execute(
             "INSERT INTO tracks (track_id, persistent_id, name, artist, album_artist, album, genre,
                                  year, track_number, track_count, disc_number, disc_count,
                                  total_time_ms, date_added, location_raw, location_path,
-                                 track_type, file_exists)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'File', 1)",
+                                 track_type, file_exists, search_text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'File', 1, ?17)",
             params![
                 next_id,
                 persistent_id,
@@ -270,10 +320,25 @@ impl Database {
                 now,
                 location_url,
                 location_path,
+                search_text,
             ],
         )?;
 
         Ok(next_id)
+    }
+
+    /// 既存行の `search_text` を、現在の name/artist/album/album_artist/genre/comments から
+    /// 再計算する。SQL 側 `SEARCH_TEXT_EXPR` (= Rust 側 compute_search_text と等価) を使い、
+    /// どの列が変わっても確実に正しい値へ更新できる。検索対象列を変える全 UPDATE 経路から呼ぶ。
+    fn recompute_search_text(&self, track_id: i64) -> Result<()> {
+        self.conn.execute(
+            &format!(
+                "UPDATE tracks SET search_text = {expr} WHERE track_id = ?1",
+                expr = SEARCH_TEXT_EXPR,
+            ),
+            params![track_id],
+        )?;
+        Ok(())
     }
 
     pub fn get_tracks(
@@ -311,14 +376,6 @@ impl Database {
     ) -> Result<Vec<Track>> {
         use rusqlite::types::Value;
 
-        const COLS: [&str; 6] = [
-            "name",
-            "artist",
-            "album",
-            "album_artist",
-            "genre",
-            "comments",
-        ];
         let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NOCASE ASC");
 
         // 検索の字体ゆれ吸収レベル。Off のときは下の分岐で従来と完全に同じ SQL/バインドを使う。
@@ -327,7 +384,7 @@ impl Database {
         );
 
         // 各トークンを AND 結合。bpm:/key:/energy: は track_analysis への絞り込み、
-        // それ以外はテキスト 6 列への部分一致 (OR)。バインド値は句の出現順に積む。
+        // それ以外はテキスト列への部分一致。バインド値は句の出現順に積む。
         let mut clauses: Vec<String> = Vec::new();
         let mut bind: Vec<Value> = Vec::new();
         for tok in query.split_whitespace() {
@@ -336,29 +393,52 @@ impl Database {
                 bind.append(&mut binds);
                 continue;
             }
-            // Off: 従来どおり `col LIKE ?` に生トークンの `%..%` をバインド。
-            // それ以外: 列側を `fold(col, n)` で畳み、パターンも Rust 側で畳んでからバインド。
-            let group = if level == crate::text_fold::FoldLevel::Off {
-                let pat = format!("%{}%", tok);
-                COLS.iter()
-                    .map(|c| {
-                        bind.push(Value::Text(pat.clone()));
-                        format!("{} LIKE ?", c)
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" OR ")
-            } else {
-                let pat = format!("%{}%", crate::text_fold::fold(tok, level));
-                let n = level.as_i64();
-                COLS.iter()
-                    .map(|c| {
-                        bind.push(Value::Text(pat.clone()));
-                        format!("fold({}, {}) LIKE ?", c, n)
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" OR ")
-            };
-            clauses.push(format!("({})", group));
+            match level {
+                // 高速パス (既定): 事前計算済みの `search_text` (Standard で fold 済みの
+                // 6 列連結) 1 列だけを LIKE で見る。クエリ時の fold() UDF 呼び出しと
+                // 6 列 OR が消え、数万曲でも 1 列スキャンで済む。トークンも Standard で畳む。
+                // search_text が NULL の行 (バックフィル前 / 直 SQL 挿入など) のみ、安全網として
+                // その場で SEARCH_TEXT_EXPR を評価する。通常は COALESCE が短絡し fold は走らない。
+                crate::text_fold::FoldLevel::Standard => {
+                    let pat = format!(
+                        "%{}%",
+                        crate::text_fold::fold(tok, crate::text_fold::FoldLevel::Standard)
+                    );
+                    bind.push(Value::Text(pat));
+                    clauses.push(format!(
+                        "(COALESCE(search_text, {expr}) LIKE ?)",
+                        expr = SEARCH_TEXT_EXPR
+                    ));
+                }
+                // Off: 従来どおり `col LIKE ?` に生トークンの `%..%` をバインド。
+                crate::text_fold::FoldLevel::Off => {
+                    let pat = format!("%{}%", tok);
+                    let group = SEARCH_COLS
+                        .iter()
+                        .map(|c| {
+                            bind.push(Value::Text(pat.clone()));
+                            format!("{} LIKE ?", c)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" OR ");
+                    clauses.push(format!("({})", group));
+                }
+                // Light: search_text は Standard 固定なので使えない。列側を `fold(col, 1)` で
+                // 畳み、パターンも Rust 側で Light に畳んでからバインドする従来パス。
+                crate::text_fold::FoldLevel::Light => {
+                    let pat = format!("%{}%", crate::text_fold::fold(tok, level));
+                    let n = level.as_i64();
+                    let group = SEARCH_COLS
+                        .iter()
+                        .map(|c| {
+                            bind.push(Value::Text(pat.clone()));
+                            format!("fold({}, {}) LIKE ?", c, n)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" OR ");
+                    clauses.push(format!("({})", group));
+                }
+            }
         }
         let where_sql = if clauses.is_empty() {
             "1=1".to_string()
@@ -474,6 +554,15 @@ impl Database {
         set_str!(album, "album");
         set_str!(genre, "genre");
         set_str!(comments, "comments");
+
+        // 検索対象列 (name/artist/album/album_artist/genre/comments) のいずれかが変われば
+        // 更新後に search_text を再計算する (composer は検索対象外なので無視)。
+        let touches_search = edits.name.is_some()
+            || edits.artist.is_some()
+            || edits.album.is_some()
+            || edits.album_artist.is_some()
+            || edits.genre.is_some()
+            || edits.comments.is_some();
         set_int_clear!(year, "year");
         set_int_clear!(bpm, "bpm");
         set_int_opt!(rating, "rating");
@@ -509,6 +598,9 @@ impl Database {
         let sql = format!("UPDATE tracks SET {} WHERE track_id = ?", sets.join(", "));
         let params = rusqlite::params_from_iter(values);
         self.conn.execute(&sql, params)?;
+        if touches_search {
+            self.recompute_search_text(track_id)?;
+        }
         Ok(())
     }
 
@@ -586,6 +678,8 @@ impl Database {
                 track_id
             ],
         )?;
+        // genre は検索対象列なので search_text を再計算する。
+        self.recompute_search_text(track_id)?;
         Ok(())
     }
 
@@ -613,6 +707,8 @@ impl Database {
                 track_id
             ],
         )?;
+        // genre は検索対象列なので search_text を再計算する。
+        self.recompute_search_text(track_id)?;
         Ok(())
     }
 
@@ -767,8 +863,114 @@ pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
 
 #[cfg(test)]
 mod tests {
-    use super::common_dir_prefix;
+    use super::{common_dir_prefix, compute_search_text};
     use crate::db::Database;
+
+    /// Standard 高速パス: 検索が `search_text` 1 列を見て、字体ゆれ (ひらがな⇔カタカナ・
+    /// 全角英字・繁体字) を吸収して従来と同じ結果を返すこと。insert_track 経路で
+    /// search_text が必ず埋まることも同時に保証する。
+    #[test]
+    fn search_fast_path_folds_variants() {
+        use crate::itunes_xml::parser::{PlistValue, RawTrack};
+        let db = Database::open_memory().unwrap();
+        // 既定 (search_fold_level 未設定) は Standard なので高速パスが効く。
+        let mk = |tid: i64, name: &str, artist: &str| {
+            let mut raw = RawTrack::default();
+            raw.fields
+                .insert("Track ID".to_string(), PlistValue::Int(tid));
+            raw.fields
+                .insert("Name".to_string(), PlistValue::Str(name.to_string()));
+            raw.fields
+                .insert("Artist".to_string(), PlistValue::Str(artist.to_string()));
+            db.insert_track(&raw, "", true).unwrap();
+        };
+        mk(1, "さくら", "ＡＢＣ"); // ひらがな + 全角英字
+        mk(2, "桜の歌", "圖書館"); // 繁体字を含む
+
+        // insert で search_text が NULL でないこと。
+        let st: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT search_text FROM tracks WHERE track_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(st.is_some() && !st.unwrap().is_empty());
+
+        // カタカナで検索 → ひらがなの曲にヒット (字体ゆれ吸収)。
+        let hits = db.search_tracks("サクラ", 100, 0, None, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].track_id, 1);
+
+        // 半角英字 (小文字) で全角 ＡＢＣ にヒット。
+        let hits = db.search_tracks("abc", 100, 0, None, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].track_id, 1);
+
+        // 簡体字 图 で繁体字 圖 にヒット (Standard の漢字フォールド)。
+        let hits = db.search_tracks("图书馆", 100, 0, None, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].track_id, 2);
+    }
+
+    /// update_track / genre タグ更新で search_text が再計算され、新しい値で検索できること。
+    #[test]
+    fn search_text_recomputed_on_update() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, file_exists) VALUES (1, 'old', 1)",
+                [],
+            )
+            .unwrap();
+        // 直 INSERT は search_text が NULL のまま → 起動時バックフィルが無いインメモリでも
+        // recompute されるのは update 経路。まず明示的に埋めるため update_track を使う。
+        let edit = crate::models::TrackEdit {
+            name: Some("みどり".to_string()),
+            ..Default::default()
+        };
+        db.update_track(1, &edit).unwrap();
+        // カタカナで検索 → 更新後の名前にヒット。
+        assert_eq!(db.search_tracks("ミドリ", 100, 0, None, None).unwrap().len(), 1);
+        // 古い名前ではヒットしない。
+        assert_eq!(db.search_tracks("old", 100, 0, None, None).unwrap().len(), 0);
+
+        // genre タグ追加でも search_text が更新される。
+        db.add_genre_tag(1, "ハウス").unwrap();
+        assert_eq!(db.search_tracks("はうす", 100, 0, None, None).unwrap().len(), 1);
+    }
+
+    /// Rust 側 compute_search_text と SQL 側 SEARCH_TEXT_EXPR が一致すること
+    /// (両者がズレると insert と backfill/recompute で別の値になり検索が破綻する)。
+    #[test]
+    fn compute_search_text_matches_sql_expr() {
+        let db = Database::open_memory().unwrap();
+        let rust_val = compute_search_text([
+            Some("Sakura"),
+            Some("サクラ"),
+            None,
+            Some("圖書館"),
+            Some("House"),
+            None,
+        ]);
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, artist, album, album_artist, genre, comments, file_exists)
+                 VALUES (1, 'Sakura', 'サクラ', NULL, '圖書館', 'House', NULL, 1)",
+                [],
+            )
+            .unwrap();
+        let sql_val: String = db
+            .conn
+            .query_row(
+                &format!("SELECT {} FROM tracks WHERE track_id = 1", super::SEARCH_TEXT_EXPR),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rust_val, sql_val);
+    }
 
     /// get_albums は album ごとに distinct 集約し、track_count と最小 track_id を返す。
     /// album が NULL/空 の曲は除外し、album 名 (NOCASE) 昇順で並ぶ。
