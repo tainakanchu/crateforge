@@ -5,6 +5,7 @@ import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import { ColumnPicker } from "./ColumnPicker";
 import type { LibraryStats, SortField, ViewMode } from "../types";
+import { AUDIO_EXTENSIONS } from "../lib/audioExtensions";
 
 interface ToolbarProps {
   onLibraryChanged: () => void;
@@ -128,12 +129,13 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
       const value = e.target.value;
       // 表示は即時反映（制御入力）
       setLocalSearch(value);
-      // store 反映はデバウンス
+      // store 反映はデバウンス。ただし1文字のときはタイマー自体セットしない（空文字クリアは通す）。
       clearTimeout(searchTimer.current);
+      if (value.length === 1) return;
       searchTimer.current = setTimeout(() => {
         setSearchQuery(value);
         if (value) setViewMode("library");
-      }, 120);
+      }, 300);
     },
     [setSearchQuery, setViewMode],
   );
@@ -184,7 +186,7 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
       filters: [
         {
           name: "Audio files",
-          extensions: ["flac", "mp3", "m4a", "wav", "aac", "ogg", "opus", "aiff", "wma"],
+          extensions: [...AUDIO_EXTENSIONS],
         },
       ],
     });
