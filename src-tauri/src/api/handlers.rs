@@ -75,12 +75,39 @@ pub async fn list_tracks(
     let db = state.db()?;
 
     // 1. 取得: q があればトークン検索、無ければ全件取得 (どちらも sort/order は DB に委譲)。
-    //    構造化フィルタは DB を触らず Rust 側で適用するため、ここでは「全件」を引く。
+    //    構造化フィルタは DB を触らず Rust 側で適用するため、原則「全件」を引く。
     let sort = q.sort.as_deref();
     let order = q.order.as_deref();
+    let has_query = matches!(q.q.as_deref(), Some(s) if !s.trim().is_empty());
+
+    // 追加フィルタ (rating/genre/album/year/analyzed) は後段で Rust 側 retain している。
+    // これらが付いていると DB 側 LIMIT で打ち切ると取りこぼすため、上限は使えない。
+    // そこで「q 指定 かつ 追加フィルタ無し」のときだけ DB へ limit/offset を委譲して
+    // 全件転送を避ける (保守的対応)。フィルタがある場合・q 無しの全件取得は従来どおり。
+    let has_extra_filters = q.rating_min.is_some()
+        || q.rating_max.is_some()
+        || q.genre.is_some()
+        || q.album.is_some()
+        || q.year_from.is_some()
+        || q.year_to.is_some()
+        || q.analyzed.is_some();
+    let db_pushdown = has_query && !has_extra_filters;
+
+    // 全件転送を防ぐための上限。q 指定で追加フィルタが無いときのみ DB に渡す。
+    const MAX_SEARCH_ROWS: i64 = 1000;
+    let (db_limit, db_offset) = if db_pushdown {
+        let lim = match q.limit {
+            Some(l) if l >= 0 => l.min(MAX_SEARCH_ROWS),
+            _ => MAX_SEARCH_ROWS,
+        };
+        (lim, q.offset.unwrap_or(0).max(0))
+    } else {
+        (ALL_ROWS, 0)
+    };
+
     let mut tracks = match q.q.as_deref() {
         Some(query) if !query.trim().is_empty() => {
-            db.search_tracks(query, ALL_ROWS, 0, sort, order)?
+            db.search_tracks(query, db_limit, db_offset, sort, order)?
         }
         _ => db.get_tracks(ALL_ROWS, 0, sort, order)?,
     };
@@ -131,6 +158,11 @@ pub async fn list_tracks(
     }
 
     // 3. offset/limit を Rust 側でスライス (offset 既定 0、limit 既定なし=全件)。
+    //    db_pushdown 経路では DB が既に offset/limit を適用済みなのでそのまま返す
+    //    (二重スライスを避ける)。それ以外 (q 無し or 追加フィルタ有り) は従来どおり。
+    if db_pushdown {
+        return Ok(Json(tracks));
+    }
     let offset = q.offset.unwrap_or(0).max(0) as usize;
     let sliced: Vec<Track> = if offset >= tracks.len() {
         Vec::new()
@@ -615,15 +647,19 @@ pub fn decide_stream_mode(
 
 /// ffmpeg で音声ファイルを AAC (ADTS) へトランスコードしてバイト列を返す。
 /// 既存の "-c:a aac -b:a {br}k -f adts -" パイプラインを共通化したもの。
+/// 失敗 (spawn 不可・exit code 非ゼロ・出力空) は crateforge.log に記録し、
+/// 200+空ボディを返さず 502 Bad Gateway で返す (#67)。
 async fn transcode_aac(
     ffmpeg_path: &std::path::Path,
     path_str: &str,
     br_kbps: u32,
+    track_id: i64,
+    ext: &str,
 ) -> Result<Vec<u8>, ApiError> {
     use tokio::io::AsyncReadExt;
 
     let bitrate = format!("{br_kbps}k");
-    let mut child = tokio::process::Command::new(ffmpeg_path)
+    let mut child = match tokio::process::Command::new(ffmpeg_path)
         .args([
             "-hide_banner", "-loglevel", "error",
             "-i", path_str,
@@ -632,14 +668,49 @@ async fn transcode_aac(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    {
+        Ok(c) => c,
+        Err(e) => {
+            crate::logging::write_line(
+                "error",
+                &format!(
+                    "stream failed: ffmpeg spawn error (track_id={track_id}, path={path_str}, ext={ext}): {e}"
+                ),
+            );
+            return Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+        }
+    };
 
     let mut stdout = child.stdout.take()
         .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no stdout from ffmpeg"))?;
     let mut buf = Vec::new();
-    stdout.read_to_end(&mut buf).await
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let _ = child.wait().await;
+    if let Err(e) = stdout.read_to_end(&mut buf).await {
+        crate::logging::write_line(
+            "error",
+            &format!(
+                "stream failed: reading ffmpeg output (track_id={track_id}, path={path_str}, ext={ext}): {e}"
+            ),
+        );
+        return Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+    }
+
+    // exit code を捨てず判定する。非ゼロ or 出力空はトランスコード失敗とみなす。
+    let status = child.wait().await;
+    let exit_ok = matches!(&status, Ok(s) if s.success());
+    if !exit_ok || buf.is_empty() {
+        let code = match &status {
+            Ok(s) => s.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".to_string()),
+            Err(e) => format!("wait error: {e}"),
+        };
+        crate::logging::write_line(
+            "error",
+            &format!(
+                "stream failed: ffmpeg transcode failed (track_id={track_id}, path={path_str}, ext={ext}, exit={code}, bytes={})",
+                buf.len()
+            ),
+        );
+        return Err(ApiError::new(StatusCode::BAD_GATEWAY, "transcode failed"));
+    }
     Ok(buf)
 }
 
@@ -660,9 +731,18 @@ pub async fn stream_track(
 
     let path_str = track.location_path.as_deref().unwrap_or("");
     if path_str.is_empty() {
+        // 再生ストリーム失敗を crateforge.log に残す (#67)。デスクトップ再生と同じ機構。
+        crate::logging::write_line(
+            "error",
+            &format!("stream failed: no file path (track_id={track_id})"),
+        );
         return Err(ApiError::not_found("no file path for this track"));
     }
     if !std::path::Path::new(path_str).exists() {
+        crate::logging::write_line(
+            "error",
+            &format!("stream failed: file not found (track_id={track_id}, path={path_str})"),
+        );
         return Err(ApiError::not_found("audio file not found on disk"));
     }
 
@@ -690,17 +770,34 @@ pub async fn stream_track(
             let result = service.oneshot(req).await;
             match result {
                 Ok(resp) => Ok(resp.map(axum::body::Body::new).into_response()),
-                Err(_) => Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to serve file")),
+                Err(e) => {
+                    crate::logging::write_line(
+                        "error",
+                        &format!(
+                            "stream failed: serve file error (track_id={track_id}, path={path_str}, ext={ext}): {e}"
+                        ),
+                    );
+                    Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to serve file"))
+                }
             }
         }
         StreamMode::Aac(br_kbps) => {
             // AAC へトランスコードしてバッファリング配信する。
             let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
-            let ffmpeg_path = crate::ffmpeg::resolve(app)
-                .map(|(p, _)| p)
-                .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "ffmpeg not found"))?;
+            let ffmpeg_path = match crate::ffmpeg::resolve(app).map(|(p, _)| p) {
+                Some(p) => p,
+                None => {
+                    crate::logging::write_line(
+                        "error",
+                        &format!(
+                            "stream failed: ffmpeg not found for transcode (track_id={track_id}, path={path_str}, ext={ext})"
+                        ),
+                    );
+                    return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "ffmpeg not found"));
+                }
+            };
 
-            let buf = transcode_aac(&ffmpeg_path, path_str, br_kbps).await?;
+            let buf = transcode_aac(&ffmpeg_path, path_str, br_kbps, track_id, &ext).await?;
 
             Ok(axum::response::Response::builder()
                 .header("content-type", "audio/aac")

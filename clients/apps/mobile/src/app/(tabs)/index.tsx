@@ -42,7 +42,8 @@ export default function LibraryScreen() {
   const router = useRouter();
   const client = useConnection((s) => s.client);
 
-  const [mode, setMode] = useState<Mode>("albums");
+  // 既定は「アーティスト」モード（アーティスト→アルバム→曲の導線を優先）。
+  const [mode, setMode] = useState<Mode>("artists");
 
   // 検索はデバウンス（入力ごとに叩かない）。
   const [search, setSearch] = useState("");
@@ -58,10 +59,14 @@ export default function LibraryScreen() {
   const trackSort = useSettings((s) => s.trackSort);
   const setTrackSort = useSettings((s) => s.setTrackSort);
 
+  // 検索クエリは最小2文字ガード（debounced は trim 済み）。1文字だと巨大ヒット＝
+  // 全件転送になり得るので投げない。空のときは undefined（フィルタ無し一覧）に戻る。
+  const searchQuery = debounced.length >= 2 ? debounced : undefined;
+
   // アクティブなモードだけ取得する（既定アルバム時に全曲フェッチしない＝重さ回避）。
   const tracksQuery = useTracks(
     {
-      q: debounced || undefined,
+      q: searchQuery,
       genre: genre ?? undefined,
       limit: BROWSE_LIMIT,
       sort: trackSort.field,

@@ -110,7 +110,7 @@ export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const pushToast = useStore((s) => s.pushToast);
   const parentRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<CoversCtxMenu | null>(null);
   const [showAddTagDialog, setShowAddTagDialog] = useState(false);
   const [newTag, setNewTag] = useState("");
@@ -140,7 +140,7 @@ export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       const chunk = albums.slice(i, i + cols);
       out.push({ type: "grid", albums: chunk });
       for (const al of chunk) {
-        if (expanded.has(al.key)) out.push({ type: "expand", album: al });
+        if (expanded === al.key) out.push({ type: "expand", album: al });
       }
     }
     return out;
@@ -167,12 +167,7 @@ export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   }, [isLoading, hasMore, onLoadMore]);
 
   const toggleExpand = useCallback((key: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+    setExpanded((prev) => (prev === key ? null : key));
   }, []);
 
   // アルバムを頭から（または指定トラックから）再生。
@@ -419,7 +414,7 @@ export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                     const isCurrent = al.tracks.some(
                       (t) => playback.currentTrackId === t.trackId,
                     );
-                    const isOpen = expanded.has(al.key);
+                    const isOpen = expanded === al.key;
                     return (
                       <div key={al.key} className="cb-cardwrap">
                         <div

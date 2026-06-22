@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { BRAND, PALETTE } from "@/constants/brand";
 import MiniPlayer from "@/components/MiniPlayer";
+import PlaybackErrorToast from "@/components/PlaybackErrorToast";
 
 export default function TabsLayout() {
   return (
@@ -60,6 +61,8 @@ export default function TabsLayout() {
         />
       </Tabs>
       <MiniPlayer />
+      {/* 再生エラーの通知（描画なし。Toast/Alert を出す） */}
+      <PlaybackErrorToast />
     </View>
   );
 }

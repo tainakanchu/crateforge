@@ -95,5 +95,34 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "playlists", "smart_criteria")? {
         conn.execute_batch("ALTER TABLE playlists ADD COLUMN smart_criteria TEXT;")?;
     }
+    migrate_search_text(conn)?;
+    Ok(())
+}
+
+/// 検索高速化用の正規化済みカラム `search_text` を追加し、未計算行を一括バックフィルする。
+/// `search_text` は name/artist/album/album_artist/genre/comments を Standard で fold して
+/// 連結したもの (`tracks::SEARCH_TEXT_EXPR` が単一の真実の源)。検索の高速パスはこの 1 列のみを
+/// `LIKE` で見るため、クエリ時の per-row fold() 呼び出しを排除できる。
+fn migrate_search_text(conn: &Connection) -> Result<()> {
+    let fresh = !column_exists(conn, "tracks", "search_text")?;
+    if fresh {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN search_text TEXT;")?;
+    }
+    // 既存 DB のバックフィル: search_text が NULL の行を計算して埋める。
+    // 新規 ALTER 直後は全行 NULL なので全件、再起動時は NULL 行のみ (冪等)。
+    // トランザクション一括で、失敗時は自動ロールバック (execute_batch 内の BEGIN/COMMIT)。
+    let pending: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tracks WHERE search_text IS NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    if pending > 0 {
+        conn.execute_batch(&format!(
+            "BEGIN;
+             UPDATE tracks SET search_text = {expr} WHERE search_text IS NULL;
+             COMMIT;",
+            expr = crate::db::tracks::SEARCH_TEXT_EXPR,
+        ))?;
+    }
     Ok(())
 }

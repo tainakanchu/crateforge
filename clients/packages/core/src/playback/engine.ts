@@ -22,10 +22,26 @@ export class ExpoAudioEngine implements AudioEngine {
   private readonly player: AudioPlayer;
   private handlers: EngineHandlers = {};
 
+  /** 直近に通知したエラーメッセージ。同じエラーの連続通知（毎フレーム）を防ぐ。 */
+  private lastErrorReported: string | null = null;
+
   constructor() {
     // updateInterval を 500ms にして進捗を定期通知させる。
     this.player = createAudioPlayer(null, { updateInterval: 500 });
     this.player.addListener("playbackStatusUpdate", (st: AudioStatus) => {
+      // 再生エラー検知。expo-audio は status.error（string|null）に載せる。
+      // 404 / トランスコード失敗 等で鳴らないケースを拾い、ストアへ通知する。
+      // status は updateInterval ごとに来るので、同一エラーの重複通知を抑止する。
+      if (st.error) {
+        if (st.error !== this.lastErrorReported) {
+          this.lastErrorReported = st.error;
+          this.handlers.onError?.(st.error);
+        }
+        // エラー中は進捗/完了を素通しさせない（誤った didJustFinish 連鎖を避ける）。
+        return;
+      }
+      // 正常に読み込めたらエラー状態をリセット（次の失敗を再通知できるように）。
+      if (st.isLoaded) this.lastErrorReported = null;
       // expo-audio は秒単位 → ストアはミリ秒で扱う。
       this.handlers.onProgress?.(st.currentTime * 1000, st.duration * 1000);
       this.handlers.onPlayingChange?.(st.playing);
@@ -35,6 +51,8 @@ export class ExpoAudioEngine implements AudioEngine {
 
   load(track: Track): void {
     const client = useConnection.getState().client;
+    // 新しい音源を読むので、前の曲のエラー抑止状態をクリアする。
+    this.lastErrorReported = null;
     // CRITICAL: メディアは track.trackId（iTunes trackId）で解決する。
     // オフライン保存済みならローカルファイルを優先（client 不要で再生可）。
     // 未保存のときだけ接続中の LAN ストリーム（native=1）を使う。
@@ -45,6 +63,8 @@ export class ExpoAudioEngine implements AudioEngine {
       this.player.replace(client.streamSource(track.trackId, { native: true }));
     } else {
       // オフラインかつ未ダウンロード → 再生できる音源が無い。
+      // 無音で固まらないよう、エラーとしてストアへ通知する（次へスキップ等を促す）。
+      this.handlers.onError?.("オフラインのため再生できません（未ダウンロード）");
       return;
     }
     // ロック画面メタを設定（artwork は接続時のみ token 付き URL を渡す）。

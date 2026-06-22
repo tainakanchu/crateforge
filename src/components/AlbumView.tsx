@@ -74,17 +74,12 @@ interface AlbumViewProps {
 
 export function AlbumView({ mode }: AlbumViewProps) {
   const { tracks, playback } = useStore();
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const groups = useMemo(() => groupTracks(tracks, mode), [tracks, mode]);
 
   const toggle = useCallback((key: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+    setExpanded((prev) => (prev === key ? null : key));
   }, []);
 
   const playAll = useCallback(async (g: GroupedItem) => {
@@ -112,7 +107,7 @@ export function AlbumView({ mode }: AlbumViewProps) {
     <div className="album-view">
       <div className="album-grid">
         {groups.map((g) => {
-          const isOpen = expanded.has(g.key);
+          const isOpen = expanded === g.key;
           const totalMs = g.tracks.reduce((sum, t) => sum + (t.totalTimeMs ?? 0), 0);
           return (
             <div key={g.key} className={`album-card ${isOpen ? "open" : ""}`}>

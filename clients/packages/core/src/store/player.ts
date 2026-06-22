@@ -28,6 +28,8 @@ export interface EngineHandlers {
   onProgress?: (positionMs: number, durationMs: number) => void;
   onFinished?: () => void;
   onPlayingChange?: (playing: boolean) => void;
+  /** 再生エラー（読み込み失敗 / 404 / トランスコード失敗 / オフライン未DL 等）。 */
+  onError?: (message: string) => void;
 }
 
 /** 何もしないエンジン（差し込み前のデフォルト＆テスト用基底）。 */
@@ -55,6 +57,12 @@ export interface PlayerState {
   sleepTimerMs: number | null;
   stopAtTrackEnd: boolean;
   engine: AudioEngine;
+  /**
+   * 直近の再生エラー（UI 通知用）。message は表示文言、at は発生時刻(ms)。
+   * at を持たせることで「同じ文言の再発」もUI側が新規イベントとして検知できる。
+   * 通知の購読側が消費したら null に戻してよい。
+   */
+  lastError: { message: string; at: number } | null;
 
   /** 現在トラック（無ければ null）。 */
   current: () => Track | null;
@@ -92,10 +100,15 @@ export interface PlayerState {
   enqueueNext: (track: Track) => void;
   clear: () => void;
 
+  /** 通知済みエラーを消費して消す（UI 側が表示後に呼ぶ）。 */
+  clearError: () => void;
+
   // エンジン → ストアのイベント受け口（実エンジンから呼ばれる）。
   _onProgress: (positionMs: number, durationMs: number) => void;
   _onFinished: () => void;
   _onPlayingChange: (playing: boolean) => void;
+  /** 再生エラー受け口。ログ→通知用 state→自動スキップ（連続失敗時は停止）を行う。 */
+  _onError: (message: string) => void;
 }
 
 /** shuffle 時の次インデックス（現在を避けてランダム）。1 曲以下はそのまま。 */
@@ -104,6 +117,25 @@ function randomOtherIndex(length: number, current: number): number {
   let next = Math.floor(Math.random() * length);
   if (next === current) next = (next + 1) % length;
   return next;
+}
+
+/**
+ * 連続再生失敗の上限。これ以上連続で失敗したら自動スキップを止めて停止する
+ * （全曲が鳴らない状況での無限スキップ＝CPU/ネットワーク暴走を防ぐ）。
+ */
+const MAX_CONSECUTIVE_FAILURES = 3;
+
+/**
+ * 連続再生失敗カウンタ（モジュールローカル）。
+ * 成功（実際に再生が始まった/進捗が出た）でリセットする。
+ * ストア state ではなくモジュール変数にするのは、UI 再レンダリングを誘発しない
+ * 内部カウンタであり、テストからは resetPlayer() でクリアできれば十分なため。
+ */
+let consecutiveFailures = 0;
+
+/** 連続失敗カウンタをリセットする（再生成功時・キュー操作時に呼ぶ）。 */
+function resetFailureCount(): void {
+  consecutiveFailures = 0;
 }
 
 export const usePlayer = create<PlayerState>((set, get) => ({
@@ -118,6 +150,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   sleepTimerMs: null,
   stopAtTrackEnd: false,
   engine: new NoopAudioEngine(),
+  lastError: null,
 
   current: () => {
     const { queue, index } = get();
@@ -129,12 +162,15 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       onProgress: (p, d) => get()._onProgress(p, d),
       onFinished: () => get()._onFinished(),
       onPlayingChange: (playing) => get()._onPlayingChange(playing),
+      onError: (message) => get()._onError(message),
     });
     set({ engine });
   },
 
   setQueue: (tracks, startIndex = 0) => {
-    set({ queue: tracks, positionMs: 0, durationMs: 0 });
+    // 新しいキューはユーザー操作起点。前の連続失敗状態をクリアして再挑戦させる。
+    resetFailureCount();
+    set({ queue: tracks, positionMs: 0, durationMs: 0, lastError: null });
     if (tracks.length === 0) {
       set({ index: -1, isPlaying: false });
       return;
@@ -287,13 +323,54 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     set({ queue: [], index: -1, isPlaying: false, positionMs: 0, durationMs: 0 });
   },
 
-  _onProgress: (positionMs, durationMs) => set({ positionMs, durationMs }),
+  clearError: () => set({ lastError: null }),
+
+  _onProgress: (positionMs, durationMs) => {
+    // 実際に再生位置が進んだ＝この曲は鳴っている。連続失敗カウンタをリセット。
+    if (positionMs > 0) resetFailureCount();
+    set({ positionMs, durationMs });
+  },
   _onFinished: () => get().next(true),
   _onPlayingChange: (playing) => set({ isPlaying: playing }),
+
+  _onError: (message) => {
+    // (1) ログ出力（クラッシュ調査・原因切り分け用）。
+    console.warn("[playback] error:", message);
+    consecutiveFailures += 1;
+    const { queue, index } = get();
+    // 連続失敗が上限に達したら、無限スキップを避けて停止し通知する。
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      get().engine.pause();
+      set({
+        isPlaying: false,
+        // (2) ユーザー通知（UI 購読側が表示）。
+        lastError: {
+          message: "再生できない曲が続いたため停止しました",
+          at: Date.now(),
+        },
+      });
+      resetFailureCount();
+      return;
+    }
+    // (2) ユーザー通知用 state を立てる（UI が toast/alert を出す）。
+    set({ lastError: { message, at: Date.now() } });
+    // (3) 自動で次の曲へスキップ。キューに次が無い（単曲/末尾 repeat off）なら停止。
+    const hasNext =
+      get().repeat === "all" || get().shuffle || index + 1 < queue.length;
+    if (hasNext && queue.length > 0) {
+      // auto=true: repeat one でも「鳴らない同じ曲」を無限に再試行しないよう next 側で扱う。
+      // ただし repeat one だと同じ曲に戻るため、ここでは手動相当（auto=false）で前進させる。
+      get().next(false);
+    } else {
+      get().engine.pause();
+      set({ isPlaying: false });
+    }
+  },
 }));
 
 /** テスト用：ストアを初期状態へ戻す（エンジンは Noop に）。 */
 export function resetPlayer(): void {
+  resetFailureCount();
   usePlayer.setState({
     queue: [],
     index: -1,
@@ -306,5 +383,6 @@ export function resetPlayer(): void {
     sleepTimerMs: null,
     stopAtTrackEnd: false,
     engine: new NoopAudioEngine(),
+    lastError: null,
   });
 }

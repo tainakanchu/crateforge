@@ -3,12 +3,52 @@
 // queryFn では client のメソッドを使い、AbortSignal を受け取る経路には渡す。
 
 import { useCallback, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, trackArtist, trackAlbumArtist, useConnection, useDownloads, useSettings } from "@crateforge/core";
 
 /** 大規模ライブラリでも全件取得（仮想リスト前提）。500/200 上限の撤廃。 */
 export const BROWSE_LIMIT = 100000;
+
+/** アルバム並べ替えに必要な最小キー。year は代表年（MIN 推奨, 無ければ null）。 */
+type AlbumSortKey = { album: string; albumArtist: string | null; year?: number | null };
+
+/**
+ * アルバムの共通ソート比較。順序は「アルバムアーティスト → アルバム名 → 年(昇順)」。
+ * - 名前比較は localeCompare（base sensitivity）。読み仮名フィールドが無いため漢字は
+ *   文字コード順になり得るが許容（簡易ソート）。ロケールは undefined（Hermes 互換重視）。
+ * - year は MIN(year) を想定。null/undefined は「年不明」として最後に置く。
+ * deriveArtistAlbums と useAlbums の両方から再利用して重複を避ける。
+ */
+export function compareAlbums(a: AlbumSortKey, b: AlbumSortKey): number {
+  const byArtist = (a.albumArtist ?? a.album).localeCompare(
+    b.albumArtist ?? b.album,
+    undefined,
+    { sensitivity: "base" },
+  );
+  if (byArtist !== 0) return byArtist;
+  const byAlbum = a.album.localeCompare(b.album, undefined, { sensitivity: "base" });
+  if (byAlbum !== 0) return byAlbum;
+  // 年順（昇順）。不明（null/undefined）は最後。
+  const ay = a.year ?? null;
+  const by = b.year ?? null;
+  if (ay == null && by == null) return 0;
+  if (ay == null) return 1;
+  if (by == null) return -1;
+  return ay - by;
+}
+
+/** トラック配列から「アルバム名 → 代表年(MIN)」のマップを作る（year を持つ曲のみ集計）。 */
+export function albumYearMap(tracks: Track[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const t of tracks) {
+    if (t.year == null) continue;
+    const key = t.album ?? "";
+    const prev = map.get(key);
+    if (prev == null || t.year < prev) map.set(key, t.year);
+  }
+  return map;
+}
 
 /** 曲一覧（検索/ジャンル等のクエリで絞り込み）。enabled=false で取得抑止（非表示モード時）。 */
 export function useTracks(query?: TracksQuery, enabled = true) {
@@ -60,13 +100,31 @@ export function usePlaylistTracks(playlistId: number) {
   });
 }
 
-/** アルバム一覧（distinct）。enabled=false で取得抑止。 */
+/** アルバム一覧（distinct）。enabled=false で取得抑止。
+ * 並びは「アルバムアーティスト → アルバム名 → 年(昇順)」。
+ * /api/albums は year を返さないので、全曲キャッシュ（["tracks", {limit}]）が
+ * 既にあれば代表年(MIN)を引いて年順まで効かせる。無ければ（＝重い全曲取得を
+ * わざわざ誘発しないため取得はしない）「アーティスト → アルバム名」までで安定ソート。
+ */
 export function useAlbums(enabled = true) {
   const client = useConnection((s) => s.client);
-  return useQuery<Album[]>({
+  const queryClient = useQueryClient();
+  return useQuery<Album[], Error, Album[]>({
     queryKey: ["albums"],
     enabled: !!client && enabled,
     queryFn: () => client!.albums(),
+    select: (albums) => {
+      // 既にキャッシュ済みの全曲があれば年マップを引く（無ければ空＝年順はスキップ）。
+      const tracks =
+        queryClient.getQueryData<Track[]>(["tracks", { limit: BROWSE_LIMIT }]) ?? [];
+      const years = albumYearMap(tracks);
+      return [...albums].sort((a, b) =>
+        compareAlbums(
+          { album: a.album, albumArtist: a.albumArtist, year: years.get(a.album) ?? null },
+          { album: b.album, albumArtist: b.albumArtist, year: years.get(b.album) ?? null },
+        ),
+      );
+    },
   });
 }
 
@@ -159,7 +217,7 @@ function deriveArtistAlbums(
   const nameOf = grouping === "albumArtist" ? trackAlbumArtist : trackArtist;
   const map = new Map<
     string,
-    { album: string; albumArtist: string | null; trackCount: number; sampleTrackId: number; sampleDownloaded: boolean }
+    { album: string; albumArtist: string | null; trackCount: number; sampleTrackId: number; sampleDownloaded: boolean; year: number | null }
   >();
   for (const t of tracks) {
     if (nameOf(t) !== artist) continue;
@@ -168,6 +226,10 @@ function deriveArtistAlbums(
     const entry = map.get(album);
     if (entry) {
       entry.trackCount += 1;
+      // 代表年は MIN(year)（再発盤などで年がばらつく場合に初出年へ寄せる）。
+      if (t.year != null && (entry.year == null || t.year < entry.year)) {
+        entry.year = t.year;
+      }
       // 代表トラックは「DL 済み優先」。既存が未 DL で今回が DL 済みなら差し替える。
       if (isDownloaded && !entry.sampleDownloaded) {
         entry.sampleTrackId = t.trackId;
@@ -180,16 +242,15 @@ function deriveArtistAlbums(
         trackCount: 1,
         sampleTrackId: t.trackId,
         sampleDownloaded: isDownloaded,
+        year: t.year,
       });
     }
   }
+  // year は集計のみに使い、Album DTO（year を持たない）には載せず compareAlbums に渡す。
   return [...map.values()]
-    .map(({ album, albumArtist, trackCount, sampleTrackId }) => ({ album, albumArtist, trackCount, sampleTrackId }))
-    .sort(
-      (a, b) =>
-        (a.albumArtist ?? a.album).localeCompare(b.albumArtist ?? b.album, undefined, { sensitivity: "base" }) ||
-        a.album.localeCompare(b.album, undefined, { sensitivity: "base" }),
-    );
+    .map(({ album, albumArtist, trackCount, sampleTrackId, year }) => ({ album, albumArtist, trackCount, sampleTrackId, year }))
+    .sort(compareAlbums)
+    .map(({ album, albumArtist, trackCount, sampleTrackId }) => ({ album, albumArtist, trackCount, sampleTrackId }));
 }
 
 /** 指定アーティストのアルバム一覧（album でグルーピング）。

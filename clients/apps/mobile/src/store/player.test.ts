@@ -133,6 +133,69 @@ describe("engine events", () => {
   });
 });
 
+describe("error handling (#67)", () => {
+  // console.warn を黙らせつつ呼び出しは検証可能にする。
+  let warnSpy: jest.SpyInstance;
+  beforeEach(() => {
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => warnSpy.mockRestore());
+
+  it("onError sets lastError, logs, and auto-skips to the next track", () => {
+    s().setQueue([track(1), track(2)]); // index 0
+    engine.handlers.onError?.("boom");
+    expect(warnSpy).toHaveBeenCalled();
+    expect(s().lastError?.message).toBe("boom");
+    expect(s().current()?.id).toBe(2); // skipped to next
+  });
+
+  it("clearError clears the notification state", () => {
+    s().setQueue([track(1), track(2)]);
+    engine.handlers.onError?.("boom");
+    expect(s().lastError).not.toBeNull();
+    s().clearError();
+    expect(s().lastError).toBeNull();
+  });
+
+  it("stops after MAX_CONSECUTIVE_FAILURES consecutive failures (no infinite skip)", () => {
+    s().setQueue([track(1), track(2), track(3), track(4), track(5)]);
+    // 3回連続失敗で停止する想定（しきい値 3）。
+    engine.handlers.onError?.("e1"); // index 0 -> skip to 1
+    engine.handlers.onError?.("e2"); // index 1 -> skip to 2
+    engine.handlers.onError?.("e3"); // 3回目 -> 停止
+    expect(s().isPlaying).toBe(false);
+    expect(s().lastError?.message).toBe("再生できない曲が続いたため停止しました");
+  });
+
+  it("resets the failure counter once playback actually progresses", () => {
+    s().setQueue([track(1), track(2), track(3), track(4), track(5)]);
+    engine.handlers.onError?.("e1"); // skip to 1
+    engine.handlers.onError?.("e2"); // skip to 2
+    // 実際に再生が進んだ → カウンタリセット。
+    s()._onProgress(1000, 200000);
+    // さらに2回失敗しても、リセット後なので即停止はしない（次へ進める）。
+    engine.handlers.onError?.("e3"); // skip to 3
+    engine.handlers.onError?.("e4"); // skip to 4
+    expect(s().isPlaying).toBe(true);
+    expect(s().current()?.id).toBe(5);
+  });
+
+  it("stops (no skip) when the failing track is the last with repeat off", () => {
+    s().setQueue([track(1), track(2)], 1); // index 1 (last)
+    engine.handlers.onError?.("boom");
+    expect(s().isPlaying).toBe(false);
+    expect(s().current()?.id).toBe(2); // index unchanged at the end
+  });
+
+  it("setQueue clears a prior error and failure state", () => {
+    s().setQueue([track(1)], 0);
+    engine.handlers.onError?.("boom");
+    expect(s().lastError).not.toBeNull();
+    s().setQueue([track(9), track(10)]);
+    expect(s().lastError).toBeNull();
+  });
+});
+
 describe("shuffle", () => {
   it("picks a different index on next", () => {
     const spy = jest.spyOn(Math, "random").mockReturnValue(0); // -> index 0; same as current -> +1

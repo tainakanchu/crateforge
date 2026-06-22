@@ -186,6 +186,53 @@ describe("ExpoAudioEngine", () => {
     expect(onFinished).toHaveBeenCalledTimes(1);
   });
 
+  it("status.error を検知して onError へ転送し、進捗/完了は素通ししない (#67)", () => {
+    const engine = new ExpoAudioEngine();
+    const onError = jest.fn();
+    const onFinished = jest.fn();
+    const onProgress = jest.fn();
+    engine.setHandlers({ onError, onFinished, onProgress });
+
+    mockAudio.listener?.({
+      currentTime: 0,
+      duration: 0,
+      playing: false,
+      didJustFinish: true,
+      isLoaded: false,
+      error: "HTTP 404",
+    } as AudioStatus);
+
+    expect(onError).toHaveBeenCalledWith("HTTP 404");
+    // エラー中は finished/progress を流さない（誤った曲送り連鎖を防ぐ）。
+    expect(onFinished).not.toHaveBeenCalled();
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it("同一エラーは重複通知せず、isLoaded 回復後に再通知できる (#67)", () => {
+    const engine = new ExpoAudioEngine();
+    const onError = jest.fn();
+    engine.setHandlers({ onError });
+
+    const errStatus = { currentTime: 0, duration: 0, playing: false, didJustFinish: false, isLoaded: false, error: "boom" } as AudioStatus;
+    mockAudio.listener?.(errStatus);
+    mockAudio.listener?.(errStatus); // 同一エラーの再来 → 通知は1回のまま
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    // 正常ステータスでリセット → 再び同じエラーが来たら通知する。
+    mockAudio.listener?.({ currentTime: 1, duration: 100, playing: true, didJustFinish: false, isLoaded: true, error: null } as AudioStatus);
+    mockAudio.listener?.(errStatus);
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it("load() は未接続かつ未DLなら onError で無音を通知する (#67)", () => {
+    const engine = new ExpoAudioEngine();
+    const onError = jest.fn();
+    engine.setHandlers({ onError });
+    engine.load(makeTrack());
+    expect(mockAudio.player.replace).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it("createAudioEngine() は ExpoAudioEngine を返す", () => {
     expect(createAudioEngine()).toBeInstanceOf(ExpoAudioEngine);
   });
