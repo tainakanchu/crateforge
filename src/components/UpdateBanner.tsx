@@ -7,6 +7,45 @@ import type { UpdateInfo } from "../api/system";
 
 const DISMISS_KEY = "itunes-viewer-update-dismissed";
 
+// リリースノートの折りたたみ表示コンポーネント
+function ReleaseNotesToggle({ notes }: { notes: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      <button
+        className="toolbar-btn"
+        onClick={() => setOpen((v) => !v)}
+        style={{ fontSize: 11, padding: "1px 6px" }}
+      >
+        {open ? "更新内容を閉じる" : "更新内容を見る"}
+      </button>
+      {open && (
+        <span
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            zIndex: 50,
+            background: "var(--bg3)",
+            border: "1px solid var(--bd)",
+            borderRadius: 6,
+            padding: "8px 12px",
+            whiteSpace: "pre-wrap",
+            fontSize: 12,
+            color: "var(--tx2)",
+            maxHeight: 200,
+            overflowY: "auto",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+          }}
+        >
+          {notes}
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function UpdateBanner() {
   const setPendingUpdate = useStore((s) => s.setPendingUpdate);
   const [info, setInfo] = useState<UpdateInfo | null>(null);
@@ -98,12 +137,15 @@ export function UpdateBanner() {
   }
 
   return (
-    <div className="update-banner">
+    // position: relative はリリースノートのドロップダウン基準点として必要
+    <div className="update-banner" style={{ position: "relative" }}>
       <Icon name="sparkle" size={16} />
       <span className="update-banner-text">
-        <strong>{info.latestVersion}</strong> is available
-        <span className="update-banner-current"> (you're on v{info.currentVersion})</span>
+        <strong>{info.latestVersion}</strong> が利用可能です
+        <span className="update-banner-current">（現在 v{info.currentVersion}）</span>
       </span>
+      {/* リリースノートがあれば折りたたみボタンを表示 */}
+      {info.releaseNotes && <ReleaseNotesToggle notes={info.releaseNotes} />}
       <button
         className="toolbar-btn primary"
         onClick={handleDownload}
@@ -116,7 +158,7 @@ export function UpdateBanner() {
             : "リリースページを開きます"
         }
       >
-        {busy ? "Downloading…" : info.downloadUrl ? "今すぐ更新" : "Download"}
+        {busy ? "ダウンロード中…" : info.downloadUrl ? "今すぐ更新" : "ダウンロード"}
       </button>
       {info.downloadUrl && (
         <button className="toolbar-btn" onClick={scheduleOnClose} disabled={busy}>
@@ -124,7 +166,7 @@ export function UpdateBanner() {
         </button>
       )}
       <button className="toolbar-btn" onClick={handleDismiss} disabled={busy}>
-        Skip this version
+        このバージョンをスキップ
       </button>
     </div>
   );
@@ -154,7 +196,7 @@ export function CloseUpdateDialog({ info, onClose }: CloseUpdateDialogProps) {
       >
         <div className="modal-header">
           <h2>
-            <Icon name="sparkle" size={16} /> Update Available
+            <Icon name="sparkle" size={16} /> アップデートが利用可能です
           </h2>
           <button className="modal-close" onClick={onClose}>
             <Icon name="x" size={16} />
@@ -162,8 +204,8 @@ export function CloseUpdateDialog({ info, onClose }: CloseUpdateDialogProps) {
         </div>
         <div className="modal-body" style={{ padding: 16 }}>
           <p style={{ marginBottom: 8 }}>
-            <strong>{info.latestVersion}</strong> is available (current: v
-            {info.currentVersion}).
+            <strong>{info.latestVersion}</strong> が利用可能です（現在: v
+            {info.currentVersion}）
           </p>
           {info.releaseNotes && (
             <pre className="rip-log" style={{ maxHeight: 240 }}>
@@ -172,10 +214,10 @@ export function CloseUpdateDialog({ info, onClose }: CloseUpdateDialogProps) {
           )}
           <div className="rip-actions" style={{ marginTop: 16 }}>
             <button className="toolbar-btn" onClick={onClose}>
-              Later
+              あとで
             </button>
             <button className="toolbar-btn primary" onClick={handleOpen}>
-              Open Release Page
+              リリースページを開く
             </button>
           </div>
         </div>

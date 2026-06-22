@@ -14,6 +14,8 @@ import { ConvertDialog } from "./components/ConvertDialog";
 import { SmartPlaylistEditor } from "./components/SmartPlaylistEditor";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { Toaster } from "./components/Toaster";
+import { ShortcutHelp } from "./components/ShortcutHelp";
 import { useStore } from "./store/useStore";
 import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
@@ -74,6 +76,7 @@ export default function App() {
   } | null>(null);
   const [installing, setInstalling] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const reloadPlaylists = useCallback(async () => {
     if (!isTauri) return;
@@ -437,6 +440,26 @@ export default function App() {
         return;
       }
 
+      // Shift+←/→ で ±5 秒シーク（位置・長さは最新の state から読む）。
+      if (e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        const { playback: pb } = useStore.getState();
+        if (pb.currentTrackId === null) return;
+        const delta = e.key === "ArrowRight" ? 5000 : -5000;
+        const next = Math.min(
+          pb.durationMs || Number.MAX_SAFE_INTEGER,
+          Math.max(0, pb.positionMs + delta),
+        );
+        if (isTauri) playbackApi.seek(next).catch(() => {});
+        return;
+      }
+      // ? でショートカット一覧オーバーレイをトグル。
+      if (e.key === "?") {
+        e.preventDefault();
+        setHelpOpen((v) => !v);
+        return;
+      }
+
       if (e.key === "/") {
         e.preventDefault();
         document.getElementById("search-input")?.focus();
@@ -554,6 +577,8 @@ export default function App() {
       {settingsOpen && (
         <SettingsDialog onClose={() => setSettingsOpen(false)} />
       )}
+      {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
+      <Toaster />
       {installing && (
         <div className="modal-overlay">
           <div className="modal" style={{ width: 380, padding: 28, textAlign: "center" }}>

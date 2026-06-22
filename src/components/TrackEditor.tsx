@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import * as libraryApi from "../api/library";
@@ -6,6 +6,7 @@ import { Icon, Stars } from "./Icon";
 import { artworkUrl } from "./Cover";
 import { GenreTagInput } from "./GenreTagInput";
 import { artGradient, leadingGlyph } from "../lib/art";
+import { useStore } from "../store/useStore";
 import type { Track, TrackEdit } from "../types";
 
 function formatDuration(ms: number | null | undefined): string {
@@ -58,6 +59,9 @@ function toBase64(bytes: Uint8Array): string {
 export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
   const single = tracks.length === 1;
   const trackIds = useMemo(() => tracks.map((t) => t.trackId), [tracks]);
+  const pushToast = useStore((s) => s.pushToast);
+  // 最初のテキスト入力への ref（初期フォーカス用）
+  const firstInputRef = useRef<HTMLInputElement>(null);
 
   // 各フィールドの共通値と「混在しているか」を求める。
   const initial = useMemo(() => {
@@ -130,6 +134,49 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
       .catch(() => setGenreSuggestions([]));
   }, []);
 
+  // 初期フォーカス: ダイアログが開いたら最初の入力欄へ。
+  useEffect(() => {
+    firstInputRef.current?.focus();
+  }, []);
+
+  // すべての「閉じる」操作はここを通す。dirty なら確認ダイアログを挟む。
+  const requestClose = useCallback(() => {
+    if (busy) return;
+    if (dirty.size > 0) {
+      if (!window.confirm("変更を破棄して閉じますか？")) return;
+    }
+    onClose();
+  }, [busy, dirty, onClose]);
+
+  // handleSave を ref に持つことで、keydown リスナーが常に最新版を参照できるようにする。
+  const handleSaveRef = useRef<() => void>(() => {});
+
+  // Esc で閉じる / Enter で保存（textarea・select・IME 変換中は除外）。
+  // ジャンルのタグ入力など、子要素が Enter を消費するものは stopPropagation で
+  // ここに届かないようにしてある（GenreTagInput 参照）。
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        requestClose();
+        return;
+      }
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (
+        e.key === "Enter" &&
+        !e.isComposing &&
+        (e as KeyboardEvent & { keyCode: number }).keyCode !== 229 &&
+        tag !== "TEXTAREA" &&
+        tag !== "SELECT"
+      ) {
+        e.preventDefault();
+        handleSaveRef.current();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [requestClose]);
+
   const update = useCallback(
     <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => {
       setForm((f) => ({ ...f, [key]: value }));
@@ -145,6 +192,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
   const ph = (mixed: boolean) => (mixed && !dirty.size ? "— 複数の値 —" : undefined);
 
   const handleSave = useCallback(async () => {
+    if (busy) return;
     setBusy(true);
     setError("");
     try {
@@ -168,14 +216,20 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
       for (const id of trackIds) {
         await libraryApi.updateTrack(id, e);
       }
+      pushToast("success", "保存しました");
       onSaved();
       onClose();
     } catch (err) {
-      setError(`${err}`);
+      const msg = `${err}`;
+      setError(msg);
+      pushToast("error", `保存に失敗しました: ${msg}`);
     } finally {
       setBusy(false);
     }
-  }, [form, dirty, trackIds, onSaved, onClose]);
+  }, [busy, form, dirty, trackIds, onSaved, onClose, pushToast]);
+
+  // ref を最新の handleSave に追従させる（keydown リスナー用）。
+  handleSaveRef.current = handleSave;
 
   const pasteArtwork = useCallback(async () => {
     setBusy(true);
@@ -233,14 +287,14 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
   const glyph = single ? tracks[0].name : `${tracks.length}`;
 
   return (
-    <div className="modal-overlay" onClick={busy ? undefined : onClose}>
+    <div className="modal-overlay" onClick={requestClose}>
       <div className="modal track-editor" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>
             <Icon name="info" size={16} />{" "}
             {single ? "Track Info" : `${tracks.length} 曲を一括編集`}
           </h2>
-          <button className="modal-close" onClick={onClose} disabled={busy}>
+          <button className="modal-close" onClick={requestClose} disabled={busy}>
             <Icon name="x" size={16} />
           </button>
         </div>
@@ -299,7 +353,9 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           </div>
 
           <Field label="Name">
+            {/* 初期フォーカスは最初の入力欄へ */}
             <input
+              ref={firstInputRef}
               className="rip-input"
               value={form.name}
               placeholder={ph(initial.name.mixed)}
@@ -488,11 +544,12 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           {error && <div className="rip-error">{error}</div>}
 
           <div className="rip-actions">
-            <button className="toolbar-btn" onClick={onClose} disabled={busy}>
+            <button className="toolbar-btn" onClick={requestClose} disabled={busy}>
               Cancel
             </button>
             <button className="toolbar-btn primary" onClick={handleSave} disabled={busy}>
-              {busy ? "Saving..." : single ? "Save" : `${tracks.length} 曲を保存`}
+              {/* 保存中はスピナー相当のラベルに変更してボタンを無効化 */}
+              {busy ? "保存中…" : single ? "Save" : `${tracks.length} 曲を保存`}
             </button>
           </div>
         </div>

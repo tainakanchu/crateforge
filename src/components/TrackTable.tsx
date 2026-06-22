@@ -74,7 +74,11 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     pushRecentPlaylist,
     analysisByTrack,
     setSimilarBase,
+    nameColWidth,
+    setNameColWidth,
   } = useStore();
+  // グローバルトースト通知
+  const pushToast = useStore((s) => s.pushToast);
 
   const parentRef = useRef<HTMLDivElement>(null);
   // 範囲選択の起点（Shift の基準）と、矢印移動のカーソル位置。
@@ -120,6 +124,38 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
     // 直後のヘッダ click（ソート）を抑止する。
+    suppressNextSortClick.current = true;
+  };
+
+  // --- Track（曲名）列のリサイズ ---
+  // nameColWidth が null（flex:1）のときはドラッグ開始時の実描画幅を初期値に固定幅化する。
+  const nameResizeRef = useRef<{ startX: number; startW: number } | null>(null);
+  // 曲名列の最小幅。カバー/曲名が潰れないよう他列より広めにクランプ。
+  const clampNameWidth = (w: number) => Math.max(160, Math.min(900, w));
+  const nameHeadRef = useRef<HTMLSpanElement>(null);
+  const onNameResizePointerDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    // 現在の実描画幅を初期値に（固定済みなら nameColWidth、未固定なら DOM 実測）。
+    const startW = nameColWidth ?? nameHeadRef.current?.getBoundingClientRect().width ?? 260;
+    nameResizeRef.current = { startX: e.clientX, startW };
+    setNameColWidth(clampNameWidth(startW));
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+  };
+  const onNameResizePointerMove = (e: React.PointerEvent) => {
+    const r = nameResizeRef.current;
+    if (!r) return;
+    e.preventDefault();
+    setNameColWidth(clampNameWidth(r.startW + (e.clientX - r.startX)));
+  };
+  const onNameResizePointerUp = (e: React.PointerEvent) => {
+    if (!nameResizeRef.current) return;
+    e.stopPropagation();
+    nameResizeRef.current = null;
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
     suppressNextSortClick.current = true;
   };
 
@@ -283,11 +319,11 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         pushRecentPlaylist(playlistId);
         onTracksChanged();
       } catch (err) {
-        alert(`Failed to add: ${err}`);
+        pushToast("error", `追加に失敗しました: ${err}`);
       }
       setContextMenu(null);
     },
-    [ctxIds, pushRecentPlaylist, onTracksChanged],
+    [ctxIds, pushRecentPlaylist, onTracksChanged, pushToast],
   );
 
   const handleAddSelectionToCrate = useCallback(() => {
@@ -304,11 +340,11 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         await playlistsApi.removeTrackFromPlaylist(selectedPlaylistId, track.trackId);
         onTracksChanged();
       } catch (err) {
-        alert(`Failed to remove: ${err}`);
+        pushToast("error", `削除に失敗しました: ${err}`);
       }
       setContextMenu(null);
     },
-    [viewMode, selectedPlaylistId, onTracksChanged],
+    [viewMode, selectedPlaylistId, onTracksChanged, pushToast],
   );
 
   const handleSetRating = useCallback(
@@ -377,12 +413,12 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       await libraryApi.addGenreTag(ctxIds(), tag);
       onTracksChanged();
     } catch (err) {
-      alert(`Failed: ${err}`);
+      pushToast("error", `タグの追加に失敗しました: ${err}`);
     }
     setShowAddTagDialog(false);
     setNewTag("");
     setContextMenu(null);
-  }, [newTag, ctxIds, onTracksChanged]);
+  }, [newTag, ctxIds, onTracksChanged, pushToast]);
 
   const handleRemoveGenreTag = useCallback(
     async (tag: string) => {
@@ -390,11 +426,11 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         await libraryApi.removeGenreTag(ctxIds(), tag);
         onTracksChanged();
       } catch (err) {
-        alert(`Failed: ${err}`);
+        pushToast("error", `タグの削除に失敗しました: ${err}`);
       }
       setContextMenu(null);
     },
-    [ctxIds, onTracksChanged],
+    [ctxIds, onTracksChanged, pushToast],
   );
 
   const handleGetInfo = useCallback(() => {
@@ -435,9 +471,9 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       await libraryApi.updateTrack(genreEdit.trackId, { genre: next });
       onTracksChanged();
     } catch (err) {
-      alert(`ジャンルの保存に失敗: ${err}`);
+      pushToast("error", `ジャンルの保存に失敗しました: ${err}`);
     }
-  }, [genreEdit, onTracksChanged]);
+  }, [genreEdit, onTracksChanged, pushToast]);
 
   // 右クリックした 1 曲を基準に右レールの Similar タブを開く。
   const handleFindSimilar = useCallback(() => {
@@ -464,7 +500,12 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       const tag = el?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
       if (selectedTrackIds.size === 0) return;
-      const sel = tracks.find((t) => selectedTrackIds.has(t.trackId));
+      // フォーカス行を優先し、無ければ最初の選択行を基準にする。
+      const focused =
+        focusIdRef.current != null && selectedTrackIds.has(focusIdRef.current)
+          ? tracks.find((t) => t.trackId === focusIdRef.current)
+          : undefined;
+      const sel = focused ?? tracks.find((t) => selectedTrackIds.has(t.trackId));
       if (!sel) return;
       e.preventDefault();
       const rowEl = parentRef.current?.querySelector(
@@ -504,6 +545,22 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         st.setSelectedTrackIds(new Set(ts.map((t) => t.trackId)));
         anchorIdRef.current = ts[0].trackId;
         focusIdRef.current = ts[ts.length - 1].trackId;
+        return;
+      }
+
+      // Enter: フォーカス行（無ければ選択先頭）の曲を再生。
+      if (e.key === "Enter" && !cmd) {
+        // フォーカス → 選択先頭 の順でフォールバック。
+        let track = ts.find((t) => t.trackId === focusIdRef.current);
+        if (!track) track = ts.find((t) => st.selectedTrackIds.has(t.trackId));
+        if (!track || !track.fileExists) return;
+        e.preventDefault();
+        const ids = ts.map((t) => t.trackId);
+        const startIndex = ids.indexOf(track.trackId);
+        playbackApi
+          .setQueue(ids, Math.max(0, startIndex))
+          .then(() => playbackApi.playTrack(track!.trackId))
+          .catch((err) => console.error("Failed to play:", err));
         return;
       }
 
@@ -576,9 +633,9 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           </span>
         ) : null;
       case "album":
-        return <span className="cb-v ell">{t.album || ""}</span>;
+        return <span className="cb-v ell" title={t.album || ""}>{t.album || ""}</span>;
       case "albumArtist":
-        return <span className="cb-v ell">{t.albumArtist || ""}</span>;
+        return <span className="cb-v ell" title={t.albumArtist || ""}>{t.albumArtist || ""}</span>;
       case "genre":
         return (
           <span className="cb-tags">
@@ -674,9 +731,21 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       {/* Column header */}
       <div className="cb-head" ref={headRef}>
         <span
+          ref={nameHeadRef}
           className={"cb-h-id sortable" + (sortField === "name" ? " sorted" : "")}
+          // nameColWidth が数値なら固定幅、null なら従来どおり flex:1。
+          style={
+            nameColWidth != null
+              ? { position: "relative", flex: "0 0 auto", width: nameColWidth }
+              : { position: "relative" }
+          }
           onClick={(e) => {
             e.stopPropagation();
+            // リサイズ直後の click はソートとして扱わない。
+            if (suppressNextSortClick.current) {
+              suppressNextSortClick.current = false;
+              return;
+            }
             toggleSort("name");
           }}
         >
@@ -688,6 +757,14 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
               style={{ transform: sortOrder === "asc" ? "rotate(180deg)" : undefined }}
             />
           )}
+          {/* 右端のリサイズハンドル。他列と同じ pointer 方式で曲名列を固定幅化する。 */}
+          <span
+            className="cb-h-resize"
+            onPointerDown={onNameResizePointerDown}
+            onPointerMove={onNameResizePointerMove}
+            onPointerUp={onNameResizePointerUp}
+            onClick={(e) => e.stopPropagation()}
+          />
         </span>
         {fields.map((id, index) => {
           const def = FIELD_DEFS[id];
@@ -740,6 +817,24 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         })}
         {/* 末尾へのドロップ位置インジケータ。 */}
         {dropIndicator === fields.length && <span className="cb-h-droplast" />}
+        {/* 選択件数 / 全件数の控えめな表示。右端の add 列の手前に置く。 */}
+        <span
+          style={{
+            marginLeft: "auto",
+            paddingLeft: 10,
+            paddingRight: 4,
+            flexShrink: 0,
+            color: "var(--mut)",
+            fontVariantNumeric: "tabular-nums",
+            letterSpacing: "0.3px",
+            textTransform: "none",
+          }}
+          title="選択件数 / 全件数"
+        >
+          {selectedTrackIds.size > 0
+            ? `${selectedTrackIds.size}選択 / ${tracks.length}曲`
+            : `${tracks.length}曲`}
+        </span>
         <span className="cb-h-add" />
       </div>
 
@@ -773,7 +868,11 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
               onDoubleClick={() => handleDoubleClick(t)}
               onContextMenu={(e) => handleContextMenu(e, t)}
             >
-              <div className="cb-id">
+              <div
+                className="cb-id"
+                // 曲名列が固定幅なら row 側も合わせる（null は CSS の flex:1）。
+                style={nameColWidth != null ? { flex: "0 0 auto", width: nameColWidth } : undefined}
+              >
                 {coverSize > 0 && (
                   <Cover
                     className="cb-cov"
@@ -796,11 +895,18 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                         <Icon name="warning" size={12} />
                       </span>
                     )}
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                    <span
+                      style={{ overflow: "hidden", textOverflow: "ellipsis" }}
+                      title={t.name || "(unknown)"}
+                    >
                       {t.name || "(unknown)"}
                     </span>
                   </div>
-                  {showArtist && <div className="a">{t.artist || ""}</div>}
+                  {showArtist && (
+                    <div className="a" title={t.artist || ""}>
+                      {t.artist || ""}
+                    </div>
+                  )}
                 </div>
               </div>
               {fields.map((id) => (
@@ -835,7 +941,27 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         })}
       </div>
 
-      {isLoading && <div className="cb-loading">Loading…</div>}
+      {isLoading && (
+        <div
+          className="cb-loading"
+          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+        >
+          {/* 簡易スピナー（keyframe はこの場で一度だけ定義）。 */}
+          <style>{"@keyframes cb-spin{to{transform:rotate(360deg)}}"}</style>
+          <span
+            aria-hidden
+            style={{
+              width: 12,
+              height: 12,
+              borderRadius: "50%",
+              border: "2px solid var(--bd)",
+              borderTopColor: "var(--ac)",
+              animation: "cb-spin 0.7s linear infinite",
+            }}
+          />
+          <span>Loading… ({tracks.length}曲)</span>
+        </div>
+      )}
       {tracks.length === 0 && !isLoading && (
         <div className="cb-empty">
           No tracks. Import an iTunes Library XML, rip a CD, or add files to get started.
@@ -913,14 +1039,22 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
       {/* 一覧からのジャンル編集ポップオーバー（外側クリックで保存） */}
       {genreEdit && (
-        <div className="genre-pop-overlay" onMouseDown={saveGenreEdit}>
+        // mousedown ではなく click + 同一ターゲット判定で誤保存を防ぐ。
+        // （down がポップ内→up が overlay 等のドラッグで誤発火しないよう、
+        //  overlay 自身が click ターゲットのときだけ保存する）
+        <div
+          className="genre-pop-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) saveGenreEdit();
+          }}
+        >
           <div
             className="genre-pop"
             style={{
               left: Math.min(genreEdit.x, window.innerWidth - 300),
               top: Math.min(genreEdit.y, window.innerHeight - 180),
             }}
-            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="genre-pop-head">
               <Icon name="tag" size={13} /> ジャンルを編集

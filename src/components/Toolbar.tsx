@@ -80,8 +80,11 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
   const [stats, setStats] = useState<LibraryStats | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
+  // 検索ボックス: 表示用ローカル state（即時反映）。store への反映はデバウンス。
+  const [localSearch, setLocalSearch] = useState(searchQuery);
 
   const searchTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const isListLike = viewMode !== "albums" && viewMode !== "artists";
 
   const refreshStats = useCallback(async () => {
@@ -115,9 +118,17 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
     }
   }, []);
 
+  // store の searchQuery が外部（Ctrl+L / Escape など）で変わったら表示も同期する。
+  useEffect(() => {
+    setLocalSearch(searchQuery);
+  }, [searchQuery]);
+
   const handleSearchChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const value = e.target.value;
+      // 表示は即時反映（制御入力）
+      setLocalSearch(value);
+      // store 反映はデバウンス
       clearTimeout(searchTimer.current);
       searchTimer.current = setTimeout(() => {
         setSearchQuery(value);
@@ -130,13 +141,21 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
   const handleSearchKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key === "Escape") {
+        setLocalSearch("");
         setSearchQuery("");
-        (e.target as HTMLInputElement).value = "";
         (e.target as HTMLInputElement).blur();
       }
     },
     [setSearchQuery],
   );
+
+  // 検索クリア(×)ボタン: store をクリアし入力にフォーカスを戻す。
+  const handleClearSearch = useCallback(() => {
+    clearTimeout(searchTimer.current);
+    setLocalSearch("");
+    setSearchQuery("");
+    searchInputRef.current?.focus();
+  }, [setSearchQuery]);
 
   const handleImport = useCallback(async () => {
     const path = await open({ filters: [{ name: "iTunes Library XML", extensions: ["xml"] }] });
@@ -252,18 +271,42 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
   return (
     <>
       <div className="cb-tb">
-        <div className="cb-sbox">
+        <div className="cb-sbox" style={{ position: "relative" }}>
           <Icon name="search" size={15} />
           <input
             id="search-input"
+            ref={searchInputRef}
             type="text"
-            placeholder="Search… or bpm:120-128  key:8A  energy:60-100  (/)"
-            defaultValue={searchQuery}
+            placeholder="Search… or bpm:120-128  key:8A  energy:60-100  (/ or Ctrl+F)"
+            value={localSearch}
             onChange={handleSearchChange}
             onKeyDown={handleSearchKeyDown}
             autoComplete="off"
             spellCheck={false}
           />
+          {/* 検索文字がある時だけ × を表示 */}
+          {localSearch && (
+            <button
+              onClick={handleClearSearch}
+              title="検索をクリア"
+              style={{
+                position: "absolute",
+                right: 6,
+                top: "50%",
+                transform: "translateY(-50%)",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "2px 4px",
+                color: "var(--tx2)",
+                lineHeight: 1,
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <Icon name="x" size={13} />
+            </button>
+          )}
         </div>
 
         <div className="cb-seg">
@@ -292,7 +335,8 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
             }}
             title="Sort"
           >
-            Sort: {curSort?.label ?? "—"}
+            {/* ソートフィールド名＋現在の昇順/降順を常時表示 */}
+            Sort: {curSort?.label ?? "—"} {sortOrder === "asc" ? "↑" : "↓"}
             <Icon name="chevronD" size={12} />
           </button>
           {sortOpen && (

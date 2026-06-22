@@ -142,9 +142,12 @@ export function ColumnPicker({ onClose }: ColumnPickerProps) {
                 <button
                   key={s}
                   className={"cb-segb2" + (coverSize === s ? " on" : "")}
+                  // アートワーク列幅: Off=非表示 / S=小(20px) / M=中(28px)
+                  title={s === 0 ? "Artwork: Off" : s === 20 ? "Artwork: Small" : "Artwork: Medium"}
+                  aria-label={s === 0 ? "Artwork: Off" : s === 20 ? "Artwork: Small" : "Artwork: Medium"}
                   onClick={() => setCoverSize(s)}
                 >
-                  {s === 0 ? "なし" : s === 20 ? "豆" : "小"}
+                  {s === 0 ? "Off" : s === 20 ? "S" : "M"}
                 </button>
               ))}
             </div>

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import * as convertApi from "../api/convert";
 import { Icon } from "./Icon";
+import { useStore } from "../store/useStore";
 import type { ConvertFormat, ConvertProgress } from "../types";
 
 interface ConvertDialogProps {
@@ -34,7 +35,17 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
     null,
   );
 
+  const pushToast = useStore((s) => s.pushToast);
+
+  // 初期フォーカス用 ref（format セレクト）
+  const formatSelectRef = useRef<HTMLSelectElement>(null);
+
   const isLossy = FORMATS.find((f) => f.value === format)?.lossy ?? false;
+
+  // 開いた直後に format セレクトへフォーカス
+  useEffect(() => {
+    formatSelectRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     let un: UnlistenFn | undefined;
@@ -77,9 +88,25 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
         addToLibrary,
       });
     } catch (e) {
-      alert(`Convert failed: ${e}`);
+      pushToast("error", `変換に失敗しました: ${e}`);
     }
-  }, [outputDir, running, trackIds, format, isLossy, bitrate, addToLibrary]);
+  }, [outputDir, running, trackIds, format, isLossy, bitrate, addToLibrary, pushToast]);
+
+  // Esc で閉じる / Enter で変換開始（handleConvert 定義後に登録）
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !running) {
+        onClose();
+      }
+      // Enter で変換開始（IME 変換中・変換済み・outputDir 未設定は除外）
+      if (e.key === "Enter" && !e.isComposing && !running && outputDir) {
+        e.preventDefault();
+        handleConvert();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [running, onClose, outputDir, handleConvert]);
 
   return (
     <div className="modal-overlay" onClick={running ? undefined : onClose}>
@@ -97,6 +124,7 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
           <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ width: 96, color: "var(--mut)" }}>Format</span>
             <select
+              ref={formatSelectRef}
               className="rip-input"
               value={format}
               onChange={(e) => setFormat(e.target.value as ConvertFormat)}

@@ -6,6 +6,15 @@ import { Icon } from "./Icon";
 import { Cover } from "./Cover";
 import { bpmColor } from "../lib/art";
 
+// 残り時間を "-mm:ss" 形式でフォーマット。
+function formatRemainingTime(positionMs: number, durationMs: number): string {
+  const remaining = Math.max(0, durationMs - positionMs);
+  const totalSec = Math.floor(remaining / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `-${min}:${sec.toString().padStart(2, "0")}`;
+}
+
 function formatTime(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
   const min = Math.floor(totalSec / 60);
@@ -28,6 +37,8 @@ export function PlayerBar() {
     setRepeat,
     setReplayGain,
     setRailTab,
+    showRemainingTime,
+    toggleRemainingTime,
   } = useStore();
 
   // ミュート前の音量を保持（復帰用）。
@@ -93,14 +104,43 @@ export function PlayerBar() {
 
   const handleOpenQueue = useCallback(() => setRailTab("next"), [setRailTab]);
 
-  const handleWaveSeek = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
+  // ドラッグシーク用: null=非ドラッグ中, 0〜1=ドラッグ中プレビュー位置。
+  const [dragRatio, setDragRatio] = useState<number | null>(null);
+  const waveRef = useRef<HTMLDivElement>(null);
+
+  // バー上の clientX から 0〜1 の比率を計算。
+  const getRatioFromX = useCallback((clientX: number): number => {
+    if (!waveRef.current) return 0;
+    const rect = waveRef.current.getBoundingClientRect();
+    return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  }, []);
+
+  const handleWavePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
       if (!currentTrack || playback.durationMs <= 0) return;
-      const rect = e.currentTarget.getBoundingClientRect();
-      const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-      playbackApi.seek(Math.floor(ratio * playback.durationMs));
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const ratio = getRatioFromX(e.clientX);
+      setDragRatio(ratio);
     },
-    [currentTrack, playback.durationMs],
+    [currentTrack, playback.durationMs, getRatioFromX],
+  );
+
+  const handleWavePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (dragRatio === null) return;
+      setDragRatio(getRatioFromX(e.clientX));
+    },
+    [dragRatio, getRatioFromX],
+  );
+
+  const handleWavePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (dragRatio === null || playback.durationMs <= 0) return;
+      const ratio = getRatioFromX(e.clientX);
+      playbackApi.seek(Math.floor(ratio * playback.durationMs));
+      setDragRatio(null);
+    },
+    [dragRatio, playback.durationMs, getRatioFromX],
   );
 
   const handleVolumeClick = useCallback(
@@ -201,16 +241,38 @@ export function PlayerBar() {
         </div>
         <div className="cb-seek">
           <span>{formatTime(playback.positionMs)}</span>
-          <div className="cb-wave" onClick={handleWaveSeek}>
-            {bars.map((h, i) => (
-              <i
-                key={i}
-                className={i / bars.length < progress ? "on" : ""}
-                style={{ height: h }}
-              />
-            ))}
+          {/* ドラッグシーク対応: pointerDown/Move/Up + setPointerCapture でドラッグを捕捉 */}
+          <div
+            ref={waveRef}
+            className="cb-wave"
+            style={{ touchAction: "none", cursor: "pointer" }}
+            onPointerDown={handleWavePointerDown}
+            onPointerMove={handleWavePointerMove}
+            onPointerUp={handleWavePointerUp}
+            onPointerCancel={() => setDragRatio(null)}
+          >
+            {bars.map((h, i) => {
+              // ドラッグ中はプレビュー位置、通常は再生位置で塗り分け。
+              const activeRatio = dragRatio !== null ? dragRatio : progress;
+              return (
+                <i
+                  key={i}
+                  className={i / bars.length < activeRatio ? "on" : ""}
+                  style={{ height: h }}
+                />
+              );
+            })}
           </div>
-          <span>{formatTime(playback.durationMs)}</span>
+          {/* クリックで経過時間 ↔ 残り時間をトグル */}
+          <span
+            onClick={toggleRemainingTime}
+            style={{ cursor: "pointer", userSelect: "none" }}
+            title="クリックで残り時間/経過時間を切替"
+          >
+            {showRemainingTime
+              ? formatRemainingTime(playback.positionMs, playback.durationMs)
+              : formatTime(playback.durationMs)}
+          </span>
         </div>
       </div>
 
@@ -234,8 +296,30 @@ export function PlayerBar() {
         >
           <Icon name={volume === 0 ? "volumeX" : "volume"} size={16} />
         </button>
-        <div className="cb-vbar" onClick={handleVolumeClick} title="Volume (Ctrl+↑/↓)">
+        {/* title に現在の音量 % を表示。サム（丸いつまみ）を絶対配置で追加 */}
+        <div
+          className="cb-vbar"
+          onClick={handleVolumeClick}
+          title={`Volume: ${Math.round(volume * 100)}% (Ctrl+↑/↓)`}
+          style={{ position: "relative" }}
+        >
+          {/* 塗り済みバー */}
           <i style={{ right: `${(1 - volume) * 100}%` }} />
+          {/* 丸いサム（つまみ） */}
+          <span
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: `${volume * 100}%`,
+              transform: "translate(-50%, -50%)",
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              background: "var(--ac)",
+              pointerEvents: "none",
+              boxShadow: "0 0 0 2px var(--bg3)",
+            }}
+          />
         </div>
       </div>
     </div>

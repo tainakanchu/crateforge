@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as playlistsApi from "../api/playlists";
 import { Icon } from "./Icon";
 import type { SmartCriteria, SmartOp, SmartRule } from "../types";
@@ -11,7 +11,7 @@ interface SmartPlaylistEditorProps {
   onSaved: () => void;
 }
 
-type FieldType = "str" | "num";
+type FieldType = "str" | "num" | "date";
 
 const FIELDS: { value: string; label: string; type: FieldType }[] = [
   { value: "artist", label: "Artist", type: "str" },
@@ -28,8 +28,8 @@ const FIELDS: { value: string; label: string; type: FieldType }[] = [
   { value: "energy", label: "Energy (0–1)", type: "num" },
   { value: "playCount", label: "Plays", type: "num" },
   { value: "skipCount", label: "Skips", type: "num" },
-  { value: "dateAdded", label: "Date Added", type: "str" },
-  { value: "lastPlayed", label: "Last Played", type: "str" },
+  { value: "dateAdded", label: "Date Added", type: "date" },
+  { value: "lastPlayed", label: "Last Played", type: "date" },
 ];
 
 const STR_OPS: { value: SmartOp; label: string }[] = [
@@ -67,6 +67,7 @@ function fieldType(field: string): FieldType {
   return FIELDS.find((f) => f.value === field)?.type ?? "str";
 }
 function opsFor(field: string) {
+  // date は内部的に str 演算子を流用する。
   return fieldType(field) === "num" ? NUM_OPS : STR_OPS;
 }
 function needsValue(op: SmartOp) {
@@ -90,6 +91,8 @@ export function SmartPlaylistEditor({
   const [sortDesc, setSortDesc] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // 編集モード時に最初のフォーカスを当てる参照。
+  const firstFocusRef = useRef<HTMLSelectElement>(null);
 
   // 編集モードなら既存条件を読み込む。
   useEffect(() => {
@@ -110,6 +113,13 @@ export function SmartPlaylistEditor({
       alive = false;
     };
   }, [playlistId]);
+
+  // 編集モード: 初期フォーカスを match-all セレクトに当てる。
+  useEffect(() => {
+    if (!creating) {
+      firstFocusRef.current?.focus();
+    }
+  }, [creating]);
 
   const setRule = useCallback((i: number, patch: Partial<SmartRule>) => {
     setRules((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
@@ -150,6 +160,26 @@ export function SmartPlaylistEditor({
     }
   }, [creating, name, matchAll, rules, limit, sortBy, sortDesc, playlistId, onSaved, onClose]);
 
+  // Esc で閉じる / Ctrl+Enter または Cmd+Enter で保存（handleSave 定義後に登録）。
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (busy) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      // IME 変換中は無視。
+      if (e.isComposing) return;
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        handleSave();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [busy, onClose, handleSave]);
+
   return (
     <div className="modal-overlay" onClick={busy ? undefined : onClose}>
       <div className="modal" style={{ width: 560 }} onClick={(e) => e.stopPropagation()}>
@@ -178,6 +208,7 @@ export function SmartPlaylistEditor({
             <span>条件:</span>
             <select
               className="rip-input"
+              ref={firstFocusRef}
               value={matchAll ? "all" : "any"}
               onChange={(e) => setMatchAll(e.target.value === "all")}
               style={{ width: 160 }}
@@ -221,9 +252,10 @@ export function SmartPlaylistEditor({
                 </select>
                 <input
                   className="rip-input"
+                  type={fieldType(r.field) === "date" ? "date" : "text"}
                   value={r.value}
                   disabled={!needsValue(r.op)}
-                  placeholder={needsValue(r.op) ? "値" : "—"}
+                  placeholder={needsValue(r.op) ? (fieldType(r.field) === "date" ? "" : "値") : "—"}
                   onChange={(e) => setRule(i, { value: e.target.value })}
                   style={{ flex: "1 1 100px" }}
                 />

@@ -3113,3 +3113,128 @@ input {
 ::-webkit-scrollbar-thumb:hover {
   background: #3a4248;
 }
+
+/* ============================================================
+   グローバルトースト（成功/失敗/情報の一時通知）
+   ============================================================ */
+.toaster {
+  position: fixed;
+  right: 18px;
+  bottom: 84px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 2000;
+  pointer-events: none;
+  max-width: min(420px, 90vw);
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 14px;
+  border-radius: 10px;
+  background: #1b2125;
+  border: 1px solid var(--bd-strong);
+  border-left: 3px solid var(--ac);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+  color: var(--tx);
+  animation: toast-in 0.18s ease-out;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.toast-success {
+  border-left-color: #5fae7e;
+}
+.toast-error {
+  border-left-color: #d2685f;
+}
+.toast-info {
+  border-left-color: var(--ac);
+}
+.toast-msg {
+  flex: 1;
+  line-height: 1.4;
+}
+.toast-close {
+  background: transparent;
+  border: none;
+  color: var(--mut);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  border-radius: 4px;
+}
+.toast-close:hover {
+  color: var(--tx);
+  background: var(--hover);
+}
+
+/* ============================================================
+   ショートカット一覧オーバーレイ（? キー）
+   ============================================================ */
+.modal.shortcut-help {
+  width: 560px;
+}
+.shortcut-help-body {
+  padding: 8px 18px 18px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 28px;
+}
+.shortcut-group {
+  margin-top: 12px;
+}
+.shortcut-group h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tx2);
+  margin-bottom: 6px;
+}
+.shortcut-group ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.shortcut-group li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+}
+.shortcut-label {
+  color: var(--tx2);
+  text-align: right;
+}
+.shortcut-keys {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.shortcut-keys kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  min-width: 20px;
+  text-align: center;
+  padding: 2px 6px;
+  background: var(--bg3);
+  border: 1px solid var(--bd-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  color: var(--tx-strong);
+}

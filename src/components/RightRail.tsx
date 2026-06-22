@@ -48,11 +48,16 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
     repeat,
     similarBaseTrackId,
     analysisByTrack,
+    pushToast,
   } = useStore();
 
   const [queueTracks, setQueueTracks] = useState<QueueItem[]>([]);
   const dragIdx = useRef<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
+
+  // Save as Playlist のインライン入力用
+  const [saveNameInput, setSaveNameInput] = useState<string | null>(null);
+  const saveInputRef = useRef<HTMLInputElement | null>(null);
 
   // Up Next のドラッグ並び替え用。Crate と違いバックエンドが正なので、
   // ドラッグ中はローカルの並びだけ動かし、drop 確定時に moveQueueItem を 1 回だけ呼ぶ。
@@ -176,10 +181,18 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
     setOverIdx(null);
   };
 
-  const handleSaveAsPlaylist = useCallback(async () => {
+  // Save as Playlist ボタン → インライン入力を表示
+  const handleSaveAsPlaylistOpen = useCallback(() => {
     if (crate.length === 0) return;
-    const name = window.prompt("Save crate as playlist — name:");
-    if (!name?.trim()) return;
+    setSaveNameInput("");
+    // 次のフレームで input にフォーカス
+    setTimeout(() => saveInputRef.current?.focus(), 0);
+  }, [crate]);
+
+  // インライン入力で Enter 確定 or 明示的呼び出し
+  const handleSaveAsPlaylistCommit = useCallback(async (name: string) => {
+    if (!name.trim()) return;
+    setSaveNameInput(null);
     try {
       const pl = await playlistsApi.createPlaylist(name.trim(), null, false);
       await playlistsApi.addTracksToPlaylist(
@@ -188,10 +201,11 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
       );
       clearCrate();
       onPlaylistsChanged();
+      pushToast("success", `「${name.trim()}」として保存しました`);
     } catch (err) {
-      alert(`Failed to save playlist: ${err}`);
+      pushToast("error", `プレイリストの保存に失敗しました: ${err}`);
     }
-  }, [crate, clearCrate, onPlaylistsChanged]);
+  }, [crate, clearCrate, onPlaylistsChanged, pushToast]);
 
   const handlePlayCrate = useCallback(async () => {
     if (crate.length === 0) return;
@@ -203,13 +217,18 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   // 貪欲最近傍で crate を滑らかな並びへ (解析済みの曲が対象)。
   const handleSmoothOrder = useCallback(async () => {
     if (crate.length < 3) return;
+    const total = crate.length;
     try {
       const ids = await analysisApi.buildSmoothOrder(crate.map((t) => t.trackId));
       setCrateOrder(ids);
+      // 並び替えられた曲数（解析済みのもの）をフィードバック
+      const arranged = ids.filter((id) => analysisByTrack.has(id)).length;
+      pushToast("success", `${arranged}/${total} 曲をスムーズに並び替えました`);
     } catch (err) {
       console.error("Failed to build smooth order:", err);
+      pushToast("error", `スムーズ並び替えに失敗しました: ${err}`);
     }
-  }, [crate, setCrateOrder]);
+  }, [crate, setCrateOrder, analysisByTrack, pushToast]);
 
   // Crate の曲をダブルクリック: Crate 全体をキューにして、その曲から再生。
   const playFromCrate = useCallback(
@@ -367,21 +386,64 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
       {/* Now Playing details */}
       {railTab === "now" && (
         <div className="cb-cratelist">
-          {now ? (
-            <div style={{ padding: "4px 6px", display: "flex", flexDirection: "column", gap: 8 }}>
-              <NowRow label="Album" value={now.album} />
-              <NowRow label="Artist" value={now.artist} />
-              <NowRow label="Genre" value={now.genre} />
-              <NowRow label="BPM" value={now.bpm != null ? String(now.bpm) : null} />
-              <NowRow label="Plays" value={now.playCount != null ? String(now.playCount) : null} />
-            </div>
-          ) : (
+          {now ? (() => {
+            // analysisByTrack から再生中トラックの解析結果を取得
+            const na = now.trackId != null ? analysisByTrack.get(now.trackId) : null;
+            return (
+              <div style={{ padding: "4px 6px", display: "flex", flexDirection: "column", gap: 8 }}>
+                <NowRow label="Album" value={now.album} />
+                <NowRow label="Artist" value={now.artist} />
+                <NowRow label="Genre" value={now.genre} />
+                <NowRow label="BPM" value={now.bpm != null ? String(now.bpm) : null} />
+                {/* Key: analysisByTrack から取得（null なら行ごと非表示）*/}
+                {na?.keyCamelot != null && (
+                  <NowRow label="Key" value={na.keyCamelot} />
+                )}
+                {/* Energy: analysisByTrack から取得（null なら行ごと非表示）*/}
+                {na?.energy != null && (
+                  <NowRow label="Energy" value={String(Math.round(na.energy * 100)) + "%"} />
+                )}
+                <NowRow label="Plays" value={now.playCount != null ? String(now.playCount) : null} />
+              </div>
+            );
+          })() : (
             <div className="cb-rail-empty">再生中のトラックはありません。</div>
           )}
         </div>
       )}
 
       {/* Up Next */}
+      {railTab === "next" && (
+        <div className="cb-cratehd">
+          <b>Up Next</b>
+          <span className="cb-cmeta">
+            {queueTracks.length > 0 && (
+              <>
+                <b>{queueTracks.length}</b> 曲
+                {" · "}
+                <b>{fmtTotal(queueTracks.map((q) => q.track))}</b>
+              </>
+            )}
+            {/* shuffle ON バッジ */}
+            {shuffle && (
+              <span
+                style={{
+                  marginLeft: 6,
+                  padding: "1px 6px",
+                  fontSize: 10,
+                  borderRadius: 4,
+                  background: "var(--ac)",
+                  color: "#fff",
+                  fontWeight: 600,
+                  letterSpacing: "0.04em",
+                }}
+              >
+                Shuffle
+              </span>
+            )}
+          </span>
+        </div>
+      )}
       {railTab === "next" && (
         <div className="cb-cratelist">
           {queueTracks.length === 0 ? (
@@ -461,7 +523,16 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
                 </button>
               )}
               {crate.length > 0 && (
-                <button className="cb-clear" onClick={clearCrate} title="Clear crate">
+                <button
+                  className="cb-clear"
+                  title="Clear crate"
+                  onClick={() => {
+                    // 非永続なので曲数を明示して確認
+                    if (window.confirm(`クレート ${crate.length} 曲をすべて外しますか？`)) {
+                      clearCrate();
+                    }
+                  }}
+                >
                   {" "}
                   clear
                 </button>
@@ -521,18 +592,60 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
               ))
             )}
           </div>
-          <div className="cb-cratefoot">
-            <button className="cb-big" onClick={handleSaveAsPlaylist} disabled={crate.length === 0}>
-              <Icon name="check" size={15} /> Save as Playlist
-            </button>
-            <button
-              className="cb-ghost"
-              title="Play crate"
-              onClick={handlePlayCrate}
-              disabled={crate.length === 0}
-            >
-              <Icon name="play" size={15} fill="currentColor" stroke={0} />
-            </button>
+          <div className="cb-cratefoot" style={{ flexDirection: "column", gap: 4 }}>
+            {/* インライン名前入力（表示中のみ） */}
+            {saveNameInput !== null ? (
+              <div style={{ display: "flex", gap: 4, width: "100%" }}>
+                <input
+                  ref={saveInputRef}
+                  type="text"
+                  value={saveNameInput}
+                  onChange={(e) => setSaveNameInput(e.target.value)}
+                  placeholder="プレイリスト名を入力…"
+                  style={{
+                    flex: 1,
+                    fontSize: 12,
+                    padding: "4px 8px",
+                    borderRadius: 6,
+                    border: "1px solid var(--bd-strong)",
+                    background: "var(--bg3)",
+                    color: "var(--tx)",
+                    outline: "none",
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveAsPlaylistCommit(saveNameInput);
+                    if (e.key === "Escape") setSaveNameInput(null);
+                  }}
+                />
+                <button
+                  className="cb-big"
+                  style={{ flexShrink: 0, padding: "4px 10px" }}
+                  onClick={() => handleSaveAsPlaylistCommit(saveNameInput)}
+                  disabled={!saveNameInput.trim()}
+                >
+                  <Icon name="check" size={14} />
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 4, width: "100%" }}>
+                <button
+                  className="cb-big"
+                  style={{ flex: 1 }}
+                  onClick={handleSaveAsPlaylistOpen}
+                  disabled={crate.length === 0}
+                >
+                  <Icon name="check" size={15} /> Save as Playlist
+                </button>
+                <button
+                  className="cb-ghost"
+                  title="Play crate"
+                  onClick={handlePlayCrate}
+                  disabled={crate.length === 0}
+                >
+                  <Icon name="play" size={15} fill="currentColor" stroke={0} />
+                </button>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -620,16 +733,24 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
               })
             )}
           </div>
-          {similar.length > 0 && (
-            <div className="cb-cratefoot">
-              <button
-                className="cb-big"
-                onClick={() => similar.forEach((h) => addToCrate(h.track))}
-              >
-                <Icon name="layers" size={15} /> Add all to Crate
-              </button>
-            </div>
-          )}
+          {similar.length > 0 && (() => {
+            // similar 候補がすべて crate 済みかどうかチェック
+            const allInCrate = similar.every((h) =>
+              crate.some((c) => c.trackId === h.track.trackId)
+            );
+            return (
+              <div className="cb-cratefoot">
+                <button
+                  className="cb-big"
+                  onClick={() => similar.forEach((h) => addToCrate(h.track))}
+                  disabled={allInCrate}
+                >
+                  <Icon name="layers" size={15} />
+                  {allInCrate ? " All added" : " Add all to Crate"}
+                </button>
+              </div>
+            );
+          })()}
         </>
       )}
     </aside>

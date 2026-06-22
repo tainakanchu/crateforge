@@ -16,12 +16,26 @@ import type {
 } from "../types";
 import { DEFAULT_FIELDS } from "../types";
 
+// グローバルトースト（成功/失敗/情報の一時通知）。永続化しない。
+export type ToastKind = "success" | "error" | "info";
+export interface Toast {
+  id: number;
+  kind: ToastKind;
+  message: string;
+  // 自動で消えるまでのミリ秒。0 以下なら自動で消えない。
+  durationMs: number;
+}
+
 interface PersistedSettings {
   fields: FieldKey[];
   // 列ごとのユーザー指定幅 (px)。未指定の列は FIELD_DEFS の既定幅を使う。
   fieldWidths: Partial<Record<FieldKey, number>>;
+  // 曲名(Track)列のユーザー指定幅 (px)。null なら従来どおり残り幅いっぱい(flex:1)。
+  nameColWidth: number | null;
   // 右ペイン(RightRail)を表示するか。false でテーブルを全幅に広げる。
   rightRailVisible: boolean;
+  // プレーヤーの時間表示を「残り時間(−)」にするか。false なら経過時間。
+  showRemainingTime: boolean;
   rowH: number;
   coverSize: CoverSize;
   displayMode: DisplayMode;
@@ -74,6 +88,9 @@ interface AppState extends PersistedSettings {
   // 「閉じるときに更新」が予約されていれば、そのインストーラ URL とバージョン。
   pendingUpdate: { url: string; version: string } | null;
 
+  // グローバルトースト — セッション内のみ、永続化しない。
+  toasts: Toast[];
+
   // Actions
   setViewMode: (mode: ViewMode) => void;
   setSelectedPlaylistId: (id: number | null) => void;
@@ -105,8 +122,11 @@ interface AppState extends PersistedSettings {
   toggleField: (key: FieldKey) => void;
   reorderFields: (from: number, to: number) => void;
   setFieldWidth: (key: FieldKey, width: number) => void;
+  setNameColWidth: (width: number | null) => void;
   setRightRailVisible: (visible: boolean) => void;
   toggleRightRail: () => void;
+  setShowRemainingTime: (show: boolean) => void;
+  toggleRemainingTime: () => void;
   setRowH: (h: number) => void;
   setCoverSize: (s: CoverSize) => void;
   resetColumns: () => void;
@@ -126,7 +146,14 @@ interface AppState extends PersistedSettings {
   setAnalysisActive: (v: { done: number; total: number } | null) => void;
   setSimilarBase: (trackId: number | null) => void;
   setPendingUpdate: (v: { url: string; version: string } | null) => void;
+
+  // Toasts
+  pushToast: (kind: ToastKind, message: string, durationMs?: number) => number;
+  dismissToast: (id: number) => void;
 }
+
+// トーストの連番 ID 発番用カウンタ。
+let toastSeq = 0;
 
 export const useStore = create<AppState>()(
   persist(
@@ -152,11 +179,14 @@ export const useStore = create<AppState>()(
       analysisActive: null,
       similarBaseTrackId: null,
       pendingUpdate: null,
+      toasts: [],
 
       // Persisted
       fields: DEFAULT_FIELDS,
       fieldWidths: {},
+      nameColWidth: null,
       rightRailVisible: true,
+      showRemainingTime: false,
       rowH: 40,
       coverSize: 20,
       displayMode: "list",
@@ -258,9 +288,13 @@ export const useStore = create<AppState>()(
         }),
       setFieldWidth: (key, width) =>
         set((state) => ({ fieldWidths: { ...state.fieldWidths, [key]: width } })),
+      setNameColWidth: (nameColWidth) => set({ nameColWidth }),
       setRightRailVisible: (rightRailVisible) => set({ rightRailVisible }),
       toggleRightRail: () =>
         set((state) => ({ rightRailVisible: !state.rightRailVisible })),
+      setShowRemainingTime: (showRemainingTime) => set({ showRemainingTime }),
+      toggleRemainingTime: () =>
+        set((state) => ({ showRemainingTime: !state.showRemainingTime })),
       setRowH: (rowH) => set({ rowH }),
       setCoverSize: (coverSize) => set({ coverSize }),
       resetColumns: () =>
@@ -299,16 +333,28 @@ export const useStore = create<AppState>()(
       setSimilarBase: (trackId) =>
         set({ similarBaseTrackId: trackId, railTab: "similar" }),
       setPendingUpdate: (pendingUpdate) => set({ pendingUpdate }),
+
+      pushToast: (kind, message, durationMs = 3200) => {
+        const id = ++toastSeq;
+        set((state) => ({
+          toasts: [...state.toasts, { id, kind, message, durationMs }],
+        }));
+        return id;
+      },
+      dismissToast: (id) =>
+        set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
     }),
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 7,
+      version: 8,
       partialize: (state) =>
         ({
           fields: state.fields,
           fieldWidths: state.fieldWidths,
+          nameColWidth: state.nameColWidth,
           rightRailVisible: state.rightRailVisible,
+          showRemainingTime: state.showRemainingTime,
           rowH: state.rowH,
           coverSize: state.coverSize,
           displayMode: state.displayMode,
@@ -355,6 +401,13 @@ export const useStore = create<AppState>()(
             p.fieldWidths = {};
           }
           if (typeof p.rightRailVisible !== "boolean") p.rightRailVisible = true;
+        }
+        // v8: 曲名列幅(nameColWidth) と 残り時間表示(showRemainingTime) を追加。
+        // 旧データには無いので null / false で補完する。
+        if (version < 8 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (typeof p.nameColWidth !== "number") p.nameColWidth = null;
+          if (typeof p.showRemainingTime !== "boolean") p.showRemainingTime = false;
         }
         return persisted as PersistedSettings;
       },

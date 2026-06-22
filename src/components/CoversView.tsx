@@ -106,6 +106,8 @@ export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     pushRecentPlaylist,
     setSimilarBase,
   } = useStore();
+  // グローバルトースト通知
+  const pushToast = useStore((s) => s.pushToast);
   const parentRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -308,11 +310,11 @@ export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         pushRecentPlaylist(playlistId);
         onTracksChanged();
       } catch (err) {
-        alert(`Failed to add: ${err}`);
+        pushToast("error", `追加に失敗しました: ${err}`);
       }
       closeMenu();
     },
-    [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu],
+    [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast],
   );
 
   const handleRemoveFromPlaylist = useCallback(async () => {
@@ -323,10 +325,10 @@ export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       }
       onTracksChanged();
     } catch (err) {
-      alert(`Failed to remove: ${err}`);
+      pushToast("error", `削除に失敗しました: ${err}`);
     }
     closeMenu();
-  }, [contextMenu, viewMode, selectedPlaylistId, onTracksChanged, closeMenu]);
+  }, [contextMenu, viewMode, selectedPlaylistId, onTracksChanged, closeMenu, pushToast]);
 
   const handleApplyAddTag = useCallback(async () => {
     const tag = newTag.trim();
@@ -338,12 +340,12 @@ export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       await libraryApi.addGenreTag(contextMenu.trackIds, tag);
       onTracksChanged();
     } catch (err) {
-      alert(`Failed: ${err}`);
+      pushToast("error", `タグの追加に失敗しました: ${err}`);
     }
     setShowAddTagDialog(false);
     setNewTag("");
     closeMenu();
-  }, [newTag, contextMenu, onTracksChanged, closeMenu]);
+  }, [newTag, contextMenu, onTracksChanged, closeMenu, pushToast]);
 
   const handleRemoveTag = useCallback(
     async (tag: string) => {
@@ -352,11 +354,11 @@ export function CoversView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         await libraryApi.removeGenreTag(contextMenu.trackIds, tag);
         onTracksChanged();
       } catch (err) {
-        alert(`Failed: ${err}`);
+        pushToast("error", `タグの削除に失敗しました: ${err}`);
       }
       closeMenu();
     },
-    [contextMenu, onTracksChanged, closeMenu],
+    [contextMenu, onTracksChanged, closeMenu, pushToast],
   );
 
   // メニュー表示用の派生値（レーティングは最新の tracks から引き直す）。

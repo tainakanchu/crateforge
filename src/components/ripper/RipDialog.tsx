@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as ripperApi from "../../api/ripper";
+import { useStore } from "../../store/useStore";
 import { Icon } from "../Icon";
 import type {
   DiscToc,
@@ -31,6 +32,8 @@ function defaultDevice(): string {
 }
 
 export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialogProps) {
+  // グローバルトースト通知
+  const pushToast = useStore((s) => s.pushToast);
   const [stage, setStage] = useState<Stage>("idle");
   const [device, setDevice] = useState(defaultDevice());
   const [toc, setToc] = useState<DiscToc | null>(null);
@@ -108,7 +111,7 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
 
   const handleRip = useCallback(async () => {
     if (!toc || !outputDir) {
-      alert("Pick an output directory first.");
+      pushToast("info", "先に出力先フォルダを選んでください");
       return;
     }
 
@@ -141,7 +144,7 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
       setErrorMsg(`${e}`);
       setStage("error");
     }
-  }, [toc, outputDir, device, format, selectedTracks, selectedRelease, addToLibrary, onLibraryChanged]);
+  }, [toc, outputDir, device, format, selectedTracks, selectedRelease, addToLibrary, onLibraryChanged, pushToast]);
 
   const trackList = useMemo(() => {
     if (!toc) return [];

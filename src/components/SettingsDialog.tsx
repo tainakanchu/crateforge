@@ -63,6 +63,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     setPendingUpdate,
   } = useStore();
 
+  // トースト通知（alert の代わりに使用）
+  const pushToast = useStore((s) => s.pushToast);
+
   const [section, setSection] = useState<Section>("general");
   const [version, setVersion] = useState("");
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
@@ -194,21 +197,21 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       setApiStatus(next);
       setPortInput(String(next.port));
     } catch (err) {
-      alert(`API サーバーの設定に失敗しました: ${err}`);
+      pushToast("error", `API サーバーの設定に失敗しました: ${err}`);
       // 失敗した場合は最新状態を再取得してトグルをリセット。
       serverApi.getApiServerStatus().then((s) => {
         setApiStatus(s);
         setPortInput(String(s.port));
       }).catch(() => {});
     }
-  }, [apiStatus, portInput]);
+  }, [apiStatus, portInput, pushToast]);
 
   // ポート番号の変更を適用（enabled=true のときのみ即時反映）。
   const handleApplyPort = useCallback(async () => {
     if (!apiStatus) return;
     const port = Number(portInput);
     if (!port || port < 1 || port > 65535) {
-      alert(`ポート番号が不正です: ${portInput}`);
+      pushToast("error", `ポート番号が不正です: ${portInput}`);
       setPortInput(String(apiStatus.port));
       return;
     }
@@ -221,13 +224,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       setApiStatus(next);
       setPortInput(String(next.port));
     } catch (err) {
-      alert(`ポートの変更に失敗しました: ${err}`);
+      pushToast("error", `ポートの変更に失敗しました: ${err}`);
       serverApi.getApiServerStatus().then((s) => {
         setApiStatus(s);
         setPortInput(String(s.port));
       }).catch(() => {});
     }
-  }, [apiStatus, portInput]);
+  }, [apiStatus, portInput, pushToast]);
 
   // LAN 公開トグル。
   const handleToggleLan = useCallback(async (checked: boolean) => {
@@ -235,20 +238,22 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       const next = await serverApi.setApiLanEnabled(checked);
       setApiStatus(next);
     } catch (err) {
-      alert(`LAN 公開の設定に失敗しました: ${err}`);
+      pushToast("error", `LAN 公開の設定に失敗しました: ${err}`);
       serverApi.getApiServerStatus().then(setApiStatus).catch(() => {});
     }
-  }, []);
+  }, [pushToast]);
 
-  // トークン再生成。
+  // トークン再生成。破壊操作なので confirm で確認する。
   const handleRegenerateToken = useCallback(async () => {
+    if (!window.confirm("トークンを再生成すると既存の接続がすべて無効になります。続けますか？")) return;
     try {
       const next = await serverApi.regenerateApiToken();
       setApiStatus(next);
+      pushToast("success", "トークンを再生成しました。既存の接続先 URL を更新してください。");
     } catch (err) {
-      alert(`トークンの再生成に失敗しました: ${err}`);
+      pushToast("error", `トークンの再生成に失敗しました: ${err}`);
     }
-  }, []);
+  }, [pushToast]);
 
   // ペアリングコード承認。
   const handleApprovePairing = useCallback(async () => {
@@ -309,11 +314,11 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     try {
       await libraryApi.setSearchFoldLevel(v);
     } catch (err) {
-      alert(`字体ゆれ吸収レベルの設定に失敗しました: ${err}`);
+      pushToast("error", `字体ゆれ吸収レベルの設定に失敗しました: ${err}`);
       // 失敗した場合は最新状態を再取得して戻す。
       libraryApi.getSearchFoldLevel().then(setFoldLevel).catch(() => setFoldLevel(prev));
     }
-  }, [foldLevel]);
+  }, [foldLevel, pushToast]);
 
   const handleSetLibraryRoot = useCallback(async () => {
     const dir = await openDir({ directory: true, multiple: false });
@@ -322,30 +327,34 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       await libraryApi.setLibraryRoot(dir);
       setLibraryRoot(dir);
     } catch (err) {
-      alert(`整理先の設定に失敗: ${err}`);
+      pushToast("error", `整理先の設定に失敗: ${err}`);
     }
-  }, []);
+  }, [pushToast]);
 
   // 既存トラックのパスから整理先を自動推定して設定する。
   const handleDetectLibraryRoot = useCallback(async () => {
     try {
       const detected = await libraryApi.detectLibraryRoot();
       if (!detected) {
-        alert("既存の曲から共通フォルダを推定できませんでした（曲が少ない / パスがばらばら）。");
+        pushToast("info", "既存の曲から共通フォルダを推定できませんでした（曲が少ない / パスがばらばら）。");
         return;
       }
       await libraryApi.setLibraryRoot(detected);
       setLibraryRoot(detected);
     } catch (err) {
-      alert(`自動検出に失敗: ${err}`);
+      pushToast("error", `自動検出に失敗: ${err}`);
     }
-  }, []);
+  }, [pushToast]);
 
   const handleToggleReplayGain = useCallback(() => {
     const next = !replayGain;
     setReplayGain(next);
-    playbackApi.setReplayGain(next).catch(() => {});
-  }, [replayGain, setReplayGain]);
+    // 失敗時はトーストで通知し、ストアを元に戻す。
+    playbackApi.setReplayGain(next).catch((err) => {
+      pushToast("error", `ReplayGain の設定に失敗しました: ${err}`);
+      setReplayGain(!next);
+    });
+  }, [replayGain, setReplayGain, pushToast]);
 
   const handleToggleAutoExport = useCallback(async () => {
     if (autoExportEnabled) {
@@ -402,13 +411,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       await fontsApi.loadCjkFont(true);
       setCjkStatus(await fontsApi.cjkFontStatus());
     } catch (err) {
-      alert(`CJK フォントの取得に失敗しました: ${err}`);
+      pushToast("error", `CJK フォントの取得に失敗しました: ${err}`);
     } finally {
       un();
       setCjkBusy(false);
       setCjkProgress("");
     }
-  }, []);
+  }, [pushToast]);
 
   const handleCheckUpdate = useCallback(async () => {
     setChecking(true);

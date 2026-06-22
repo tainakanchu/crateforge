@@ -10,6 +10,52 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.8.2] - 2026-06-22
+
+### 日本語
+
+#### 追加
+- **グローバルトースト通知**：成功/失敗/情報の一時通知基盤を導入し、各種操作のフィードバックを一本化（右下にスタック表示・自動消滅）。
+- **キーボードショートカット一覧**：`?` キーでショートカット一覧オーバーレイを表示（発見性の向上）。
+- **再生操作のショートカット拡充**：`Shift+←/→` で 5 秒シーク、`Enter` でフォーカス/選択行を再生。
+- **曲名(Track)列のリサイズ**：ヘッダ右端のドラッグで曲名列の幅を変更可能に（永続化）。
+- **プレーヤーの操作性**：シークバーをドラッグでシーク可能に、時間表示クリックで「経過⇄残り」切替、音量バーにつまみと % 表示。
+- **右ペインの可視化**：Up Next に件数・合計時間・シャッフルバッジを追加、Now Playing に Key/Energy を表示、Similar の「Add all」を全追加済みなら無効化（"All added"）。
+- **スマートプレイリスト/タグ入力**：日付条件をネイティブの日付入力に。ジャンルタグ入力は Tab でも確定でき、候補リストをスクロール可能に。
+
+#### 改善
+- **ネイティブ `alert()` / `window.prompt()` を全廃**：トースト・インライン入力・カスタムメニューに置き換え（サイドバー右クリック、設定のエラー、クレートの「プレイリストとして保存」、変換失敗など）。暗所で目立つ白い OS ダイアログが出なくなりました。
+- **サイドバーのコンテキストメニュー化**：プレイリスト/フォルダの操作を、キーボード操作対応（↑↓/Enter/Esc）のカスタムメニューに刷新（名前変更・複製・ルール編集・削除）。新規作成と名前変更はインライン入力に。
+- **破壊的操作の確認**：クレート全消去・ペアリングトークン再生成・トラック編集の未保存破棄に確認を追加。
+- **モーダルのキーボード対応**：トラック編集／スマートプレイリスト／変換の各ダイアログを Esc で閉じられるように。初期フォーカスと Enter 確定にも対応。
+- **トラック編集**：保存中の表示と「保存しました」トーストを追加。未保存があれば破棄前に確認。
+- **一覧の作り込み**：省略表示セル（曲名/アルバム/アルバムアーティスト）にホバーで全文表示（title）、選択件数の表示、読み込み中表示の改善、アプリケーションキーのメニュー位置をフォーカス行基準に。
+- **検索ツールバー**：検索ボックスを制御入力化＋クリア(×)ボタン、ソート方向（↑/↓）の常時表示、ボタンの tooltip にショートカットを追記。
+- **アップデート通知**：日本語化＋リリースノートの折りたたみ表示を追加。
+- **設定**：ReplayGain の変更に失敗したときに通知し、設定を元に戻すように。
+
+### English
+
+#### Added
+- **Global toast notifications**: a unified success/error/info transient-notification system (stacked bottom-right, auto-dismiss).
+- **Keyboard shortcut overlay**: press `?` to show the list of shortcuts (improved discoverability).
+- **More playback shortcuts**: `Shift+←/→` to seek ±5s, `Enter` to play the focused/selected row.
+- **Resizable Track (name) column**: drag the right edge of the header to resize the name column (persisted).
+- **Player improvements**: drag the seek bar to scrub, click the time to toggle elapsed/remaining, volume bar now has a thumb and a % tooltip.
+- **More visible state in the right rail**: Up Next now shows count, total time, and a shuffle badge; Now Playing shows Key/Energy; Similar's "Add all" is disabled ("All added") when everything is already in the crate.
+- **Smart playlists / tag input**: native date inputs for date conditions; the genre tag input now also commits on Tab and its suggestion list scrolls.
+
+#### Improved
+- **Removed all native `alert()` / `window.prompt()`**: replaced with toasts, inline inputs, and custom menus (sidebar right-click, Settings errors, crate "Save as Playlist", convert failures, etc.). No more jarring white OS dialogs.
+- **Sidebar context menu**: playlist/folder actions are now a keyboard-friendly custom menu (↑↓/Enter/Esc) — Rename, Duplicate, Edit rules, Delete. Create and rename use inline inputs.
+- **Confirmations for destructive actions**: clearing the crate, regenerating the pairing token, and discarding unsaved track edits now ask first.
+- **Keyboard support in modals**: Track editor, Smart playlist editor, and Convert dialogs close on Esc, with initial focus and Enter-to-confirm.
+- **Track editor**: saving shows progress and a "Saved" toast; unsaved changes are confirmed before discarding.
+- **List polish**: truncated cells (name/album/album artist) show the full text on hover (title); selection count is shown; loading state improved; the Application-key context menu now anchors to the focused row.
+- **Search toolbar**: the search box is now a controlled input with a clear (×) button, sort direction (↑/↓) is always shown, and button tooltips list their shortcuts.
+- **Update banner**: localized to Japanese and added a collapsible release-notes view.
+- **Settings**: a failed ReplayGain change now notifies and rolls back.
+
 ## [v0.8.1] - 2026-06-22
 
 ### 日本語

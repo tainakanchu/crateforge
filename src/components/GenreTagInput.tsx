@@ -27,13 +27,12 @@ export function GenreTagInput({
 
   const lower = useMemo(() => new Set(value.map((v) => v.toLowerCase())), [value]);
 
-  // 入力に前方/部分一致し、まだ付いていない候補。
+  // 入力に前方/部分一致し、まだ付いていない候補（上限なし、スクロールで全件辿れる）。
   const filtered = useMemo(() => {
     const q = text.trim().toLowerCase();
     return suggestions
       .filter((s) => !lower.has(s.toLowerCase()))
-      .filter((s) => (q ? s.toLowerCase().includes(q) : true))
-      .slice(0, 8);
+      .filter((s) => (q ? s.toLowerCase().includes(q) : true));
   }, [suggestions, lower, text]);
 
   const addTag = (raw: string) => {
@@ -60,35 +59,60 @@ export function GenreTagInput({
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" || e.key === "," || e.key === " " || e.key === "Tab") {
-      if (open && filtered[hi] && text.trim() && e.key !== "Tab") {
+      // Tab: テキストあり or 候補ハイライト中なら確定してフォーカス移動を抑止
+      if (e.key === "Tab") {
+        if (open && filtered[hi] && text.trim()) {
+          e.preventDefault();
+          e.stopPropagation();
+          addTag(filtered[hi]);
+          return;
+        }
+        if (text.trim()) {
+          e.preventDefault();
+          e.stopPropagation();
+          addTag(text);
+          return;
+        }
+        // 入力が空のときは通常の Tab 移動を許可（preventDefault しない）
+        return;
+      }
+      // Enter / , / スペースはこのフィールドが消費する。上位の保存ハンドラ
+      // （TrackEditor の document リスナー等）へ伝播させてタグ追加と同時に
+      // 保存・クローズが走る事故を防ぐ。
+      e.stopPropagation();
+      if (open && filtered[hi] && text.trim()) {
         e.preventDefault();
         addTag(filtered[hi]);
         return;
       }
       if (text.trim()) {
-        if (e.key !== "Tab") e.preventDefault();
+        e.preventDefault();
         addTag(text);
       }
       return;
     }
     if (e.key === "Backspace" && !text && value.length > 0) {
       e.preventDefault();
+      e.stopPropagation();
       removeAt(value.length - 1);
       return;
     }
     if (e.key === "ArrowDown" && filtered.length) {
       e.preventDefault();
+      e.stopPropagation();
       setOpen(true);
       setHi((h) => Math.min(h + 1, filtered.length - 1));
       return;
     }
     if (e.key === "ArrowUp" && filtered.length) {
       e.preventDefault();
+      e.stopPropagation();
       setHi((h) => Math.max(h - 1, 0));
       return;
     }
     if (e.key === "Escape" && open) {
       e.preventDefault();
+      e.stopPropagation();
       setOpen(false);
     }
   };
@@ -135,7 +159,7 @@ export function GenreTagInput({
         />
       </div>
       {open && filtered.length > 0 && (
-        <div className="gt-menu">
+        <div className="gt-menu" style={{ maxHeight: "14rem", overflowY: "auto" }}>
           {filtered.map((s, i) => (
             <button
               type="button"
