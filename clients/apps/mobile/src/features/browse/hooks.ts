@@ -70,13 +70,19 @@ export function useAlbums(enabled = true) {
   });
 }
 
-/** 指定アルバムの曲（album が null のときは無効）。 */
+/** 指定アルバムの曲（album が null のときは無効）。disc→track 昇順でソート。 */
 export function useAlbumTracks(album: string | null) {
   const client = useConnection((s) => s.client);
-  return useQuery<Track[]>({
+  return useQuery<Track[], Error, Track[]>({
     queryKey: ["album-tracks", album],
     enabled: !!client && album != null,
     queryFn: () => client!.listTracks({ album: album!, limit: BROWSE_LIMIT }),
+    select: (tracks) =>
+      [...tracks].sort(
+        (a, b) =>
+          (a.discNumber ?? 0) - (b.discNumber ?? 0) ||
+          (a.trackNumber ?? 0) - (b.trackNumber ?? 0),
+      ),
   });
 }
 
