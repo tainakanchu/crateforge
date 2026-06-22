@@ -15,6 +15,7 @@ import { SmartPlaylistEditor } from "./components/SmartPlaylistEditor";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { Toaster } from "./components/Toaster";
+import { DropImportOverlay } from "./components/DropImportOverlay";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 import { useStore } from "./store/useStore";
 import * as libraryApi from "./api/library";
@@ -579,6 +580,8 @@ export default function App() {
       )}
       {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
       <Toaster />
+      {/* エクスプローラー/Finder からのドラッグ&ドロップ取り込み（issue #70） */}
+      {isTauri && <DropImportOverlay onImported={triggerReload} />}
       {installing && (
         <div className="modal-overlay">
           <div className="modal" style={{ width: 380, padding: 28, textAlign: "center" }}>

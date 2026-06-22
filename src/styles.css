@@ -3235,3 +3235,34 @@ input {
   border-radius: 5px;
   color: var(--tx-strong);
 }
+
+/* ============================================================
+   ドラッグ&ドロップ取り込みオーバーレイ（useFileDropImport）
+   ============================================================ */
+.drop-import-overlay {
+  position: fixed;
+  inset: 0;
+  /* 下のコンテンツ操作を邪魔しない */
+  pointer-events: none;
+  z-index: 1800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 13, 15, 0.65);
+  backdrop-filter: blur(3px);
+}
+.drop-import-inner {
+  border: 2px dashed var(--ac);
+  border-radius: 20px;
+  padding: 42px 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(108, 161, 181, 0.08);
+}
+.drop-import-label {
+  font-size: 17px;
+  font-weight: 680;
+  color: var(--ac-hi);
+  letter-spacing: 0.3px;
+}
