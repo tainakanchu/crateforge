@@ -10,6 +10,30 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.8.1] - 2026-06-22
+
+### 日本語
+
+#### 追加
+- **トラックテーブルの列をカスタマイズしやすく**：ヘッダ右端のドラッグで列幅をリサイズ（Genre/タグ列も全部見える幅に広げられる）。列の並べ替えをヘッダ直接ドラッグ＋カスタマイズメニューのポインタ操作で確実に行えるよう刷新。トラック番号列の発見性を改善（"#" → "Track #"）し、表示順の連番列「No.」を追加。右ペインを隠せるトグルを追加。設定は永続化（既存設定は非破壊で移行）。
+
+#### 改善
+- **設定画面を開く速度を改善**：OS フォントの全列挙を、フォント設定セクションを開いたときだけ行う遅延ロードに変更（設定オープン時の引っかかりを解消）。
+
+#### モバイル（OTA 配信）
+- サーバー未接続でもダウンロード済みの曲・プレイリスト・アルバムを閲覧／再生できるように。アーティストの束ね方をアルバムアーティストに切り替える設定を追加。(#56)
+
+### English
+
+#### Added
+- **Easier track-table column customization**: drag the right edge of a header to resize columns (widen the Genre/tags column so everything shows). Reworked column reordering to work reliably via direct header drag and pointer-based reordering in the customize menu. Improved discoverability of the track-number column ("#" → "Track #") and added a sequential "No." column for the current view order. Added a toggle to hide the right rail. All persisted (existing settings migrated non-destructively).
+
+#### Improved
+- **Faster Settings open**: enumerate OS fonts lazily, only when the Fonts section is opened (removes the hitch when opening Settings).
+
+#### Mobile (OTA)
+- Browse and play downloaded tracks, playlists, and albums even when the server is unreachable. Added a setting to group artists by Album Artist. (#56)
+
 ## [v0.8.0] - 2026-06-21
 
 ### 日本語
