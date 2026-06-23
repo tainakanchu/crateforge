@@ -3,7 +3,8 @@ use std::io::BufReader;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use rodio::stream::MixerDeviceSink;
+use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 use serde::{Deserialize, Serialize};
 
 use crate::models::PlaybackState;
@@ -28,9 +29,11 @@ pub struct PlayReport {
 }
 
 pub struct AudioPlayer {
-    _stream: Option<OutputStream>,
-    stream_handle: Option<OutputStreamHandle>,
-    sink: Option<Sink>,
+    /// 既定の出力デバイス (cpal Stream を内包)。drop すると再生が止まるので保持する。
+    /// rodio 0.22 では `OutputStream` + `OutputStreamHandle` の 2 つではなく、
+    /// `MixerDeviceSink` 1 つから `mixer()` を取り出して `Player` を都度生成する。
+    _device: Option<MixerDeviceSink>,
+    sink: Option<Player>,
     current_track_id: Option<i64>,
     duration_ms: u64,
     play_started_at: Option<Instant>,
@@ -60,20 +63,24 @@ pub struct AudioPlayer {
     finished_for_advance: bool,
 }
 
-// OutputStream internally holds a cpal Stream which is !Send on some platforms
+// MixerDeviceSink internally holds a cpal Stream which is !Send on some platforms
 // but we guarantee single-threaded access via Mutex
 unsafe impl Send for AudioPlayer {}
 unsafe impl Sync for AudioPlayer {}
 
 impl AudioPlayer {
     pub fn new() -> Self {
-        let (stream, handle) = match OutputStream::try_default() {
-            Ok((s, h)) => (Some(s), Some(h)),
-            Err(_) => (None, None),
+        // デバイスが無ければ None で継続 (再生不可だがアプリは動く)。
+        let device = match DeviceSinkBuilder::open_default_sink() {
+            Ok(mut d) => {
+                // drop 時に stderr へ "Dropping DeviceSink..." を吐くのを抑止する。
+                d.log_on_drop(false);
+                Some(d)
+            }
+            Err(_) => None,
         };
         AudioPlayer {
-            stream_handle: handle,
-            _stream: stream,
+            _device: device,
             sink: None,
             current_track_id: None,
             duration_ms: 0,
@@ -103,8 +110,8 @@ impl AudioPlayer {
     ) -> Result<Option<PlayReport>, String> {
         let report = self.stop_internal();
 
-        let handle = self
-            .stream_handle
+        let device = self
+            ._device
             .as_ref()
             .ok_or("No audio output available")?;
 
@@ -127,15 +134,33 @@ impl AudioPlayer {
         // (panic フック=logging は unwind 中に走るので crateforge.log には残り原因追跡できる。)
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
+            // byte_len は seek / duration 算出に必要なので metadata から取得する
+            // (取れなくてもデコード自体は可能。その場合は seek/duration の精度が落ちるだけ)。
+            let byte_len = file.metadata().ok().map(|m| m.len());
             let reader = BufReader::new(file);
-            let source =
-                Decoder::new(reader).map_err(|e| format!("Failed to decode audio: {}", e))?;
+            // rodio 0.22 の Decoder ビルダ。`with_gapless(false)` が肝:
+            // gapless 初期化中の seek が一部 MP4 で Error::SeekError を返すと、
+            // rodio の SymphoniaDecoder::new が `unreachable!("Seek errors should not
+            // occur during initialization")` で panic する (rodio 0.20→0.22 で
+            // この unreachable! 自体は残っているが、0.22 では gapless が設定可能になった)。
+            // gapless を切ればその初期化 seek を踏まないので当該 panic を回避できる。
+            // トレードオフ: gapless off では AAC/MP3 のエンコーダ遅延/パディングの
+            // トリミングが効かず、曲頭にごく短い無音(~数十ms)が入りうる。曲またぎの
+            // gapless 再生はこのプレイヤー(曲ごとに source 再生成)では使っていないため
+            // 影響は軽微で、クラッシュ回避を優先する。
+            let mut builder = Decoder::builder().with_data(reader).with_gapless(false);
+            if let Some(len) = byte_len {
+                builder = builder.with_byte_len(len);
+            }
+            let source = builder
+                .build()
+                .map_err(|e| format!("Failed to decode audio: {}", e))?;
             // Prefer the decoded source's reported duration when available.
             let actual_duration = source.total_duration().map(|d| d.as_millis() as u64);
-            let sink = Sink::try_new(handle).map_err(|e| format!("Failed to create sink: {}", e))?;
+            let sink = Player::connect_new(device.mixer());
             sink.set_volume(volume);
             sink.append(source);
-            Ok::<(Sink, Option<u64>), String>((sink, actual_duration))
+            Ok::<(Player, Option<u64>), String>((sink, actual_duration))
         }));
         let (sink, actual_duration) = match built {
             Ok(Ok(v)) => v,
