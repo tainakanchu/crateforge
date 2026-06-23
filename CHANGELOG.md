@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.8.9] - 2026-06-23
+
+### 日本語
+
+#### デスクトップ
+- **曲一覧の列ずれを修正**：列ヘッダーにだけ件数表示が入っていたため、ヘッダーと本体行で列（ALBUM 以降）の位置がずれていた問題を修正。選択件数はツールバーに移設（`Search · N · M selected`）。
+
+### English
+
+#### Desktop
+- **Fixed misaligned track-list columns**: the column header included a count label that the body rows didn't, shifting the header and body columns (ALBUM onward) out of alignment. The selection count moved to the toolbar (`Search · N · M selected`).
+
 ## [v0.8.8] - 2026-06-23
 
 ### 日本語
