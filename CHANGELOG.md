@@ -10,6 +10,34 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.8.7] - 2026-06-23
+
+### 日本語
+
+#### デスクトップ
+- **圧縮ダウンロード/配信の逐次ストリーミング化**：AAC 変換配信を全件バッファから逐次ストリーミングへ変更。長尺曲でモバイルのオフライン保存が失敗（read timeout）していた問題を解消。
+- **空コンソール窓の抑止**：`ffmpeg` / `flac` / `lame` / `cdparanoia` の起動時に Windows で空のターミナルが出ていたのを抑止。
+- **`/api/artists` 追加**：アーティスト一覧をサーバ側で集計して返すエンドポイントと、曲一覧の artist / albumArtist 絞り込みを追加。
+- **API サーバのポート起動を堅牢化**：既定ポートが Windows の予約範囲や使用中で bind できない場合に代替ポートへ自動フォールバック。状態・QR は実際に待ち受けているポートを表示。
+
+#### モバイル
+- **再生エラーの自動回避**：端末が再生できない形式での "Source error" 時に AAC へ自動フォールバックして再生。
+- **圧縮ダウンロードの保存形式を修正**：保存後に再生できなかった不具合を修正（`.aac` で保存）。
+- **アーティスト表示の高速化**：サーバ集計＋キャッシュ即時表示（裏で再取得）で待ち時間を短縮。
+
+### English
+
+#### Desktop
+- **Streamed compressed download/serving**: AAC transcoding is now streamed instead of fully buffered, fixing offline-save failures (read timeout) on longer tracks from mobile.
+- **No more empty console window**: suppressed the empty terminal window on Windows when launching `ffmpeg` / `flac` / `lame` / `cdparanoia`.
+- **`/api/artists` endpoint**: server-side aggregated artist list, plus artist / albumArtist filters for the tracks list.
+- **Robust API server port binding**: automatically falls back to an alternate port when the default port is reserved by Windows or already in use; status and QR now reflect the actually bound port.
+
+#### Mobile
+- **Automatic playback fallback**: on a "Source error" for formats the device can't decode, playback now falls back to AAC automatically.
+- **Fixed compressed download format**: fixes downloads that could not be played back after saving (now saved as `.aac`).
+- **Faster artist browsing**: server-side aggregation plus instant cache display (revalidating in the background) shortens wait time.
+
 ## [v0.8.6] - 2026-06-23
 
 ### 日本語
