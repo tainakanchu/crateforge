@@ -1,6 +1,7 @@
 // MiniPlayer の表示とトグル動作を検証する。
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react-native";
+import { useSegments } from "expo-router";
 
 import { type Track, usePlayer } from "@crateforge/core";
 import { resetTestState } from "@/test-utils";
@@ -48,6 +49,8 @@ function makeTrack(over: Partial<Track> = {}): Track {
 
 beforeEach(() => {
   resetTestState();
+  // 既定はタブ配下扱い（多くのテストは表示されることを期待）。
+  (useSegments as jest.Mock).mockReturnValue(["(tabs)"]);
 });
 
 describe("MiniPlayer", () => {
@@ -77,5 +80,26 @@ describe("MiniPlayer", () => {
     const playBtn = await waitFor(() => screen.getByLabelText("再生"));
     fireEvent.press(playBtn);
     expect(usePlayer.getState().isPlaying).toBe(true);
+  });
+
+  it("全画面プレイヤー(/player)では表示しない", async () => {
+    (useSegments as jest.Mock).mockReturnValue(["player"]);
+    usePlayer.getState().setQueue([makeTrack()]);
+    await render(<MiniPlayer />);
+    expect(screen.queryByText("Mini Song")).toBeNull();
+  });
+
+  it("オンボーディング(/connect)では表示しない", async () => {
+    (useSegments as jest.Mock).mockReturnValue(["connect"]);
+    usePlayer.getState().setQueue([makeTrack()]);
+    await render(<MiniPlayer />);
+    expect(screen.queryByText("Mini Song")).toBeNull();
+  });
+
+  it("スタック画面(/artist など)では表示する", async () => {
+    (useSegments as jest.Mock).mockReturnValue(["artist", "[name]"]);
+    usePlayer.getState().setQueue([makeTrack()]);
+    await render(<MiniPlayer />);
+    expect(screen.getByText("Mini Song")).toBeTruthy();
   });
 });

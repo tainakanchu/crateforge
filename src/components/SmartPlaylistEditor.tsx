@@ -230,7 +230,7 @@ export function SmartPlaylistEditor({
                     const op = ops.some((o) => o.value === r.op) ? r.op : ops[0].value;
                     setRule(i, { field, op });
                   }}
-                  style={{ flex: "1 1 130px" }}
+                  style={{ flex: "1 1 130px", minWidth: 0 }}
                 >
                   {FIELDS.map((f) => (
                     <option key={f.value} value={f.value}>
@@ -257,13 +257,14 @@ export function SmartPlaylistEditor({
                   disabled={!needsValue(r.op)}
                   placeholder={needsValue(r.op) ? (fieldType(r.field) === "date" ? "" : "値") : "—"}
                   onChange={(e) => setRule(i, { value: e.target.value })}
-                  style={{ flex: "1 1 100px" }}
+                  style={{ flex: "1 1 100px", minWidth: 0 }}
                 />
                 <button
                   className="toolbar-btn"
                   title="この条件を削除"
                   onClick={() => removeRule(i)}
                   disabled={rules.length <= 1}
+                  style={{ flexShrink: 0 }}
                 >
                   <Icon name="minus" size={14} />
                 </button>

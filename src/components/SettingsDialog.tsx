@@ -761,7 +761,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                           </div>
                           <div style={{ alignItems: "flex-start", flexDirection: "column", gap: 8 }}>
                             <div style={{ display: "flex", alignItems: "center", width: "100%", gap: 6 }}>
-                              <span className="v mono" style={{ flex: 1, wordBreak: "break-all", fontSize: "0.9em" }}>
+                              <span className="v mono" style={{ flex: 1, minWidth: 0, wordBreak: "break-all", fontSize: "0.9em" }}>
                                 {recommendedUrl}
                               </span>
                               <button
@@ -806,7 +806,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                                 const fullUrl = `${u}/?token=${apiStatus.token}`;
                                 return (
                                   <div key={u} style={{ alignItems: "center" }}>
-                                    <span className="v mono" style={{ flex: 1, wordBreak: "break-all", fontSize: "0.85em" }}>
+                                    <span className="v mono" style={{ flex: 1, minWidth: 0, wordBreak: "break-all", fontSize: "0.85em" }}>
                                       {fullUrl}
                                     </span>
                                     <button

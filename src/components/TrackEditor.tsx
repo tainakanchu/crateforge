@@ -202,7 +202,9 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
       if (dirty.has("albumArtist")) e.albumArtist = form.albumArtist;
       if (dirty.has("album")) e.album = form.album;
       if (dirty.has("composer")) e.composer = form.composer;
-      if (dirty.has("genre")) e.genre = form.genre;
+      // genre は単一曲のみ全置換（並び替え/編集をそのまま反映）。複数曲は保存ループ後に
+      // add/remove の差分適用にして各曲の既存ジャンルを上書きしない（= 一括編集は「追加」挙動）。
+      if (single && dirty.has("genre")) e.genre = form.genre;
       if (dirty.has("comments")) e.comments = form.comments;
       if (dirty.has("year")) e.year = parseInt2(form.year);
       if (dirty.has("bpm")) e.bpm = parseInt2(form.bpm);
@@ -216,6 +218,17 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
       for (const id of trackIds) {
         await libraryApi.updateTrack(id, e);
       }
+      // 複数曲のジャンルは初期セットとの差分を add/remove で各曲にマージ（既存タグを保持）。
+      if (!single && dirty.has("genre")) {
+        const splitTags = (s: string) => s.split(/\s+/).filter(Boolean);
+        const eqi = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+        const before = splitTags(initial.genre.value);
+        const after = splitTags(form.genre);
+        const added = after.filter((t) => !before.some((x) => eqi(x, t)));
+        const removed = before.filter((t) => !after.some((x) => eqi(x, t)));
+        for (const tag of added) await libraryApi.addGenreTag(trackIds, tag);
+        for (const tag of removed) await libraryApi.removeGenreTag(trackIds, tag);
+      }
       pushToast("success", "保存しました");
       onSaved();
       onClose();
@@ -226,7 +239,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
     } finally {
       setBusy(false);
     }
-  }, [busy, form, dirty, trackIds, onSaved, onClose, pushToast]);
+  }, [busy, form, dirty, trackIds, single, initial, onSaved, onClose, pushToast]);
 
   // ref を最新の handleSave に追従させる（keydown リスナー用）。
   handleSaveRef.current = handleSave;
@@ -335,7 +348,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               )}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button className="toolbar-btn" onClick={pasteArtwork} disabled={busy}>
                   <Icon name="layers" size={14} /> クリップボードから貼付
                 </button>

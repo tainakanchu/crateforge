@@ -230,6 +230,7 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
   },
   listContent: {
-    paddingBottom: 24,
+    // ミニプレイヤー（全画面常時表示）に最下部の行が隠れないよう余白を確保。
+    paddingBottom: 96,
   },
 });

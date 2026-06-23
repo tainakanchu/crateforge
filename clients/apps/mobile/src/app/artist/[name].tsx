@@ -140,7 +140,11 @@ export default function ArtistScreen() {
               return (
                 <AlbumRow
                   album={item.album}
-                  onPress={() => router.push(`/album/${encodeURIComponent(item.album.album)}`)}
+                  onPress={() => {
+                    // 空アルバム名では遷移しない（/album/ 空セグメント＝クラッシュの防御）。
+                    if (!item.album.album) return;
+                    router.push(`/album/${encodeURIComponent(item.album.album)}`);
+                  }}
                 />
               );
             }

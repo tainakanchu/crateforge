@@ -108,6 +108,18 @@ pub(crate) fn is_public_path(path: &str) -> bool {
     )
 }
 
+/// `/api/tracks/{id}/rating` 形式（レーティング更新の最小権限エンドポイント）か判定する。
+/// `{id}` は 1 文字以上の数字のみ。これ以外の `/api/tracks/...` パスは含めない。
+fn is_rating_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/tracks/") else {
+        return false;
+    };
+    let Some(id) = rest.strip_suffix("/rating") else {
+        return false;
+    };
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
+}
+
 // ────────────────────── ペアリングエンドポイント ──────────────────────────
 
 /// POST /api/pair/start — ペアリングセッションを開始する。
@@ -213,12 +225,17 @@ async fn auth_guard(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    // LAN からの書き込みは /api/remote/* と GET のみ許可する。
+    // LAN からの書き込みは原則 /api/remote/* と GET のみ許可する。
+    // 例外: `POST /api/tracks/{id}/rating` のみ許可する。これはレーティングを DB に
+    // 書くだけの最小権限エンドポイントで、ファイルタグや他メタデータには触れない
+    // (モバイルから★を設定する用)。メタデータ編集 (`PATCH /api/tracks/{id}`) や
+    // 一括書き込みは引き続き LAN から拒否する。
     let method = req.method().clone();
     let is_read_only_method = method == axum::http::Method::GET;
     let is_remote_path = path.starts_with("/api/remote");
+    let is_rating_write = method == axum::http::Method::POST && is_rating_path(&path);
 
-    if !is_read_only_method && !is_remote_path {
+    if !is_read_only_method && !is_remote_path && !is_rating_write {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -248,6 +265,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/api/tracks/{trackId}",
             get(handlers::get_track).patch(handlers::patch_track),
+        )
+        .route(
+            "/api/tracks/{trackId}/rating",
+            post(handlers::set_track_rating),
         )
         .route(
             "/api/tracks/{trackId}/analysis",
@@ -1150,6 +1171,33 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(patched["track"]["rating"], 100);
+    }
+
+    // ===== レーティング専用エンドポイント: POST /api/tracks/{id}/rating (DB のみ) =====
+    #[tokio::test]
+    async fn case_set_rating_endpoint() {
+        let (_dir, app) = setup();
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/1/rating",
+            Some(json!({ "rating": 80 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, track) = req(app, "GET", "/api/tracks/1", None).await;
+        assert_eq!(track["rating"], 80);
+    }
+
+    #[test]
+    fn is_rating_path_matches_only_rating_subpath() {
+        assert!(is_rating_path("/api/tracks/1/rating"));
+        assert!(is_rating_path("/api/tracks/123/rating"));
+        assert!(!is_rating_path("/api/tracks/1")); // 単一トラック (メタ PATCH 対象) は許可しない
+        assert!(!is_rating_path("/api/tracks/abc/rating")); // id が数字でない
+        assert!(!is_rating_path("/api/tracks//rating")); // id 空
+        assert!(!is_rating_path("/api/tracks/1/ratings")); // 末尾不一致
+        assert!(!is_rating_path("/api/tracks")); // 一括
     }
 
     // ===== メタデータ書き込み: PATCH は他フィールドを据え置く (#39-8) =====

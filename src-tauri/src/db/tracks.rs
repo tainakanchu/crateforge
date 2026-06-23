@@ -169,8 +169,12 @@ fn parse_energy_range(s: &str) -> Option<(f64, f64)> {
     }
 }
 
-/// ORDER BY 句を組み立てる。NULL は常に最後、track_id でタイブレーク。
+/// ORDER BY 句を組み立てる。NULL は常に最後、最終的に track_id でタイブレーク。
 /// `prefix` は JOIN 時のテーブル別名 ("t." など)。`default` は sort_field が無効な時に丸ごと使う句。
+///
+/// アルバムをまたぐ系のソート (artist / albumArtist / album) では、同一アルバム内を
+/// disc番号 → トラック番号 → 曲名 の自然順 (= ディスクの収録順) で並べる。これが無いと
+/// 同一アルバム内が曲名順になってしまう (#sort tie-break)。曲順は主キーの昇降に依らず常に昇順。
 pub(super) fn build_order_by(
     sort_field: Option<&str>,
     sort_order: Option<&str>,
@@ -186,13 +190,30 @@ pub(super) fn build_order_by(
         "ASC"
     };
     let collate = if is_text { " COLLATE NOCASE" } else { "" };
-    format!(
-        "({prefix}{col} IS NULL), {prefix}{col}{collate} {dir}, {prefix}track_id ASC",
-        prefix = prefix,
-        col = col,
-        collate = collate,
-        dir = dir,
-    )
+
+    // 主キー (NULL は最後)。
+    let mut order = format!("({prefix}{col} IS NULL), {prefix}{col}{collate} {dir}");
+
+    // アルバム文脈のソートだけ、収録順のタイブレークを足す (主キーと同じ列はスキップ)。
+    if matches!(sort_field, Some("artist") | Some("albumArtist") | Some("album")) {
+        for tb in ["album", "disc_number", "track_number", "name"] {
+            if tb == col {
+                continue;
+            }
+            let tb_collate = if tb == "album" || tb == "name" {
+                " COLLATE NOCASE"
+            } else {
+                ""
+            };
+            order.push_str(&format!(
+                ", ({prefix}{tb} IS NULL), {prefix}{tb}{tb_collate} ASC"
+            ));
+        }
+    }
+
+    // 最終タイブレーク (安定化)。
+    order.push_str(&format!(", {prefix}track_id ASC"));
+    order
 }
 
 impl Database {

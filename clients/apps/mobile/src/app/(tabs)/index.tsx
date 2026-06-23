@@ -235,7 +235,10 @@ export default function LibraryScreen() {
           renderItem={({ item }: { item: Album }) => (
             <AlbumRow
               album={item}
-              onPress={() => router.push(`/album/${encodeURIComponent(item.album)}`)}
+              onPress={() => {
+                if (!item.album) return;
+                router.push(`/album/${encodeURIComponent(item.album)}`);
+              }}
             />
           )}
           ListEmptyComponent={
@@ -267,7 +270,10 @@ export default function LibraryScreen() {
             renderItem={({ item }: { item: Artist }) => (
               <ArtistRow
                 artist={item}
-                onPress={() => router.push(`/artist/${encodeURIComponent(item.artist)}`)}
+                onPress={() => {
+                  if (!item.artist) return;
+                  router.push(`/artist/${encodeURIComponent(item.artist)}`);
+                }}
               />
             )}
             ListEmptyComponent={

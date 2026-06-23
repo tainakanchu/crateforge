@@ -1261,6 +1261,30 @@ pub async fn patch_track(
     Ok(Json(json!({ "track": track_val, "fileWriteFailed": file_failed })))
 }
 
+/// `POST /api/tracks/{trackId}/rating` のボディ。
+#[derive(Debug, Deserialize)]
+pub struct SetRatingBody {
+    /// 0..100 のレーティング (★ = 20 刻み)。範囲外は 0..100 にクランプ。
+    pub rating: i64,
+}
+
+/// `POST /api/tracks/{trackId}/rating` — レーティングのみを更新する。
+/// DB の rating を更新するだけでファイルタグは書かない最小権限の書き込み
+/// (play_count / skip_count と同じく DB のみ)。auth_guard はこのパスだけ LAN からの
+/// 書き込みを許可しており、モバイル等から token 認証つきで★を設定するために使う。
+pub async fn set_track_rating(
+    State(state): State<ApiState>,
+    Path(track_id): Path<i64>,
+    ExtractJson(body): ExtractJson<SetRatingBody>,
+) -> Result<StatusCode, ApiError> {
+    let db = state.db()?;
+    let rating = body.rating.clamp(0, 100);
+    db.set_rating(track_id, rating)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.notify_library_changed(None);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `PATCH /api/tracks` のボディ。`trackIds` の各曲に同一の `edit` を一括適用する。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

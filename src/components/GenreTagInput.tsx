@@ -23,6 +23,7 @@ export function GenreTagInput({
   const [text, setText] = useState("");
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const lower = useMemo(() => new Set(value.map((v) => v.toLowerCase())), [value]);
@@ -54,6 +55,15 @@ export function GenreTagInput({
   const removeAt = (i: number) => {
     const next = value.slice();
     next.splice(i, 1);
+    onChange(next);
+  };
+
+  // チップのドラッグ＆ドロップ並べ替え。from を to の位置へ移動する。
+  const reorder = (from: number, to: number) => {
+    if (from === to || from < 0 || to < 0) return;
+    const next = value.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
     onChange(next);
   };
 
@@ -121,7 +131,23 @@ export function GenreTagInput({
     <div className="gt-wrap">
       <div className="gt-box" onClick={() => inputRef.current?.focus()}>
         {value.map((t, i) => (
-          <span key={`${t}-${i}`} className="gt-chip">
+          <span
+            key={`${t}-${i}`}
+            className="gt-chip"
+            draggable
+            onDragStart={(e) => {
+              setDragIdx(i);
+              e.dataTransfer.effectAllowed = "move";
+            }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragIdx !== null) reorder(dragIdx, i);
+              setDragIdx(null);
+            }}
+            onDragEnd={() => setDragIdx(null)}
+            style={{ cursor: "grab", opacity: dragIdx === i ? 0.5 : undefined }}
+          >
             {t}
             <button
               type="button"

@@ -5,7 +5,7 @@
 // lib/api/augment.d.ts に宣言している（別エージェントが core に実装する新 IF）。
 
 import { useCallback, useMemo } from "react";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, trackArtist, trackAlbumArtist, useConnection, useDownloads, useSettings } from "@crateforge/core";
 
@@ -209,6 +209,10 @@ function deriveArtistAlbums(
   for (const t of tracks) {
     if (nameOf(t) !== artist) continue;
     const album = t.album ?? "";
+    // album が空/NULL の曲はアルバムグループに含めない。空名でグループ化すると
+    // アーティスト画面の行タップで /album/（空セグメント）へ遷移してクラッシュするため。
+    // 無アルバム曲は「全曲」セクション（tracks）から従来どおりアクセスできる。
+    if (!album) continue;
     const isDownloaded = downloadedIds.has(t.trackId);
     const entry = map.get(album);
     if (entry) {
@@ -286,4 +290,39 @@ export function useSimilar(trackId: number | null) {
     enabled: !!client && trackId != null,
     queryFn: () => client!.similar(trackId!),
   });
+}
+
+/** rating を含むキャッシュ済みクエリのキープレフィックス（無効化対象）。 */
+const RATING_AFFECTED_KEYS = [
+  ["tracks"],
+  ["artist-tracks"],
+  ["album-tracks"],
+  ["playlist-tracks"],
+  ["similar"],
+] as const;
+
+/**
+ * 曲のレーティング設定ミューテーション。
+ * - `rating` は 0..100 スケール（★ = rating/20）。ApiClient.setRating が clamp する。
+ * - 成功/失敗いずれでも rating を含む可能性のあるクエリ群を invalidate して再取得させる
+ *   （楽観的な行の星表示は呼び出し側のローカル state で行う。ここはサーバ確定後の整合用）。
+ * - client 未接続（オフライン）時は何もしない no-op を返す。
+ */
+export function useSetRating() {
+  const client = useConnection((s) => s.client);
+  const qc = useQueryClient();
+
+  const mutation = useMutation<void, Error, { trackId: number; rating: number }>({
+    mutationFn: async ({ trackId, rating }) => {
+      if (!client) return;
+      await client.setRating(trackId, rating);
+    },
+    onSettled: async () => {
+      await Promise.all(
+        RATING_AFFECTED_KEYS.map((key) => qc.invalidateQueries({ queryKey: key })),
+      );
+    },
+  });
+
+  return mutation;
 }

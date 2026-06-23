@@ -129,7 +129,7 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
               value={format}
               onChange={(e) => setFormat(e.target.value as ConvertFormat)}
               disabled={running}
-              style={{ flex: 1 }}
+              style={{ flex: 1, minWidth: 0 }}
             >
               {FORMATS.map((f) => (
                 <option key={f.value} value={f.value}>
@@ -147,7 +147,7 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
                 value={bitrate}
                 onChange={(e) => setBitrate(Number(e.target.value))}
                 disabled={running}
-                style={{ flex: 1 }}
+                style={{ flex: 1, minWidth: 0 }}
               >
                 {BITRATES.map((b) => (
                   <option key={b} value={b}>
@@ -166,9 +166,9 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
               readOnly
               value={outputDir}
               placeholder="出力先フォルダを選択…"
-              style={{ flex: 1 }}
+              style={{ flex: 1, minWidth: 0 }}
             />
-            <button className="toolbar-btn" onClick={pickFolder} disabled={running}>
+            <button className="toolbar-btn" onClick={pickFolder} disabled={running} style={{ flexShrink: 0 }}>
               <Icon name="folderPlus" size={14} /> Browse
             </button>
           </label>

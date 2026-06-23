@@ -60,8 +60,6 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
     sortOrder,
     toggleSort,
     fields,
-    coverSize,
-    setCoverSize,
     selectedPlaylistId,
     playlists,
     tracks,
@@ -370,13 +368,6 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
 
         {isListLike && displayMode === "list" && (
           <>
-            <button
-              className={"cb-btn" + (coverSize > 0 ? " on" : "")}
-              onClick={() => setCoverSize(coverSize > 0 ? 0 : 20)}
-              title="Toggle artwork in rows"
-            >
-              <Icon name="grid" size={15} /> Artwork
-            </button>
             <button
               className={"cb-btn" + (pickerOpen ? " on" : "")}
               onClick={() => {

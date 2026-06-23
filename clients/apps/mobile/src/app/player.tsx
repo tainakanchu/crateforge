@@ -17,11 +17,13 @@ import type { LayoutChangeEvent, GestureResponderEvent } from "react-native";
 import { useRouter } from "expo-router";
 
 import { BRAND, PALETTE } from "@/constants/brand";
-import { type SimilarHit, type Track, formatDuration, trackTitle, trackArtist, trackAlbumArtist, useConnection, usePlayer, useSettings } from "@crateforge/core";
+import { type SimilarHit, type Track, formatDuration, ratingToStars, trackTitle, trackArtist, trackAlbumArtist, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
 import IconButton from "@/components/IconButton";
 import TrackRow from "@/components/TrackRow";
+import RatingStars from "@/components/RatingStars";
+import { useSetRating } from "@/features/browse/hooks";
 
 // 再生速度の選択肢
 const RATE_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] as const;
@@ -326,6 +328,10 @@ function NowPlaying({
         </Pressable>
       )}
 
+      {/* レーティング（★×5・タップで設定）。current が変わるたびに id をキーにして再マウントし、
+          別の曲の楽観的状態が引き継がれないようにする。 */}
+      <RatingControl key={current.id} track={current} />
+
       <SeekBar progress={progress} durationMs={durationMs} onSeek={seek} />
       <View style={styles.timeRow}>
         <Text style={styles.time}>{formatDuration(positionMs)}</Text>
@@ -482,6 +488,44 @@ function NowPlaying({
           </View>
         </Pressable>
       </Modal>
+    </View>
+  );
+}
+
+/**
+ * 現在曲のレーティング（★×5）をタップで設定するコントロール。
+ * - 表示は楽観的ローカル state。タップ即時に星を更新し、サーバ呼び出しが失敗したら元に戻す。
+ * - 同じ星を再タップすると 0（未設定）にクリア（RatingStars 側のロジック）。
+ * - オフライン（client null）時は操作不可（淡色表示）。
+ * - 成功/失敗後に rating を含むクエリ群を invalidate（useSetRating 内）。
+ */
+function RatingControl({ track }: { track: Track }) {
+  const client = useConnection((s) => s.client);
+  const setRating = useSetRating();
+  // サーバ確定値（track.rating 由来）の星数。track が変わると key 再マウントで初期化される。
+  const serverStars = ratingToStars(track.rating);
+  const [stars, setStars] = useState(serverStars);
+
+  const handleChange = (next: number) => {
+    if (!client) return;
+    const prev = stars;
+    setStars(next); // 楽観的更新
+    setRating.mutate(
+      { trackId: track.id, rating: next * 20 },
+      {
+        onError: () => setStars(prev), // 失敗したら元に戻す
+      },
+    );
+  };
+
+  return (
+    <View style={styles.ratingRow}>
+      <RatingStars
+        value={stars}
+        onChange={handleChange}
+        disabled={!client}
+        size={26}
+      />
     </View>
   );
 }
@@ -673,6 +717,11 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 3,
     textDecorationLine: "underline",
+  },
+
+  ratingRow: {
+    alignItems: "center",
+    marginTop: 14,
   },
 
   seekHit: {

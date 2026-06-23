@@ -1,9 +1,12 @@
-// ミニプレイヤー。タブバーの上に常時重ねて、現在再生中の曲を小さく表示する。
+// ミニプレイヤー。ルートレイアウトに置き、全画面で現在再生中の曲を小さく重ねて表示する。
 // タップで全画面プレイヤー（/player）へ。現在曲が無ければ何も描画しない。
+// - タブ配下（(tabs) 内のルート）ではタブバーの上に置く。
+// - スタック画面（/artist /album /folder 等）では画面下端（セーフエリア）の上に置く。
+// - 全画面プレイヤー（/player モーダル）・オンボーディング（/connect）では表示しない。
 
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, useSegments } from "expo-router";
 
 import { PALETTE } from "@/constants/brand";
 import { trackTitle, trackArtist, usePlayer } from "@crateforge/core";
@@ -13,9 +16,14 @@ import IconButton from "@/components/IconButton";
 // 標準的なタブバーの高さ目安（OS により多少前後するが重なり防止には十分）。
 const TAB_BAR_HEIGHT = 49;
 
+// ミニプレイヤーを隠すルート（最上位セグメントで判定）。
+// /player（モーダル全画面プレイヤー）と /connect（オンボーディング）では出さない。
+const HIDDEN_ROOTS = new Set(["player", "connect"]);
+
 export default function MiniPlayer() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const segments = useSegments();
   const current = usePlayer((s) => s.current());
   const isPlaying = usePlayer((s) => s.isPlaying);
   const positionMs = usePlayer((s) => s.positionMs);
@@ -23,8 +31,13 @@ export default function MiniPlayer() {
   const toggle = usePlayer((s) => s.toggle);
 
   if (!current) return null;
+  // 現在ルートの最上位セグメント。タブ配下は "(tabs)"、スタックは "artist" 等。
+  const root = segments[0];
+  if (root != null && HIDDEN_ROOTS.has(root)) return null;
 
-  const bottom = TAB_BAR_HEIGHT + insets.bottom;
+  // タブ配下のみタブバー分の余白を足す。スタック画面はセーフエリアの上に置く。
+  const onTabs = root === "(tabs)";
+  const bottom = (onTabs ? TAB_BAR_HEIGHT : 0) + insets.bottom;
   const progress =
     durationMs > 0 ? Math.max(0, Math.min(1, positionMs / durationMs)) : 0;
 

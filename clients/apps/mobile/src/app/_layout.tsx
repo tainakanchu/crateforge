@@ -14,6 +14,9 @@ import * as Updates from "expo-updates";
 import { PALETTE } from "@/constants/brand";
 import { createFilePersister } from "@/lib/queryPersister";
 import { useConnection, usePlayer, useDownloads, useSettings, createAudioEngine, initPlayback } from "@crateforge/core";
+import MiniPlayer from "@/components/MiniPlayer";
+import PlaybackErrorToast from "@/components/PlaybackErrorToast";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 // ライブラリは頻繁に変わらないので staleTime を長めに取り、タブ/モード切替のたびの
 // 再取得を抑える。全曲取得（曲/アーティストモード）は重いので特に効く。
@@ -85,16 +88,24 @@ export default function RootLayout() {
         >
           <StatusBar style="light" />
           <Gate />
-          <Stack
-            screenOptions={{
-              headerShown: false,
-              contentStyle: { backgroundColor: PALETTE.bg },
-            }}
-          >
-            <Stack.Screen name="(tabs)" />
-            <Stack.Screen name="connect" />
-            <Stack.Screen name="player" options={{ presentation: "modal" }} />
-          </Stack>
+          {/* 描画エラーを捕捉したら再生を止める保険（主因の遷移クラッシュは別途修正済み）。 */}
+          <ErrorBoundary>
+            <Stack
+              screenOptions={{
+                headerShown: false,
+                contentStyle: { backgroundColor: PALETTE.bg },
+              }}
+            >
+              <Stack.Screen name="(tabs)" />
+              <Stack.Screen name="connect" />
+              <Stack.Screen name="player" options={{ presentation: "modal" }} />
+            </Stack>
+            {/* ミニプレイヤーは全画面で常時表示（出し分けは MiniPlayer 内でルート判定）。
+                Stack の兄弟に置くことでスタック/タブどちらの画面にも重ねられる。 */}
+            <MiniPlayer />
+            {/* 再生エラーの通知（描画なし。Toast/Alert を出す） */}
+            <PlaybackErrorToast />
+          </ErrorBoundary>
         </PersistQueryClientProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

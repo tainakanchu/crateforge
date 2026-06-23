@@ -604,6 +604,7 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
                   placeholder="プレイリスト名を入力…"
                   style={{
                     flex: 1,
+                    minWidth: 0,
                     fontSize: 12,
                     padding: "4px 8px",
                     borderRadius: 6,
@@ -641,6 +642,7 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
                   title="Play crate"
                   onClick={handlePlayCrate}
                   disabled={crate.length === 0}
+                  style={{ flexShrink: 0 }}
                 >
                   <Icon name="play" size={15} fill="currentColor" stroke={0} />
                 </button>

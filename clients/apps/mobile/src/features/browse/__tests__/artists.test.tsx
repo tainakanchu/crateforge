@@ -221,4 +221,29 @@ describe("ArtistScreen", () => {
     });
     expect(usePlayer.getState().current()?.trackId).toBe(201);
   });
+
+  test("album が空の曲は『アルバム』セクションに行を作らない（/album/ への遷移クラッシュ防止）", async () => {
+    setTestConnection();
+    (useLocalSearchParams as jest.Mock).mockReturnValue({ name: encodeURIComponent("Miles Davis") });
+    // 1 曲は実アルバム、1 曲はアルバム無し（album: null）。
+    const tracks = [
+      makeTrack({ trackId: 301, name: "Real Album Song", artist: "Miles Davis", album: "Kind of Blue" }),
+      makeTrack({ trackId: 302, name: "No Album Song", artist: "Miles Davis", album: null }),
+    ];
+    mockFetchByUrl([], tracks);
+
+    const Wrapper = createQueryWrapper();
+    await render(
+      <Wrapper>
+        <ArtistScreen />
+      </Wrapper>,
+    );
+
+    // 実アルバムはアルバムセクションに出る。
+    expect(await screen.findByText("Kind of Blue")).toBeTruthy();
+    // アルバム枚数は 1（空アルバムは含めない）。
+    expect(screen.getByText("1枚のアルバム ・ 2曲")).toBeTruthy();
+    // 無アルバム曲は「全曲」セクションからアクセスできる。
+    expect(screen.getByText("No Album Song")).toBeTruthy();
+  });
 });

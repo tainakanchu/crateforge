@@ -269,6 +269,9 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
     gap: 16,
+    // ミニプレイヤー（タブバー上に重なる ~60px）に最下部の項目が隠れないよう
+    // 余白を確保する。他の一覧画面の listContent と同じ値に揃える。
+    paddingBottom: 96,
   },
   heading: {
     color: PALETTE.text,

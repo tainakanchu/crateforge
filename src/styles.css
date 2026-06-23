@@ -1174,6 +1174,7 @@ input {
 
 .settings-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
@@ -1181,6 +1182,9 @@ input {
   border-bottom: 1px solid var(--bd);
 }
 .settings-rowtext {
+  /* 読みやすい基準幅で伸縮。幅が足りないときは行が wrap してコントロールが
+     下に回り、ラベル/説明が 1 文字ずつ縦折りに潰れるのを防ぐ。 */
+  flex: 1 1 280px;
   min-width: 0;
 }
 .settings-rowtitle {
@@ -1202,12 +1206,14 @@ input {
 }
 .settings-subrow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 10px 0 2px;
 }
 .settings-pathrow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }
@@ -1591,6 +1597,7 @@ input {
   gap: 7px;
   overflow: hidden;
   white-space: nowrap;
+  min-width: 0;
 }
 .cb-cmetawrap .la b {
   color: var(--ac);
@@ -1873,6 +1880,7 @@ input {
   padding: 7px;
   max-height: 300px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 .cb-pi {
   display: flex;
@@ -1897,9 +1905,13 @@ input {
 }
 .cb-pi .lbl {
   flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 550;
   color: var(--tx);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cb-chk {
   width: 20px;
@@ -2371,6 +2383,12 @@ input {
   display: flex;
   flex-direction: column;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  /* overlay の flex 子としての既定 min-width:auto を打ち消す。これが無いと
+     中身の min-content（長い URL / 折り返さないフォント字形など）に引っ張られて
+     width 指定を超えてモーダルが横に膨張し、はみ出し+横スクロールになる。
+     CJK フォント未ロード時はフォールバック字形で min-content が更に広がるため
+     初回ロードで崩れて見える原因にもなっていた。 */
+  min-width: 0;
 }
 .modal-header {
   display: flex;
@@ -2595,6 +2613,9 @@ input {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  /* 行(.track-editor-row)内で flex:1 のフィールドが入力欄の固有幅に縛られて
+     縮まないと、3 列行などが 520px を超えて横スクロールになる。0 にして縮める。 */
+  min-width: 0;
 }
 .track-editor-row {
   display: flex;
@@ -2764,6 +2785,7 @@ input {
   right: 0;
   max-height: 220px;
   overflow-y: auto;
+  overflow-x: hidden;
   background: var(--bg3);
   border: 1px solid var(--bd);
   border-radius: 8px;
@@ -2775,6 +2797,7 @@ input {
   align-items: center;
   gap: 7px;
   width: 100%;
+  min-width: 0;
   text-align: left;
   border: none;
   background: none;
@@ -2783,6 +2806,9 @@ input {
   padding: 6px 8px;
   border-radius: 6px;
   cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .gt-opt.hi,
 .gt-opt:hover {
@@ -3166,7 +3192,9 @@ input {
 }
 .toast-msg {
   flex: 1;
+  min-width: 0;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 .toast-close {
   background: transparent;

@@ -172,6 +172,19 @@ export class ApiClient {
     );
   }
 
+  // ---- 曲メタデータ書き込み ----
+  /**
+   * レーティングを設定する（`POST /api/tracks/{trackId}/rating` に `{ rating }` を送る）。
+   * - rating は 0..100 スケール（★ = rating/20）。範囲外は 0..100 に clamp し整数へ丸める。
+   * - DB の rating のみ更新する最小権限エンドポイント（ファイルタグ等には触れない）。
+   *   LAN からは token 認証つき（X-API-Token ヘッダ）で通る。
+   * - 解決値（後続のキャッシュ無効化用）は呼び出し側で持つため戻り値は void。
+   */
+  async setRating(trackId: number, rating: number): Promise<void> {
+    const clamped = Math.round(Math.max(0, Math.min(100, rating)));
+    await this.post<unknown>(`/api/tracks/${trackId}/rating`, { rating: clamped });
+  }
+
   // ---- メディア ----
   artworkUrl(trackId: number): string {
     return this.mediaUrl(`/api/tracks/${trackId}/artwork`);

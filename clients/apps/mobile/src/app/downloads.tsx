@@ -81,6 +81,7 @@ export default function DownloadsScreen() {
               }
             />
           )}
+          contentContainerStyle={styles.listContent}
         />
       )}
     </Screen>
@@ -88,6 +89,10 @@ export default function DownloadsScreen() {
 }
 
 const styles = StyleSheet.create({
+  listContent: {
+    // ミニプレイヤー（全画面常時表示）に最下部の行が隠れないよう余白を確保。
+    paddingBottom: 96,
+  },
   header: {
     paddingHorizontal: 16,
     paddingTop: 8,
