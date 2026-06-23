@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.8.8] - 2026-06-23
+
+### 日本語
+
+#### デスクトップ
+- **一部の `.m4a` が再生できずクラッシュする不具合を修正**：ドラッグ&ドロップで追加した曲などで「`decoder crashed`」となり再生できなかった問題を解消（`rodio` を 0.22 に更新し、ギャップレス初期化中の seek 失敗による内部 panic を回避）。
+
+### English
+
+#### Desktop
+- **Fixed a crash where some `.m4a` files failed to play**: resolved "`decoder crashed`" on certain tracks (e.g. drag-and-dropped files) by upgrading `rodio` to 0.22 and avoiding the internal panic caused by a failed seek during gapless initialization.
+
 ## [v0.8.7] - 2026-06-23
 
 ### 日本語
