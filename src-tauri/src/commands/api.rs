@@ -33,9 +33,9 @@ pub struct ApiServerStatus {
     pub enabled: bool,
     /// 実際に待受中か (managed state にハンドルがあるか)。
     pub running: bool,
-    /// 設定上のポート。
+    /// 稼働中は実 bind ポート (フォールバック後の実ポート)、停止中は設定値。
     pub port: u16,
-    /// running 時のみ `http://127.0.0.1:{port}`。
+    /// running 時のみ `http://127.0.0.1:{port}` (port は実 bind ポート)。
     pub url: Option<String>,
     /// LAN 公開が有効かどうか。
     pub lan_enabled: bool,
@@ -78,8 +78,14 @@ pub fn get_api_server_status(
     let (enabled, port, lan_enabled, token) = read_full_config(&app)?;
     let guard = server.lock().map_err(|e| e.to_string())?;
     let running = guard.is_some();
+    // 稼働中なら既存 guard から実 bind ポートを取り出す (二重ロックしない)。
+    // 借用が guard を跨がないよう、ここで値を確定させてから guard を drop する。
+    let live_port = guard.as_ref().map(|c| c.addr.port());
+    drop(guard);
+    // 実ポートが取れれば優先 (フォールバック後の実ポート)、無ければ設定値。
+    let effective_port = live_port.unwrap_or(port);
     let url = if running {
-        Some(format!("http://127.0.0.1:{port}"))
+        Some(format!("http://127.0.0.1:{effective_port}"))
     } else {
         None
     };
@@ -107,7 +113,7 @@ pub fn get_api_server_status(
                 addrs.swap(0, pos);
             }
         }
-        addrs.into_iter().map(|v4| format!("http://{}:{}", v4, port)).collect()
+        addrs.into_iter().map(|v4| format!("http://{}:{}", v4, effective_port)).collect()
     } else {
         Vec::new()
     };
@@ -115,7 +121,7 @@ pub fn get_api_server_status(
     Ok(ApiServerStatus {
         enabled,
         running,
-        port,
+        port: effective_port,
         url,
         lan_enabled,
         token: token_out,

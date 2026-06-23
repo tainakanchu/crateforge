@@ -74,10 +74,11 @@ export default function RootLayout() {
               // 永続化は「小さく・再起動時に即出したい」クエリだけに限定する。
               // 全曲リスト(["tracks",{limit}]) は数万件になり得て、丸ごと同期 file.write すると
               // メインスレッドが固まる（= アプリが激重になる原因）。これは永続化しない。
+              // "artists" はサーバ集計の軽量リスト（Artist[] ≪ Track[]）なので永続化対象に含める。
               shouldDehydrateQuery: (q) => {
                 if (q.state.status !== "success") return false;
                 const key = q.queryKey[0];
-                return key === "genres" || key === "playlists" || key === "albums";
+                return key === "genres" || key === "playlists" || key === "albums" || key === "artists";
               },
             },
           }}

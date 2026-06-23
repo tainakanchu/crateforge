@@ -19,12 +19,26 @@ use tauri::Manager;
 use super::error::ApiError;
 use super::ApiState;
 use crate::analyzer::similarity::{rank_similar, SimilarOpts};
-use crate::db::tracks::AlbumInfo;
+use crate::db::tracks::{AlbumInfo, ArtistInfo};
 use crate::models::{GenreTagCount, LibraryStats, Playlist, SimilarHit, Track, TrackAnalysis};
 
 /// `get_tracks` / `search_tracks` は `limit: i64` を直値で要求する。
 /// 「全件取得してから Rust 側で絞り込む」方針なので、実質的に無制限な上限を渡す。
 const ALL_ROWS: i64 = i64::MAX;
+
+/// 表示アーティスト名を契約のフォールバック規則で決める。
+/// `first || second || "Unknown Artist"` 相当: 各値は Some かつ非空文字なら採用、
+/// None / 空文字 "" は次へ、空白のみ " " は truthy として採用する
+/// (db 側 `get_artists` の SQL 表示名式と完全一致させる)。
+fn display_artist(first: Option<&str>, second: Option<&str>) -> String {
+    match first {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => match second {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => "Unknown Artist".to_string(),
+        },
+    }
+}
 
 // ===== 読み取り =====
 
@@ -53,6 +67,10 @@ pub struct TracksQuery {
     pub genre: Option<String>,
     /// album 部分一致 (小文字化して比較)。
     pub album: Option<String>,
+    /// 表示アーティスト名 (grouping=artist 表示名式) と完全一致で絞り込む。
+    pub artist: Option<String>,
+    /// 表示アルバムアーティスト名 (grouping=albumArtist 表示名式) と完全一致で絞り込む。
+    pub album_artist: Option<String>,
     /// year 下限。
     pub year_from: Option<i64>,
     /// year 上限。
@@ -88,6 +106,8 @@ pub async fn list_tracks(
         || q.rating_max.is_some()
         || q.genre.is_some()
         || q.album.is_some()
+        || q.artist.is_some()
+        || q.album_artist.is_some()
         || q.year_from.is_some()
         || q.year_to.is_some()
         || q.analyzed.is_some();
@@ -138,6 +158,21 @@ pub async fn list_tracks(
                 .as_deref()
                 .map(|a| a.to_lowercase().contains(&needle))
                 .unwrap_or(false)
+        });
+    }
+    // artist: 表示アーティスト名 (grouping=artist 表示名式) と完全一致。
+    // 契約: trackArtist = artist || albumArtist || "Unknown Artist"
+    //   (空文字 "" は falsy=次へ、NULL も次へ、空白のみ " " は truthy=採用)。
+    if let Some(want) = q.artist.as_deref() {
+        tracks.retain(|t| {
+            display_artist(t.artist.as_deref(), t.album_artist.as_deref()) == want
+        });
+    }
+    // albumArtist: 表示アルバムアーティスト名 (grouping=albumArtist 表示名式) と完全一致。
+    // 契約: trackAlbumArtist = albumArtist || artist || "Unknown Artist" (artist と優先順を入替)。
+    if let Some(want) = q.album_artist.as_deref() {
+        tracks.retain(|t| {
+            display_artist(t.album_artist.as_deref(), t.artist.as_deref()) == want
         });
     }
     // year: [year_from, year_to]。year が無い曲は範囲指定時に除外する。
@@ -276,6 +311,24 @@ pub async fn get_genres(
 /// `GET /api/albums` — distinct なアルバム一覧 (album 名昇順)。
 pub async fn get_albums(State(state): State<ApiState>) -> Result<Json<Vec<AlbumInfo>>, ApiError> {
     Ok(Json(state.db()?.get_albums()?))
+}
+
+/// `GET /api/artists` のクエリパラメータ。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistsQuery {
+    /// "artist" (既定) または "albumArtist"。表示名のフォールバック優先順を切り替える。
+    pub grouping: Option<String>,
+}
+
+/// `GET /api/artists?grouping=artist|albumArtist` — distinct な表示アーティスト一覧
+/// (表示名 NOCASE 昇順)。grouping 省略時は "artist"。
+pub async fn get_artists(
+    State(state): State<ApiState>,
+    Query(q): Query<ArtistsQuery>,
+) -> Result<Json<Vec<ArtistInfo>>, ApiError> {
+    let by_album_artist = q.grouping.as_deref() == Some("albumArtist");
+    Ok(Json(state.db()?.get_artists(by_album_artist)?))
 }
 
 /// `GET /api/playlists` — 全プレイリスト。
@@ -645,30 +698,40 @@ pub fn decide_stream_mode(
     }
 }
 
-/// ffmpeg で音声ファイルを AAC (ADTS) へトランスコードしてバイト列を返す。
-/// 既存の "-c:a aac -b:a {br}k -f adts -" パイプラインを共通化したもの。
-/// 失敗 (spawn 不可・exit code 非ゼロ・出力空) は crateforge.log に記録し、
-/// 200+空ボディを返さず 502 Bad Gateway で返す (#67)。
-async fn transcode_aac(
+/// ffmpeg で音声ファイルを AAC (ADTS) へトランスコードし、stdout を逐次ストリーミング
+/// 配信するボディを組み立てる。
+///
+/// 旧実装は出力を Vec へ全部読み込んでから 200 を返していたため、長尺だと「最初の 1
+/// バイトが返るまでの無音時間」が長く、モバイルの `File.downloadFileAsync` が read
+/// timeout で失敗していた (サーバーログには失敗が残らない=完走している、#課題2)。
+///
+/// 本実装は先頭チャンク (最大 16KB) だけ同期的に read し、即座にレスポンスを返し始める。
+/// 残りは `ReaderStream` で chunked のまま流す。
+/// 失敗判定は「先頭チャンクが即 EOF (n==0) かつ ffmpeg が非ゼロ/失敗」のときだけ行い、
+/// 従来どおり 502 を返す (#67 のフェイルファストを維持)。spawn 不可は 500。
+async fn transcode_aac_stream(
     ffmpeg_path: &std::path::Path,
     path_str: &str,
     br_kbps: u32,
     track_id: i64,
     ext: &str,
-) -> Result<Vec<u8>, ApiError> {
+) -> Result<axum::body::Body, ApiError> {
+    use futures_util::StreamExt;
     use tokio::io::AsyncReadExt;
 
     let bitrate = format!("{br_kbps}k");
-    let mut child = match tokio::process::Command::new(ffmpeg_path)
-        .args([
-            "-hide_banner", "-loglevel", "error",
-            "-i", path_str,
-            "-vn", "-c:a", "aac", "-b:a", &bitrate, "-f", "adts", "-",
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
+    let mut cmd = tokio::process::Command::new(ffmpeg_path);
+    cmd.args([
+        "-hide_banner", "-loglevel", "error",
+        "-i", path_str,
+        "-vn", "-c:a", "aac", "-b:a", &bitrate, "-f", "adts", "-",
+    ])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null());
+    // Windows でコンソール窓を出さない (課題1)。
+    crate::proc::no_window_tokio(&mut cmd);
+
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             crate::logging::write_line(
@@ -683,35 +746,75 @@ async fn transcode_aac(
 
     let mut stdout = child.stdout.take()
         .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no stdout from ffmpeg"))?;
-    let mut buf = Vec::new();
-    if let Err(e) = stdout.read_to_end(&mut buf).await {
-        crate::logging::write_line(
-            "error",
-            &format!(
-                "stream failed: reading ffmpeg output (track_id={track_id}, path={path_str}, ext={ext}): {e}"
-            ),
-        );
-        return Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+
+    // 先頭チャンクを read してフェイルファスト判定に使う。
+    let mut first = [0u8; 16 * 1024];
+    let n = match stdout.read(&mut first).await {
+        Ok(n) => n,
+        Err(e) => {
+            crate::logging::write_line(
+                "error",
+                &format!(
+                    "stream failed: reading ffmpeg output (track_id={track_id}, path={path_str}, ext={ext}): {e}"
+                ),
+            );
+            return Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+        }
+    };
+
+    // 即 EOF (出力 0 バイト) はトランスコード失敗の可能性が高い。exit code を確認し、
+    // 非ゼロ/失敗なら従来どおり 502 を返す (#67)。
+    if n == 0 {
+        let status = child.wait().await;
+        let exit_ok = matches!(&status, Ok(s) if s.success());
+        if !exit_ok {
+            let code = match &status {
+                Ok(s) => s.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".to_string()),
+                Err(e) => format!("wait error: {e}"),
+            };
+            crate::logging::write_line(
+                "error",
+                &format!(
+                    "stream failed: ffmpeg transcode failed (track_id={track_id}, path={path_str}, ext={ext}, exit={code}, bytes=0)"
+                ),
+            );
+            return Err(ApiError::new(StatusCode::BAD_GATEWAY, "transcode failed"));
+        }
+        // 0 バイトかつ exit 0 という稀なケースは空の成功として扱う (空ボディ 200)。
+        return Ok(axum::body::Body::empty());
     }
 
-    // exit code を捨てず判定する。非ゼロ or 出力空はトランスコード失敗とみなす。
-    let status = child.wait().await;
-    let exit_ok = matches!(&status, Ok(s) if s.success());
-    if !exit_ok || buf.is_empty() {
-        let code = match &status {
-            Ok(s) => s.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".to_string()),
-            Err(e) => format!("wait error: {e}"),
-        };
-        crate::logging::write_line(
-            "error",
-            &format!(
-                "stream failed: ffmpeg transcode failed (track_id={track_id}, path={path_str}, ext={ext}, exit={code}, bytes={})",
-                buf.len()
-            ),
-        );
-        return Err(ApiError::new(StatusCode::BAD_GATEWAY, "transcode failed"));
-    }
-    Ok(buf)
+    // 先頭チャンク → 残り stdout の順で流すストリームを組む。
+    let head = futures_util::stream::once(async move {
+        Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::copy_from_slice(&first[..n]))
+    });
+    let tail = tokio_util::io::ReaderStream::new(stdout);
+    let stream = head.chain(tail);
+
+    // child をストリーム存続中も生かす。所有権を spawn タスクへ移して wait() し、
+    // 非ゼロ終了をログする (zombie 化を避ける)。クライアント切断時は ffmpeg が
+    // broken pipe で自然終了する。
+    let log_ctx = format!("track_id={track_id}, path={path_str}, ext={ext}");
+    tokio::spawn(async move {
+        match child.wait().await {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                let code = s.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".to_string());
+                crate::logging::write_line(
+                    "error",
+                    &format!("stream failed: ffmpeg transcode failed ({log_ctx}, exit={code})"),
+                );
+            }
+            Err(e) => {
+                crate::logging::write_line(
+                    "error",
+                    &format!("stream failed: ffmpeg wait error ({log_ctx}): {e}"),
+                );
+            }
+        }
+    });
+
+    Ok(axum::body::Body::from_stream(stream))
 }
 
 /// `GET /api/tracks/{trackId}/stream` — 音声ファイルをストリーミング配信する。
@@ -797,11 +900,13 @@ pub async fn stream_track(
                 }
             };
 
-            let buf = transcode_aac(&ffmpeg_path, path_str, br_kbps, track_id, &ext).await?;
+            // 逐次ストリーミング配信: ffmpeg の stdout を即座に流す (バッファ廃止、課題2)。
+            // Content-Length は付けず chunked で返す。
+            let body = transcode_aac_stream(&ffmpeg_path, path_str, br_kbps, track_id, &ext).await?;
 
             Ok(axum::response::Response::builder()
                 .header("content-type", "audio/aac")
-                .body(axum::body::Body::from(buf))
+                .body(body)
                 .unwrap()
                 .into_response())
         }

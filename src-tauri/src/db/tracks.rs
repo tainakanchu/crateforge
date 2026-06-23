@@ -16,6 +16,17 @@ pub struct AlbumInfo {
     pub sample_track_id: i64,
 }
 
+/// `/api/artists` で返す、ライブラリ内の distinct なアーティスト 1 件分の情報。
+/// `artist` は表示アーティスト名 (フォールバック適用済み)。
+/// `sample_track_id` はアートワーク表示用の代表トラック (グループ内最小 track_id)。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistInfo {
+    pub artist: String,
+    pub track_count: i64,
+    pub sample_track_id: i64,
+}
+
 /// 検索対象のテキスト列 (name/artist/album/album_artist/genre/comments)。
 /// `search_text` の計算 (Rust 側 compute_search_text) と SQL 側 SEARCH_TEXT_EXPR で
 /// 同じ列・同じ順序を使い、両者が必ず一致するようにする。
@@ -753,6 +764,40 @@ impl Database {
         rows.collect()
     }
 
+    /// ライブラリ内の distinct な表示アーティスト一覧を表示名 (NOCASE) 昇順で返す。
+    /// `by_album_artist=false` (grouping=artist): artist→album_artist→"Unknown Artist"。
+    /// `by_album_artist=true`  (grouping=albumArtist): album_artist→artist→"Unknown Artist"。
+    /// 表示名でグループ化し、`track_count` は COUNT(*)、`sample_track_id` は MIN(track_id)。
+    /// 共有インターフェース契約 (TS の trackArtist/trackAlbumArtist) と完全一致させる:
+    /// 空文字 "" は falsy=次へ、NULL も次へ、空白のみ " " は truthy=採用。
+    pub fn get_artists(&self, by_album_artist: bool) -> Result<Vec<ArtistInfo>> {
+        // 表示名式: 優先列が NULL でも空文字 '' でもない → 採用、それ以外は次の列、
+        // どちらも無効なら 'Unknown Artist'。grouping により artist/album_artist の優先を入替。
+        let (first, second) = if by_album_artist {
+            ("album_artist", "artist")
+        } else {
+            ("artist", "album_artist")
+        };
+        let display_expr = format!(
+            "CASE WHEN {first} IS NOT NULL AND {first} != '' THEN {first} \
+                  WHEN {second} IS NOT NULL AND {second} != '' THEN {second} \
+                  ELSE 'Unknown Artist' END"
+        );
+        let sql = format!(
+            "SELECT {display_expr} AS display_name, COUNT(*), MIN(track_id) FROM tracks \
+             GROUP BY display_name ORDER BY display_name COLLATE NOCASE"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ArtistInfo {
+                artist: r.get(0)?,
+                track_count: r.get(1)?,
+                sample_track_id: r.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     pub fn add_recent_track(&self, track_id: i64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO recent_tracks (track_id) VALUES (?1)",
@@ -1008,6 +1053,56 @@ mod tests {
         // 同一 album 内の最小 track_id が代表曲。
         assert_eq!(albums[1].sample_track_id, 10);
         assert_eq!(albums[1].album_artist.as_deref(), Some("AA1"));
+    }
+
+    /// get_artists は grouping ごとに表示名でグループ化し、track_count と最小 track_id を返す。
+    /// 表示名フォールバック (artist→album_artist→Unknown / album_artist→artist→Unknown) と
+    /// 空文字="" の扱い (falsy=次へ)、表示名 NOCASE 昇順を検証する。
+    #[test]
+    fn get_artists_groups_by_display_name() {
+        let db = Database::open_memory().unwrap();
+        let rows = [
+            // (track_id, artist, album_artist)
+            (10, Some("Beta"), Some("VA")),   // artist=Beta / album_artist=VA
+            (11, Some("Beta"), Some("VA")),   // 同 artist=Beta、別 album_artist と組み合わせ
+            (12, Some("alpha"), Some("alpha")),
+            (13, Some(""), Some("Comp AA")),  // artist 空 → grouping=artist では album_artist にフォールバック
+            (14, None, None),                  // 両方無し → "Unknown Artist"
+        ];
+        for (tid, artist, aa) in rows {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, artist, album_artist, file_exists)
+                     VALUES (?1, ?2, ?3, ?4, 1)",
+                    rusqlite::params![tid, format!("t{tid}"), artist, aa],
+                )
+                .unwrap();
+        }
+
+        // grouping=artist: 表示名 = artist || album_artist || "Unknown Artist"。
+        // 期待される表示名: "alpha"(12), "Beta"(10,11), "Comp AA"(13), "Unknown Artist"(14)。
+        let artists = db.get_artists(false).unwrap();
+        let names: Vec<&str> = artists.iter().map(|a| a.artist.as_str()).collect();
+        // NOCASE 昇順: alpha, Beta, Comp AA, Unknown Artist。
+        assert_eq!(names, vec!["alpha", "Beta", "Comp AA", "Unknown Artist"]);
+        let beta = artists.iter().find(|a| a.artist == "Beta").unwrap();
+        assert_eq!(beta.track_count, 2);
+        assert_eq!(beta.sample_track_id, 10);
+        let comp = artists.iter().find(|a| a.artist == "Comp AA").unwrap();
+        assert_eq!(comp.track_count, 1);
+        assert_eq!(comp.sample_track_id, 13);
+        let unknown = artists.iter().find(|a| a.artist == "Unknown Artist").unwrap();
+        assert_eq!(unknown.track_count, 1);
+        assert_eq!(unknown.sample_track_id, 14);
+
+        // grouping=albumArtist: 表示名 = album_artist || artist || "Unknown Artist"。
+        // 期待: "alpha"(12), "Comp AA"(13), "Unknown Artist"(14), "VA"(10,11)。
+        let aas = db.get_artists(true).unwrap();
+        let names: Vec<&str> = aas.iter().map(|a| a.artist.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "Comp AA", "Unknown Artist", "VA"]);
+        let va = aas.iter().find(|a| a.artist == "VA").unwrap();
+        assert_eq!(va.track_count, 2);
+        assert_eq!(va.sample_track_id, 10);
     }
 
     #[test]

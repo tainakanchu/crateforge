@@ -1,9 +1,11 @@
 // Browse スライスの React Query フック群。
 // 全フックは useConnection().client（接続中のみ非 null）を読み、enabled: !!client。
 // queryFn では client のメソッドを使い、AbortSignal を受け取る経路には渡す。
+// ApiClient.artists() / TracksQuery.artist / TracksQuery.albumArtist の型拡張は
+// lib/api/augment.d.ts に宣言している（別エージェントが core に実装する新 IF）。
 
 import { useCallback, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, trackArtist, trackAlbumArtist, useConnection, useDownloads, useSettings } from "@crateforge/core";
 
@@ -50,13 +52,16 @@ export function albumYearMap(tracks: Track[]): Map<string, number> {
   return map;
 }
 
-/** 曲一覧（検索/ジャンル等のクエリで絞り込み）。enabled=false で取得抑止（非表示モード時）。 */
+/** 曲一覧（検索/ジャンル等のクエリで絞り込み）。enabled=false で取得抑止（非表示モード時）。
+ * placeholderData: keepPreviousData で検索/ソート/モード変更時のスピナー点滅を抑える。
+ */
 export function useTracks(query?: TracksQuery, enabled = true) {
   const client = useConnection((s) => s.client);
   return useQuery<Track[]>({
     queryKey: ["tracks", query ?? {}],
     enabled: !!client && enabled,
     queryFn: ({ signal }) => client!.listTracks(query, signal),
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -105,6 +110,7 @@ export function usePlaylistTracks(playlistId: number) {
  * /api/albums は year を返さないので、全曲キャッシュ（["tracks", {limit}]）が
  * 既にあれば代表年(MIN)を引いて年順まで効かせる。無ければ（＝重い全曲取得を
  * わざわざ誘発しないため取得はしない）「アーティスト → アルバム名」までで安定ソート。
+ * placeholderData: keepPreviousData で grouping/検索変更時のスピナー点滅を抑える。
  */
 export function useAlbums(enabled = true) {
   const client = useConnection((s) => s.client);
@@ -113,6 +119,7 @@ export function useAlbums(enabled = true) {
     queryKey: ["albums"],
     enabled: !!client && enabled,
     queryFn: () => client!.albums(),
+    placeholderData: keepPreviousData,
     select: (albums) => {
       // 既にキャッシュ済みの全曲があれば年マップを引く（無ければ空＝年順はスキップ）。
       const tracks =
@@ -144,63 +151,43 @@ export function useAlbumTracks(album: string | null) {
   });
 }
 
-/** アーティスト一覧（クライアント側で全曲から集計）。enabled=false で取得抑止。
+/** アーティスト一覧（サーバ側 /api/artists で集計）。enabled=false で取得抑止。
  * grouping を引数で上書き可能。省略時はストアの artistGrouping を読む。
- * useCallback で select をメモ化し、grouping 変更時に select 参照が変わって再集計される。
+ * 従来はクライアント側で全曲から集計していたが、サーバ側の専用エンドポイントに切替えて
+ * 重い全曲転送を回避する。キーを ["artists", grouping] にして永続化の対象にも含める。
+ * placeholderData: keepPreviousData で grouping 切替時のスピナー点滅を抑える。
  */
 export function useArtists(enabled = true, grouping?: ArtistGrouping) {
   const client = useConnection((s) => s.client);
   // 引数省略時はストアの設定を使う（index.tsx が引数なしで呼ぶため）。
   const storedGrouping = useSettings((s) => s.artistGrouping);
   const resolvedGrouping = grouping ?? storedGrouping;
-  const select = useCallback(
-    (tracks: Track[]): Artist[] => {
-      const nameOf = resolvedGrouping === "albumArtist" ? trackAlbumArtist : trackArtist;
-      const map = new Map<string, { trackCount: number; sampleTrackId: number }>();
-      for (const t of tracks) {
-        const name = nameOf(t);
-        const entry = map.get(name);
-        if (entry) {
-          entry.trackCount += 1;
-        } else {
-          map.set(name, { trackCount: 1, sampleTrackId: t.trackId });
-        }
-      }
-      return [...map.entries()]
-        .map(([artist, { trackCount, sampleTrackId }]) => ({ artist, trackCount, sampleTrackId }))
-        .sort((a, b) => a.artist.localeCompare(b.artist, undefined, { sensitivity: "base" }));
-    },
-    [resolvedGrouping],
-  );
-  return useQuery<Track[], Error, Artist[]>({
-    queryKey: ["tracks", { limit: BROWSE_LIMIT }],
+  return useQuery<Artist[]>({
+    queryKey: ["artists", resolvedGrouping],
     enabled: !!client && enabled,
-    queryFn: ({ signal }) => client!.listTracks({ limit: BROWSE_LIMIT }, signal),
-    select,
+    queryFn: () => client!.artists(resolvedGrouping),
+    placeholderData: keepPreviousData,
   });
 }
 
 /** 指定アーティストの曲（artist が null のときは無効）。
  * grouping を引数で上書き可能。省略時はストアの artistGrouping を使う。
- * useCallback で select をメモ化し、grouping/artist 変更時に再フィルタされる。
+ * サーバ側 artist/albumArtist フィルタで取得するため全曲転送を回避する。
+ * placeholderData: keepPreviousData でアーティスト切替時のスピナー点滅を抑える。
  */
 export function useArtistTracks(artist: string | null, grouping?: ArtistGrouping) {
   const client = useConnection((s) => s.client);
   // 引数省略時はストアから読む。
   const storedGrouping = useSettings((s) => s.artistGrouping);
   const resolvedGrouping = grouping ?? storedGrouping;
-  const select = useCallback(
-    (tracks: Track[]): Track[] => {
-      const nameOf = resolvedGrouping === "albumArtist" ? trackAlbumArtist : trackArtist;
-      return tracks.filter((t) => nameOf(t) === artist);
-    },
-    [artist, resolvedGrouping],
-  );
-  return useQuery<Track[], Error, Track[]>({
-    queryKey: ["tracks", { limit: BROWSE_LIMIT }],
+  return useQuery<Track[]>({
+    queryKey: ["artist-tracks", resolvedGrouping, artist],
     enabled: !!client && artist != null,
-    queryFn: ({ signal }) => client!.listTracks({ limit: BROWSE_LIMIT }, signal),
-    select,
+    queryFn: ({ signal }) =>
+      resolvedGrouping === "albumArtist"
+        ? client!.listTracks({ albumArtist: artist!, limit: BROWSE_LIMIT }, signal)
+        : client!.listTracks({ artist: artist!, limit: BROWSE_LIMIT }, signal),
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -254,7 +241,8 @@ function deriveArtistAlbums(
 }
 
 /** 指定アーティストのアルバム一覧（album でグルーピング）。
- * オンライン=全曲キャッシュからフィルタ／オフライン（client null）=DL 済み entries からフィルタ。
+ * オンライン=サーバ側フィルタ済み曲（useArtistTracks と同じキャッシュ）からアルバム集計／
+ * オフライン（client null）=DL 済み entries からフィルタ。
  * grouping を引数で上書き可能。省略時はストアの artistGrouping を使う。
  * ソートは albumArtist 順（同点は album 名）。
  */
@@ -263,18 +251,23 @@ export function useArtistAlbums(artist: string | null, grouping?: ArtistGrouping
   const storedGrouping = useSettings((s) => s.artistGrouping);
   const resolvedGrouping = grouping ?? storedGrouping;
   const entries = useDownloads((s) => s.entries);
-  // オンライン時のみ全曲キャッシュを使う（select でアルバム集計）。
   const downloadedIds = useMemo(() => new Set(Object.values(entries).map((e) => e.trackId)), [entries]);
+  // オンライン時: ["artist-tracks", grouping, artist] キャッシュ（useArtistTracks と共有）からアルバムを集計。
+  // サーバ側でアーティストフィルタ済みなので deriveArtistAlbums に artist を渡しても問題ない。
   const select = useCallback(
     (tracks: Track[]): Album[] =>
       artist == null ? [] : deriveArtistAlbums(tracks, artist, resolvedGrouping, downloadedIds),
     [artist, resolvedGrouping, downloadedIds],
   );
   const query = useQuery<Track[], Error, Album[]>({
-    queryKey: ["tracks", { limit: BROWSE_LIMIT }],
+    queryKey: ["artist-tracks", resolvedGrouping, artist],
     enabled: !!client && artist != null,
-    queryFn: ({ signal }) => client!.listTracks({ limit: BROWSE_LIMIT }, signal),
+    queryFn: ({ signal }) =>
+      resolvedGrouping === "albumArtist"
+        ? client!.listTracks({ albumArtist: artist!, limit: BROWSE_LIMIT }, signal)
+        : client!.listTracks({ artist: artist!, limit: BROWSE_LIMIT }, signal),
     select,
+    placeholderData: keepPreviousData,
   });
   // オフライン（client null）は DL 済みトラックからアルバムを導出。
   const offlineAlbums = useMemo(() => {

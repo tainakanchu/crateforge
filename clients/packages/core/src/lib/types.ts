@@ -117,6 +117,10 @@ export interface TracksQuery {
   genre?: string;
   /** album 部分一致（小文字比較）。 */
   album?: string;
+  /** artist 表示名（grouping=artist の表示名式）に完全一致する行のみに絞る。 */
+  artist?: string;
+  /** albumArtist 表示名（grouping=albumArtist の表示名式）に完全一致する行のみに絞る。 */
+  albumArtist?: string;
   yearFrom?: number;
   yearTo?: number;
   /** true=解析済みのみ / false=未解析のみ。 */

@@ -6,6 +6,8 @@
 
 import type {
   Album,
+  Artist,
+  ArtistGrouping,
   DownloadQuality,
   GenreTagCount,
   Health,
@@ -154,6 +156,9 @@ export class ApiClient {
   albums(): Promise<Album[]> {
     return this.get<Album[]>("/api/albums");
   }
+  artists(grouping: ArtistGrouping = "artist"): Promise<Artist[]> {
+    return this.get<Artist[]>("/api/artists", { grouping });
+  }
   playlists(): Promise<Playlist[]> {
     return this.get<Playlist[]>("/api/playlists");
   }
@@ -176,10 +181,14 @@ export class ApiClient {
   }
   /**
    * 再生用ストリーム source（ヘッダ認証つき）。
-   * opts.native=true で `?native=1` を付け、端末再生可能な形式は無変換、不可なら AAC で配信させる。
+   * - opts.native=true で `?native=1` を付け、端末再生可能な形式は無変換、不可なら AAC で配信させる。
+   * - opts.forceAac=true で `?fmt=aac` を付け、常に ADTS AAC へ再エンコードさせる
+   *   （端末で再生できない形式の "Source error" フォールバック用）。forceAac は native より優先。
    */
-  streamSource(trackId: number, opts?: { native?: boolean }): MediaSource {
-    const query = buildQuery(opts?.native ? { native: 1 } : {});
+  streamSource(trackId: number, opts?: { native?: boolean; forceAac?: boolean }): MediaSource {
+    const query = buildQuery(
+      opts?.forceAac ? { fmt: "aac" } : opts?.native ? { native: 1 } : {},
+    );
     return {
       uri: this.baseUrl + `/api/tracks/${trackId}/stream` + query,
       headers: this.token ? { "X-API-Token": this.token } : undefined,

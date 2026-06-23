@@ -185,6 +185,8 @@ fn encode_alac(input: &Path, output: &Path, meta: &EncodeMeta) -> Result<(), Str
 }
 
 fn run(mut cmd: Command, name: &str) -> Result<(), String> {
+    // Windows でコンソール窓を出さない (課題1)。flac/lame/ffmpeg いずれもここを通る。
+    crate::proc::no_window(&mut cmd);
     let status = cmd.status().map_err(|e| {
         format!(
             "`{}` not found ({}). Make sure it's in PATH (use `nix develop`).",

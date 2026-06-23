@@ -3,8 +3,10 @@
 // index.json にメタ（DownloadEntry）を永続化する。曲は track.trackId で扱う（CRITICAL id rule）。
 //
 // 設計メモ:
-// - ファイル名は `${trackId}.${ext}`。ext は original は track のロケーションから推定、それ以外は m4a。
+// - ファイル名は `${trackId}.${ext}`。ext は original は track のロケーションから推定、
+//   それ以外（圧縮DL）はサーバが ADTS AAC を返すので aac。
 // - fs 操作はすべて try/catch で握りつぶし、エラーは downloading マップ解除のみ行う（UI を壊さない）。
+//   ただしダウンロード失敗は原因切り分けのため console.warn でログだけは残す。
 
 import { Directory, File, Paths } from "expo-file-system";
 import { create } from "zustand";
@@ -48,7 +50,8 @@ function inferExt(track: Track): string {
 
 /** quality に応じた保存拡張子。 */
 function extFor(track: Track, quality: DownloadQuality): string {
-  return quality === "original" ? inferExt(track) : "m4a";
+  // 非 original（圧縮DL）はサーバが ADTS AAC を返す。.m4a だと端末で再生不可になるため .aac で保存する。
+  return quality === "original" ? inferExt(track) : "aac";
 }
 
 /** アートワーク保存先サブディレクトリ（document/downloads/art）。 */
@@ -240,7 +243,9 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
         delete downloading[track.trackId];
         return { entries, downloading };
       });
-    } catch {
+    } catch (e) {
+      // 完全沈黙だとDL失敗が分からないので最低限ログだけ残す（UI は壊さない）。
+      console.warn("[downloads] downloadTrack failed:", track.trackId, e);
       set((s) => {
         const downloading = { ...s.downloading };
         delete downloading[track.trackId];

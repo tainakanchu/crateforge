@@ -70,19 +70,22 @@ pub fn rip_cd(
         // Unix: cdparanoia 経由で WAV を取得。
         #[cfg(not(windows))]
         {
-            let cdp_status = Command::new("cdparanoia")
+            let mut cdp_cmd = Command::new("cdparanoia");
+            cdp_cmd
                 .arg("-d")
                 .arg(&req.device)
                 .arg("-w")
                 .arg(format!("{}", track_num))
-                .arg(&wav_path)
-                .status()
-                .map_err(|e| {
-                    format!(
-                        "`cdparanoia` not found ({}). Use `nix develop` so the toolchain is in PATH.",
-                        e
-                    )
-                })?;
+                .arg(&wav_path);
+            // Windows でコンソール窓を出さない (課題1)。この経路は non-Windows のみだが
+            // 共通ヘルパに揃えておく (no-op)。
+            crate::proc::no_window(&mut cdp_cmd);
+            let cdp_status = cdp_cmd.status().map_err(|e| {
+                format!(
+                    "`cdparanoia` not found ({}). Use `nix develop` so the toolchain is in PATH.",
+                    e
+                )
+            })?;
             if !cdp_status.success() {
                 return Err(format!(
                     "cdparanoia failed for track {} (device {})",

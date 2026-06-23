@@ -47,12 +47,15 @@ function makeTrack(overrides: Partial<Track> = {}): Track {
   };
 }
 
-/** URL でルーティングする fetch モック（tracks/genres/albums を返し分ける）。 */
+/** URL でルーティングする fetch モック（artists/tracks/genres/albums を返し分ける）。
+ * useArtists は /api/artists を叩くようになったので artists も返し分ける。
+ */
 function mockFetchByUrl(tracks: Track[]): jest.Mock {
   const fn = jest.fn(async (input: unknown) => {
     const url = String(input);
     let body: unknown = [];
-    if (url.includes("/api/tracks")) body = tracks;
+    if (url.includes("/api/artists")) body = [];
+    else if (url.includes("/api/tracks")) body = tracks;
     else if (url.includes("/api/genres")) body = [{ tag: "House", count: 3 }];
     else if (url.includes("/api/albums")) body = [];
     return {

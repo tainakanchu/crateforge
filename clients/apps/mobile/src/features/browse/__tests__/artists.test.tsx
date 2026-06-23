@@ -1,10 +1,11 @@
 // アーティストブラウズのテスト。
 // useArtists のグルーピング確認と Library のアーティストモード切替テスト。
+// useArtists は /api/artists に切り替え済み、useArtistTracks は /api/tracks?artist=... を使う。
 
 import { renderHook, render, screen, fireEvent, waitFor } from "@testing-library/react-native";
 import { router, useLocalSearchParams } from "expo-router";
 
-import { type Track, usePlayer } from "@crateforge/core";
+import { type Artist, type Track, usePlayer } from "@crateforge/core";
 import { setTestConnection, createQueryWrapper, resetTestState } from "@/test-utils";
 import { useArtists } from "@/features/browse/hooks";
 import LibraryScreen from "@/app/(tabs)/index";
@@ -50,12 +51,25 @@ function makeTrack(overrides: Partial<Track> = {}): Track {
   };
 }
 
-/** URL でルーティングする fetch モック。 */
-function mockFetchByUrl(tracks: Track[]): jest.Mock {
+function makeArtist(overrides: Partial<Artist> = {}): Artist {
+  return {
+    artist: "Test Artist",
+    trackCount: 1,
+    sampleTrackId: 42,
+    ...overrides,
+  };
+}
+
+/**
+ * URL でルーティングする fetch モック。
+ * useArtists は /api/artists を叩くようになったので、artists と tracks を返し分ける。
+ */
+function mockFetchByUrl(artists: Artist[], tracks: Track[] = []): jest.Mock {
   const fn = jest.fn(async (input: unknown) => {
     const url = String(input);
     let body: unknown = [];
-    if (url.includes("/api/tracks")) body = tracks;
+    if (url.includes("/api/artists")) body = artists;
+    else if (url.includes("/api/tracks")) body = tracks;
     else if (url.includes("/api/genres")) body = [{ tag: "House", count: 3 }];
     else if (url.includes("/api/albums")) body = [];
     return {
@@ -76,21 +90,20 @@ beforeEach(() => {
 });
 
 describe("useArtists", () => {
-  test("groups tracks by artist and returns correct trackCount", async () => {
+  test("fetches artists from /api/artists and returns correct data", async () => {
     setTestConnection();
-    const tracks = [
-      makeTrack({ trackId: 1, artist: "Artist A", name: "Song 1" }),
-      makeTrack({ trackId: 2, artist: "Artist A", name: "Song 2" }),
-      makeTrack({ trackId: 3, artist: "Artist B", name: "Song 3" }),
+    const artists: Artist[] = [
+      makeArtist({ artist: "Artist A", trackCount: 2, sampleTrackId: 1 }),
+      makeArtist({ artist: "Artist B", trackCount: 1, sampleTrackId: 3 }),
     ];
-    mockFetchByUrl(tracks);
+    mockFetchByUrl(artists);
 
     const wrapper = createQueryWrapper();
     const { result } = await renderHook(() => useArtists(), { wrapper });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    const data: import("@crateforge/core").Artist[] = result.current.data ?? [];
+    const data: Artist[] = result.current.data ?? [];
     expect(data).toHaveLength(2);
 
     const artistA = data.find((a) => a.artist === "Artist A");
@@ -105,45 +118,41 @@ describe("useArtists", () => {
     expect(artistB?.sampleTrackId).toBe(3);
   });
 
-  test("groups tracks by album artist when grouping is albumArtist", async () => {
+  test("passes grouping=albumArtist query param to /api/artists", async () => {
     setTestConnection();
-    // コンピレーション: トラックのアーティストはバラバラだがアルバムアーティストは共通。
-    const tracks = [
-      makeTrack({ trackId: 1, artist: "Artist X", albumArtist: "Various Artists", name: "Song 1" }),
-      makeTrack({ trackId: 2, artist: "Artist Y", albumArtist: "Various Artists", name: "Song 2" }),
-      makeTrack({ trackId: 3, artist: "Solo Artist", albumArtist: null, name: "Song 3" }),
+    const artists: Artist[] = [
+      makeArtist({ artist: "Various Artists", trackCount: 2, sampleTrackId: 1 }),
+      makeArtist({ artist: "Solo Artist", trackCount: 1, sampleTrackId: 3 }),
     ];
-    mockFetchByUrl(tracks);
+    const fetchMock = mockFetchByUrl(artists);
 
     const wrapper = createQueryWrapper();
     const { result } = await renderHook(() => useArtists(true, "albumArtist"), { wrapper });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    const data: import("@crateforge/core").Artist[] = result.current.data ?? [];
-    // Various Artists（2曲） と Solo Artist（albumArtist 無しなので artist フォールバック）。
+    const data: Artist[] = result.current.data ?? [];
     expect(data).toHaveLength(2);
 
-    const various = data.find((a) => a.artist === "Various Artists");
-    expect(various).toBeDefined();
-    expect(various?.trackCount).toBe(2);
-    expect(various?.sampleTrackId).toBe(1);
+    // サーバ集計を信頼する（クライアント側の集計ロジックはテスト不要）。
+    expect(data.find((a) => a.artist === "Various Artists")).toBeDefined();
+    expect(data.find((a) => a.artist === "Solo Artist")).toBeDefined();
 
-    const solo = data.find((a) => a.artist === "Solo Artist");
-    expect(solo).toBeDefined();
-    expect(solo?.trackCount).toBe(1);
-    expect(solo?.sampleTrackId).toBe(3);
+    // grouping=albumArtist が URL に渡されること。
+    const calledUrl = String(fetchMock.mock.calls[0]?.[0]);
+    expect(calledUrl).toContain("/api/artists");
+    expect(calledUrl).toContain("albumArtist");
   });
 });
 
 describe("Library artist mode", () => {
-  test("switching to artist mode shows artist names", async () => {
+  test("artist mode is the default and shows artist names immediately", async () => {
     setTestConnection();
-    const tracks = [
-      makeTrack({ trackId: 11, artist: "Miles Davis", name: "Kind of Blue" }),
-      makeTrack({ trackId: 22, artist: "John Coltrane", name: "Blue Train" }),
+    const artists: Artist[] = [
+      makeArtist({ artist: "Miles Davis", trackCount: 1, sampleTrackId: 11 }),
+      makeArtist({ artist: "John Coltrane", trackCount: 1, sampleTrackId: 22 }),
     ];
-    mockFetchByUrl(tracks);
+    mockFetchByUrl(artists);
 
     const Wrapper = createQueryWrapper();
     await render(
@@ -152,19 +161,17 @@ describe("Library artist mode", () => {
       </Wrapper>,
     );
 
-    // 「アーティスト」トグルを押す。
-    fireEvent.press(screen.getByText("アーティスト"));
-
+    // 既定がアーティストモードなので、トグルを押さずとも表示される。
     expect(await screen.findByText("Miles Davis")).toBeTruthy();
     expect(screen.getByText("John Coltrane")).toBeTruthy();
   });
 
   test("tapping an artist row navigates to the artist route", async () => {
     setTestConnection();
-    const tracks = [
-      makeTrack({ trackId: 11, artist: "Miles Davis", name: "Kind of Blue" }),
+    const artists: Artist[] = [
+      makeArtist({ artist: "Miles Davis", trackCount: 1, sampleTrackId: 11 }),
     ];
-    mockFetchByUrl(tracks);
+    mockFetchByUrl(artists);
 
     const Wrapper = createQueryWrapper();
     await render(
@@ -173,7 +180,6 @@ describe("Library artist mode", () => {
       </Wrapper>,
     );
 
-    fireEvent.press(screen.getByText("アーティスト"));
     const row = await screen.findByText("Miles Davis");
     fireEvent.press(row);
 
@@ -191,7 +197,9 @@ describe("ArtistScreen", () => {
       makeTrack({ trackId: 201, name: "So What", artist: "Miles Davis" }),
       makeTrack({ trackId: 202, name: "Freddie Freeloader", artist: "Miles Davis" }),
     ];
-    mockFetchByUrl(tracks);
+    // ArtistScreen は useArtistTracks（/api/tracks?artist=...）を使う。
+    // useArtistAlbums も同じクエリキーなので /api/tracks が返せば両方満たせる。
+    mockFetchByUrl([], tracks);
 
     const setQueueSpy = jest.spyOn(usePlayer.getState(), "setQueue");
 

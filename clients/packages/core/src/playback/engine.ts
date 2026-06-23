@@ -25,14 +25,41 @@ export class ExpoAudioEngine implements AudioEngine {
   /** 直近に通知したエラーメッセージ。同じエラーの連続通知（毎フレーム）を防ぐ。 */
   private lastErrorReported: string | null = null;
 
+  /** 現在ロード中のトラック（AAC フォールバック再ロードに使う）。 */
+  private currentTrack: Track | null = null;
+  /** この曲で既に AAC フォールバックを試したか（無限リトライ防止）。 */
+  private triedAacFallback = false;
+  /** 現在の音源がローカルファイルか（ローカルは AAC フォールバック対象外）。 */
+  private isLocalSource = false;
+
   constructor() {
     // updateInterval を 500ms にして進捗を定期通知させる。
     this.player = createAudioPlayer(null, { updateInterval: 500 });
     this.player.addListener("playbackStatusUpdate", (st: AudioStatus) => {
       // 再生エラー検知。expo-audio は status.error（string|null）に載せる。
-      // 404 / トランスコード失敗 等で鳴らないケースを拾い、ストアへ通知する。
+      // 404 / トランスコード失敗 等で鳴らないケースを拾う。
+      // リモートストリームの "Source error"（端末非対応コーデック等）は、未リトライなら
+      // 一度だけ AAC で再ロードして救済する。ローカル/未接続/AAC でも失敗した場合のみ通知する。
       // status は updateInterval ごとに来るので、同一エラーの重複通知を抑止する。
       if (st.error) {
+        const client = useConnection.getState().client;
+        // リモート音源かつ未リトライ → ユーザー通知せず AAC で 1 回だけ再ロードして再生。
+        if (
+          !this.isLocalSource &&
+          client &&
+          this.currentTrack &&
+          !this.triedAacFallback
+        ) {
+          this.triedAacFallback = true;
+          // 本当の失敗（AAC でも鳴らない）を次に拾えるよう、抑止状態をリセット。
+          this.lastErrorReported = null;
+          this.player.replace(
+            client.streamSource(this.currentTrack.trackId, { forceAac: true }),
+          );
+          this.player.play();
+          return;
+        }
+        // ローカル/未接続/AAC でも失敗 → 従来どおり通知（重複抑止は維持）。
         if (st.error !== this.lastErrorReported) {
           this.lastErrorReported = st.error;
           this.handlers.onError?.(st.error);
@@ -51,15 +78,19 @@ export class ExpoAudioEngine implements AudioEngine {
 
   load(track: Track): void {
     const client = useConnection.getState().client;
-    // 新しい音源を読むので、前の曲のエラー抑止状態をクリアする。
+    // 新しい音源を読むので、前の曲のエラー抑止状態と AAC フォールバック状態をクリアする。
     this.lastErrorReported = null;
+    this.currentTrack = track;
+    this.triedAacFallback = false;
     // CRITICAL: メディアは track.trackId（iTunes trackId）で解決する。
     // オフライン保存済みならローカルファイルを優先（client 不要で再生可）。
     // 未保存のときだけ接続中の LAN ストリーム（native=1）を使う。
     const local = useDownloads.getState().getLocalUri(track.trackId);
     if (local) {
+      this.isLocalSource = true;
       this.player.replace({ uri: local });
     } else if (client) {
+      this.isLocalSource = false;
       this.player.replace(client.streamSource(track.trackId, { native: true }));
     } else {
       // オフラインかつ未ダウンロード → 再生できる音源が無い。

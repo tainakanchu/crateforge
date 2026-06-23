@@ -268,6 +268,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/stats", get(handlers::get_stats))
         .route("/api/genres", get(handlers::get_genres))
         .route("/api/albums", get(handlers::get_albums))
+        .route("/api/artists", get(handlers::get_artists))
         .route("/api/playlists", get(handlers::list_playlists))
         .route("/api/playlists/{playlistId}", get(handlers::get_playlist))
         .route(
@@ -318,10 +319,9 @@ pub fn router(state: ApiState) -> Router {
 
 /// 起動中サーバーのハンドル。`stop` で graceful shutdown を発火する。
 pub struct ServerControl {
-    /// 実際に bind したアドレス (port 0 を渡した時に解決済みの値を知るため)。
-    /// 現状コマンド層は設定上の port から URL を組み立てるため未参照だが、
-    /// 公開 API として呼び出し側 (将来の status 表示やテスト) が使える値として残す。
-    #[allow(dead_code)]
+    /// 実際に bind したアドレス (port 0 やフォールバック時に解決済みの値を知るため)。
+    /// `get_api_server_status` がここから実 bind ポートを読み出し、url / lan_urls /
+    /// port 表示を実際のポートに合わせる (フォールバックしても QR が正しいポートを指す)。
     pub addr: SocketAddr,
     shutdown: tokio::sync::oneshot::Sender<()>,
     /// serve タスクのハンドル。`stop` でタスク終了を待ち合わせる (ポート解放の同期)。
@@ -365,13 +365,12 @@ pub fn start(
     pairings: crate::pairing::PairingRegistry,
 ) -> Result<ServerControl, String> {
     let ip = if lan { [0, 0, 0, 0] } else { [127, 0, 0, 1] };
-    let addr = SocketAddr::from((ip, port));
     // bind は同期的に確定させたいので block_on で待つ (tauri は内部で tokio を使う)。
     // SO_REUSEADDR (unix では SO_REUSEPORT も) を立てて bind することで、直前の
     // ソケットが TIME_WAIT/teardown 中でも再 bind できるようにする。それでも
-    // AddrInUse になる場合は短いリトライで teardown 完了を待つ。
-    let listener = tauri::async_runtime::block_on(async move { bind_reuse(addr).await })
-        .map_err(|e| format!("bind {addr} failed: {e}"))?;
+    // 失敗する場合 (使用中 / Windows の予約ポート範囲) は候補ポートへフォールバックする。
+    let listener = tauri::async_runtime::block_on(async move { bind_with_fallback(ip, port).await })
+        .map_err(|e| format!("bind 127.0.0.1:{port} failed: {e}"))?;
     let local = listener.local_addr().map_err(|e| e.to_string())?;
 
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -395,6 +394,62 @@ pub fn start(
         shutdown: tx,
         handle,
     })
+}
+
+/// 希望ポートで bind を試み、失敗したら候補ポート列へフォールバックする。
+///
+/// 候補列: `[requested_port, 9797, 18787, 28787, 38787, 0]`。先頭が希望ポート、
+/// 続いて散らばった固定候補、最後に `0` (= OS が空きポートを自動割当)。
+/// 候補を隣接させず散らすのは、Windows の予約ポート範囲が連続するため
+/// 8788 など隣接ポートも同じ範囲で弾かれやすいから。`requested_port` と重複する
+/// 固定候補はスキップする。`0` は予約範囲から割り当てられないため最終手段として確実。
+///
+/// 各候補について [`bind_reuse`] を試し:
+/// - `Ok` → そのリスナーを返す。実 bind ポートが希望ポートと異なれば warn ログに残す。
+/// - `Err` (`AddrInUse` / `PermissionDenied` / その他いずれも) → 次候補へ進み last_err を保持。
+///
+/// 全候補が失敗したら last_err を返す (`0` がある限り通常ここには来ない)。
+async fn bind_with_fallback(
+    ip: [u8; 4],
+    requested_port: u16,
+) -> std::io::Result<tokio::net::TcpListener> {
+    // 候補列: 希望 → 散らした固定候補 → 0 (OS 自動割当)。
+    // requested_port と重複する固定候補はスキップする (先頭で既に試すため)。
+    let mut candidates: Vec<u16> = vec![requested_port];
+    for &cand in &[9797u16, 18787, 28787, 38787, 0] {
+        if cand != requested_port {
+            candidates.push(cand);
+        }
+    }
+
+    let mut last_err: Option<std::io::Error> = None;
+    for cand in candidates {
+        let addr = SocketAddr::from((ip, cand));
+        match bind_reuse(addr).await {
+            Ok(listener) => {
+                let bound_port = listener.local_addr()?.port();
+                if bound_port != requested_port {
+                    crate::logging::write_line(
+                        "warn",
+                        &format!(
+                            "API port {requested_port} unavailable; bound fallback port {bound_port}"
+                        ),
+                    );
+                }
+                return Ok(listener);
+            }
+            // 使用中 (AddrInUse) や権限拒否 (PermissionDenied = Windows の予約ポート
+            // 範囲) はもちろん、それ以外のエラーも堅牢性を優先して次候補へ進める
+            // (候補が尽きたら last_err を返す)。
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::AddrInUse, "no candidate port could be bound")
+    }))
 }
 
 /// SO_REUSEADDR (unix では SO_REUSEPORT も) を設定して bind し、tokio リスナーへ変換する。
@@ -776,6 +831,57 @@ mod tests {
         let dawn = arr.iter().find(|a| a["album"] == "Dawn").unwrap();
         assert_eq!(dawn["trackCount"], 1);
         assert_eq!(dawn["sampleTrackId"], 1);
+    }
+
+    // ===== ケース: artists (grouping=artist 既定) =====
+    #[tokio::test]
+    async fn case_artists_default_grouping() {
+        let (_dir, app) = setup();
+        let (status, body) = req(app, "GET", "/api/artists", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().unwrap();
+        // seed の 5 曲は別アーティスト (Alpha..Epsilon) → distinct 5 件。
+        assert_eq!(arr.len(), 5);
+        // 表示名 (NOCASE) 昇順。
+        let names: Vec<&str> = arr.iter().map(|a| a["artist"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["Alpha", "Beta", "Delta", "Epsilon", "Gamma"]);
+        // 代表曲 / 件数 (camelCase キー) が出る。Alpha = track 1。
+        let alpha = arr.iter().find(|a| a["artist"] == "Alpha").unwrap();
+        assert_eq!(alpha["trackCount"], 1);
+        assert_eq!(alpha["sampleTrackId"], 1);
+    }
+
+    // ===== ケース: artists (grouping=albumArtist) =====
+    #[tokio::test]
+    async fn case_artists_album_artist_grouping() {
+        let (_dir, app) = setup();
+        // seed は album_artist を持たないので、grouping=albumArtist では
+        // album_artist(空) → artist にフォールバックし、結果は grouping=artist と同じ表示名集合になる。
+        let (status, body) = req(app, "GET", "/api/artists?grouping=albumArtist", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let names: Vec<String> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["artist"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["Alpha", "Beta", "Delta", "Epsilon", "Gamma"]);
+    }
+
+    // ===== ケース: tracks の artist フィルタ (表示名完全一致) =====
+    #[tokio::test]
+    async fn case_tracks_artist_filter() {
+        let (_dir, app) = setup();
+        let (status, body) = req(app.clone(), "GET", "/api/tracks?artist=Beta", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().unwrap();
+        // artist=Beta は track 2 のみ。
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["trackId"], 2);
+
+        // 部分一致ではなく完全一致なので "Bet" ではヒットしない。
+        let (_, none) = req(app, "GET", "/api/tracks?artist=Bet", None).await;
+        assert_eq!(none.as_array().unwrap().len(), 0);
     }
 
     // ===== ケース 12: playlists =====
@@ -1278,6 +1384,59 @@ mod tests {
         assert!(!handlers::is_browser_native("aif"));
         assert!(!handlers::is_browser_native("aiff"));
         assert!(!handlers::is_browser_native("alac"));
+    }
+
+    // ===== bind_with_fallback: 空きポート (0) を希望すると非 0 の実ポートで bind =====
+    #[tokio::test]
+    async fn test_bind_with_fallback_port_zero_resolves_nonzero() {
+        let listener = bind_with_fallback([127, 0, 0, 1], 0)
+            .await
+            .expect("port 0 should always bind to an OS-assigned port");
+        let port = listener.local_addr().unwrap().port();
+        assert_ne!(port, 0, "OS-assigned port must be non-zero");
+    }
+
+    // ===== bind_with_fallback: 希望ポートが空いていればそのポートで bind =====
+    #[tokio::test]
+    async fn test_bind_with_fallback_uses_requested_when_free() {
+        // まず OS に空きポートを 1 つ確保させ、そのポート番号を控えてから解放する。
+        // (解放直後は SO_REUSEADDR で再 bind できるため、希望ポートとして使える。)
+        let probe = bind_with_fallback([127, 0, 0, 1], 0).await.unwrap();
+        let free_port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let listener = bind_with_fallback([127, 0, 0, 1], free_port)
+            .await
+            .expect("a free requested port should bind directly");
+        assert_eq!(
+            listener.local_addr().unwrap().port(),
+            free_port,
+            "should bind the requested port, not fall back"
+        );
+    }
+
+    // ===== bind_with_fallback: 希望ポートが埋まっていれば別ポートへフォールバック =====
+    // 注: SO_REUSEADDR/SO_REUSEPORT を立てているため、同一ポートへの再 bind が
+    // OS によっては成功しうる (AddrInUse にならない)。その場合フォールバックは
+    // 起きないため、別ポート (>0) になったときだけ厳密に検証する。
+    #[tokio::test]
+    async fn test_bind_with_fallback_falls_back_when_busy() {
+        let probe = bind_with_fallback([127, 0, 0, 1], 0).await.unwrap();
+        let busy_port = probe.local_addr().unwrap().port();
+        // `probe` を生かしたまま同じポートを希望する。
+        let second = bind_with_fallback([127, 0, 0, 1], busy_port)
+            .await
+            .expect("fallback (incl. port 0) must always yield a listener");
+        let bound = second.local_addr().unwrap().port();
+        assert_ne!(bound, 0, "bound port must be a real port");
+        if bound == busy_port {
+            // REUSEADDR で同ポート再 bind が成立したケース (環境依存)。許容する。
+        } else {
+            // フォールバックが起きた: 別ポートかつ候補列のいずれか (固定候補 or OS 割当)。
+            assert_ne!(bound, busy_port);
+        }
+        drop(probe);
+        drop(second);
     }
 
     // ===== トークン照合ロジックのユニットテスト =====

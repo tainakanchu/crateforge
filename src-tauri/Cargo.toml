@@ -64,6 +64,11 @@ socket2 = { version = "0.6", features = ["all"] }
 # アートワークのサーバー側リサイズ + webp/jpeg エンコード (モバイルのオフラインサムネ用)。
 # default-features を切り、必要な webp(=image-webp, pure Rust) / jpeg / png のみ有効化する。
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# 圧縮ストリーム配信を逐次化するため (ffmpeg stdout を ReaderStream で即流す、課題2)。
+# いずれも既に Cargo.lock 上の依存ツリー (axum/tokio 経由) に存在するバージョンに合わせる。
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = "0.3"
+bytes = "1"
 
 # === OS メディアコントロール連携（全 OS 共通） ===
 # Windows: SMTC (System Media Transport Controls)

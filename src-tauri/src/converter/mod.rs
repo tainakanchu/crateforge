@@ -201,6 +201,8 @@ fn run_ffmpeg(
 
     cmd.arg(output);
 
+    // Windows でコンソール窓を出さない (課題1)。
+    crate::proc::no_window(&mut cmd);
     let status = cmd.status().map_err(|e| {
         format!("`ffmpeg` not found ({e}). Make sure it's in PATH (use `nix develop`).")
     })?;

@@ -254,30 +254,38 @@ export default function LibraryScreen() {
           keyboardShouldPersistTaps="handled"
         />
       ) : (
-        <FlatList
-          data={artists}
-          keyExtractor={(a) => a.artist}
-          renderItem={({ item }: { item: Artist }) => (
-            <ArtistRow
-              artist={item}
-              onPress={() => router.push(`/artist/${encodeURIComponent(item.artist)}`)}
-            />
-          )}
-          ListEmptyComponent={
-            artistsQuery.isLoading ? (
-              <Loading />
-            ) : artistsQuery.isError ? (
-              <ErrorView
-                message={errorText(artistsQuery.error)}
-                onRetry={() => artistsQuery.refetch()}
+        <>
+          {/* データがありかつ裏で再取得中のとき、控えめな更新インジケータを出す */}
+          {artistsQuery.data != null && artistsQuery.data.length > 0 && artistsQuery.isFetching ? (
+            <View style={styles.fetchingBadge}>
+              <Text style={styles.fetchingText}>更新中…</Text>
+            </View>
+          ) : null}
+          <FlatList
+            data={artists}
+            keyExtractor={(a) => a.artist}
+            renderItem={({ item }: { item: Artist }) => (
+              <ArtistRow
+                artist={item}
+                onPress={() => router.push(`/artist/${encodeURIComponent(item.artist)}`)}
               />
-            ) : (
-              <EmptyView message="アーティストが見つかりません" icon="person-outline" />
-            )
-          }
-          contentContainerStyle={artists.length === 0 ? styles.emptyContent : styles.listContent}
-          keyboardShouldPersistTaps="handled"
-        />
+            )}
+            ListEmptyComponent={
+              artistsQuery.isLoading ? (
+                <Loading />
+              ) : artistsQuery.isError ? (
+                <ErrorView
+                  message={errorText(artistsQuery.error)}
+                  onRetry={() => artistsQuery.refetch()}
+                />
+              ) : (
+                <EmptyView message="アーティストが見つかりません" icon="person-outline" />
+              )
+            }
+            contentContainerStyle={artists.length === 0 ? styles.emptyContent : styles.listContent}
+            keyboardShouldPersistTaps="handled"
+          />
+        </>
       )}
     </Screen>
   );
@@ -804,5 +812,16 @@ const styles = StyleSheet.create({
     color: PALETTE.textFaint,
     fontSize: 13,
     marginTop: 1,
+  },
+  fetchingBadge: {
+    alignSelf: "flex-end",
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  fetchingText: {
+    color: PALETTE.textFaint,
+    fontSize: 11,
+    fontStyle: "italic",
   },
 });

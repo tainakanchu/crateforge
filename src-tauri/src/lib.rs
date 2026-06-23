@@ -16,6 +16,7 @@ mod models;
 mod organizer;
 mod pairing;
 mod playlist_rules;
+mod proc;
 mod smart;
 mod smtc;
 mod text_fold;
