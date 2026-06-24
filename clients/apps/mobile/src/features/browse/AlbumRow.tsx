@@ -46,7 +46,7 @@ export default function AlbumRow({ album, onPress }: AlbumRowProps) {
       )}
       <View style={styles.texts}>
         <Text style={styles.name} numberOfLines={1}>
-          {album.album}
+          {album.album || "アルバムなし"}
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
           {album.albumArtist ? `${album.albumArtist} ・ ` : ""}

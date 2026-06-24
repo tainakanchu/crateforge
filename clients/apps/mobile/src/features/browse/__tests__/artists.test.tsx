@@ -222,7 +222,7 @@ describe("ArtistScreen", () => {
     expect(usePlayer.getState().current()?.trackId).toBe(201);
   });
 
-  test("album が空の曲は『アルバム』セクションに行を作らない（/album/ への遷移クラッシュ防止）", async () => {
+  test("album が空の曲は『アルバムなし』として 1 グループにまとまる（末尾・クラッシュしない）", async () => {
     setTestConnection();
     (useLocalSearchParams as jest.Mock).mockReturnValue({ name: encodeURIComponent("Miles Davis") });
     // 1 曲は実アルバム、1 曲はアルバム無し（album: null）。
@@ -239,11 +239,11 @@ describe("ArtistScreen", () => {
       </Wrapper>,
     );
 
-    // 実アルバムはアルバムセクションに出る。
+    // 実アルバムと「アルバムなし」グループの 2 枚になる。
     expect(await screen.findByText("Kind of Blue")).toBeTruthy();
-    // アルバム枚数は 1（空アルバムは含めない）。
-    expect(screen.getByText("1枚のアルバム ・ 2曲")).toBeTruthy();
-    // 無アルバム曲は「全曲」セクションからアクセスできる。
+    expect(screen.getByText("アルバムなし")).toBeTruthy();
+    expect(screen.getByText("2枚のアルバム ・ 2曲")).toBeTruthy();
+    // 無アルバム曲は「全曲」セクションからもアクセスできる。
     expect(screen.getByText("No Album Song")).toBeTruthy();
   });
 });

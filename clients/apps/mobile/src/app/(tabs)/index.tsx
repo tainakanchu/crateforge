@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, FlatList, Pressable, Text, TextInput, View, StyleSheet } from "react-native";
+import { showTrackMenu } from "@/features/playback/trackMenu";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
@@ -103,21 +104,6 @@ export default function LibraryScreen() {
     router.push("/player");
   };
 
-  // 長押しで曲ごとのアクションを選ぶ。
-  const onLongPressTrack = (track: Track) => {
-    const buttons: Parameters<typeof Alert.alert>[2] = [
-      { text: "次に再生", onPress: () => usePlayer.getState().enqueueNext(track) },
-    ];
-    if (track.album) {
-      buttons.push({
-        text: "アルバムを保存",
-        onPress: () => void useDownloads.getState().downloadAlbum(track.album!),
-      });
-    }
-    buttons.push({ text: "キャンセル", style: "cancel" });
-    Alert.alert(track.name || "この曲", undefined, buttons);
-  };
-
   /** ソートフィールド選択ダイアログを開く。 */
   const openSortPicker = () => {
     const buttons: Parameters<typeof Alert.alert>[2] = SORT_FIELDS.map((field) => ({
@@ -208,7 +194,7 @@ export default function LibraryScreen() {
                 track={item}
                 active={currentTrackId === item.trackId}
                 onPress={() => onPressTrack(index)}
-                onLongPress={() => onLongPressTrack(item)}
+                onLongPress={() => showTrackMenu(item)}
                 trailing={<DownloadButton track={item} />}
               />
             )}

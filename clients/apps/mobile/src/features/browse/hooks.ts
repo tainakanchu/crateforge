@@ -209,10 +209,9 @@ function deriveArtistAlbums(
   for (const t of tracks) {
     if (nameOf(t) !== artist) continue;
     const album = t.album ?? "";
-    // album が空/NULL の曲はアルバムグループに含めない。空名でグループ化すると
-    // アーティスト画面の行タップで /album/（空セグメント）へ遷移してクラッシュするため。
-    // 無アルバム曲は「全曲」セクション（tracks）から従来どおりアクセスできる。
-    if (!album) continue;
+    // album が空/NULL の曲は "" キーで 1 グループ（「アルバムなし」）に束ねる。
+    // 表示は AlbumRow が空名を「アルバムなし」と出し、遷移はアーティスト画面が
+    // 専用パラメータ(noAlbum)へ振り分ける（/album/ 空セグメントのクラッシュは回避済み）。
     const isDownloaded = downloadedIds.has(t.trackId);
     const entry = map.get(album);
     if (entry) {
@@ -240,7 +239,11 @@ function deriveArtistAlbums(
   // year は集計のみに使い、Album DTO（year を持たない）には載せず compareAlbums に渡す。
   return [...map.values()]
     .map(({ album, albumArtist, trackCount, sampleTrackId, year }) => ({ album, albumArtist, trackCount, sampleTrackId, year }))
-    .sort(compareAlbums)
+    .sort((a, b) => {
+      // 「アルバムなし」(空アルバム) グループは常に末尾へ。
+      if (!a.album !== !b.album) return a.album ? -1 : 1;
+      return compareAlbums(a, b);
+    })
     .map(({ album, albumArtist, trackCount, sampleTrackId }) => ({ album, albumArtist, trackCount, sampleTrackId }));
 }
 

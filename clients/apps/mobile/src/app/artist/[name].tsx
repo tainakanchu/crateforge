@@ -14,6 +14,7 @@ import AlbumRow from "@/features/browse/AlbumRow";
 import DownloadButton from "@/components/DownloadButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { useArtistTracks, useArtistAlbums } from "@/features/browse/hooks";
+import { showTrackMenu } from "@/features/playback/trackMenu";
 
 // アルバム一覧と全曲リストを 1 本の FlatList に流すための行ユニオン。
 // 見出し / アルバム行 / 曲行を判別して renderItem を切り替える。
@@ -141,9 +142,15 @@ export default function ArtistScreen() {
                 <AlbumRow
                   album={item.album}
                   onPress={() => {
-                    // 空アルバム名では遷移しない（/album/ 空セグメント＝クラッシュの防御）。
-                    if (!item.album.album) return;
-                    router.push(`/album/${encodeURIComponent(item.album.album)}`);
+                    // 「アルバムなし」(空アルバム) はこのアーティストの無アルバム曲を専用表示へ。
+                    // 通常アルバムは従来どおり album 名で遷移（空セグメントのクラッシュは回避）。
+                    if (item.album.album) {
+                      router.push(`/album/${encodeURIComponent(item.album.album)}`);
+                    } else {
+                      router.push(
+                        `/album/none?noAlbum=1&artist=${encodeURIComponent(artist)}&grouping=${artistGrouping}`,
+                      );
+                    }
                   }}
                 />
               );
@@ -154,7 +161,7 @@ export default function ArtistScreen() {
                 index={item.trackIndex + 1}
                 active={currentTrackId === item.track.trackId}
                 onPress={() => onPressTrack(item.trackIndex)}
-                onLongPress={() => usePlayer.getState().enqueueNext(item.track)}
+                onLongPress={() => showTrackMenu(item.track)}
                 trailing={<DownloadButton track={item.track} />}
               />
             );

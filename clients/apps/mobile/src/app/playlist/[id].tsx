@@ -13,6 +13,7 @@ import TrackRow from "@/components/TrackRow";
 import DownloadButton from "@/components/DownloadButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { usePlaylist, usePlaylistTracks } from "@/features/browse/hooks";
+import { showTrackMenu } from "@/features/playback/trackMenu";
 
 export default function PlaylistScreen() {
   const router = useRouter();
@@ -82,7 +83,7 @@ export default function PlaylistScreen() {
                 index={index + 1}
                 active={currentTrackId === item.trackId}
                 onPress={() => onPressTrack(index)}
-                onLongPress={() => usePlayer.getState().enqueueNext(item)}
+                onLongPress={() => showTrackMenu(item)}
                 trailing={<DownloadButton track={item} />}
               />
             )}
@@ -104,7 +105,7 @@ export default function PlaylistScreen() {
               index={index + 1}
               active={currentTrackId === item.trackId}
               onPress={() => onPressTrack(index)}
-              onLongPress={() => usePlayer.getState().enqueueNext(item)}
+              onLongPress={() => showTrackMenu(item)}
               trailing={<DownloadButton track={item} />}
             />
           )}

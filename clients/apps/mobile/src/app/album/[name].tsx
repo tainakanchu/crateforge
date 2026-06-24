@@ -6,36 +6,72 @@ import { FlatList, Pressable, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
-import { type Track, useConnection, usePlayer, useDownloads } from "@crateforge/core";
+import {
+  type ArtistGrouping,
+  type Track,
+  trackArtist,
+  trackAlbumArtist,
+  useConnection,
+  usePlayer,
+  useDownloads,
+} from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import TrackRow from "@/components/TrackRow";
 import DownloadButton from "@/components/DownloadButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
-import { useAlbumTracks } from "@/features/browse/hooks";
+import { useAlbumTracks, useArtistTracks } from "@/features/browse/hooks";
+import { showTrackMenu } from "@/features/playback/trackMenu";
+
+/** disc 番号 → トラック番号 の収録順比較。 */
+function byDiscTrack(a: Track, b: Track): number {
+  return (a.discNumber ?? 0) - (b.discNumber ?? 0) || (a.trackNumber ?? 0) - (b.trackNumber ?? 0);
+}
 
 export default function AlbumScreen() {
   const router = useRouter();
-  const { name } = useLocalSearchParams<{ name: string }>();
-  const album = name ? decodeURIComponent(name) : "";
+  const params = useLocalSearchParams<{
+    name?: string;
+    noAlbum?: string;
+    artist?: string;
+    grouping?: string;
+  }>();
+  // 「アルバムなし」モード: 指定アーティストの album が空の曲を集めて表示する。
+  const isNoAlbum = params.noAlbum === "1";
+  const album = params.name ? decodeURIComponent(params.name) : "";
+  const artist = params.artist ? decodeURIComponent(params.artist) : "";
+  const grouping: ArtistGrouping = params.grouping === "albumArtist" ? "albumArtist" : "artist";
+  const title = isNoAlbum ? "アルバムなし" : album || "アルバム";
   const client = useConnection((s) => s.client);
-  const query = useAlbumTracks(album || null);
+
+  // 通常はアルバム名で取得。アルバムなしはアーティストの曲から album 空を抽出する。
+  const albumQuery = useAlbumTracks(isNoAlbum ? null : album || null);
+  const artistQuery = useArtistTracks(isNoAlbum ? artist || null : null, grouping);
+  const query = isNoAlbum ? artistQuery : albumQuery;
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
 
-  // オフライン時はダウンロード済みエントリを album 名で絞って曲順に並べる。
+  const onlineTracks = useMemo<Track[]>(() => {
+    if (isNoAlbum) return [...(artistQuery.data ?? [])].filter((t) => !t.album).sort(byDiscTrack);
+    return albumQuery.data ?? [];
+  }, [isNoAlbum, artistQuery.data, albumQuery.data]);
+
+  // オフライン時はダウンロード済みエントリから絞る（通常=album 名 / アルバムなし=artist かつ album 空）。
   const entries = useDownloads((s) => s.entries);
   const offlineTracks = useMemo(() => {
     if (client) return [] as Track[];
+    if (isNoAlbum) {
+      const nameOf = grouping === "albumArtist" ? trackAlbumArtist : trackArtist;
+      return Object.values(entries)
+        .map((e) => e.track)
+        .filter((t) => nameOf(t) === artist && !t.album)
+        .sort(byDiscTrack);
+    }
     return Object.values(entries)
       .filter((e) => e.track.album === album)
       .map((e) => e.track)
-      .sort(
-        (a, b) =>
-          (a.discNumber ?? 0) - (b.discNumber ?? 0) ||
-          (a.trackNumber ?? 0) - (b.trackNumber ?? 0),
-      );
-  }, [client, entries, album]);
-  const tracks = client ? (query.data ?? []) : offlineTracks;
+      .sort(byDiscTrack);
+  }, [client, entries, album, isNoAlbum, artist, grouping]);
+  const tracks = client ? onlineTracks : offlineTracks;
 
   const onPressTrack = (index: number) => {
     usePlayer.getState().setQueue(tracks, index);
@@ -53,7 +89,7 @@ export default function AlbumScreen() {
       <View style={styles.header}>
         <View style={styles.headerText}>
           <Text style={styles.title} numberOfLines={2}>
-            {album || "アルバム"}
+            {title}
           </Text>
           {tracks.length > 0 ? <Text style={styles.count}>{tracks.length}曲</Text> : null}
         </View>
@@ -78,7 +114,9 @@ export default function AlbumScreen() {
             <Ionicons name="play" size={18} color={BRAND.accentText} />
             <Text style={styles.playLabel}>再生</Text>
           </Pressable>
-          {client ? <DownloadButton albumName={album} label="アルバムを保存" /> : null}
+          {client && !isNoAlbum ? (
+            <DownloadButton albumName={album} label="アルバムを保存" />
+          ) : null}
         </View>
       ) : null}
 
@@ -99,7 +137,7 @@ export default function AlbumScreen() {
                 index={index + 1}
                 active={currentTrackId === item.trackId}
                 onPress={() => onPressTrack(index)}
-                onLongPress={() => usePlayer.getState().enqueueNext(item)}
+                onLongPress={() => showTrackMenu(item)}
                 trailing={<DownloadButton track={item} />}
               />
             )}
@@ -121,7 +159,7 @@ export default function AlbumScreen() {
               index={index + 1}
               active={currentTrackId === item.trackId}
               onPress={() => onPressTrack(index)}
-              onLongPress={() => usePlayer.getState().enqueueNext(item)}
+              onLongPress={() => showTrackMenu(item)}
               trailing={<DownloadButton track={item} />}
             />
           )}

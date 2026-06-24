@@ -608,6 +608,17 @@ function SimilarSection({ trackId }: { trackId: number }) {
   const tracks = hits.map((h) => h.track);
   return (
     <View>
+      {/* 読み込み済みの類似曲をまとめてキューに差し替えて先頭から再生する */}
+      <View style={styles.similarActions}>
+        <TouchableOpacity
+          onPress={() => setQueue(tracks, 0)}
+          accessibilityRole="button"
+          accessibilityLabel="類似曲をまとめて再生"
+          style={styles.similarPlayAllBtn}
+        >
+          <Text style={styles.similarPlayAllText}>▶ まとめて再生</Text>
+        </TouchableOpacity>
+      </View>
       {tracks.map((track, i) => (
         <TrackRow
           key={`similar-${track.id}`}
@@ -901,6 +912,24 @@ const styles = StyleSheet.create({
   similarLoading: {
     paddingVertical: 20,
     alignItems: "center",
+  },
+  similarActions: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  similarPlayAllBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: PALETTE.accent,
+    backgroundColor: PALETTE.surfaceAlt,
+  },
+  similarPlayAllText: {
+    color: PALETTE.accent,
+    fontSize: 13,
+    fontWeight: "700",
   },
   similarNote: {
     color: PALETTE.textDim,

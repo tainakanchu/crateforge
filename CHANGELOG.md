@@ -10,6 +10,20 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+### 日本語
+
+#### モバイル（OTA 配信）
+- **似た曲でラジオ再生**：曲の長押し、またはプレイヤーの類似曲セクションから、その曲＋似た曲をまとめて即プレイリスト再生。
+- **曲の長押しメニューを拡充**：似た曲でラジオ / 次に再生 / アーティストを見る / アルバムを保存（全画面で統一）。
+- **「アルバムなし」の曲をまとめて表示**：アーティスト画面で、アルバム情報のない曲を「アルバムなし」グループ（末尾）として表示・再生できるように（以前は除外していた）。
+
+### English
+
+#### Mobile (OTA)
+- **Similar-track radio**: instantly play a track plus its similar tracks as a queue — from the track long-press menu or the player's "similar tracks" section.
+- **Richer track long-press menu**: radio / play next / view artist / save album (consistent across screens).
+- **"No album" grouping**: tracks without album info are grouped as "アルバムなし" (at the end) on the artist screen, browsable and playable (previously omitted).
+
 ## [v0.8.10] - 2026-06-24
 
 ### 日本語
