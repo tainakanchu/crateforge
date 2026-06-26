@@ -37,21 +37,20 @@ const config: ExpoConfig = {
   android: {
     package: "com.tainakanchu.crateforge.tv",
     icon: "./assets/images/icon.png",
-    // Android TV バナーは app.plugin.js が assets/images/banner.png（640×360）を
-    // res/drawable/tv_banner.png へコピーし android:banner="@drawable/tv_banner" を注入する。
+    // Android TV バナーは app.plugin.js が assets/images/banner.png（320×180）を
+    // res/drawable/tv_banner.png へコピーし、application に android:banner="@drawable/tv_banner" を注入する。
     adaptiveIcon: {
       backgroundColor: "#0E1416",
       foregroundImage: "./assets/images/icon.png",
     },
-    // Android TV の leanback uses-feature と LEANBACK_LAUNCHER は
-    // eas build 時に app.plugin.js（下記）で AndroidManifest.xml に注入する。
-    // プレーンな APK でも Android TV にインストール・起動できる。
+    // LEANBACK_LAUNCHER ランチャーは下記 intentFilters で設定（短縮名）。
+    // leanback/no-touchscreen の uses-feature と banner は app.plugin.js が注入。
     intentFilters: [
       {
-        action: "android.intent.action.MAIN",
-        category: [
-          "android.intent.category.LEANBACK_LAUNCHER",
-        ],
+        // Expo が android.intent.action. / android.intent.category. を自動付与するため短縮名で書く。
+        // フル修飾名を書くと二重プレフィックスになり TV ランチャーが解決できない。
+        action: "MAIN",
+        category: ["LEANBACK_LAUNCHER"],
       },
     ],
   },
@@ -68,8 +67,8 @@ const config: ExpoConfig = {
         },
       },
     ],
-    // Android TV マニフェスト追加: uses-feature leanback(required=false) + no-touchscreen
-    // app.plugin.js が AndroidManifest.xml に uses-feature を注入する。
+    // Android TV マニフェスト追加: uses-feature leanback(required=false) + no-touchscreen + android:banner
+    // app.plugin.js が AndroidManifest.xml に uses-feature と banner を注入し、banner アセットをコピーする。
     "./app.plugin.js",
   ],
   experiments: {
