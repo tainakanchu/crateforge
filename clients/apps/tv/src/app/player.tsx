@@ -26,10 +26,27 @@ export default function PlayerScreen() {
   const toggle = usePlayer((s) => s.toggle);
   const next = usePlayer((s) => s.next);
   const prev = usePlayer((s) => s.prev);
+  const seek = usePlayer((s) => s.seek);
+  const repeat = usePlayer((s) => s.repeat);
+  const shuffle = usePlayer((s) => s.shuffle);
+  const setRepeat = usePlayer((s) => s.setRepeat);
+  const setShuffle = usePlayer((s) => s.setShuffle);
 
   const [focusedBtn, setFocusedBtn] = useState<string | null>(null);
 
   const progress = durationMs > 0 ? positionMs / durationMs : 0;
+
+  // ±10 秒シーク。duration が判明していれば末尾を超えないようにクランプ。
+  const skip = (deltaMs: number) => {
+    const target = positionMs + deltaMs;
+    const clamped = durationMs > 0 ? Math.min(target, durationMs) : target;
+    seek(Math.max(0, clamped));
+  };
+
+  // リピートを off → all → one → off で循環させる。
+  const cycleRepeat = () => {
+    setRepeat(repeat === "off" ? "all" : repeat === "all" ? "one" : "off");
+  };
 
   if (!current) {
     return (
@@ -79,18 +96,42 @@ export default function PlayerScreen() {
             </Text>
           )}
 
-          {/* プログレスバー */}
+          {/* プログレスバー + ±10秒シーク（D-pad でフォーカスして決定） */}
           <View style={styles.progressWrapper}>
             <Text style={styles.timeText}>{formatDuration(positionMs)}</Text>
+            <ControlButton
+              label="−10"
+              id="back10"
+              focusedBtn={focusedBtn}
+              setFocusedBtn={setFocusedBtn}
+              onPress={() => skip(-10000)}
+              small
+            />
             <View style={styles.progressBg}>
               <View style={[styles.progressFg, { flex: progress }]} />
               <View style={{ flex: 1 - progress }} />
             </View>
+            <ControlButton
+              label="+10"
+              id="fwd10"
+              focusedBtn={focusedBtn}
+              setFocusedBtn={setFocusedBtn}
+              onPress={() => skip(10000)}
+              small
+            />
             <Text style={styles.timeText}>{formatDuration(durationMs)}</Text>
           </View>
 
-          {/* コントロール */}
+          {/* コントロール: シャッフル / 前 / 再生停止 / 次 / リピート */}
           <View style={styles.controls}>
+            <ControlButton
+              label="🔀"
+              id="shuffle"
+              focusedBtn={focusedBtn}
+              setFocusedBtn={setFocusedBtn}
+              onPress={() => setShuffle(!shuffle)}
+              active={shuffle}
+            />
             <ControlButton
               label="⏮"
               id="prev"
@@ -114,7 +155,20 @@ export default function PlayerScreen() {
               setFocusedBtn={setFocusedBtn}
               onPress={() => next()}
             />
+            <ControlButton
+              label={repeat === "one" ? "🔂" : "🔁"}
+              id="repeat"
+              focusedBtn={focusedBtn}
+              setFocusedBtn={setFocusedBtn}
+              onPress={cycleRepeat}
+              active={repeat !== "off"}
+            />
           </View>
+          {repeat === "one" ? (
+            <Text style={styles.repeatHint}>1曲リピート</Text>
+          ) : repeat === "all" ? (
+            <Text style={styles.repeatHint}>全曲リピート</Text>
+          ) : null}
 
           <Pressable
             style={[
@@ -140,6 +194,10 @@ interface ControlButtonProps {
   setFocusedBtn: (id: string | null) => void;
   onPress: () => void;
   primary?: boolean;
+  /** トグルが ON のときに teal で強調する（シャッフル/リピート用）。 */
+  active?: boolean;
+  /** ±10秒シークなど小型ボタン用にパディング/フォントを縮める。 */
+  small?: boolean;
   hasTVPreferredFocus?: boolean;
 }
 
@@ -150,6 +208,8 @@ function ControlButton({
   setFocusedBtn,
   onPress,
   primary,
+  active,
+  small,
   hasTVPreferredFocus,
 }: ControlButtonProps) {
   const isFocused = focusedBtn === id;
@@ -158,6 +218,10 @@ function ControlButton({
       style={[
         styles.ctrlBtn,
         primary && styles.ctrlBtnPrimary,
+        small && styles.ctrlBtnSmall,
+        // active は非フォーカス時に teal の枠で「ON」を示す。フォーカス時は
+        // focused スタイルが枠/背景を上書きするので最後に置く。
+        active && !isFocused && styles.ctrlBtnActive,
         isFocused && styles.ctrlBtnFocused,
       ]}
       onFocus={() => setFocusedBtn(id)}
@@ -165,7 +229,14 @@ function ControlButton({
       onPress={onPress}
       hasTVPreferredFocus={hasTVPreferredFocus}
     >
-      <Text style={[styles.ctrlBtnText, primary && styles.ctrlBtnTextPrimary]}>
+      <Text
+        style={[
+          styles.ctrlBtnText,
+          small && styles.ctrlBtnTextSmall,
+          primary && styles.ctrlBtnTextPrimary,
+          active && styles.ctrlBtnTextActive,
+        ]}
+      >
         {label}
       </Text>
     </Pressable>
@@ -253,13 +324,13 @@ const styles = StyleSheet.create({
   },
   controls: {
     flexDirection: "row",
-    gap: 24,
+    gap: 20,
     marginTop: 32,
     alignItems: "center",
   },
   ctrlBtn: {
     paddingVertical: 20,
-    paddingHorizontal: 40,
+    paddingHorizontal: 36,
     borderRadius: 8,
     backgroundColor: PALETTE.surface,
     borderWidth: 3,
@@ -267,8 +338,15 @@ const styles = StyleSheet.create({
   },
   ctrlBtnPrimary: {
     paddingVertical: 24,
-    paddingHorizontal: 56,
+    paddingHorizontal: 52,
     backgroundColor: PALETTE.teal,
+  },
+  ctrlBtnSmall: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+  },
+  ctrlBtnActive: {
+    borderColor: PALETTE.teal,
   },
   ctrlBtnFocused: {
     borderColor: PALETTE.text,
@@ -279,9 +357,21 @@ const styles = StyleSheet.create({
     color: PALETTE.text,
     textAlign: "center",
   },
+  ctrlBtnTextSmall: {
+    fontSize: TV_FONT.xs,
+    fontVariant: ["tabular-nums"],
+  },
   ctrlBtnTextPrimary: {
     color: PALETTE.bg,
     fontWeight: "700",
+  },
+  ctrlBtnTextActive: {
+    color: PALETTE.teal,
+  },
+  repeatHint: {
+    fontSize: TV_FONT.xs,
+    color: PALETTE.textSub,
+    marginTop: 12,
   },
   backBtn: {
     alignSelf: "flex-start",
