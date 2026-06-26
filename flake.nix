@@ -38,10 +38,6 @@
       in {
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
-            # Node.js toolchain
-            nodejs_22
-            pnpm
-
             # Rust toolchain
             rustc
             cargo

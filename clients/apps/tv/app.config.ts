@@ -8,21 +8,19 @@ import type { ExpoConfig } from "expo/config";
 // - QR ペアリングは TV では使えないため expo-camera は省く。
 //   代わりに画面上の数字コードを手入力してペアリングする。
 //
-// TODO: EAS プロジェクトの初期化
-//   TV アプリは電話アプリとは別の EAS プロジェクトが必要。
-//   下記手順でプロジェクト ID を取得し、このファイルの PLACEHOLDER_TV_PROJECT_ID を置き換えてください:
-//   1. cd clients/apps/tv
-//   2. pnpm dlx eas-cli init
-//   3. 生成された projectId を updates.url と extra.eas.projectId に設定する
+// EAS プロジェクト: @tainakanchu/crateforge-tv
+//   https://expo.dev/accounts/tainakanchu/projects/crateforge-tv
+//   TV アプリは電話アプリとは別の EAS プロジェクト。projectId は eas init で取得済み。
+//   この ID は updates.url と extra.eas.projectId の両方で使う。
+//   再リンク/再初期化する場合: cd clients/apps/tv && pnpm exec eas init
 
-const TV_PROJECT_ID = "PLACEHOLDER_TV_PROJECT_ID"; // TODO: eas init で取得した ID に置き換える
+const TV_PROJECT_ID = "e65af3bc-0400-4fb0-9de1-eb5b828869c2";
 
 const config: ExpoConfig = {
   name: "Crateforge TV",
   slug: "crateforge-tv",
   version: "0.1.0",
   owner: "tainakanchu",
-  // TODO: eas init 後に PLACEHOLDER_TV_PROJECT_ID を実際の projectId に置き換えること
   extra: {
     eas: {
       projectId: TV_PROJECT_ID,
@@ -31,7 +29,6 @@ const config: ExpoConfig = {
   scheme: "crateforgetv",
   userInterfaceStyle: "dark",
   // fingerprint ポリシー = ネイティブ構成のフィンガープリントから runtimeVersion を自動算出。
-  // TODO: eas init 後に updates.url の PLACEHOLDER_TV_PROJECT_ID も置き換えること
   runtimeVersion: { policy: "fingerprint" },
   updates: {
     url: `https://u.expo.dev/${TV_PROJECT_ID}`,
@@ -40,8 +37,8 @@ const config: ExpoConfig = {
   android: {
     package: "com.tainakanchu.crateforge.tv",
     icon: "./assets/images/icon.png",
-    // TODO: 320x180 の TV バナー画像を用意して banner に設定する（現在は icon で代用）
-    // android:banner は 320×180px。アスペクト比は合わないが Android は受け入れる。
+    // Android TV バナーは app.plugin.js が assets/images/banner.png（640×360）を
+    // res/drawable/tv_banner.png へコピーし android:banner="@drawable/tv_banner" を注入する。
     adaptiveIcon: {
       backgroundColor: "#0E1416",
       foregroundImage: "./assets/images/icon.png",

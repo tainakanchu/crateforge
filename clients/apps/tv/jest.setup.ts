@@ -146,5 +146,7 @@ jest.mock("expo-router", () => {
       React.createElement("Redirect", props, (props as { children?: unknown }).children),
     Stack: withScreen("Stack"),
     Tabs: withScreen("Tabs"),
+    // Slot: 現在のルートをレンダリングするプリミティブ。テストでは null を返す。
+    Slot: () => null,
   };
 });
