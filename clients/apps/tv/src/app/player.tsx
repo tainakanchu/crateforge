@@ -1,8 +1,10 @@
 // Crateforge TV プレイヤー画面（Now Playing）。
-// 大きなアートワーク + タイトル/アーティスト + D-pad 操作可能コントロール。
+// サイドナビなしの全画面で描画される（_layout.tsx の AppShell で制御）。
+// 縦中央寄せ: アートワーク（画面高の ~45%）→ タイトル/アーティスト/アルバム →
+// プログレスバー → 主操作（前/再生停止/次）→ 副操作（シャッフル/シーク/リピート）→ 戻る。
 
-import { useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -14,10 +16,13 @@ import {
   trackArtist,
   formatDuration,
 } from "@crateforge/core";
-import { PALETTE, TV_FONT } from "@/theme/palette";
+import { Focusable } from "@/components/focus/Focusable";
+import { PALETTE, TV_FONT, FOCUS_RING } from "@/theme/palette";
 
 export default function PlayerScreen() {
   const router = useRouter();
+  const { height: screenHeight } = useWindowDimensions();
+
   const client = useConnection((s) => s.client);
   const current = usePlayer((s) => s.current());
   const isPlaying = usePlayer((s) => s.isPlaying);
@@ -32,35 +37,37 @@ export default function PlayerScreen() {
   const setRepeat = usePlayer((s) => s.setRepeat);
   const setShuffle = usePlayer((s) => s.setShuffle);
 
-  const [focusedBtn, setFocusedBtn] = useState<string | null>(null);
+  // アートワークサイズ: 画面高の 45%、最大 520px
+  const artSize = Math.min(Math.round(screenHeight * 0.45), 520);
 
-  const progress = durationMs > 0 ? positionMs / durationMs : 0;
+  const progress = durationMs > 0 ? Math.max(0, Math.min(1, positionMs / durationMs)) : 0;
 
-  // ±10 秒シーク。duration が判明していれば末尾を超えないようにクランプ。
+  // ±10 秒シーク
   const skip = (deltaMs: number) => {
     const target = positionMs + deltaMs;
     const clamped = durationMs > 0 ? Math.min(target, durationMs) : target;
     seek(Math.max(0, clamped));
   };
 
-  // リピートを off → all → one → off で循環させる。
+  // リピートを off → all → one → off で循環
   const cycleRepeat = () => {
     setRepeat(repeat === "off" ? "all" : repeat === "all" ? "one" : "off");
   };
 
+  // 曲なし状態
   if (!current) {
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.center}>
           <Text style={styles.noTrack}>再生中の曲がありません</Text>
-          <ControlButton
-            label="ライブラリへ戻る"
-            id="back"
-            focusedBtn={focusedBtn}
-            setFocusedBtn={setFocusedBtn}
-            onPress={() => router.back()}
+          <Focusable
+            onSelect={() => router.back()}
+            style={styles.backBtn}
+            accessibilityLabel="ライブラリへ戻る"
             hasTVPreferredFocus
-          />
+          >
+            <Text style={styles.backText}>← ライブラリへ</Text>
+          </Focusable>
         </View>
       </SafeAreaView>
     );
@@ -70,7 +77,7 @@ export default function PlayerScreen() {
     <SafeAreaView style={styles.safe}>
       <View style={styles.container}>
         {/* アートワーク */}
-        <View style={styles.artworkWrapper}>
+        <View style={[styles.artworkWrapper, { width: artSize, height: artSize }]}>
           {client ? (
             <Image
               source={client.artworkSource(current.trackId)}
@@ -82,164 +89,106 @@ export default function PlayerScreen() {
           )}
         </View>
 
-        {/* メタ情報 */}
-        <View style={styles.info}>
-          <Text style={styles.trackName} numberOfLines={2}>
-            {trackTitle(current)}
+        {/* タイトル・アーティスト・アルバム */}
+        <Text style={styles.trackName} numberOfLines={2}>
+          {trackTitle(current)}
+        </Text>
+        <Text style={styles.trackArtist} numberOfLines={1}>
+          {trackArtist(current)}
+        </Text>
+        {current.album != null && (
+          <Text style={styles.trackAlbum} numberOfLines={1}>
+            {current.album}
           </Text>
-          <Text style={styles.trackArtist} numberOfLines={1}>
-            {trackArtist(current)}
-          </Text>
-          {current.album && (
-            <Text style={styles.trackAlbum} numberOfLines={1}>
-              {current.album}
-            </Text>
-          )}
+        )}
 
-          {/* プログレスバー + ±10秒シーク（D-pad でフォーカスして決定） */}
-          <View style={styles.progressWrapper}>
-            <Text style={styles.timeText}>{formatDuration(positionMs)}</Text>
-            <ControlButton
-              label="−10"
-              id="back10"
-              focusedBtn={focusedBtn}
-              setFocusedBtn={setFocusedBtn}
-              onPress={() => skip(-10000)}
-              small
-            />
-            <View style={styles.progressBg}>
-              <View style={[styles.progressFg, { flex: progress }]} />
-              <View style={{ flex: 1 - progress }} />
-            </View>
-            <ControlButton
-              label="+10"
-              id="fwd10"
-              focusedBtn={focusedBtn}
-              setFocusedBtn={setFocusedBtn}
-              onPress={() => skip(10000)}
-              small
-            />
-            <Text style={styles.timeText}>{formatDuration(durationMs)}</Text>
+        {/* プログレスバー + 時間 */}
+        <View style={styles.progressRow}>
+          <Text style={styles.timeText}>{formatDuration(positionMs)}</Text>
+          <View style={styles.progressBg}>
+            <View style={[styles.progressFg, { flex: progress }]} />
+            <View style={{ flex: Math.max(0, 1 - progress) }} />
           </View>
-
-          {/* コントロール: シャッフル / 前 / 再生停止 / 次 / リピート */}
-          <View style={styles.controls}>
-            <ControlButton
-              label="🔀"
-              id="shuffle"
-              focusedBtn={focusedBtn}
-              setFocusedBtn={setFocusedBtn}
-              onPress={() => setShuffle(!shuffle)}
-              active={shuffle}
-            />
-            <ControlButton
-              label="⏮"
-              id="prev"
-              focusedBtn={focusedBtn}
-              setFocusedBtn={setFocusedBtn}
-              onPress={() => prev()}
-            />
-            <ControlButton
-              label={isPlaying ? "⏸" : "▶"}
-              id="toggle"
-              focusedBtn={focusedBtn}
-              setFocusedBtn={setFocusedBtn}
-              onPress={() => toggle()}
-              primary
-              hasTVPreferredFocus
-            />
-            <ControlButton
-              label="⏭"
-              id="next"
-              focusedBtn={focusedBtn}
-              setFocusedBtn={setFocusedBtn}
-              onPress={() => next()}
-            />
-            <ControlButton
-              label={repeat === "one" ? "🔂" : "🔁"}
-              id="repeat"
-              focusedBtn={focusedBtn}
-              setFocusedBtn={setFocusedBtn}
-              onPress={cycleRepeat}
-              active={repeat !== "off"}
-            />
-          </View>
-          {repeat === "one" ? (
-            <Text style={styles.repeatHint}>1曲リピート</Text>
-          ) : repeat === "all" ? (
-            <Text style={styles.repeatHint}>全曲リピート</Text>
-          ) : null}
-
-          <Pressable
-            style={[
-              styles.backBtn,
-              focusedBtn === "back" && { borderColor: PALETTE.teal },
-            ]}
-            onFocus={() => setFocusedBtn("back")}
-            onBlur={() => setFocusedBtn(null)}
-            onPress={() => router.back()}
-          >
-            <Text style={styles.backBtnText}>← ライブラリへ</Text>
-          </Pressable>
+          <Text style={styles.timeText}>{formatDuration(durationMs)}</Text>
         </View>
+
+        {/* 主操作: 前 / 再生停止 / 次 */}
+        <View style={styles.primaryControls}>
+          <Focusable
+            onSelect={() => prev()}
+            style={styles.ctrlBtn}
+            accessibilityLabel="前の曲"
+          >
+            <Text style={styles.ctrlText}>⏮</Text>
+          </Focusable>
+          <Focusable
+            onSelect={() => toggle()}
+            style={styles.ctrlBtnPrimary}
+            focusedStyle={styles.ctrlBtnPrimaryFocused}
+            hasTVPreferredFocus
+            accessibilityLabel={isPlaying ? "一時停止" : "再生"}
+          >
+            <Text style={styles.ctrlTextPrimary}>{isPlaying ? "⏸" : "▶"}</Text>
+          </Focusable>
+          <Focusable
+            onSelect={() => next()}
+            style={styles.ctrlBtn}
+            accessibilityLabel="次の曲"
+          >
+            <Text style={styles.ctrlText}>⏭</Text>
+          </Focusable>
+        </View>
+
+        {/* 副操作: シャッフル / −10s / +10s / リピート */}
+        <View style={styles.secondaryControls}>
+          <Focusable
+            onSelect={() => setShuffle(!shuffle)}
+            style={[styles.ctrlBtnSm, shuffle && styles.ctrlBtnSmActive]}
+            accessibilityLabel="シャッフル"
+          >
+            <Text style={[styles.ctrlTextSm, shuffle && styles.ctrlTextSmActive]}>🔀</Text>
+          </Focusable>
+          <Focusable
+            onSelect={() => skip(-10000)}
+            style={styles.ctrlBtnSm}
+            accessibilityLabel="-10秒"
+          >
+            <Text style={styles.ctrlTextSm}>−10s</Text>
+          </Focusable>
+          <Focusable
+            onSelect={() => skip(10000)}
+            style={styles.ctrlBtnSm}
+            accessibilityLabel="+10秒"
+          >
+            <Text style={styles.ctrlTextSm}>+10s</Text>
+          </Focusable>
+          <Focusable
+            onSelect={cycleRepeat}
+            style={[styles.ctrlBtnSm, repeat !== "off" && styles.ctrlBtnSmActive]}
+            accessibilityLabel="リピート"
+          >
+            <Text style={[styles.ctrlTextSm, repeat !== "off" && styles.ctrlTextSmActive]}>
+              {repeat === "one" ? "🔂" : "🔁"}
+            </Text>
+          </Focusable>
+        </View>
+
+        {repeat !== "off" && (
+          <Text style={styles.repeatHint}>
+            {repeat === "one" ? "1曲リピート" : "全曲リピート"}
+          </Text>
+        )}
+
+        {/* 戻るボタン */}
+        <Focusable
+          onSelect={() => router.back()}
+          style={styles.backBtn}
+          accessibilityLabel="ライブラリへ戻る"
+        >
+          <Text style={styles.backText}>← ライブラリへ</Text>
+        </Focusable>
       </View>
     </SafeAreaView>
-  );
-}
-
-interface ControlButtonProps {
-  label: string;
-  id: string;
-  focusedBtn: string | null;
-  setFocusedBtn: (id: string | null) => void;
-  onPress: () => void;
-  primary?: boolean;
-  /** トグルが ON のときに teal で強調する（シャッフル/リピート用）。 */
-  active?: boolean;
-  /** ±10秒シークなど小型ボタン用にパディング/フォントを縮める。 */
-  small?: boolean;
-  hasTVPreferredFocus?: boolean;
-}
-
-function ControlButton({
-  label,
-  id,
-  focusedBtn,
-  setFocusedBtn,
-  onPress,
-  primary,
-  active,
-  small,
-  hasTVPreferredFocus,
-}: ControlButtonProps) {
-  const isFocused = focusedBtn === id;
-  return (
-    <Pressable
-      style={[
-        styles.ctrlBtn,
-        primary && styles.ctrlBtnPrimary,
-        small && styles.ctrlBtnSmall,
-        // active は非フォーカス時に teal の枠で「ON」を示す。フォーカス時は
-        // focused スタイルが枠/背景を上書きするので最後に置く。
-        active && !isFocused && styles.ctrlBtnActive,
-        isFocused && styles.ctrlBtnFocused,
-      ]}
-      onFocus={() => setFocusedBtn(id)}
-      onBlur={() => setFocusedBtn(null)}
-      onPress={onPress}
-      hasTVPreferredFocus={hasTVPreferredFocus}
-    >
-      <Text
-        style={[
-          styles.ctrlBtnText,
-          small && styles.ctrlBtnTextSmall,
-          primary && styles.ctrlBtnTextPrimary,
-          active && styles.ctrlBtnTextActive,
-        ]}
-      >
-        {label}
-      </Text>
-    </Pressable>
   );
 }
 
@@ -260,49 +209,51 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    flexDirection: "row",
-    padding: 64,
-    gap: 64,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 80,
+    paddingVertical: 24,
+    gap: 16,
   },
   artworkWrapper: {
-    width: 480,
-    aspectRatio: 1,
-    alignSelf: "center",
+    borderRadius: 12,
+    overflow: "hidden",
+    marginBottom: 8,
   },
   artwork: {
     width: "100%",
     height: "100%",
-    borderRadius: 12,
-    backgroundColor: PALETTE.surface,
   },
   artworkPlaceholder: {
     backgroundColor: PALETTE.surface,
-  },
-  info: {
-    flex: 1,
-    justifyContent: "center",
-    gap: 16,
   },
   trackName: {
     fontSize: TV_FONT.xl,
     fontWeight: "700",
     color: PALETTE.text,
+    textAlign: "center",
     lineHeight: TV_FONT.xl * 1.2,
+    maxWidth: 900,
   },
   trackArtist: {
     fontSize: TV_FONT.lg,
     color: PALETTE.teal,
-    marginTop: 8,
+    textAlign: "center",
+    maxWidth: 900,
   },
   trackAlbum: {
     fontSize: TV_FONT.md,
     color: PALETTE.textSub,
+    textAlign: "center",
+    maxWidth: 900,
   },
-  progressWrapper: {
+  progressRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 16,
-    marginTop: 24,
+    width: "100%",
+    maxWidth: 900,
+    marginTop: 8,
   },
   progressBg: {
     flex: 1,
@@ -320,69 +271,86 @@ const styles = StyleSheet.create({
     fontSize: TV_FONT.sm,
     color: PALETTE.textSub,
     fontVariant: ["tabular-nums"],
-    minWidth: 72,
+    minWidth: 80,
+    textAlign: "center",
   },
-  controls: {
+  primaryControls: {
     flexDirection: "row",
-    gap: 20,
-    marginTop: 32,
     alignItems: "center",
+    gap: 24,
+    marginTop: 8,
   },
   ctrlBtn: {
     paddingVertical: 20,
     paddingHorizontal: 36,
     borderRadius: 8,
     backgroundColor: PALETTE.surface,
-    borderWidth: 3,
+    borderWidth: FOCUS_RING.borderWidth,
     borderColor: "transparent",
   },
   ctrlBtnPrimary: {
     paddingVertical: 24,
     paddingHorizontal: 52,
+    borderRadius: 12,
     backgroundColor: PALETTE.teal,
+    borderWidth: FOCUS_RING.borderWidth,
+    borderColor: "transparent",
   },
-  ctrlBtnSmall: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-  },
-  ctrlBtnActive: {
-    borderColor: PALETTE.teal,
-  },
-  ctrlBtnFocused: {
+  ctrlBtnPrimaryFocused: {
     borderColor: PALETTE.text,
-    backgroundColor: PALETTE.focusBg,
+    backgroundColor: PALETTE.teal,
+    borderRadius: 12,
   },
-  ctrlBtnText: {
-    fontSize: TV_FONT.lg,
+  ctrlText: {
+    fontSize: TV_FONT.xl,
     color: PALETTE.text,
     textAlign: "center",
   },
-  ctrlBtnTextSmall: {
-    fontSize: TV_FONT.xs,
-    fontVariant: ["tabular-nums"],
-  },
-  ctrlBtnTextPrimary: {
+  ctrlTextPrimary: {
+    fontSize: TV_FONT.xl,
     color: PALETTE.bg,
     fontWeight: "700",
+    textAlign: "center",
   },
-  ctrlBtnTextActive: {
+  secondaryControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+    marginTop: 4,
+  },
+  ctrlBtnSm: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+    backgroundColor: PALETTE.surface,
+    borderWidth: FOCUS_RING.borderWidth,
+    borderColor: "transparent",
+  },
+  ctrlBtnSmActive: {
+    borderColor: PALETTE.teal,
+  },
+  ctrlTextSm: {
+    fontSize: TV_FONT.sm,
+    color: PALETTE.textSub,
+    textAlign: "center",
+    fontVariant: ["tabular-nums"],
+  },
+  ctrlTextSmActive: {
     color: PALETTE.teal,
   },
   repeatHint: {
     fontSize: TV_FONT.xs,
     color: PALETTE.textSub,
-    marginTop: 12,
   },
   backBtn: {
-    alignSelf: "flex-start",
-    marginTop: 32,
+    marginTop: 8,
     paddingVertical: 12,
     paddingHorizontal: 24,
     borderRadius: 8,
-    borderWidth: 2,
+    borderWidth: FOCUS_RING.borderWidth,
     borderColor: PALETTE.border,
   },
-  backBtnText: {
+  backText: {
     fontSize: TV_FONT.sm,
     color: PALETTE.textSub,
   },

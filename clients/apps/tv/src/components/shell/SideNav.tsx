@@ -9,7 +9,6 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { Focusable } from "@/components/focus/Focusable";
 import { FocusGuide } from "@/components/focus/FocusGuide";
-import { MiniPlayer } from "@/components/player/MiniPlayer";
 import { PALETTE, TV_FONT, TV_LAYOUT, FOCUS_RING } from "@/theme/palette";
 
 /** ナビ項目の定義。 */
@@ -69,9 +68,6 @@ export function SideNav() {
         })}
       </View>
 
-      {/* 下部: 余白を埋めるスペーサー + ミニプレイヤー */}
-      <View style={styles.spacer} />
-      <MiniPlayer />
     </FocusGuide>
   );
 }
@@ -134,8 +130,5 @@ const styles = StyleSheet.create({
   labelActive: {
     color: PALETTE.teal,
     fontWeight: "600",
-  },
-  spacer: {
-    flex: 1,
   },
 });
