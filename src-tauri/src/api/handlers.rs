@@ -596,6 +596,34 @@ fn artwork_response(bytes: Vec<u8>, mime: &str) -> Response {
         .into_response()
 }
 
+/// `PUT /api/tracks/{trackId}/artwork` — 曲の埋め込みアートワークを差し替える。
+/// リクエストボディは画像バイナリそのもの (Content-Type: image/jpeg | image/png 等)。
+/// URL は受け取らない (サーバーに外部 fetch 権限を持たせない最小権限方針)。
+/// DB からファイルパスを引き、`set_picture` で既存カバー(front)を置換して実ファイルの
+/// タグに書き戻す。空ボディ=400、対象/パス無し=404、書き込み失敗=500、成功=204。
+pub async fn set_track_artwork(
+    State(state): State<ApiState>,
+    Path(track_id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    if body.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty request body"));
+    }
+    let db = state.db()?;
+    let track = db
+        .get_track_by_track_id(track_id)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| ApiError::not_found("track not found"))?;
+    let path_str = track.location_path.as_deref().unwrap_or("");
+    if path_str.is_empty() {
+        return Err(ApiError::not_found("no file path for this track"));
+    }
+    crate::artwork::set_picture(path_str, body.to_vec())
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    state.notify_library_changed(None);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// 原本バイトをデコードし、アスペクト比維持で最大辺 ≤ size に縮小して再エンコードする。
 /// format 既定は webp (ロスレス, pure Rust)、"jpeg" 指定で JPEG (品質 82)。
 /// size 既定は 512。デコード/エンコードに失敗したら `None` (呼び出し側で原本へフォールバック)。

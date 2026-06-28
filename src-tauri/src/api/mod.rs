@@ -148,6 +148,18 @@ fn is_rating_path(path: &str) -> bool {
     !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// `/api/tracks/{id}/artwork` 形式（アートワーク設定の書き込みエンドポイント）か判定する。
+/// `{id}` は 1 文字以上の数字のみ。
+fn is_artwork_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/tracks/") else {
+        return false;
+    };
+    let Some(id) = rest.strip_suffix("/artwork") else {
+        return false;
+    };
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
+}
+
 // ────────────────────── ペアリングエンドポイント ──────────────────────────
 
 /// POST /api/pair/start のリクエストボディ (全フィールド任意・後方互換)。
@@ -292,21 +304,30 @@ async fn auth_guard(
     }
 
     // LAN からの書き込みは原則 /api/remote/* と GET のみ許可する。
-    // 例外: `POST /api/tracks/{id}/rating` のみ許可する。これはレーティングを DB に
-    // 書くだけの最小権限エンドポイントで、ファイルタグや他メタデータには触れない
-    // (モバイルから★を設定する用)。メタデータ編集 (`PATCH /api/tracks/{id}`) や
-    // 一括書き込みは引き続き LAN から拒否する。
+    // 例外: `POST /api/tracks/{id}/rating` と `PUT /api/tracks/{id}/artwork` のみ許可する。
+    // rating はレーティングを DB に書くだけの最小権限エンドポイントで、ファイルタグや
+    // 他メタデータには触れない (モバイルから★を設定する用)。artwork は実ファイルの
+    // 埋め込みカバーを差し替える (ユーザー判断で LAN 設定を許可)。メタデータ編集
+    // (`PATCH /api/tracks/{id}`) や一括書き込みは引き続き LAN から拒否する。
     let method = req.method().clone();
     let is_read_only_method = method == axum::http::Method::GET;
     let is_remote_path = path.starts_with("/api/remote");
     let is_rating_write = method == axum::http::Method::POST && is_rating_path(&path);
+    // アートワーク設定 (PUT) も LAN から token 認証つきで許可する。rating と違い
+    // 実ファイル(音源)のタグを書き換えるが、ユーザー判断で LAN 設定を許可している。
+    let is_artwork_write =
+        method == axum::http::Method::PUT && is_artwork_path(&path);
 
-    if !is_read_only_method && !is_remote_path && !is_rating_write {
+    if !is_read_only_method && !is_remote_path && !is_rating_write && !is_artwork_write {
         return StatusCode::FORBIDDEN.into_response();
     }
 
     next.run(req).await
 }
+
+/// アートワーク設定 (PUT artwork) のリクエストボディ上限 (20 MiB)。
+/// axum 既定の 2 MiB ではカバー画像が入りきらないことがあるため引き上げる。
+const ARTWORK_MAX_BYTES: usize = 20 * 1024 * 1024;
 
 /// `/api` 以下の全ルートを束ねた Router を返す。
 pub fn router(state: ApiState) -> Router {
@@ -350,7 +371,9 @@ pub fn router(state: ApiState) -> Router {
         )
         .route(
             "/api/tracks/{trackId}/artwork",
-            get(handlers::stream_artwork),
+            get(handlers::stream_artwork)
+                .put(handlers::set_track_artwork)
+                .layer(axum::extract::DefaultBodyLimit::max(ARTWORK_MAX_BYTES)),
         )
         .route("/api/stats", get(handlers::get_stats))
         .route("/api/genres", get(handlers::get_genres))
