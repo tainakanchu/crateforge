@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use super::Database;
 use crate::itunes_xml::parser::RawTrack;
-use crate::models::{GenreTagCount, Track, TrackEdit};
+use crate::models::{AlbumRow, GenreTagCount, Track, TrackEdit};
 
 /// `/api/albums` で返す、ライブラリ内の distinct なアルバム 1 件分の情報。
 /// `sample_track_id` はアートワーク表示用の代表トラック (アルバム内最小 track_id)。
@@ -49,6 +49,16 @@ pub(crate) const SEARCH_TEXT_EXPR: &str = "COALESCE(fold(name,2),'')||char(10)||
      COALESCE(fold(artist,2),'')||char(10)||COALESCE(fold(album,2),'')||char(10)||\
      COALESCE(fold(album_artist,2),'')||char(10)||COALESCE(fold(genre,2),'')||char(10)||\
      COALESCE(fold(comments,2),'')";
+
+/// アルバム束ねキーの算出式。get_albums の GROUP BY と get_album_tracks の WHERE で同一に使う。
+/// - album が空/NULL → `tr:<track_id>` (1曲1グループ。(unknown)へ吸い込ませない)
+/// - compilation=1  → `cmp:<album>` のみ (アーティストが曲ごとに違っても1枚に束ねる)
+/// - それ以外       → `al:<albumArtist||artist>␟<album>` (char(31)=ユニットセパレータ区切り)
+const ALBUM_KEY_EXPR: &str = "CASE \
+  WHEN album IS NULL OR trim(album) = '' THEN 'tr:' || track_id \
+  WHEN compilation = 1 THEN 'cmp:' || lower(trim(album)) \
+  ELSE 'al:' || lower(trim(coalesce(nullif(trim(album_artist),''), artist, ''))) || char(31) || lower(trim(album)) \
+END";
 
 /// `search_text` を **Rust 側で** 計算する。insert 経路で、まだ DB に行が無い段階の
 /// 値から `search_text` を組み立てるのに使う。SQL 側 `SEARCH_TEXT_EXPR` と等価:
@@ -101,6 +111,33 @@ fn sort_field_to_column(sort_field: &str) -> Option<(&'static str, bool)> {
         "dateAdded" => Some(("date_added", true)),
         "lastPlayed" => Some(("last_played", true)),
         _ => None,
+    }
+}
+
+/// アルバム粒度の ORDER BY 句を組み立てる。
+/// SQL インジェクション防止のため sort_field/sort_order は match で固定文字列に変換する。
+fn album_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String {
+    let dir = if matches!(sort_order, Some("desc")) { "DESC" } else { "ASC" };
+    match sort_field {
+        Some("albumArtist") => format!(
+            "album_artist COLLATE NOCASE {dir}, album COLLATE NOCASE ASC"
+        ),
+        Some("album") => format!(
+            "album COLLATE NOCASE {dir}, album_artist COLLATE NOCASE ASC"
+        ),
+        Some("year") => format!(
+            "(year IS NULL), year {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
+        ),
+        Some("dateAdded") => format!(
+            "(date_added IS NULL), date_added {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
+        ),
+        Some("rating") => format!(
+            "(rating IS NULL), rating {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
+        ),
+        Some("playCount") => format!(
+            "play_count {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
+        ),
+        _ => "album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC".to_string(),
     }
 }
 
@@ -768,7 +805,7 @@ impl Database {
 
     /// ライブラリ内の distinct なアルバム一覧を album 名 (NOCASE) 昇順で返す。
     /// album が NULL/空 の曲は除外。`sample_track_id` はアルバム内最小 track_id (代表曲)。
-    pub fn get_albums(&self) -> Result<Vec<AlbumInfo>> {
+    pub fn get_albums_legacy(&self) -> Result<Vec<AlbumInfo>> {
         let mut stmt = self.conn.prepare(
             "SELECT album, MAX(album_artist), COUNT(*), MIN(track_id) FROM tracks
              WHERE album IS NOT NULL AND album != '' GROUP BY album ORDER BY album COLLATE NOCASE",
@@ -782,6 +819,94 @@ impl Database {
                 sample_track_id: r.get(3)?,
             })
         })?;
+        rows.collect()
+    }
+
+    /// アルバムグリッド向けの集約クエリ。コンピレーション対応・カバー代表曲選択済み。
+    pub fn get_albums(
+        &self,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<AlbumRow>> {
+        let order_by = album_order_by(sort_field, sort_order);
+        let sql = format!(
+            "WITH base AS (
+              SELECT *,
+                ({key}) AS album_key,
+                ROW_NUMBER() OVER (
+                  PARTITION BY ({key})
+                  ORDER BY file_exists DESC, (disc_number IS NULL), disc_number,
+                           (track_number IS NULL), track_number, track_id
+                ) AS rn
+              FROM tracks
+            )
+            SELECT
+              album_key,
+              MAX(coalesce(nullif(trim(album),''), name, '(unknown)'))          AS album,
+              MAX(CASE WHEN compilation=1 THEN 'Various Artists'
+                       ELSE coalesce(nullif(trim(album_artist),''), artist, '') END) AS album_artist,
+              MAX(compilation)                                                   AS is_compilation,
+              COUNT(*)                                                           AS track_count,
+              MAX(CASE WHEN rn=1 THEN track_id END)                              AS cover_track_id,
+              MAX(CASE WHEN rn=1 THEN location_path END)                         AS cover_location_path,
+              MAX(CASE WHEN rn=1 THEN file_exists END)                           AS cover_file_exists,
+              COALESCE(SUM(total_time_ms),0)                                     AS total_time_ms,
+              MIN(year)                                                          AS year,
+              MAX(date_added)                                                    AS date_added,
+              MAX(rating)                                                        AS rating,
+              COALESCE(SUM(play_count),0)                                        AS play_count,
+              MIN(bpm)                                                           AS bpm_min,
+              MAX(bpm)                                                           AS bpm_max
+            FROM base
+            GROUP BY album_key
+            ORDER BY {order}
+            LIMIT ?1 OFFSET ?2",
+            key = ALBUM_KEY_EXPR,
+            order = order_by
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit, offset], |r| {
+            Ok(AlbumRow {
+                album_key: r.get(0)?,
+                album: r.get(1)?,
+                album_artist: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                is_compilation: r.get::<_, i32>(3)? != 0,
+                track_count: r.get(4)?,
+                cover_track_id: r.get(5)?,
+                cover_location_path: r.get(6)?,
+                cover_file_exists: r.get::<_, Option<i32>>(7)?.unwrap_or(0) != 0,
+                total_time_ms: r.get(8)?,
+                year: r.get(9)?,
+                date_added: r.get(10)?,
+                rating: r.get(11)?,
+                play_count: r.get(12)?,
+                bpm_min: r.get(13)?,
+                bpm_max: r.get(14)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// album_key に属するトラック一覧をディスク→トラック順で返す。
+    /// 同一の ALBUM_KEY_EXPR で WHERE するため get_albums と完全に一致する。
+    pub fn get_album_tracks(&self, album_key: &str) -> Result<Vec<Track>> {
+        let sql = format!(
+            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
+                    album, genre, year, rating, play_count, skip_count, total_time_ms,
+                    date_added, date_modified, bpm, comments, location_raw, location_path,
+                    track_type, disabled, compilation, disc_number, disc_count,
+                    track_number, track_count, file_exists, last_played
+             FROM (
+               SELECT *, ({key}) AS album_key FROM tracks
+             ) WHERE album_key = ?1
+             ORDER BY (disc_number IS NULL), disc_number,
+                      (track_number IS NULL), track_number, track_id",
+            key = ALBUM_KEY_EXPR
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![album_key], row_to_track)?;
         rows.collect()
     }
 
@@ -1061,7 +1186,7 @@ mod tests {
                 .unwrap();
         }
 
-        let albums = db.get_albums().unwrap();
+        let albums = db.get_albums_legacy().unwrap();
         // distinct な album は 2 件 ("alpha", "Beta")。NOCASE 昇順なので alpha が先。
         assert_eq!(albums.len(), 2);
         assert_eq!(albums[0].album, "alpha");
@@ -1155,5 +1280,124 @@ mod tests {
         // 異なるドライブ → 共通プレフィックス無し。
         let p = vec!["C:\\x\\1.mp3".to_string(), "D:\\y\\2.mp3".to_string()];
         assert_eq!(common_dir_prefix(&p), None);
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // AlbumRow 集約クエリのテスト
+    // ────────────────────────────────────────────────────────────────
+
+    /// コンピレーション束ね: compilation=1・同じアルバム・アーティストが曲ごとに異なる3曲
+    /// → get_albums が1行、track_count=3、album_artist="Various Artists"、is_compilation=true。
+    #[test]
+    fn album_row_compilation_bundled() {
+        let db = Database::open_memory().unwrap();
+        for (tid, artist) in [(100i64, "ArtistA"), (101, "ArtistB"), (102, "ArtistC")] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, artist, album, compilation, file_exists, track_number)
+                     VALUES (?1, ?2, ?3, 'Greatest Hits', 1, 1, ?4)",
+                    rusqlite::params![tid, format!("t{tid}"), artist, tid - 99],
+                )
+                .unwrap();
+        }
+        let albums = db.get_albums(None, None, 100, 0).unwrap();
+        assert_eq!(albums.len(), 1, "コンピは1行に束ねられるべき");
+        let a = &albums[0];
+        assert_eq!(a.track_count, 3);
+        assert_eq!(a.album_artist, "Various Artists");
+        assert!(a.is_compilation);
+        assert!(a.album_key.starts_with("cmp:"));
+    }
+
+    /// 通常アルバム: 同じ album_artist + album の複数曲 → 1行に束ねる。
+    #[test]
+    fn album_row_normal_album_bundled() {
+        let db = Database::open_memory().unwrap();
+        for tid in [200i64, 201, 202] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, artist, album_artist, album, file_exists, track_number)
+                     VALUES (?1, ?2, 'SameArtist', 'SameArtist', 'SameAlbum', 1, ?3)",
+                    rusqlite::params![tid, format!("t{tid}"), tid - 199],
+                )
+                .unwrap();
+        }
+        let albums = db.get_albums(None, None, 100, 0).unwrap();
+        assert_eq!(albums.len(), 1, "通常アルバムは1行に束ねられるべき");
+        assert_eq!(albums[0].track_count, 3);
+        assert!(albums[0].album_key.starts_with("al:"));
+    }
+
+    /// 空 album: album が空の2曲はそれぞれ別行(tr: キー)になる。
+    #[test]
+    fn album_row_empty_album_separate() {
+        let db = Database::open_memory().unwrap();
+        for tid in [300i64, 301] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, album, file_exists)
+                     VALUES (?1, ?2, '', 1)",
+                    rusqlite::params![tid, format!("t{tid}")],
+                )
+                .unwrap();
+        }
+        let albums = db.get_albums(None, None, 100, 0).unwrap();
+        assert_eq!(albums.len(), 2, "空albumの曲はそれぞれ別行になるべき");
+        assert!(albums.iter().all(|a| a.album_key.starts_with("tr:")));
+    }
+
+    /// 空 albumArtist 非コンピ: album_artist 空・artist 同じ・album 同じ → artist にフォールバックして1行。
+    #[test]
+    fn album_row_fallback_to_artist() {
+        let db = Database::open_memory().unwrap();
+        for tid in [400i64, 401] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, artist, album_artist, album, file_exists, track_number)
+                     VALUES (?1, ?2, 'SoloArtist', '', 'SoloAlbum', 1, ?3)",
+                    rusqlite::params![tid, format!("t{tid}"), tid - 399],
+                )
+                .unwrap();
+        }
+        let albums = db.get_albums(None, None, 100, 0).unwrap();
+        assert_eq!(albums.len(), 1, "artistフォールバックで1行に束ねられるべき");
+        assert_eq!(albums[0].track_count, 2);
+        // album_key に artist 名が含まれること。
+        assert!(albums[0].album_key.contains("soloartist"));
+    }
+
+    /// multi-disc 並び: get_album_tracks が disc1→disc2 の順(disc_number昇順→track_number昇順)になる。
+    #[test]
+    fn album_tracks_multi_disc_order() {
+        let db = Database::open_memory().unwrap();
+        // disc2の曲を先に挿入してもdiscの昇順で並ぶことを確認。
+        let rows = [
+            // (track_id, disc_number, track_number)
+            (500i64, 2i64, 1i64),
+            (501, 2, 2),
+            (502, 1, 1),
+            (503, 1, 2),
+        ];
+        for (tid, disc, tnum) in rows {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, artist, album_artist, album, disc_number, track_number, file_exists)
+                     VALUES (?1, ?2, 'A', 'A', 'MultiDisc', ?3, ?4, 1)",
+                    rusqlite::params![tid, format!("t{tid}"), disc, tnum],
+                )
+                .unwrap();
+        }
+        // まず get_albums でアルバムキーを取得。
+        let albums = db.get_albums(None, None, 100, 0).unwrap();
+        assert_eq!(albums.len(), 1);
+        let key = &albums[0].album_key;
+
+        let tracks = db.get_album_tracks(key).unwrap();
+        assert_eq!(tracks.len(), 4);
+        // disc1-track1, disc1-track2, disc2-track1, disc2-track2 の順。
+        assert_eq!(tracks[0].track_id, 502); // disc1 track1
+        assert_eq!(tracks[1].track_id, 503); // disc1 track2
+        assert_eq!(tracks[2].track_id, 500); // disc2 track1
+        assert_eq!(tracks[3].track_id, 501); // disc2 track2
     }
 }

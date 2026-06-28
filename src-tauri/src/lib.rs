@@ -187,6 +187,8 @@ pub fn run() {
             commands::library::detect_library_root,
             commands::library::get_search_fold_level,
             commands::library::set_search_fold_level,
+            commands::library::get_albums,
+            commands::library::get_album_tracks,
             // artwork
             commands::artwork::set_artwork_from_data,
             commands::artwork::set_artwork_from_file,

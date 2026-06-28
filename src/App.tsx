@@ -2,7 +2,8 @@ import { useEffect, useCallback, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { TrackTable } from "./components/TrackTable";
-import { CoversView } from "./components/CoversView";
+import { AlbumsView } from "./components/AlbumsView";
+import { TracksView } from "./components/TracksView";
 import { AlbumView } from "./components/AlbumView";
 import { PlayerBar } from "./components/PlayerBar";
 import { RightRail } from "./components/RightRail";
@@ -42,11 +43,15 @@ export default function App() {
     filterTags,
     setTracks,
     appendTracks,
+    setAlbums,
+    appendAlbums,
+    setAlbumsHasMore,
     setPlaylists,
     setIsLoading,
     setHasMore,
     setPlayback,
     tracks,
+    albums,
     playback,
     selectedTrackIds,
     setSearchQuery,
@@ -188,6 +193,40 @@ export default function App() {
     loadTracks(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, selectedPlaylistId, searchQuery, filterTags, sortField, sortOrder, reloadCount]);
+
+  // Albums 表示モード用ローダ。ライブラリ全体 (検索なし) のときだけサーバ集約を使う。
+  // スコープ外 (プレイリスト/検索/最近) は AlbumsView が tracks をクライアント束ねする。
+  const loadAlbums = useCallback(
+    async (reset = true) => {
+      if (!isTauri) {
+        setAlbums([]);
+        setAlbumsHasMore(false);
+        return;
+      }
+      const combinedQuery = [searchQuery.trim(), ...filterTags].filter(Boolean).join(" ");
+      const isLibraryScope = viewMode === "library" && !combinedQuery;
+      if (!isLibraryScope) return;
+      setIsLoading(true);
+      try {
+        const offset = reset ? 0 : albums.length;
+        const result = await libraryApi.getAlbums(sortField, sortOrder, PAGE_SIZE, offset);
+        if (reset) setAlbums(result);
+        else appendAlbums(result);
+        setAlbumsHasMore(result.length === PAGE_SIZE);
+      } catch (err) {
+        console.error("Failed to load albums:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [viewMode, searchQuery, filterTags, sortField, sortOrder, albums.length, setAlbums, appendAlbums, setAlbumsHasMore, setIsLoading],
+  );
+
+  useEffect(() => {
+    if (displayMode !== "albums") return;
+    loadAlbums(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayMode, viewMode, searchQuery, filterTags, sortField, sortOrder, reloadCount]);
 
   useEffect(() => {
     reloadPlaylists();
@@ -489,8 +528,16 @@ export default function App() {
   }, [runAutoExport]);
 
   const handleLoadMore = useCallback(() => {
+    if (displayMode === "albums") {
+      const combinedQuery = [searchQuery.trim(), ...filterTags].filter(Boolean).join(" ");
+      const isLibraryScope = viewMode === "library" && !combinedQuery;
+      if (isLibraryScope) {
+        loadAlbums(false);
+        return;
+      }
+    }
     loadTracks(false);
-  }, [loadTracks]);
+  }, [displayMode, viewMode, searchQuery, filterTags, loadAlbums, loadTracks]);
 
   // Keyboard shortcuts (issue #1).
   useEffect(() => {
@@ -628,8 +675,15 @@ export default function App() {
             mode={viewMode === "albums" ? "album" : "artist"}
             onTracksChanged={triggerReload}
           />
-        ) : displayMode === "covers" ? (
-          <CoversView
+        ) : displayMode === "albums" ? (
+          <AlbumsView
+            onLoadMore={handleLoadMore}
+            onTracksChanged={triggerReload}
+            onEditTrack={(ts) => setEditorTracks(ts)}
+            onConvert={(ids) => setConvertIds(ids)}
+          />
+        ) : displayMode === "tracks" ? (
+          <TracksView
             onLoadMore={handleLoadMore}
             onTracksChanged={triggerReload}
             onEditTrack={(ts) => setEditorTracks(ts)}

@@ -29,3 +29,21 @@ export interface Track {
   fileExists: boolean;
   lastPlayed: string | null;
 }
+
+export interface AlbumRow {
+  albumKey: string;
+  album: string;
+  albumArtist: string; // コンピは "Various Artists"
+  isCompilation: boolean;
+  trackCount: number;
+  coverTrackId: number | null;
+  coverLocationPath: string | null;
+  coverFileExists: boolean;
+  totalTimeMs: number;
+  year: number | null;
+  dateAdded: string | null;
+  rating: number | null;
+  playCount: number;
+  bpmMin: number | null;
+  bpmMax: number | null;
+}

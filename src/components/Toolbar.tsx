@@ -5,6 +5,7 @@ import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import { ColumnPicker } from "./ColumnPicker";
 import type { LibraryStats, SortField, ViewMode } from "../types";
+import { ALBUM_SORT_FIELDS } from "../types";
 import { AUDIO_EXTENSIONS } from "../lib/audioExtensions";
 
 interface ToolbarProps {
@@ -267,7 +268,12 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
         ? stats.trackCount.toLocaleString()
         : tracks.length.toLocaleString();
 
-  const curSort = SORT_OPTIONS.find((s) => s.field === sortField);
+  // Albums モードはアルバム粒度のソートのみ (ALBUM_SORT_FIELDS の順序を維持)。
+  const albumSortOptions = ALBUM_SORT_FIELDS.map(
+    (f) => SORT_OPTIONS.find((o) => o.field === f)!,
+  );
+  const sortOptions = displayMode === "albums" ? albumSortOptions : SORT_OPTIONS;
+  const curSort = sortOptions.find((s) => s.field === sortField);
 
   return (
     <>
@@ -319,11 +325,18 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
             <Icon name="list" size={14} /> List
           </button>
           <button
-            className={"cb-segb" + (displayMode === "covers" ? " on" : "")}
-            onClick={() => setDisplayMode("covers")}
-            title="Covers view"
+            className={"cb-segb" + (displayMode === "albums" ? " on" : "")}
+            onClick={() => setDisplayMode("albums")}
+            title="Albums view"
           >
-            <Icon name="grid" size={14} /> Covers
+            <Icon name="grid" size={14} /> Albums
+          </button>
+          <button
+            className={"cb-segb" + (displayMode === "tracks" ? " on" : "")}
+            onClick={() => setDisplayMode("tracks")}
+            title="Track wall"
+          >
+            <Icon name="disc" size={14} /> Tracks
           </button>
         </div>
 
@@ -344,7 +357,7 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
             <>
               <div className="cb-scrim" onClick={() => setSortOpen(false)} />
               <div className="cb-sortpop" style={{ right: 0 }}>
-                {SORT_OPTIONS.map((s) => {
+                {sortOptions.map((s) => {
                   const on = s.field === sortField;
                   return (
                     <div

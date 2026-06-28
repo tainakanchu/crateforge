@@ -310,7 +310,7 @@ pub async fn get_genres(
 
 /// `GET /api/albums` — distinct なアルバム一覧 (album 名昇順)。
 pub async fn get_albums(State(state): State<ApiState>) -> Result<Json<Vec<AlbumInfo>>, ApiError> {
-    Ok(Json(state.db()?.get_albums()?))
+    Ok(Json(state.db()?.get_albums_legacy()?))
 }
 
 /// `GET /api/artists` のクエリパラメータ。

@@ -48,6 +48,17 @@ export type SortField =
 
 export type SortOrder = "asc" | "desc";
 
+/// Albums 表示モードで使うアルバム粒度のソートフィールド集合。
+/// トラック専用 (bpm/trackNumber/totalTimeMs 等) はアルバム集約では無意味なので除外する。
+export const ALBUM_SORT_FIELDS: SortField[] = [
+  "albumArtist",
+  "album",
+  "year",
+  "dateAdded",
+  "rating",
+  "playCount",
+];
+
 // === 設定可能フィールド（List ビューの列） ===
 // Track の identity（カバー + 曲名 + アーティスト）は常時表示の先頭セルで、
 // ここに含めない。ここで定義するのは右側の固定幅フィールド群。

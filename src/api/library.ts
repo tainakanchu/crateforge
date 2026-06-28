@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Track,
+  AlbumRow,
   ImportResult,
   ExportResult,
   ImportFileResult,
@@ -121,4 +122,19 @@ export async function setArtworkFromFile(
 /// organize (自動整理) が有効かどうかを返す。
 export async function getOrganizeActive(): Promise<boolean> {
   return invoke("organize_active");
+}
+
+/// ライブラリ全体をアルバム単位に集約して取得 (コンピは1枚に束ね済み)。
+export async function getAlbums(
+  sortField?: SortField,
+  sortOrder?: SortOrder,
+  limit?: number,
+  offset?: number,
+): Promise<AlbumRow[]> {
+  return invoke("get_albums", { sortField, sortOrder, limit, offset });
+}
+
+/// 指定アルバムの曲を disc→track 順で取得。
+export async function getAlbumTracks(albumKey: string): Promise<Track[]> {
+  return invoke("get_album_tracks", { albumKey });
 }

@@ -6,7 +6,7 @@ use crate::db::Database;
 use crate::importer;
 use crate::itunes_xml::{parser, writer};
 use crate::models::{
-    ExportResult, GenreTagCount, ImportFileResult, ImportResult, LibraryStats, Track, TrackEdit,
+    AlbumRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult, LibraryStats, Track, TrackEdit,
 };
 use crate::organizer;
 
@@ -270,6 +270,30 @@ pub fn remove_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Res
 pub fn get_all_genre_tags(app: AppHandle) -> Result<Vec<GenreTagCount>, String> {
     let db = get_db(&app)?;
     db.get_all_genre_tags().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_albums(
+    app: AppHandle,
+    sort_field: Option<String>,
+    sort_order: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<AlbumRow>, String> {
+    let db = get_db(&app)?;
+    db.get_albums(
+        sort_field.as_deref(),
+        sort_order.as_deref(),
+        limit.unwrap_or(500),
+        offset.unwrap_or(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_album_tracks(app: AppHandle, album_key: String) -> Result<Vec<Track>, String> {
+    let db = get_db(&app)?;
+    db.get_album_tracks(&album_key).map_err(|e| e.to_string())
 }
 
 pub(crate) fn open_db(app: &AppHandle) -> Result<Database, String> {

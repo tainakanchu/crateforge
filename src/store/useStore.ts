@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type {
   Track,
+  AlbumRow,
   Playlist,
   PlaybackState,
   ViewMode,
@@ -15,7 +16,7 @@ import type {
   TrackAnalysis,
   EncodeFormat,
 } from "../types";
-import { DEFAULT_FIELDS } from "../types";
+import { DEFAULT_FIELDS, ALBUM_SORT_FIELDS } from "../types";
 
 // グローバルトースト（成功/失敗/情報の一時通知）。永続化しない。
 export type ToastKind = "success" | "error" | "info";
@@ -88,6 +89,8 @@ interface AppState extends PersistedSettings {
   selectedTrackIds: Set<number>;
   isLoading: boolean;
   hasMore: boolean;
+  albums: AlbumRow[];
+  albumsHasMore: boolean;
 
   // Playback
   playback: PlaybackState;
@@ -116,6 +119,9 @@ interface AppState extends PersistedSettings {
   clearFilterTags: () => void;
   setTracks: (tracks: Track[]) => void;
   appendTracks: (tracks: Track[]) => void;
+  setAlbums: (albums: AlbumRow[]) => void;
+  appendAlbums: (albums: AlbumRow[]) => void;
+  setAlbumsHasMore: (hasMore: boolean) => void;
   setPlaylists: (playlists: Playlist[]) => void;
   setIsLoading: (loading: boolean) => void;
   setHasMore: (hasMore: boolean) => void;
@@ -190,6 +196,8 @@ export const useStore = create<AppState>()(
       selectedTrackIds: new Set(),
       isLoading: false,
       hasMore: true,
+      albums: [],
+      albumsHasMore: true,
       playback: {
         isPlaying: false,
         currentTrackId: null,
@@ -242,6 +250,10 @@ export const useStore = create<AppState>()(
       setTracks: (tracks) => set({ tracks, selectedTrackIds: new Set() }),
       appendTracks: (tracks) =>
         set((state) => ({ tracks: [...state.tracks, ...tracks] })),
+      setAlbums: (albums) => set({ albums }),
+      appendAlbums: (albums) =>
+        set((state) => ({ albums: [...state.albums, ...albums] })),
+      setAlbumsHasMore: (albumsHasMore) => set({ albumsHasMore }),
       setPlaylists: (playlists) => set({ playlists }),
       setIsLoading: (loading) => set({ isLoading: loading }),
       setHasMore: (hasMore) => set({ hasMore }),
@@ -296,7 +308,15 @@ export const useStore = create<AppState>()(
       clearCrate: () => set({ crate: [] }),
 
       // Persisted settings
-      setDisplayMode: (mode) => set({ displayMode: mode }),
+      setDisplayMode: (mode) =>
+        set((state) => {
+          // Albums モードはアルバム粒度のソート語彙のみ。トラック専用フィールド
+          // (BPM 等) のままだと無意味に散るので albumArtist 昇順へ正規化する。
+          if (mode === "albums" && !ALBUM_SORT_FIELDS.includes(state.sortField)) {
+            return { displayMode: mode, sortField: "albumArtist", sortOrder: "asc" };
+          }
+          return { displayMode: mode };
+        }),
       setFields: (fields) => set({ fields }),
       toggleField: (key) =>
         set((state) => ({
@@ -382,7 +402,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 9,
+      version: 10,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -451,6 +471,26 @@ export const useStore = create<AppState>()(
           const p = persisted as Record<string, unknown>;
           if (typeof p.ripFormat !== "string") p.ripFormat = "alac";
           if (p.ripOutputDir === undefined) p.ripOutputDir = null;
+        }
+        // v10: DisplayMode "covers" を廃止。旧 "covers" は "albums" に統合し、
+        // 不正値は "list" に倒す。さらに Albums モードのソートをアルバム粒度に正規化する。
+        if (version < 10 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (p.displayMode === "covers") p.displayMode = "albums";
+          else if (
+            p.displayMode !== "list" &&
+            p.displayMode !== "albums" &&
+            p.displayMode !== "tracks"
+          ) {
+            p.displayMode = "list";
+          }
+          if (
+            p.displayMode === "albums" &&
+            !ALBUM_SORT_FIELDS.includes(p.sortField as SortField)
+          ) {
+            p.sortField = "albumArtist";
+            p.sortOrder = "asc";
+          }
         }
         return persisted as PersistedSettings;
       },

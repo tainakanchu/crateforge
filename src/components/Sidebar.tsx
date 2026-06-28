@@ -135,7 +135,6 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { mode: "library", icon: "music", label: "All Tracks" },
-  { mode: "albums", icon: "disc", label: "Albums" },
   { mode: "artists", icon: "mic", label: "Artists" },
   { mode: "recent", icon: "clock", label: "Recently Played" },
 ];

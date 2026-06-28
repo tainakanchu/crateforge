@@ -149,6 +149,26 @@ pub struct GenreTagCount {
     pub count: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlbumRow {
+    pub album_key: String,
+    pub album: String,
+    pub album_artist: String,
+    pub is_compilation: bool,
+    pub track_count: i64,
+    pub cover_track_id: Option<i64>,
+    pub cover_location_path: Option<String>,
+    pub cover_file_exists: bool,
+    pub total_time_ms: i64,
+    pub year: Option<i64>,
+    pub date_added: Option<String>,
+    pub rating: Option<i64>,
+    pub play_count: i64,
+    pub bpm_min: Option<i64>,
+    pub bpm_max: Option<i64>,
+}
+
 // === Audio analysis (DJ 向け: BPM / key / energy / loudness / similarity) ===
 
 /// 1 曲の解析結果。`track_analysis` テーブルに 1:1 で保存される。
