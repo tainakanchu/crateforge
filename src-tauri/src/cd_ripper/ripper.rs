@@ -46,6 +46,23 @@ pub fn rip_cd(
         );
     };
 
+    // temp dir を使った場合、関数がどこで return しても必ず後始末する。
+    struct TempDirGuard<'a> {
+        dir: &'a std::path::Path,
+        active: bool,
+    }
+    impl Drop for TempDirGuard<'_> {
+        fn drop(&mut self) {
+            if self.active {
+                let _ = std::fs::remove_dir_all(self.dir);
+            }
+        }
+    }
+    let _temp_guard = TempDirGuard {
+        dir: &output_dir,
+        active: is_temp,
+    };
+
     // Windows はドライブを 1 回開いて TOC を読み、以降ループ内で CDDA を直接読む。
     #[cfg(windows)]
     let (drive, win_toc) = {
@@ -171,7 +188,9 @@ pub fn rip_cd(
                 artist: track_artist,
                 album_artist,
                 album,
-                compilation: false,
+                compilation: album_artist
+                    .map(|a| a.eq_ignore_ascii_case("various artists"))
+                    .unwrap_or(false),
                 track_number: Some(track_num as i64),
                 disc_number: Some(1),
                 disc_count: Some(1),
@@ -220,11 +239,6 @@ pub fn rip_cd(
                 output_path: final_path_str,
             },
         );
-    }
-
-    // temp ディレクトリを使った場合は後始末。
-    if is_temp {
-        std::fs::remove_dir_all(&output_dir).ok();
     }
 
     let _ = app.emit(
