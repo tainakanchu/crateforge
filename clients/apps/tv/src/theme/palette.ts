@@ -25,14 +25,15 @@ export const PALETTE = {
   error: "#E57373",
 } as const;
 
-/** D-pad / 10-foot UI 向けフォントサイズ（視聴距離 3m 想定）。 */
+/** D-pad / 10-foot UI 向けフォントサイズ（視聴距離 3m 想定）。
+ * 「文字が大きすぎる」FB を受けて全体的に一段階縮小（各値を見直し済み）。 */
 export const TV_FONT = {
-  xs: 18,
-  sm: 22,
-  md: 28,
-  lg: 36,
-  xl: 48,
-  hero: 64,
+  xs: 16,
+  sm: 20,
+  md: 26,
+  lg: 30,
+  xl: 40,
+  hero: 52,
 } as const;
 
 /** フォーカスリングのスタイル（Focusable コンポーネントのデフォルト）。 */

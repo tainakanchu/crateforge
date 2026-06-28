@@ -64,6 +64,7 @@ mdns-sd = "0.13"
 # API サーバーの bind で SO_REUSEADDR / SO_REUSEPORT を設定する (再起動時の
 # "address in use" 回避)。既に依存ツリー (tokio 経由) にある 0.6 系に合わせる。
 socket2 = { version = "0.6", features = ["all"] }
+gethostname = "0.4"
 # アートワークのサーバー側リサイズ + webp/jpeg エンコード (モバイルのオフラインサムネ用)。
 # default-features を切り、必要な webp(=image-webp, pure Rust) / jpeg / png のみ有効化する。
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }

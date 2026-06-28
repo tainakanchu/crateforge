@@ -21,6 +21,7 @@ import { PALETTE } from "@/theme/palette";
 import { useConnection, createAudioEngine, initPlayback } from "@crateforge/core";
 import { usePlayer } from "@/stores/playerStore";
 import { SideNav } from "@/components/shell/SideNav";
+import { MiniPlayer } from "@/components/player/MiniPlayer";
 
 // TV は軽量な QueryClient（永続化なし）で十分。
 const queryClient = new QueryClient({
@@ -98,17 +99,12 @@ function Gate() {
   return null;
 }
 
-/**
- * アプリシェル。
- * - /connect 画面: 全画面（サイドナビなし）。
- * - それ以外の画面: 左サイドナビ + 右コンテンツ（Slot）。
- */
 function AppShell() {
   const segments = useSegments();
-  // connect 画面（ペアリング中）はサイドナビを非表示にして全画面で表示する。
   const isConnectScreen = segments[0] === "connect";
+  const isPlayerScreen = segments[0] === "player";
 
-  if (isConnectScreen) {
+  if (isConnectScreen || isPlayerScreen) {
     return (
       <View style={styles.fullscreen}>
         <Slot />
@@ -120,9 +116,12 @@ function AppShell() {
     <View style={styles.shell}>
       {/* 左: 縦型サイドナビ（常時表示） */}
       <SideNav />
-      {/* 右: 現在ルートのコンテンツ */}
-      <View style={styles.content}>
-        <Slot />
+      {/* 右: コンテンツ列（ページ + now-playing バー） */}
+      <View style={styles.contentColumn}>
+        <View style={styles.content}>
+          <Slot />
+        </View>
+        <MiniPlayer />
       </View>
     </View>
   );
@@ -136,6 +135,11 @@ const styles = StyleSheet.create({
   shell: {
     flex: 1,
     flexDirection: "row",
+    backgroundColor: PALETTE.bg,
+  },
+  contentColumn: {
+    flex: 1,
+    flexDirection: "column",
     backgroundColor: PALETTE.bg,
   },
   content: {
