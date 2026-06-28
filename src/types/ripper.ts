@@ -30,7 +30,7 @@ export type EncodeFormat = "flac" | "mp3" | "alac" | "wav";
 
 export interface RipRequest {
   device: string;
-  outputDir: string;
+  outputDir?: string;
   format: EncodeFormat;
   tracks: number[];
   release: ReleaseCandidate | null;

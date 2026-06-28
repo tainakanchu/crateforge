@@ -15,15 +15,19 @@ import { SmartPlaylistEditor } from "./components/SmartPlaylistEditor";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { PairingApprovalDialog } from "./components/PairingApprovalDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { DiscDetectedBanner } from "./components/DiscDetectedBanner";
 import { Toaster } from "./components/Toaster";
+import { RipStatusBar } from "./components/RipStatusBar";
 import { DropImportOverlay } from "./components/DropImportOverlay";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 import { useStore } from "./store/useStore";
+import { useDiscWatcher } from "./hooks/useDiscWatcher";
 import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
 import * as playbackApi from "./api/playback";
 import * as systemApi from "./api/system";
 import * as analysisApi from "./api/analysis";
+import * as ripperApi from "./api/ripper";
 import * as fontsApi from "./api/fonts";
 import type { Track } from "./types";
 
@@ -61,12 +65,22 @@ export default function App() {
     rightRailVisible,
     setAnalyses,
     setAnalysisActive,
+    setRipStatus,
+    appendRipLog,
+    pushToast,
   } = useStore();
+
+  const ripStatus = useStore((s) => s.ripStatus);
 
   const PAGE_SIZE = 500;
   const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
   // 自動 XML エクスポート用: ライブラリに変更があったか。
   const libraryDirtyRef = useRef(false);
+  // デバウンス自動保存用。
+  const autoExportTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const autoExportInFlightRef = useRef(false);
+  // scheduleAutoExport から最新の runAutoExport を参照するための ref (循環依存回避)。
+  const runAutoExportCallbackRef = useRef<() => Promise<void>>(async () => {});
   const [reloadCount, setReloadCount] = useState(0);
   const [ripOpen, setRipOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -79,6 +93,9 @@ export default function App() {
   const [installing, setInstalling] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const { detectedDisc, dismiss: dismissDisc } = useDiscWatcher({
+    enabled: !ripOpen && ripStatus?.phase !== "ripping",
+  });
 
   const reloadPlaylists = useCallback(async () => {
     if (!isTauri) return;
@@ -356,6 +373,34 @@ export default function App() {
     };
   }, [setPlayback]);
 
+  const scheduleAutoExport = useCallback(() => {
+    clearTimeout(autoExportTimerRef.current);
+    autoExportTimerRef.current = setTimeout(() => {
+      runAutoExportCallbackRef.current();
+    }, 3000);
+  }, []);
+
+  const runAutoExport = useCallback(async () => {
+    const { autoExportEnabled, autoExportPath } = useStore.getState();
+    if (!autoExportEnabled || !autoExportPath || !libraryDirtyRef.current) return;
+    if (autoExportInFlightRef.current) return;
+    autoExportInFlightRef.current = true;
+    libraryDirtyRef.current = false; // optimistic クリア
+    try {
+      await libraryApi.exportLibrary(autoExportPath);
+    } catch (e) {
+      libraryDirtyRef.current = true;
+      console.error("auto-export failed:", e);
+      useStore.getState().pushToast("error", "ライブラリの自動保存に失敗しました");
+      scheduleAutoExport();
+    } finally {
+      autoExportInFlightRef.current = false;
+      if (libraryDirtyRef.current) scheduleAutoExport();
+    }
+  }, [scheduleAutoExport]);
+  // ref を最新の実装で更新する。
+  runAutoExportCallbackRef.current = runAutoExport;
+
   // 内蔵 API 経由の変更（プレイリスト作成・曲追加/削除）を即時反映する。
   useEffect(() => {
     if (!isTauri) return;
@@ -364,35 +409,84 @@ export default function App() {
       unlisten = await playlistsApi.onLibraryChanged(() => {
         reloadPlaylists();
         setReloadCount((c) => c + 1);
+        libraryDirtyRef.current = true;
+        scheduleAutoExport();
       });
     })();
     return () => {
       if (unlisten) unlisten();
     };
-  }, [reloadPlaylists]);
+  }, [reloadPlaylists, scheduleAutoExport]);
 
   const triggerReload = useCallback(() => {
     libraryDirtyRef.current = true; // 変更があったので次回の自動エクスポート対象。
+    scheduleAutoExport();
     setReloadCount((c) => c + 1);
     reloadPlaylists();
-  }, [reloadPlaylists]);
+  }, [reloadPlaylists, scheduleAutoExport]);
 
-  // iTunes 互換 XML の自動エクスポート: 変更があったときだけ、適度な間隔で書き出す。
+  // CD リッピング進捗のグローバル購読
   useEffect(() => {
     if (!isTauri) return;
-    const INTERVAL_MS = 30 * 60 * 1000; // 30 分
-    const id = setInterval(async () => {
-      const { autoExportEnabled, autoExportPath } = useStore.getState();
-      if (!autoExportEnabled || !autoExportPath || !libraryDirtyRef.current) return;
-      try {
-        await libraryApi.exportLibrary(autoExportPath);
-        libraryDirtyRef.current = false;
-      } catch (e) {
-        console.error("auto-export failed:", e);
-      }
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await ripperApi.onRipProgress((p) => {
+        if (p.kind === "start") {
+          setRipStatus({
+            phase: "ripping",
+            current: 0,
+            total: p.total,
+            label: "",
+            log: [`Starting rip (${p.total} tracks)`],
+          });
+        } else if (p.kind === "trackStart") {
+          const prev = useStore.getState().ripStatus;
+          setRipStatus({
+            phase: "ripping",
+            current: p.index + 1,
+            total: p.total,
+            label: p.label,
+            log: prev?.log ?? [],
+            addedTracks: prev?.addedTracks,
+          });
+          appendRipLog(`[${p.index + 1}/${p.total}] ripping: ${p.label}`);
+        } else if (p.kind === "trackProgress") {
+          const cur = useStore.getState().ripStatus;
+          if (cur) useStore.getState().setRipStatus({ ...cur, percent: p.percent });
+        } else if (p.kind === "trackDone") {
+          appendRipLog(`  → ${p.outputPath}`);
+        } else if (p.kind === "done") {
+          const prev = useStore.getState().ripStatus;
+          setRipStatus({
+            phase: "done",
+            current: prev?.total ?? p.writtenFiles.length,
+            total: prev?.total ?? p.writtenFiles.length,
+            label: prev?.label ?? "",
+            log: [...(prev?.log ?? []), `Done. ${p.writtenFiles.length} file(s), ${p.addedTracks} added.`],
+            addedTracks: p.addedTracks,
+          });
+          triggerReload();
+          pushToast("success", `リッピング完了: ${p.addedTracks} 曲`);
+        }
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [setRipStatus, appendRipLog, pushToast, triggerReload]);
+
+  // iTunes 互換 XML の自動エクスポート: デバウンスで3秒後に保存。5分インターバルはセーフティネット。
+  useEffect(() => {
+    if (!isTauri) return;
+    const INTERVAL_MS = 5 * 60 * 1000; // 5 分 (セーフティネット)
+    const id = setInterval(() => {
+      runAutoExport();
     }, INTERVAL_MS);
-    return () => clearInterval(id);
-  }, []);
+    return () => {
+      clearInterval(id);
+      clearTimeout(autoExportTimerRef.current);
+    };
+  }, [runAutoExport]);
 
   const handleLoadMore = useCallback(() => {
     loadTracks(false);
@@ -552,6 +646,7 @@ export default function App() {
       </div>
       {rightRailVisible && <RightRail onPlaylistsChanged={triggerReload} />}
       <PlayerBar />
+      <RipStatusBar onOpenLog={() => setRipOpen(true)} />
       <RipDialog open={ripOpen} onClose={() => setRipOpen(false)} onLibraryChanged={triggerReload} />
       <RulesPanel open={rulesOpen} onClose={() => setRulesOpen(false)} onLibraryChanged={triggerReload} />
       {editorTracks && (
@@ -580,6 +675,13 @@ export default function App() {
         <SettingsDialog onClose={() => setSettingsOpen(false)} />
       )}
       {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
+      {detectedDisc && (
+        <DiscDetectedBanner
+          disc={detectedDisc}
+          onRip={() => { dismissDisc(); setRipOpen(true); }}
+          onDismiss={dismissDisc}
+        />
+      )}
       {/* クライアント接続時のプッシュ承認ポップアップ（常設マウント）。 */}
       <PairingApprovalDialog />
       <Toaster />

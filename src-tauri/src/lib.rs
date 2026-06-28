@@ -231,6 +231,7 @@ pub fn run() {
             commands::ripping::lookup_release_by_toc,
             commands::ripping::compute_disc_id,
             commands::ripping::rip_cd,
+            commands::ripping::organize_active,
             // conversion
             commands::convert::convert_tracks,
             // ffmpeg (resolution / on-demand download)

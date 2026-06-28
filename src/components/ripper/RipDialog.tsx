@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as ripperApi from "../../api/ripper";
+import { getOrganizeActive } from "../../api/library";
 import { useStore } from "../../store/useStore";
 import { Icon } from "../Icon";
 import type {
   DiscToc,
   EncodeFormat,
   ReleaseCandidate,
-  RipProgress,
 } from "../../types";
+import { defaultDevice } from "../../lib/disc";
 
 interface RipDialogProps {
   open: boolean;
@@ -19,62 +20,38 @@ interface RipDialogProps {
 type Stage = "idle" | "detecting" | "looking-up" | "ready" | "ripping" | "done" | "error";
 
 const FORMATS: { value: EncodeFormat; label: string; desc: string }[] = [
-  { value: "flac", label: "FLAC", desc: "可逆圧縮 (推奨)" },
-  { value: "alac", label: "ALAC", desc: "Apple Lossless (.m4a)" },
+  { value: "flac", label: "FLAC", desc: "可逆圧縮" },
+  { value: "alac", label: "ALAC", desc: "Apple Lossless (.m4a) — 推奨 (DJソフト互換)" },
   { value: "mp3", label: "MP3 320kbps", desc: "互換性重視" },
   { value: "wav", label: "WAV", desc: "無圧縮" },
 ];
 
-function defaultDevice(): string {
-  if (navigator.userAgent.includes("Win")) return "D:";
-  if (navigator.userAgent.includes("Mac")) return "disk1";
-  return "/dev/cdrom";
-}
-
-export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialogProps) {
+export function RipDialog({ open: isOpen, onClose, onLibraryChanged: _onLibraryChanged }: RipDialogProps) {
   // グローバルトースト通知
   const pushToast = useStore((s) => s.pushToast);
+  const ripFormat = useStore((s) => s.ripFormat);
+  const ripOutputDir = useStore((s) => s.ripOutputDir);
+  const setRipFormat = useStore((s) => s.setRipFormat);
+  const setRipOutputDir = useStore((s) => s.setRipOutputDir);
   const [stage, setStage] = useState<Stage>("idle");
   const [device, setDevice] = useState(defaultDevice());
   const [toc, setToc] = useState<DiscToc | null>(null);
   const [candidates, setCandidates] = useState<ReleaseCandidate[]>([]);
   const [selectedRelease, setSelectedRelease] = useState<ReleaseCandidate | null>(null);
-  const [format, setFormat] = useState<EncodeFormat>("flac");
-  const [outputDir, setOutputDir] = useState("");
+  const [organizeActive, setOrganizeActive] = useState(false);
+  const [format, setFormat] = useState<EncodeFormat>(ripFormat);
+  const [outputDir, setOutputDir] = useState(ripOutputDir ?? "");
   const [selectedTracks, setSelectedTracks] = useState<Set<number>>(new Set());
   const [addToLibrary, setAddToLibrary] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
-  const [progressLines, setProgressLines] = useState<ReactNode[]>([]);
-  const unlistenRef = useRef<(() => void) | null>(null);
+  const ripStatus = useStore((s) => s.ripStatus);
 
-  const resetState = useCallback(() => {
-    setStage("idle");
-    setToc(null);
-    setCandidates([]);
-    setSelectedRelease(null);
-    setSelectedTracks(new Set());
-    setErrorMsg("");
-    setProgressLines([]);
-  }, []);
 
   useEffect(() => {
-    if (!isOpen) {
-      // dialog closed → tear down listener
-      if (unlistenRef.current) {
-        unlistenRef.current();
-        unlistenRef.current = null;
-      }
+    if (isOpen) {
+      getOrganizeActive().then(setOrganizeActive).catch(() => setOrganizeActive(false));
     }
   }, [isOpen]);
-
-  useEffect(() => {
-    return () => {
-      if (unlistenRef.current) {
-        unlistenRef.current();
-        unlistenRef.current = null;
-      }
-    };
-  }, []);
 
   const handleDetect = useCallback(async () => {
     setStage("detecting");
@@ -106,45 +83,41 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
 
   const handlePickOutputDir = useCallback(async () => {
     const dir = await open({ directory: true, multiple: false });
-    if (typeof dir === "string") setOutputDir(dir);
-  }, []);
+    if (typeof dir === "string") {
+      setOutputDir(dir);
+      setRipOutputDir(dir);
+    }
+  }, [setRipOutputDir]);
 
-  const handleRip = useCallback(async () => {
-    if (!toc || !outputDir) {
+  const handleRip = useCallback(() => {
+    if (!toc || (!organizeActive && !outputDir)) {
       pushToast("info", "先に出力先フォルダを選んでください");
       return;
     }
 
-    setStage("ripping");
-    setProgressLines([]);
-    setErrorMsg("");
+    const req = {
+      device,
+      outputDir: organizeActive ? undefined : outputDir,
+      format,
+      tracks: Array.from(selectedTracks).sort((a, b) => a - b),
+      release: selectedRelease,
+      addToLibrary: organizeActive ? true : addToLibrary,
+    };
 
-    // Attach progress listener before invoking rip_cd.
-    try {
-      unlistenRef.current = await ripperApi.onRipProgress((p: RipProgress) => {
-        setProgressLines((prev) => [...prev, formatProgress(p)]);
-        if (p.kind === "done") {
-          onLibraryChanged();
-          setStage("done");
-        } else if (p.kind === "error") {
-          setErrorMsg(p.message);
-          setStage("error");
-        }
-      });
+    onClose(); // モーダルを即閉じ
 
-      await ripperApi.ripCd({
-        device,
-        outputDir,
-        format,
-        tracks: Array.from(selectedTracks).sort((a, b) => a - b),
-        release: selectedRelease,
-        addToLibrary,
+    ripperApi.ripCd(req).catch((e: unknown) => {
+      useStore.getState().setRipStatus({
+        phase: "error",
+        current: 0,
+        total: 0,
+        label: "",
+        log: [String(e)],
+        error: String(e),
       });
-    } catch (e) {
-      setErrorMsg(`${e}`);
-      setStage("error");
-    }
-  }, [toc, outputDir, device, format, selectedTracks, selectedRelease, addToLibrary, onLibraryChanged, pushToast]);
+      useStore.getState().pushToast("error", `リッピング失敗: ${e}`);
+    });
+  }, [toc, organizeActive, outputDir, device, format, selectedTracks, selectedRelease, addToLibrary, onClose, pushToast]);
 
   const trackList = useMemo(() => {
     if (!toc) return [];
@@ -180,6 +153,45 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
   };
 
   if (!isOpen) return null;
+
+  // リップ中/完了/エラーのログビューモード
+  if (ripStatus) {
+    return (
+      <div className="modal-overlay" onClick={onClose}>
+        <div className="modal rip-dialog" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <h2>
+              <Icon name="disc" size={16} /> Rip CD —{" "}
+              {ripStatus.phase === "ripping"
+                ? "リッピング中"
+                : ripStatus.phase === "done"
+                  ? "完了"
+                  : "エラー"}
+            </h2>
+            <button className="modal-close" onClick={onClose}>
+              <Icon name="x" size={16} />
+            </button>
+          </div>
+          <div className="modal-body">
+            <pre className="rip-log">{ripStatus.log.join("\n")}</pre>
+            {ripStatus.phase !== "ripping" && (
+              <div className="rip-actions">
+                <button
+                  className="toolbar-btn primary"
+                  onClick={() => {
+                    useStore.getState().clearRipStatus();
+                    onClose();
+                  }}
+                >
+                  閉じる
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -291,7 +303,11 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
                 <select
                   className="rip-select"
                   value={format}
-                  onChange={(e) => setFormat(e.target.value as EncodeFormat)}
+                  onChange={(e) => {
+                    const f = e.target.value as EncodeFormat;
+                    setFormat(f);
+                    setRipFormat(f);
+                  }}
                 >
                   {FORMATS.map((f) => (
                     <option key={f.value} value={f.value}>
@@ -300,36 +316,40 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
                   ))}
                 </select>
               </div>
-              <div className="rip-row">
-                <label>Output:</label>
-                <input
-                  type="text"
-                  className="rip-input"
-                  value={outputDir}
-                  placeholder="Select folder..."
-                  onChange={(e) => setOutputDir(e.target.value)}
-                />
-                <button className="toolbar-btn" onClick={handlePickOutputDir}>
-                  <Icon name="folderOpen" size={14} /> Browse
-                </button>
-              </div>
-              <div className="rip-row">
-                <label>
+              {!organizeActive && (
+                <div className="rip-row">
+                  <label>Output:</label>
                   <input
-                    type="checkbox"
-                    checked={addToLibrary}
-                    onChange={(e) => setAddToLibrary(e.target.checked)}
+                    type="text"
+                    className="rip-input"
+                    value={outputDir}
+                    placeholder="Select folder..."
+                    onChange={(e) => setOutputDir(e.target.value)}
                   />
-                  &nbsp;Add ripped tracks to library
-                </label>
-              </div>
+                  <button className="toolbar-btn" onClick={handlePickOutputDir}>
+                    <Icon name="folderOpen" size={14} /> Browse
+                  </button>
+                </div>
+              )}
+              {!organizeActive && (
+                <div className="rip-row">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={addToLibrary}
+                      onChange={(e) => setAddToLibrary(e.target.checked)}
+                    />
+                    &nbsp;Add ripped tracks to library
+                  </label>
+                </div>
+              )}
 
               <div className="rip-actions">
                 <button className="toolbar-btn" onClick={onClose}>Cancel</button>
                 <button
                   className="toolbar-btn primary"
                   onClick={handleRip}
-                  disabled={selectedTracks.size === 0 || !outputDir}
+                  disabled={selectedTracks.size === 0 || (!organizeActive && !outputDir)}
                 >
                   <Icon name="play" size={14} fill="currentColor" stroke={0} /> Start Ripping (
                   {selectedTracks.size})
@@ -338,41 +358,9 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged }: RipDialog
             </>
           )}
 
-          {/* Ripping progress */}
-          {(stage === "ripping" || stage === "done") && (
-            <>
-              <div className="rip-section-title">Progress</div>
-              <pre className="rip-log">
-                {progressLines.map((line, i) => (
-                  <span key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>{line}{"\n"}</span>
-                ))}
-              </pre>
-              {stage === "done" && (
-                <div className="rip-actions">
-                  <button className="toolbar-btn primary" onClick={() => { resetState(); onClose(); }}>Close</button>
-                </div>
-              )}
-            </>
-          )}
         </div>
       </div>
     </div>
   );
 }
 
-function formatProgress(p: RipProgress): ReactNode {
-  switch (p.kind) {
-    case "start":
-      return <><Icon name="play" size={12} fill="currentColor" stroke={0} /> Starting ({p.total} tracks)</>;
-    case "trackStart":
-      return `  [${p.index + 1}/${p.total}] ripping: ${p.label}`;
-    case "trackProgress":
-      return `      ${p.percent}%`;
-    case "trackDone":
-      return <>{"      "}<Icon name="check" size={12} /> {"→"} {p.outputPath}</>;
-    case "done":
-      return <><Icon name="checkCircle" size={12} /> Done. {p.writtenFiles.length} file(s), {p.addedTracks} added to library.</>;
-    case "error":
-      return <><Icon name="xCircle" size={12} /> {p.message}</>;
-  }
-}

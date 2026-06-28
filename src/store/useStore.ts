@@ -13,6 +13,7 @@ import type {
   SortOrder,
   RepeatMode,
   TrackAnalysis,
+  EncodeFormat,
 } from "../types";
 import { DEFAULT_FIELDS } from "../types";
 
@@ -24,6 +25,19 @@ export interface Toast {
   message: string;
   // 自動で消えるまでのミリ秒。0 以下なら自動で消えない。
   durationMs: number;
+}
+
+// CD リッピング進捗 — セッション専用・永続化しない
+export type RipPhase = "ripping" | "done" | "error";
+export interface RipStatus {
+  phase: RipPhase;
+  current: number;
+  total: number;
+  label: string;
+  percent?: number;
+  log: string[];
+  addedTracks?: number;
+  error?: string;
 }
 
 interface PersistedSettings {
@@ -53,6 +67,8 @@ interface PersistedSettings {
   // iTunes 互換 XML の自動エクスポート
   autoExportEnabled: boolean;
   autoExportPath: string | null;
+  ripFormat: EncodeFormat;
+  ripOutputDir: string | null;
 }
 
 // 「前回入れたプレイリスト」ショートカットで保持する件数
@@ -140,10 +156,17 @@ interface AppState extends PersistedSettings {
   pushRecentPlaylist: (id: number) => void;
   toggleFolder: (id: number) => void;
   setAutoExport: (enabled: boolean, path: string | null) => void;
+  setRipFormat: (f: EncodeFormat) => void;
+  setRipOutputDir: (dir: string | null) => void;
 
   // Analysis
   setAnalyses: (list: TrackAnalysis[]) => void;
   setAnalysisActive: (v: { done: number; total: number } | null) => void;
+  // Rip progress
+  ripStatus: RipStatus | null;
+  setRipStatus: (s: RipStatus | null) => void;
+  appendRipLog: (line: string) => void;
+  clearRipStatus: () => void;
   setSimilarBase: (trackId: number | null) => void;
   setPendingUpdate: (v: { url: string; version: string } | null) => void;
 
@@ -177,6 +200,7 @@ export const useStore = create<AppState>()(
       railTab: "crate",
       analysisByTrack: new Map(),
       analysisActive: null,
+      ripStatus: null,
       similarBaseTrackId: null,
       pendingUpdate: null,
       toasts: [],
@@ -200,6 +224,8 @@ export const useStore = create<AppState>()(
       collapsedFolders: [],
       autoExportEnabled: false,
       autoExportPath: null,
+      ripFormat: "alac",
+      ripOutputDir: null,
 
       setViewMode: (mode) => set({ viewMode: mode }),
       setSelectedPlaylistId: (id) => set({ selectedPlaylistId: id }),
@@ -326,10 +352,19 @@ export const useStore = create<AppState>()(
         })),
       setAutoExport: (autoExportEnabled, autoExportPath) =>
         set({ autoExportEnabled, autoExportPath }),
+      setRipFormat: (ripFormat) => set({ ripFormat }),
+      setRipOutputDir: (ripOutputDir) => set({ ripOutputDir }),
 
       setAnalyses: (list) =>
         set({ analysisByTrack: new Map(list.map((a) => [a.trackId, a])) }),
       setAnalysisActive: (v) => set({ analysisActive: v }),
+      setRipStatus: (s) => set({ ripStatus: s }),
+      appendRipLog: (line) =>
+        set((state) => {
+          if (!state.ripStatus) return {};
+          return { ripStatus: { ...state.ripStatus, log: [...state.ripStatus.log, line] } };
+        }),
+      clearRipStatus: () => set({ ripStatus: null }),
       setSimilarBase: (trackId) =>
         set({ similarBaseTrackId: trackId, railTab: "similar" }),
       setPendingUpdate: (pendingUpdate) => set({ pendingUpdate }),
@@ -347,7 +382,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 8,
+      version: 9,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -368,6 +403,8 @@ export const useStore = create<AppState>()(
           collapsedFolders: state.collapsedFolders,
           autoExportEnabled: state.autoExportEnabled,
           autoExportPath: state.autoExportPath,
+          ripFormat: state.ripFormat,
+          ripOutputDir: state.ripOutputDir,
         }) satisfies PersistedSettings,
       // v1(visibleColumns) からの移行: 旧キーは破棄してデフォルトに倒す。
       // v3: recentPlaylistIds を追加（旧データには無いので配列で補完）。
@@ -408,6 +445,12 @@ export const useStore = create<AppState>()(
           const p = persisted as Record<string, unknown>;
           if (typeof p.nameColWidth !== "number") p.nameColWidth = null;
           if (typeof p.showRemainingTime !== "boolean") p.showRemainingTime = false;
+        }
+        // v9: ripFormat と ripOutputDir を追加。
+        if (version < 9 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (typeof p.ripFormat !== "string") p.ripFormat = "alac";
+          if (p.ripOutputDir === undefined) p.ripOutputDir = null;
         }
         return persisted as PersistedSettings;
       },
