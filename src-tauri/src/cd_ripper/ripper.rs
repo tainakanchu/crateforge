@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 #[cfg(not(windows))]
 use std::process::Command;
 
@@ -8,6 +8,7 @@ use crate::cd_ripper::encoder::{self, EncodeMeta};
 use crate::db::Database;
 use crate::itunes_xml::writer::path_to_file_url;
 use crate::models::{EncodeFormat, RipProgress, RipRequest};
+use crate::organizer;
 
 /// CD を取り込む。
 ///
@@ -19,9 +20,31 @@ pub fn rip_cd(
     req: RipRequest,
     ffmpeg: Option<PathBuf>,
 ) -> Result<(), String> {
-    let output_dir = Path::new(&req.output_dir);
-    std::fs::create_dir_all(output_dir)
-        .map_err(|e| format!("Failed to create output dir: {}", e))?;
+    // 出力先ディレクトリの決定とオーガナイザー使用判定。
+    let organize_root = db.organize_root();
+    let output_dir_given = req.output_dir.as_ref().filter(|d| !d.is_empty());
+    let use_organizer = output_dir_given.is_none() && organize_root.is_some();
+
+    let (output_dir, is_temp) = if let Some(given) = output_dir_given {
+        // 明示的な出力先が指定されている: 従来パス。
+        let p = PathBuf::from(given);
+        std::fs::create_dir_all(&p)
+            .map_err(|e| format!("Failed to create output dir: {}", e))?;
+        (p, false)
+    } else if use_organizer {
+        // 出力先なし + organize 有効: temp へ rip して後で整理。
+        let p = std::env::temp_dir()
+            .join(format!("crateforge-rip-{}", std::process::id()));
+        std::fs::create_dir_all(&p)
+            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+        (p, true)
+    } else {
+        return Err(
+            "Output directory not specified and library organization is not configured. \
+             Please set a library root in Settings or provide an output directory."
+                .to_string(),
+        );
+    };
 
     // Windows はドライブを 1 回開いて TOC を読み、以降ループ内で CDDA を直接読む。
     #[cfg(windows)]
@@ -140,12 +163,32 @@ pub fn rip_cd(
             std::fs::remove_file(&wav_path).ok();
         }
 
-        let out_path_str = out_path.to_string_lossy().to_string();
-        written_files.push(out_path_str.clone());
+        // 5. organize 有効時: ファイルをライブラリルート配下へ移動。
+        let final_path_str = if use_organizer {
+            let root_path = PathBuf::from(organize_root.as_ref().unwrap());
+            let org_meta = organizer::TrackMeta {
+                title,
+                artist: track_artist,
+                album_artist,
+                album,
+                compilation: false,
+                track_number: Some(track_num as i64),
+                disc_number: Some(1),
+                disc_count: Some(1),
+            };
+            let target = organizer::target_path(&root_path, &org_meta, &out_path);
+            let final_path = organizer::relocate(&out_path, &target, organizer::Mode::Move)
+                .map_err(|e| format!("organize failed: {}", e))?;
+            final_path.to_string_lossy().to_string()
+        } else {
+            out_path.to_string_lossy().to_string()
+        };
 
-        // 4. Optionally add to library DB.
+        written_files.push(final_path_str.clone());
+
+        // 6. Optionally add to library DB.
         if req.add_to_library {
-            let location_url = path_to_file_url(&out_path_str);
+            let location_url = path_to_file_url(&final_path_str);
             let length_ms = release_track.and_then(|t| t.length_ms).map(|x| x as i64);
             let year = date
                 .and_then(|d| d.split('-').next())
@@ -163,7 +206,7 @@ pub fn rip_cd(
                 Some(1),
                 Some(1),
                 length_ms,
-                &out_path_str,
+                &final_path_str,
                 &location_url,
             )
             .map_err(|e| format!("DB insert failed: {}", e))?;
@@ -174,9 +217,14 @@ pub fn rip_cd(
             "rip-progress",
             RipProgress::TrackDone {
                 index: idx,
-                output_path: out_path_str,
+                output_path: final_path_str,
             },
         );
+    }
+
+    // temp ディレクトリを使った場合は後始末。
+    if is_temp {
+        std::fs::remove_dir_all(&output_dir).ok();
     }
 
     let _ = app.emit(

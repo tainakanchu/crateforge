@@ -282,7 +282,7 @@ impl EncodeFormat {
 #[serde(rename_all = "camelCase")]
 pub struct RipRequest {
     pub device: String,
-    pub output_dir: String,
+    pub output_dir: Option<String>,
     pub format: EncodeFormat,
     /// 1-based トラック番号 (空なら全件)。
     pub tracks: Vec<usize>,

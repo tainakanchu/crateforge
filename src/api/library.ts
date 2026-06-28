@@ -122,3 +122,8 @@ export async function setArtworkFromFile(
 export async function removeArtwork(trackIds: number[]): Promise<number> {
   return invoke("remove_artwork", { trackIds });
 }
+
+/// organize (自動整理) が有効かどうかを返す。
+export async function getOrganizeActive(): Promise<boolean> {
+  return invoke("organize_active");
+}

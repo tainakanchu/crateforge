@@ -35,6 +35,13 @@ impl Database {
         migrate(&db.conn)?;
         Ok(db)
     }
+
+    /// エクスポート用の読み取りスナップショットトランザクションを開始する。
+    /// WAL モードの DEFERRED トランザクションにより、トランザクション開始時点の
+    /// スナップショット (repeatable-read) が得られる。
+    pub fn read_txn(&self) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+        self.conn.unchecked_transaction()
+    }
 }
 
 /// SQL から呼べるアプリ定義スカラー関数を登録する。`open` / `open_memory` の両方で使う。

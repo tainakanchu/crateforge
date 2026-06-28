@@ -56,6 +56,12 @@ pub async fn rip_cd(app: AppHandle, request: RipRequest) -> Result<(), String> {
     .map_err(|e| format!("rip task panicked: {}", e))?
 }
 
+#[tauri::command]
+pub fn organize_active(app: AppHandle) -> Result<bool, String> {
+    let db = open_db(&app)?;
+    Ok(db.organize_root().is_some())
+}
+
 fn default_device() -> String {
     #[cfg(target_os = "linux")]
     {
