@@ -1,10 +1,13 @@
 use std::fs;
 use std::io::Write;
+use std::path::Path;
 
 use crate::db::Database;
 use crate::models::{ExportResult, Playlist, Track};
 
 pub fn export_library(db: &Database, output_path: &str) -> Result<ExportResult, String> {
+    // スナップショット: WAL の repeatable-read でトラック/プレイリスト読み取りを一貫させる。
+    let snapshot = db.read_txn().map_err(|e| e.to_string())?;
     let tracks = db.get_all_tracks().map_err(|e| e.to_string())?;
     let playlists = db.get_playlists().map_err(|e| e.to_string())?;
 
@@ -53,10 +56,38 @@ pub fn export_library(db: &Database, output_path: &str) -> Result<ExportResult, 
     buf.push_str("</dict>\n");
     buf.push_str("</plist>\n");
 
-    let mut file =
-        fs::File::create(output_path).map_err(|e| format!("Failed to create file: {}", e))?;
-    file.write_all(buf.as_bytes())
-        .map_err(|e| format!("Failed to write file: {}", e))?;
+    // スナップショットはここで解放 (ファイル I/O 中は保持しない)。
+    drop(snapshot);
+
+    // アトミック書き込み: tmp に書いてから rename で置換 (クラッシュ時の破損を防ぐ)。
+    let output_path_obj = Path::new(output_path);
+    let parent = output_path_obj.parent().unwrap_or_else(|| Path::new("."));
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let tmp = parent.join(format!("crateforge-{}-{}.tmp", pid, nanos));
+
+    let write_result = (|| -> Result<(), String> {
+        let mut file = fs::File::create(&tmp)
+            .map_err(|e| format!("Failed to create tmp file: {}", e))?;
+        file.write_all(buf.as_bytes())
+            .map_err(|e| format!("Failed to write tmp file: {}", e))?;
+        file.flush()
+            .map_err(|e| format!("Failed to flush tmp file: {}", e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync tmp file: {}", e))?;
+        drop(file);
+        fs::rename(&tmp, output_path)
+            .map_err(|e| format!("Failed to rename tmp file: {}", e))?;
+        Ok(())
+    })();
+
+    if let Err(e) = write_result {
+        let _ = fs::remove_file(&tmp); // 孤児 tmp を削除して既存ファイルを温存。
+        return Err(e);
+    }
 
     Ok(ExportResult {
         output_path: output_path.to_string(),
@@ -305,5 +336,37 @@ pub fn path_to_file_url(path: &str) -> String {
     {
         let encoded: String = utf8_percent_encode(path, PATH_SAFE).collect();
         format!("file://{}", encoded)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use std::fs;
+
+    #[test]
+    fn test_export_library_atomic() {
+        let db = Database::open_memory().expect("open_memory failed");
+
+        let tmp_dir = tempfile::tempdir().expect("tempdir failed");
+        let out_path = tmp_dir.path().join("crateforge.xml");
+        let out_str = out_path.to_string_lossy().to_string();
+
+        let result = export_library(&db, &out_str);
+        assert!(result.is_ok(), "export_library failed: {:?}", result.err());
+
+        // (1) 出力ファイルが存在し、<plist を含む。
+        assert!(out_path.exists(), "output file does not exist");
+        let content = fs::read_to_string(&out_path).expect("read output file failed");
+        assert!(content.contains("<plist"), "output does not contain <plist");
+
+        // (2) tmp ファイルが残っていない。
+        let tmp_files: Vec<_> = fs::read_dir(tmp_dir.path())
+            .expect("read_dir failed")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(tmp_files.is_empty(), "orphan .tmp files remain: {:?}", tmp_files);
     }
 }
