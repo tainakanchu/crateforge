@@ -160,6 +160,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
   // 新規作成のインライン入力（プレイリスト/フォルダ）
   const [creating, setCreating] = useState<null | { isFolder: boolean }>(null);
   const [creatingName, setCreatingName] = useState("");
+  const [blankMenu, setBlankMenu] = useState<{ x: number; y: number } | null>(null);
 
   const goView = useCallback(
     (mode: Exclude<ViewMode, "playlist">) => {
@@ -440,7 +441,15 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
         </span>
       </div>
 
-      <div className="cb-pl">
+      <div
+        className="cb-pl"
+        onContextMenu={(e) => {
+          // 行の上で右クリックされた場合は既存の行メニューに任せる
+          if ((e.target as HTMLElement).closest(".cb-prow")) return;
+          e.preventDefault();
+          setBlankMenu({ x: e.clientX, y: e.clientY });
+        }}
+      >
         {creating && (
           // 新規作成のインライン入力行
           <div className="cb-prow" style={{ paddingLeft: "15px" }}>
@@ -470,23 +479,53 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
         )}
       </div>
 
-      {menu && (
+      {(menu || blankMenu) && (
         <>
           {/* クリックアウェイ用の透明オーバーレイ */}
           <div
             style={{ position: "fixed", inset: 0, zIndex: 99 }}
-            onClick={() => setMenu(null)}
+            onClick={() => { setMenu(null); setBlankMenu(null); }}
             onContextMenu={(e) => {
               e.preventDefault();
               setMenu(null);
+              setBlankMenu(null);
             }}
           />
-          <SidebarContextMenu
-            x={menu.x}
-            y={menu.y}
-            actions={buildMenuActions(menu.pl)}
-            onClose={() => setMenu(null)}
-          />
+          {menu && (
+            <SidebarContextMenu
+              x={menu.x}
+              y={menu.y}
+              actions={buildMenuActions(menu.pl)}
+              onClose={() => setMenu(null)}
+            />
+          )}
+          {blankMenu && (
+            <SidebarContextMenu
+              x={blankMenu.x}
+              y={blankMenu.y}
+              actions={[
+                {
+                  id: "new-playlist",
+                  icon: "plus",
+                  label: "New playlist",
+                  run: () => startCreate(false),
+                },
+                {
+                  id: "new-folder",
+                  icon: "folderPlus",
+                  label: "New folder",
+                  run: () => startCreate(true),
+                },
+                {
+                  id: "new-smart",
+                  icon: "sliders",
+                  label: "New smart playlist",
+                  run: () => onEditSmart(null),
+                },
+              ]}
+              onClose={() => setBlankMenu(null)}
+            />
+          )}
         </>
       )}
     </aside>

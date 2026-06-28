@@ -610,7 +610,15 @@ export default function App() {
   const isAlbumView = viewMode === "albums" || viewMode === "artists";
 
   return (
-    <div className={"app" + (rightRailVisible ? "" : " no-rail")}>
+    <div
+      className={"app" + (rightRailVisible ? "" : " no-rail")}
+      onContextMenu={(e) => {
+        const t = e.target as HTMLElement;
+        // 入力欄ではコピー&ペースト用のメニューを残す
+        if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+        e.preventDefault();
+      }}
+    >
       <Sidebar
         onPlaylistsChanged={triggerReload}
         onEditSmart={(id, name) => setSmartEditor({ playlistId: id, name })}
