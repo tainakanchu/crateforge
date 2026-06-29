@@ -10,6 +10,46 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.10.0] - 2026-06-29
+
+### 日本語
+
+#### デスクトップ
+- **アルバム表示をサーバ集約に刷新**: コンピレーションを束ねて表示、アルバム粒度のソート、および1曲1カードの Tracks ビュー（アート壁）を追加。(#94)
+- **アートワーク設定・削除と WebP 対応**: Track Info からアートワークを貼付・ファイル選択・削除でき、WebP 画像もそのまま取り込み可能に。差し替えが効かなかった m4a 等の不具合も修正。(#85)
+- **右クリックメニューを刷新**: アプリ全域でブラウザのデフォルトメニューを抑止し、サイドバー空白エリアへの右クリックで新規プレイリスト/フォルダ/スマートプレイリストを作成できるカスタムメニューを追加。(#90)
+- **CD リッピングの大幅強化**: ALAC を既定フォーマットに変更、バックグラウンドで取り込み進捗を表示、CD 挿入を自動検出、organize 連携時は取り込み先を自動配置・記憶。(#87)
+- **VA コンピを Compilations フォルダへ自動整理**: organize 時にオムニバスアルバムが正しく `Compilations/` へ振り分けられるように修正。取り込み中断時の一時ファイルも確実に削除。(#91)
+- **ライブラリ保存の堅牢化**: XML 自動保存を atomic write（書き込み中断でも既存ファイルを破損しない）に変更し、保存間隔を 3 秒デバウンスに短縮。(#87)
+- **mDNS 広告名をホスト名に変更**: LAN 上の他デバイスから母艦の識別名がより明確に。(#86)
+
+#### モバイル（フルビルド）
+- **接続フローの改善**: 発見デバイス一覧からホストを選んだ際に、承認フロー（ペアリング）へ自動遷移するように。(#86)
+- **adaptive icon の余白調整**。(#86)
+
+#### TV（OTA 配信）
+- **ライブラリ各画面を刷新**: albums / artists / songs / playlists / search の行 UI を作り直し、各曲・アルバム・アーティストから直接再生できる導線を追加。(#86)
+- **プレイヤーを強化**: Now Playing を全画面表示に作り直し、他の画面でも再生中が分かる持続的 now-playing バーを追加。フォントサイズも調整。(#86)
+
+### English
+
+#### Desktop
+- **Album view overhaul**: compilations are now grouped under a single album card; sorting is album-granular; a new Tracks view ("art wall") shows one card per track for BPM/key/energy browsing. (#94)
+- **Artwork set / delete + WebP input**: in Track Info, paste, load from file, or delete artwork; WebP images are accepted and converted to JPEG automatically. Also fixes replace/delete failures on m4a and similar formats. (#85)
+- **Context menu overhaul**: suppresses the browser's default context menu across the whole app; right-clicking blank space in the sidebar now shows a custom menu to create a new playlist, folder, or smart playlist. (#90)
+- **Major CD ripping improvements**: ALAC is now the default format; ripping runs in the background with a persistent progress bar; inserted CDs are auto-detected; when organize is enabled the destination is chosen and remembered automatically. (#87)
+- **VA compilations now sorted to Compilations folder**: "Various Artists" albums are correctly routed to `Compilations/` during organize; temporary files are always cleaned up on abort. (#91)
+- **Hardened library auto-save**: XML writes are now atomic (no corruption on interrupt) and debounced to 3 seconds. (#87)
+- **mDNS advertisement now uses hostname**: the desktop's LAN display name is now the machine hostname for easier identification. (#86)
+
+#### Mobile (full build)
+- **Improved connection flow**: selecting a discovered host now automatically enters the pairing approval flow. (#86)
+- **Adaptive icon padding adjustment**. (#86)
+
+#### TV (OTA)
+- **Library screens rebuilt**: albums / artists / songs / playlists / search row UIs are redesigned with direct play actions on each item. (#86)
+- **Player enhancements**: Now Playing is redesigned as a full-screen view; a persistent now-playing bar appears on all other screens; font size tweaked. (#86)
+
 ## [v0.9.0] - 2026-06-26
 
 ### 日本語
