@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as serverApi from "../api/server";
 import type { PairingRequest } from "../api/server";
+import type { DeviceRole } from "../api/server";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 
@@ -23,6 +24,7 @@ const isTauri = "__TAURI_INTERNALS__" in window;
 export function PairingApprovalDialog() {
   const [queue, setQueue] = useState<PairingRequest[]>([]);
   const [busy, setBusy] = useState(false);
+  const [role, setRole] = useState<DeviceRole>("remote");
   const pushToast = useStore((s) => s.pushToast);
 
   useEffect(() => {
@@ -54,6 +56,7 @@ export function PairingApprovalDialog() {
 
   const dismiss = useCallback((session: string) => {
     setQueue((prev) => prev.filter((r) => r.session !== session));
+    setRole("remote");
   }, []);
 
   const handleApprove = useCallback(async () => {
@@ -61,7 +64,7 @@ export function PairingApprovalDialog() {
     setBusy(true);
     const name = current.deviceName || "不明な端末";
     try {
-      const ok = await serverApi.approvePairing(current.code);
+      const ok = await serverApi.approvePairing(current.code, role);
       if (ok) {
         pushToast("success", `『${name}』を承認しました`);
       } else {
@@ -73,7 +76,7 @@ export function PairingApprovalDialog() {
       setBusy(false);
       dismiss(current.session);
     }
-  }, [current, busy, pushToast, dismiss]);
+  }, [current, busy, role, pushToast, dismiss]);
 
   const handleReject = useCallback(() => {
     if (!current) return;
@@ -142,6 +145,20 @@ export function PairingApprovalDialog() {
         <div style={{ fontSize: 12, color: "var(--mut)", marginBottom: 16 }}>
           端末の画面と同じコードが表示されていることを確認してください。
         </div>
+
+        <label
+          style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}
+        >
+          <span style={{ fontSize: 12, color: "var(--mut)" }}>端末の権限</span>
+          <select
+            value={role}
+            onChange={(e) => setRole(e.target.value as DeviceRole)}
+            disabled={busy}
+          >
+            <option value="remote">リモート操作のみ (remote)</option>
+            <option value="sync">ライブラリへの書き戻しを許可 (sync)</option>
+          </select>
+        </label>
 
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button

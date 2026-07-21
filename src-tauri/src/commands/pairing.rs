@@ -6,7 +6,7 @@
 use tauri::{AppHandle, State};
 
 use crate::commands::library::open_db;
-use crate::devices::{DeviceInfo, ValidTokens};
+use crate::devices::{DeviceInfo, DeviceRole, ValidTokens};
 use crate::pairing::{PairingInfo, PairingRegistry};
 
 /// TV/モバイルが画面に表示したコードを入力して承認する。
@@ -16,6 +16,7 @@ use crate::pairing::{PairingInfo, PairingRegistry};
 /// (従来の単一共有トークンも有効なまま = 後方互換)。
 ///
 /// - `code`: 6 文字のペアリングコード（大小文字・前後空白は正規化する）。
+/// - `role`: 省略時は従来相当の `remote`。
 /// - 承認成功 → `Ok(true)`。
 /// - コードが見つからない / 有効期限切れ → `Ok(false)` (トークンは発行しない)。
 #[tauri::command]
@@ -24,7 +25,9 @@ pub fn approve_pairing(
     pairings: State<'_, PairingRegistry>,
     valid_tokens: State<'_, ValidTokens>,
     code: String,
+    role: Option<DeviceRole>,
 ) -> Result<bool, String> {
+    let role = role.unwrap_or_default();
     // 1. 該当する保留中ペアリングの申告メタ (端末名/プラットフォーム) を取得する。
     //    見つからなければ承認対象が無いので、トークンは一切発行せず false を返す。
     let (device_name, platform) = match pairings.peek_pending(&code) {
@@ -43,8 +46,8 @@ pub fn approve_pairing(
     //    これにより approve_by_code が false のとき「幽霊トークン」が残らない。
     if approved {
         let db = open_db(&app)?;
-        crate::devices::add_device_with_token(&db, device_name, platform, new_token.clone())?;
-        valid_tokens.insert(new_token);
+        crate::devices::add_device_with_token(&db, device_name, platform, new_token.clone(), role)?;
+        valid_tokens.insert_with_role(new_token, role);
     }
 
     Ok(approved)

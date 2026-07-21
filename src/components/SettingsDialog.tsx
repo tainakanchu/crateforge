@@ -996,6 +996,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                                 <div style={{ fontWeight: 500, wordBreak: "break-all" }}>{label}</div>
                                 <div style={{ fontSize: "0.8em", opacity: 0.6 }}>
                                   {d.platform ? `${d.platform} · ` : ""}
+                                  {d.role === "sync" ? "書き戻し許可 (sync)" : "リモート操作のみ (remote)"} ·
                                   {relativeFromNow(d.createdAt)}
                                 </div>
                               </div>

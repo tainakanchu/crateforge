@@ -7,6 +7,14 @@ use super::Database;
 use crate::itunes_xml::parser::RawPlaylist;
 use crate::models::{Playlist, SmartCriteria, Track, TrackAnalysis};
 
+/// プレイリスト曲順の全置換結果。入力不備もトランザクション内で判定する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplacePlaylistTracksResult {
+    Replaced,
+    PlaylistNotFound,
+    TrackNotFound(i64),
+}
+
 impl Database {
     /// XML プレイリストを persistent_id 優先・名前/親 PID 補助でマージし、track_id を解決する。
     pub fn insert_playlist(
@@ -462,6 +470,47 @@ impl Database {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// プレイリストの所属曲を入力順どおりに全置換する。
+    ///
+    /// 削除・各 track_id の存在確認・挿入を同じトランザクションで行うため、途中に
+    /// 不正な track_id があれば削除も含めてロールバックされる。重複 ID は保持する。
+    pub fn replace_playlist_tracks(
+        &self,
+        playlist_id: i64,
+        ordered_track_ids: &[i64],
+    ) -> Result<ReplacePlaylistTracksResult> {
+        let tx = self.conn.unchecked_transaction()?;
+        let playlist_exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM playlists WHERE playlist_id = ?1)",
+            params![playlist_id],
+            |row| row.get(0),
+        )?;
+        if !playlist_exists {
+            return Ok(ReplacePlaylistTracksResult::PlaylistNotFound);
+        }
+
+        tx.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+            params![playlist_id],
+        )?;
+        for (i, track_id) in ordered_track_ids.iter().enumerate() {
+            let track_exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tracks WHERE track_id = ?1)",
+                params![track_id],
+                |row| row.get(0),
+            )?;
+            if !track_exists {
+                return Ok(ReplacePlaylistTracksResult::TrackNotFound(*track_id));
+            }
+            tx.execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES (?1, ?2, ?3)",
+                params![playlist_id, track_id, i as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(ReplacePlaylistTracksResult::Replaced)
     }
 
     // ===== Smart playlists =====

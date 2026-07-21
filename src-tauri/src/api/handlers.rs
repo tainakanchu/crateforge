@@ -537,6 +537,43 @@ pub async fn create_playlist(
     Ok((StatusCode::CREATED, Json(playlist)))
 }
 
+/// `PATCH /api/playlists/:playlistId` のボディ。将来の拡張を見越して全項目任意。
+#[derive(Debug, Deserialize)]
+pub struct PatchPlaylistBody {
+    pub name: Option<String>,
+}
+
+/// `PATCH /api/playlists/:playlistId` — 指定されたプレイリスト名を変更 → 204。
+pub async fn patch_playlist(
+    State(state): State<ApiState>,
+    Path(playlist_id): Path<i64>,
+    ExtractJson(body): ExtractJson<PatchPlaylistBody>,
+) -> Result<StatusCode, ApiError> {
+    let db = state.db()?;
+    if db.get_playlist(playlist_id)?.is_none() {
+        return Err(ApiError::not_found("playlist not found"));
+    }
+    if let Some(name) = body.name {
+        db.rename_playlist(playlist_id, &name)?;
+        state.notify_library_changed(Some(playlist_id));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/playlists/:playlistId` — プレイリストを削除 → 204。
+pub async fn delete_playlist(
+    State(state): State<ApiState>,
+    Path(playlist_id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
+    let db = state.db()?;
+    if db.get_playlist(playlist_id)?.is_none() {
+        return Err(ApiError::not_found("playlist not found"));
+    }
+    db.delete_playlist(playlist_id)?;
+    state.notify_library_changed(Some(playlist_id));
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `POST /api/playlists/:playlistId/tracks` — 曲を追加 → { added: n }。
 pub async fn add_tracks(
     State(state): State<ApiState>,
@@ -560,6 +597,31 @@ pub async fn remove_track(
     // 削除成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
     state.notify_library_changed(Some(playlist_id));
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT /api/playlists/:playlistId/tracks` — 所属曲を入力順どおりに全置換 → 204。
+/// 不正な trackId が 1 件でもあれば 400 とし、既存の所属・順序は変更しない。
+pub async fn replace_playlist_tracks(
+    State(state): State<ApiState>,
+    Path(playlist_id): Path<i64>,
+    ExtractJson(body): ExtractJson<ByIdsBody>,
+) -> Result<StatusCode, ApiError> {
+    use crate::db::playlists::ReplacePlaylistTracksResult;
+
+    let db = state.db()?;
+    match db.replace_playlist_tracks(playlist_id, &body.track_ids)? {
+        ReplacePlaylistTracksResult::Replaced => {
+            state.notify_library_changed(Some(playlist_id));
+            Ok(StatusCode::NO_CONTENT)
+        }
+        ReplacePlaylistTracksResult::PlaylistNotFound => {
+            Err(ApiError::not_found("playlist not found"))
+        }
+        ReplacePlaylistTracksResult::TrackNotFound(track_id) => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("track not found: {track_id}"),
+        )),
+    }
 }
 
 // ===== 曲メタデータ書き込み =====

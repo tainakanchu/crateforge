@@ -44,8 +44,13 @@ export async function lanQrSvg(data: string): Promise<string> {
 /// - true: 承認成功。
 /// - false: コードが見つからない / 有効期限切れ。
 /// - throws: LAN トークンが無効（LAN 無効時）。
-export async function approvePairing(code: string): Promise<boolean> {
-  return invoke("approve_pairing", { code });
+export type DeviceRole = "remote" | "sync";
+
+export async function approvePairing(
+  code: string,
+  role: DeviceRole = "remote",
+): Promise<boolean> {
+  return invoke("approve_pairing", { code, role });
 }
 
 /// 未承認ペアリングセッション一覧を返す（デスクトップ UI 向け）。
@@ -80,6 +85,7 @@ export interface PairedDevice {
   id: string;
   deviceName: string | null;
   platform: string | null;
+  role: DeviceRole;
   createdAt: string;
 }
 

@@ -13,17 +13,28 @@
 //!   これにより、既に共有トークンで接続中のクライアントは切れない (後方互換)。
 //! - 端末ごとに [`remove_device`] で個別失効できる。
 //!
-//! [`ValidTokens`] は `Arc<Mutex<HashSet<String>>>` を内包し、axum ハンドラ
+//! [`ValidTokens`] はトークンから役割を引く共有マップを内包し、axum ハンドラ
 //! ([`crate::api::ApiState`]) と Tauri コマンドで同じ実体を共有する。承認・失効は
 //! サーバー再起動を待たず即座に反映される。
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::db::Database;
 
 /// `app_state` テーブルでデバイス配列 (JSON) を保持するキー。
 pub const KEY_DEVICES: &str = "api_devices";
+
+/// LAN API で端末に与える権限。
+///
+/// 既存の保存データには `role` が無いため、serde の既定値は従来相当の `remote` とする。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeviceRole {
+    #[default]
+    Remote,
+    Sync,
+}
 
 /// 承認済み 1 端末ぶんの記録。`token` も含む (DB 永続化用なので外部へは返さない)。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -37,6 +48,9 @@ pub struct Device {
     pub platform: Option<String>,
     /// この端末専用の 48 文字 hex トークン。
     pub token: String,
+    /// LAN API で許可する操作範囲。旧データは remote として読む。
+    #[serde(default)]
+    pub role: DeviceRole,
     /// 承認日時 (ISO8601)。
     #[serde(rename = "createdAt")]
     pub created_at: String,
@@ -49,6 +63,7 @@ pub struct DeviceInfo {
     pub id: String,
     pub device_name: Option<String>,
     pub platform: Option<String>,
+    pub role: DeviceRole,
     pub created_at: String,
 }
 
@@ -58,6 +73,7 @@ impl From<&Device> for DeviceInfo {
             id: d.id.clone(),
             device_name: d.device_name.clone(),
             platform: d.platform.clone(),
+            role: d.role,
             created_at: d.created_at.clone(),
         }
     }
@@ -66,31 +82,41 @@ impl From<&Device> for DeviceInfo {
 /// 認証で参照する有効トークン集合 (legacy 共有トークン + 全デバイストークン)。
 /// axum ハンドラと Tauri コマンドで `Arc` を共有し、承認/失効を即時反映する。
 #[derive(Clone, Default)]
-pub struct ValidTokens(pub Arc<Mutex<HashSet<String>>>);
+pub struct ValidTokens(pub Arc<Mutex<HashMap<String, DeviceRole>>>);
 
 impl ValidTokens {
     /// 集合へ 1 件追加する (承認直後の即時有効化に使う)。
     pub fn insert(&self, token: String) {
-        let mut set = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        set.insert(token);
+        self.insert_with_role(token, DeviceRole::Remote);
+    }
+
+    /// 集合へ役割つきで 1 件追加する。
+    pub fn insert_with_role(&self, token: String, role: DeviceRole) {
+        let mut tokens = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        tokens.insert(token, role);
     }
 
     /// 集合から 1 件削除する (失効/再生成時に使う)。
     pub fn remove(&self, token: &str) {
-        let mut set = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        set.remove(token);
+        let mut tokens = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        tokens.remove(token);
     }
 
     /// 与えたトークンが有効か。
     pub fn contains(&self, token: &str) -> bool {
-        let set = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        set.contains(token)
+        self.role_for(token).is_some()
+    }
+
+    /// 与えたトークンの役割。有効でなければ `None`。
+    pub fn role_for(&self, token: &str) -> Option<DeviceRole> {
+        let tokens = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        tokens.get(token).copied()
     }
 
     /// 集合が空か (= 有効トークン未設定。LAN 認証は FORBIDDEN になる)。
     pub fn is_empty(&self) -> bool {
-        let set = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        set.is_empty()
+        let tokens = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        tokens.is_empty()
     }
 }
 
@@ -98,15 +124,15 @@ impl ValidTokens {
 /// さらに全デバイストークンを追加する。サーバー起動時/再起動時に呼び、
 /// `app_state` を単一の真実の源として `ValidTokens` を同期する。
 pub fn reload_valid_tokens(db: &Database, valid: &ValidTokens) {
-    let mut set = valid.0.lock().unwrap_or_else(|p| p.into_inner());
-    set.clear();
+    let mut tokens = valid.0.lock().unwrap_or_else(|p| p.into_inner());
+    tokens.clear();
     if let Ok(Some(legacy)) = db.get_state(crate::commands::api::KEY_TOKEN) {
         if !legacy.is_empty() {
-            set.insert(legacy);
+            tokens.insert(legacy, DeviceRole::Remote);
         }
     }
-    for token in all_device_tokens(db) {
-        set.insert(token);
+    for device in load_devices(db) {
+        tokens.insert(device.token, device.role);
     }
 }
 
@@ -131,12 +157,14 @@ pub fn add_device_with_token(
     device_name: Option<String>,
     platform: Option<String>,
     token: String,
+    role: DeviceRole,
 ) -> Result<(), String> {
     let device = Device {
         id: gen_id(),
         device_name,
         platform,
         token,
+        role,
         created_at: now_iso8601(),
     };
     let mut devices = load_devices(db);
@@ -203,6 +231,7 @@ mod tests {
             Some("Phone".into()),
             Some("android".into()),
             tok.clone(),
+            DeviceRole::Remote,
         )
         .unwrap();
         assert_eq!(tok.len(), 48, "token は 48 文字 hex");
@@ -224,8 +253,9 @@ mod tests {
     fn test_remove_device() {
         let db = Database::open_memory().unwrap();
         let t1 = gen_token();
-        add_device_with_token(&db, Some("A".into()), None, t1.clone()).unwrap();
-        add_device_with_token(&db, Some("B".into()), None, gen_token()).unwrap();
+        add_device_with_token(&db, Some("A".into()), None, t1.clone(), DeviceRole::Remote).unwrap();
+        add_device_with_token(&db, Some("B".into()), None, gen_token(), DeviceRole::Remote)
+            .unwrap();
 
         let id1 = load_devices(&db)
             .into_iter()
@@ -248,9 +278,9 @@ mod tests {
     fn test_tokens_are_unique() {
         let db = Database::open_memory().unwrap();
         let a = gen_token();
-        add_device_with_token(&db, None, None, a.clone()).unwrap();
+        add_device_with_token(&db, None, None, a.clone(), DeviceRole::Remote).unwrap();
         let b = gen_token();
-        add_device_with_token(&db, None, None, b.clone()).unwrap();
+        add_device_with_token(&db, None, None, b.clone(), DeviceRole::Sync).unwrap();
         assert_ne!(a, b);
         assert_eq!(all_device_tokens(&db).len(), 2);
     }
@@ -260,7 +290,7 @@ mod tests {
     fn test_reload_valid_tokens() {
         let db = Database::open_memory().unwrap();
         let dev = gen_token();
-        add_device_with_token(&db, Some("X".into()), None, dev.clone()).unwrap();
+        add_device_with_token(&db, Some("X".into()), None, dev.clone(), DeviceRole::Sync).unwrap();
         db.set_state(crate::commands::api::KEY_TOKEN, "legacytoken")
             .unwrap();
 
@@ -268,6 +298,8 @@ mod tests {
         reload_valid_tokens(&db, &valid);
         assert!(valid.contains("legacytoken"));
         assert!(valid.contains(&dev));
+        assert_eq!(valid.role_for("legacytoken"), Some(DeviceRole::Remote));
+        assert_eq!(valid.role_for(&dev), Some(DeviceRole::Sync));
         assert!(!valid.contains("unknown"));
 
         // デバイスを失効させて reload すると、そのトークンは集合から消える。
@@ -285,9 +317,33 @@ mod tests {
         assert!(vt.is_empty());
         vt.insert("abc".into());
         assert!(vt.contains("abc"));
+        assert_eq!(vt.role_for("abc"), Some(DeviceRole::Remote));
+        vt.insert_with_role("sync".into(), DeviceRole::Sync);
+        assert_eq!(vt.role_for("sync"), Some(DeviceRole::Sync));
         assert!(!vt.contains("xyz"));
         vt.remove("abc");
         assert!(!vt.contains("abc"));
+        assert!(!vt.is_empty());
+        vt.remove("sync");
         assert!(vt.is_empty());
+    }
+
+    /// role の無い既存 JSON は remote として後方互換に読み込む。
+    #[test]
+    fn test_legacy_device_without_role_defaults_to_remote() {
+        let db = Database::open_memory().unwrap();
+        db.set_state(
+            KEY_DEVICES,
+            r#"[{"id":"old","deviceName":"Phone","platform":"ios","token":"oldtok","createdAt":"2026-01-01T00:00:00Z"}]"#,
+        )
+        .unwrap();
+
+        let devices = load_devices(&db);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].role, DeviceRole::Remote);
+
+        let valid = ValidTokens::default();
+        reload_valid_tokens(&db, &valid);
+        assert_eq!(valid.role_for("oldtok"), Some(DeviceRole::Remote));
     }
 }
