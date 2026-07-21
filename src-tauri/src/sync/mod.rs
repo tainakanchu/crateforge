@@ -1,5 +1,7 @@
 //! federation slave 側のペアリング・参照・snapshot provisioning。
 
+pub mod writeback;
+
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};

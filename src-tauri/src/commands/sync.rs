@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::db::sync::SyncSource;
 use crate::db::Database;
 use crate::models::Playlist;
+use crate::sync::writeback::{ConflictResolution, WritebackPlan, WritebackSummary};
 use crate::sync::{
     PairedSource, PairingStart, PlaylistSizeEstimate, ProvisionSummary, SyncProgress,
 };
@@ -50,6 +51,15 @@ fn open_db(app: &AppHandle) -> Result<Database, String> {
         .app_data_dir()
         .map_err(|err| format!("Failed to get app data dir: {err}"))?;
     Database::open(&app_dir).map_err(|err| format!("Failed to open database: {err}"))
+}
+
+fn writeback_error(error: crate::sync::SyncError) -> String {
+    match error {
+        crate::sync::SyncError::Authentication(status) => {
+            format!("母艦側でこのデバイスに sync 権限が必要です ({status})")
+        }
+        error => error.to_string(),
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -224,4 +234,43 @@ pub fn sync_provision_status(
         .lock()
         .map(|status| status.clone())
         .map_err(|_| "sync provision state is poisoned".to_string())
+}
+
+/// WRITE-BACK 前の確認画面用。DB や母艦は変更しない。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sync_writeback_plan(app: AppHandle, source_id: i64) -> Result<WritebackPlan, String> {
+    let db = open_db(&app)?;
+    let source = db
+        .get_sync_source(source_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sync source not found".to_string())?;
+    let event_app = app.clone();
+    crate::sync::writeback::plan(db, source, move |progress| {
+        let _ = event_app.emit("sync-progress", progress);
+    })
+    .await
+    .map_err(writeback_error)
+}
+
+/// 確認済み plan を現在値から再計算して適用する。未指定 conflict は新しい側を採用する。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sync_writeback_apply(
+    app: AppHandle,
+    source_id: i64,
+    resolutions: Vec<ConflictResolution>,
+) -> Result<WritebackSummary, String> {
+    let db = open_db(&app)?;
+    let source = db
+        .get_sync_source(source_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sync source not found".to_string())?;
+    let event_app = app.clone();
+    let summary = crate::sync::writeback::apply(db, source, resolutions, move |progress| {
+        let _ = event_app.emit("sync-progress", progress);
+    })
+    .await
+    .map_err(writeback_error)?;
+    let _ = app.emit("writeback-complete", summary.clone());
+    let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    Ok(summary)
 }
