@@ -42,8 +42,9 @@ pub struct ApiState {
 impl ApiState {
     /// このリクエストのために DB を開く。失敗は 500 にマップする。
     fn db(&self) -> Result<crate::db::Database, ApiError> {
-        crate::db::Database::open(&self.app_data_dir)
-            .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        crate::db::Database::open(&self.app_data_dir).map_err(|e| {
+            ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })
     }
 
     /// 書き込み後に WebView へ「ライブラリが変わった」と通知する。
@@ -51,7 +52,10 @@ impl ApiState {
     pub(crate) fn notify_library_changed(&self, playlist_id: Option<i64>) {
         if let Some(app) = &self.app {
             use tauri::Emitter; // v2 では emit は Emitter トレイト経由。
-            let _ = app.emit("library-changed", serde_json::json!({ "playlistId": playlist_id }));
+            let _ = app.emit(
+                "library-changed",
+                serde_json::json!({ "playlistId": playlist_id }),
+            );
         }
     }
 
@@ -90,10 +94,7 @@ pub async fn serve_webplayer() -> axum::response::Html<&'static str> {
 /// PWA manifest を配信する。
 pub async fn serve_manifest() -> impl axum::response::IntoResponse {
     const MANIFEST: &str = r##"{"name":"Crateforge","short_name":"Crateforge","start_url":"/","scope":"/","display":"standalone","background_color":"#141618","theme_color":"#6CA1B5","icons":[{"src":"/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]}"##;
-    (
-        [("content-type", "application/manifest+json")],
-        MANIFEST,
-    )
+    ([("content-type", "application/manifest+json")], MANIFEST)
 }
 
 /// 512x512 アイコン (PWA)。
@@ -191,8 +192,9 @@ pub(crate) async fn pair_start(
     let device_name = parsed.device_name;
     let platform = parsed.platform;
 
-    let (session, code) =
-        state.pairings.create_session(device_name.clone(), platform.clone());
+    let (session, code) = state
+        .pairings
+        .create_session(device_name.clone(), platform.clone());
 
     // セッション生成直後なので ageSecs は 0。
     state.notify_pairing_requested(
@@ -232,13 +234,10 @@ pub(crate) async fn pair_poll(
             axum::Json(serde_json::json!({ "status": "expired" })),
         )
             .into_response(),
-        Some((false, _)) => {
-            axum::Json(serde_json::json!({ "status": "pending" })).into_response()
+        Some((false, _)) => axum::Json(serde_json::json!({ "status": "pending" })).into_response(),
+        Some((true, token)) => {
+            axum::Json(serde_json::json!({ "status": "approved", "token": token })).into_response()
         }
-        Some((true, token)) => axum::Json(
-            serde_json::json!({ "status": "approved", "token": token }),
-        )
-        .into_response(),
     }
 }
 
@@ -286,11 +285,16 @@ async fn auth_guard(
             let mut kv = part.splitn(2, '=');
             let key = kv.next()?;
             let val = kv.next()?;
-            if key == "token" { Some(val.to_string()) } else { None }
+            if key == "token" {
+                Some(val.to_string())
+            } else {
+                None
+            }
         })
     });
 
-    let header_token = req.headers()
+    let header_token = req
+        .headers()
         .get("X-API-Token")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
@@ -298,7 +302,9 @@ async fn auth_guard(
     // 提示されたトークンが有効集合に含まれるか。これにより共有トークンと
     // デバイス別トークンのどちらでも認証できる (後方互換)。
     let provided = query_token.or(header_token);
-    let authorized = provided.as_deref().is_some_and(|t| state.tokens.contains(t));
+    let authorized = provided
+        .as_deref()
+        .is_some_and(|t| state.tokens.contains(t));
 
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -377,10 +383,7 @@ pub fn router(state: ApiState) -> Router {
             "/api/tracks/{trackId}/similar",
             get(handlers::get_similar_tracks),
         )
-        .route(
-            "/api/tracks/{trackId}/stream",
-            get(handlers::stream_track),
-        )
+        .route("/api/tracks/{trackId}/stream", get(handlers::stream_track))
         .route(
             "/api/tracks/{trackId}/artwork",
             get(handlers::stream_artwork)
@@ -414,10 +417,7 @@ pub fn router(state: ApiState) -> Router {
         )
         // 曲メタデータ書き込み。静的セグメント genre-tags は動的 {trackId} と
         // 衝突しない (axum 0.8 は静的セグメントを優先解決する)。
-        .route(
-            "/api/tracks/genre-tags/add",
-            post(handlers::add_genre_tags),
-        )
+        .route("/api/tracks/genre-tags/add", post(handlers::add_genre_tags))
         .route(
             "/api/tracks/genre-tags/remove",
             post(handlers::remove_genre_tags),
@@ -440,7 +440,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/remote/shuffle", post(handlers::remote_shuffle))
         .route("/api/remote/repeat", post(handlers::remote_repeat))
         // 認証ミドルウェアを全ルートに適用 (with_state の前に route_layer)。
-        .route_layer(axum::middleware::from_fn_with_state(state.clone(), auth_guard))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_guard,
+        ))
         .with_state(state)
 }
 
@@ -501,8 +504,9 @@ pub fn start(
     // SO_REUSEADDR (unix では SO_REUSEPORT も) を立てて bind することで、直前の
     // ソケットが TIME_WAIT/teardown 中でも再 bind できるようにする。それでも
     // 失敗する場合 (使用中 / Windows の予約ポート範囲) は候補ポートへフォールバックする。
-    let listener = tauri::async_runtime::block_on(async move { bind_with_fallback(ip, port).await })
-        .map_err(|e| format!("bind 127.0.0.1:{port} failed: {e}"))?;
+    let listener =
+        tauri::async_runtime::block_on(async move { bind_with_fallback(ip, port).await })
+            .map_err(|e| format!("bind 127.0.0.1:{port} failed: {e}"))?;
     let local = listener.local_addr().map_err(|e| e.to_string())?;
 
     // 起動のたびに DB を単一の真実の源として有効トークン集合を同期する
@@ -611,7 +615,10 @@ async fn bind_with_fallback(
     }
 
     Err(last_err.unwrap_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::AddrInUse, "no candidate port could be bound")
+        std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "no candidate port could be bound",
+        )
     }))
 }
 
@@ -652,9 +659,8 @@ async fn bind_reuse(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener
             Err(e) => return Err(e),
         }
     }
-    Err(last_err.unwrap_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::AddrInUse, "address in use")
-    }))
+    Err(last_err
+        .unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::AddrInUse, "address in use")))
 }
 
 #[cfg(test)]
@@ -1262,8 +1268,7 @@ mod tests {
             )
             .unwrap();
 
-        let (status, body) =
-            req(app, "GET", "/api/playlists/100/size-estimate", None).await;
+        let (status, body) = req(app, "GET", "/api/playlists/100/size-estimate", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["trackCount"], 2);
         assert_eq!(body["totalBytes"], 7);
@@ -1333,7 +1338,10 @@ mod tests {
         for id in [1, 2] {
             let (_, track) = req(app.clone(), "GET", &format!("/api/tracks/{id}"), None).await;
             let genre = track["genre"].as_str().unwrap();
-            assert!(genre.contains("#fav"), "track {id} genre missing #fav: {genre}");
+            assert!(
+                genre.contains("#fav"),
+                "track {id} genre missing #fav: {genre}"
+            );
         }
     }
 

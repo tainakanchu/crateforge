@@ -175,16 +175,12 @@ pub async fn list_tracks(
     // 契約: trackArtist = artist || albumArtist || "Unknown Artist"
     //   (空文字 "" は falsy=次へ、NULL も次へ、空白のみ " " は truthy=採用)。
     if let Some(want) = q.artist.as_deref() {
-        tracks.retain(|t| {
-            display_artist(t.artist.as_deref(), t.album_artist.as_deref()) == want
-        });
+        tracks.retain(|t| display_artist(t.artist.as_deref(), t.album_artist.as_deref()) == want);
     }
     // albumArtist: 表示アルバムアーティスト名 (grouping=albumArtist 表示名式) と完全一致。
     // 契約: trackAlbumArtist = albumArtist || artist || "Unknown Artist" (artist と優先順を入替)。
     if let Some(want) = q.album_artist.as_deref() {
-        tracks.retain(|t| {
-            display_artist(t.album_artist.as_deref(), t.artist.as_deref()) == want
-        });
+        tracks.retain(|t| display_artist(t.album_artist.as_deref(), t.artist.as_deref()) == want);
     }
     // year: [year_from, year_to]。year が無い曲は範囲指定時に除外する。
     if let Some(from) = q.year_from {
@@ -420,7 +416,9 @@ pub async fn get_artists(
 }
 
 /// `GET /api/playlists` — 全プレイリスト。
-pub async fn list_playlists(State(state): State<ApiState>) -> Result<Json<Vec<Playlist>>, ApiError> {
+pub async fn list_playlists(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<Playlist>>, ApiError> {
     let db = state.db()?;
     Ok(Json(db.get_playlists()?))
 }
@@ -622,7 +620,9 @@ pub async fn add_genre_tags(
     if updated > 0 {
         state.notify_library_changed(None);
     }
-    Ok(Json(json!({ "updated": updated, "fileWriteFailed": file_failed })))
+    Ok(Json(
+        json!({ "updated": updated, "fileWriteFailed": file_failed }),
+    ))
 }
 
 /// `POST /api/tracks/genre-tags/remove` — 指定タグを各曲の genre から一括除去。
@@ -655,7 +655,9 @@ pub async fn remove_genre_tags(
     if updated > 0 {
         state.notify_library_changed(None);
     }
-    Ok(Json(json!({ "updated": updated, "fileWriteFailed": file_failed })))
+    Ok(Json(
+        json!({ "updated": updated, "fileWriteFailed": file_failed }),
+    ))
 }
 
 // ===== ストリーミング / アートワーク =====
@@ -776,7 +778,11 @@ pub async fn delete_track_artwork(
 /// 原本バイトをデコードし、アスペクト比維持で最大辺 ≤ size に縮小して再エンコードする。
 /// format 既定は webp (ロスレス, pure Rust)、"jpeg" 指定で JPEG (品質 82)。
 /// size 既定は 512。デコード/エンコードに失敗したら `None` (呼び出し側で原本へフォールバック)。
-fn resize_artwork(bytes: &[u8], size: Option<u32>, format: Option<&str>) -> Option<(Vec<u8>, &'static str)> {
+fn resize_artwork(
+    bytes: &[u8],
+    size: Option<u32>,
+    format: Option<&str>,
+) -> Option<(Vec<u8>, &'static str)> {
     use image::codecs::jpeg::JpegEncoder;
     use image::ImageFormat;
 
@@ -810,7 +816,21 @@ fn resize_artwork(bytes: &[u8], size: Option<u32>, format: Option<&str>) -> Opti
 
 /// ブラウザがネイティブ再生できる拡張子かどうかを判定する。
 pub fn is_browser_native(ext: &str) -> bool {
-    matches!(ext, "mp3" | "m4a" | "mp4" | "aac" | "m4b" | "ogg" | "oga" | "opus" | "flac" | "wav" | "weba" | "webm")
+    matches!(
+        ext,
+        "mp3"
+            | "m4a"
+            | "mp4"
+            | "aac"
+            | "m4b"
+            | "ogg"
+            | "oga"
+            | "opus"
+            | "flac"
+            | "wav"
+            | "weba"
+            | "webm"
+    )
 }
 
 /// モバイル端末 (iOS/Android のネイティブプレイヤー) がそのまま再生できる拡張子か。
@@ -899,9 +919,19 @@ async fn transcode_aac_stream(
     let bitrate = format!("{br_kbps}k");
     let mut cmd = tokio::process::Command::new(ffmpeg_path);
     cmd.args([
-        "-hide_banner", "-loglevel", "error",
-        "-i", path_str,
-        "-vn", "-c:a", "aac", "-b:a", &bitrate, "-f", "adts", "-",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        path_str,
+        "-vn",
+        "-c:a",
+        "aac",
+        "-b:a",
+        &bitrate,
+        "-f",
+        "adts",
+        "-",
     ])
     .stdout(std::process::Stdio::piped())
     .stderr(std::process::Stdio::null());
@@ -917,11 +947,16 @@ async fn transcode_aac_stream(
                     "stream failed: ffmpeg spawn error (track_id={track_id}, path={path_str}, ext={ext}): {e}"
                 ),
             );
-            return Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+            ));
         }
     };
 
-    let mut stdout = child.stdout.take()
+    let mut stdout = child
+        .stdout
+        .take()
         .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no stdout from ffmpeg"))?;
 
     // 先頭チャンクを read してフェイルファスト判定に使う。
@@ -935,7 +970,10 @@ async fn transcode_aac_stream(
                     "stream failed: reading ffmpeg output (track_id={track_id}, path={path_str}, ext={ext}): {e}"
                 ),
             );
-            return Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+            ));
         }
     };
 
@@ -946,7 +984,10 @@ async fn transcode_aac_stream(
         let exit_ok = matches!(&status, Ok(s) if s.success());
         if !exit_ok {
             let code = match &status {
-                Ok(s) => s.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".to_string()),
+                Ok(s) => s
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string()),
                 Err(e) => format!("wait error: {e}"),
             };
             crate::logging::write_line(
@@ -976,7 +1017,10 @@ async fn transcode_aac_stream(
         match child.wait().await {
             Ok(s) if s.success() => {}
             Ok(s) => {
-                let code = s.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".to_string());
+                let code = s
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string());
                 crate::logging::write_line(
                     "error",
                     &format!("stream failed: ffmpeg transcode failed ({log_ctx}, exit={code})"),
@@ -1057,13 +1101,19 @@ pub async fn stream_track(
                             "stream failed: serve file error (track_id={track_id}, path={path_str}, ext={ext}): {e}"
                         ),
                     );
-                    Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to serve file"))
+                    Err(ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to serve file",
+                    ))
                 }
             }
         }
         StreamMode::Aac(br_kbps) => {
             // AAC へトランスコードしてバッファリング配信する。
-            let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+            let app = state
+                .app
+                .as_ref()
+                .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
             let ffmpeg_path = match crate::ffmpeg::resolve(app).map(|(p, _)| p) {
                 Some(p) => p,
                 None => {
@@ -1073,13 +1123,17 @@ pub async fn stream_track(
                             "stream failed: ffmpeg not found for transcode (track_id={track_id}, path={path_str}, ext={ext})"
                         ),
                     );
-                    return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "ffmpeg not found"));
+                    return Err(ApiError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "ffmpeg not found",
+                    ));
                 }
             };
 
             // 逐次ストリーミング配信: ffmpeg の stdout を即座に流す (バッファ廃止、課題2)。
             // Content-Length は付けず chunked で返す。
-            let body = transcode_aac_stream(&ffmpeg_path, path_str, br_kbps, track_id, &ext).await?;
+            let body =
+                transcode_aac_stream(&ffmpeg_path, path_str, br_kbps, track_id, &ext).await?;
 
             Ok(axum::response::Response::builder()
                 .header("content-type", "audio/aac")
@@ -1094,8 +1148,14 @@ pub async fn stream_track(
 
 /// 再生実績 (PlayReport) を DB に反映するヘルパ。
 fn apply_play_report(db: &crate::db::Database, report: Option<crate::audio::PlayReport>) {
-    let Some(r) = report else { return; };
-    let played_threshold = if r.duration_ms > 0 { (r.duration_ms / 2).min(240_000) } else { 240_000 };
+    let Some(r) = report else {
+        return;
+    };
+    let played_threshold = if r.duration_ms > 0 {
+        (r.duration_ms / 2).min(240_000)
+    } else {
+        240_000
+    };
     if r.played_ms >= played_threshold {
         let _ = db.mark_played(r.track_id);
     } else if r.played_ms >= 4_000 {
@@ -1104,9 +1164,14 @@ fn apply_play_report(db: &crate::db::Database, report: Option<crate::audio::Play
 }
 
 /// track_id で曲を再生するヘルパ (remote_play / remote_next / remote_prev から呼ぶ)。
-fn play_by_id_for_remote(state: &ApiState, app: &tauri::AppHandle, track_id: i64) -> Result<(), ApiError> {
+fn play_by_id_for_remote(
+    state: &ApiState,
+    app: &tauri::AppHandle,
+    track_id: i64,
+) -> Result<(), ApiError> {
     let db = state.db()?;
-    let track = db.get_track_by_track_id(track_id)
+    let track = db
+        .get_track_by_track_id(track_id)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
     let path = track.location_path.as_deref().unwrap_or("");
@@ -1114,9 +1179,14 @@ fn play_by_id_for_remote(state: &ApiState, app: &tauri::AppHandle, track_id: i64
         return Err(ApiError::new(StatusCode::NOT_FOUND, "no file path"));
     }
     let duration = track.total_time_ms.unwrap_or(0) as u64;
-    let gain_db = db.get_analysis(track_id).ok().flatten().and_then(|a| a.replaygain_db);
+    let gain_db = db
+        .get_analysis(track_id)
+        .ok()
+        .flatten()
+        .and_then(|a| a.replaygain_db);
     let player = app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>();
-    let report = player.lock()
+    let report = player
+        .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .play(path, track_id, duration, gain_db)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -1129,9 +1199,13 @@ fn play_by_id_for_remote(state: &ApiState, app: &tauri::AppHandle, track_id: i64
 /// `trackIds` は `ordered_track_ids()` の順序 (シャッフル込みの再生順)、
 /// `currentIndex` は `order_pos()` (再生中ならその位置、無ければ null)。
 pub async fn remote_get_queue(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     let player = app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>();
-    let guard = player.lock()
+    let guard = player
+        .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let track_ids = guard.ordered_track_ids();
     let current_index: Value = match guard.order_pos() {
@@ -1149,9 +1223,13 @@ pub async fn remote_get_queue(State(state): State<ApiState>) -> Result<Json<Valu
 /// Web UI が音量スライダー・shuffle/repeat トグルを初期反映できるよう
 /// volume/shuffle/repeat も含める。
 pub async fn remote_get_state(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     let player = app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>();
-    let guard = player.lock()
+    let guard = player
+        .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let ps = guard.get_state();
     let volume = guard.volume();
@@ -1189,31 +1267,48 @@ pub async fn remote_play(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<RemotePlayBody>,
 ) -> Result<StatusCode, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     let db = state.db()?;
-    let track = db.get_track_by_track_id(body.track_id)
+    let track = db
+        .get_track_by_track_id(body.track_id)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
     let path = track.location_path.as_deref().unwrap_or("");
     if path.is_empty() {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "no file path for this track"));
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "no file path for this track",
+        ));
     }
     let duration = track.total_time_ms.unwrap_or(0) as u64;
-    let gain_db = db.get_analysis(body.track_id).ok().flatten().and_then(|a| a.replaygain_db);
+    let gain_db = db
+        .get_analysis(body.track_id)
+        .ok()
+        .flatten()
+        .and_then(|a| a.replaygain_db);
     let player = app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>();
-    let report = player.lock()
+    let report = player
+        .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .play(path, body.track_id, duration, gain_db)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     apply_play_report(&db, report);
-    db.add_recent_track(body.track_id).map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    app.state::<crate::analyzer::Analyzer>().submit(vec![body.track_id], false);
+    db.add_recent_track(body.track_id)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    app.state::<crate::analyzer::Analyzer>()
+        .submit(vec![body.track_id], false);
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/remote/pause` — 一時停止する。
 pub async fn remote_pause(State(state): State<ApiState>) -> Result<StatusCode, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>()
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -1223,7 +1318,10 @@ pub async fn remote_pause(State(state): State<ApiState>) -> Result<StatusCode, A
 
 /// `POST /api/remote/resume` — 再生を再開する。
 pub async fn remote_resume(State(state): State<ApiState>) -> Result<StatusCode, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>()
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -1233,9 +1331,13 @@ pub async fn remote_resume(State(state): State<ApiState>) -> Result<StatusCode, 
 
 /// `POST /api/remote/stop` — 再生を停止する。
 pub async fn remote_stop(State(state): State<ApiState>) -> Result<StatusCode, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     let player = app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>();
-    let report = player.lock()
+    let report = player
+        .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .stop();
     let db = state.db()?;
@@ -1245,16 +1347,21 @@ pub async fn remote_stop(State(state): State<ApiState>) -> Result<StatusCode, Ap
 
 /// `POST /api/remote/next` — キューの次の曲へ進む。
 pub async fn remote_next(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     let player_state = app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>();
-    let next_id = player_state.lock()
+    let next_id = player_state
+        .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .advance_next(false);
     if let Some(tid) = next_id {
         play_by_id_for_remote(&state, app, tid)?;
         Ok(Json(json!({ "trackId": tid })))
     } else {
-        let report = player_state.lock()
+        let report = player_state
+            .lock()
             .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             .stop();
         let db = state.db()?;
@@ -1265,9 +1372,13 @@ pub async fn remote_next(State(state): State<ApiState>) -> Result<Json<Value>, A
 
 /// `POST /api/remote/prev` — キューの前の曲へ戻る。
 pub async fn remote_prev(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     let player_state = app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>();
-    let prev_id = player_state.lock()
+    let prev_id = player_state
+        .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .advance_prev();
     if let Some(tid) = prev_id {
@@ -1290,7 +1401,10 @@ pub async fn remote_seek(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<RemoteSeekBody>,
 ) -> Result<StatusCode, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>()
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -1311,7 +1425,10 @@ pub async fn remote_set_queue(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<RemoteSetQueueBody>,
 ) -> Result<StatusCode, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>()
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -1330,7 +1447,10 @@ pub async fn remote_volume(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<RemoteVolumeBody>,
 ) -> Result<StatusCode, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>()
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -1349,7 +1469,10 @@ pub async fn remote_shuffle(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<RemoteShuffleBody>,
 ) -> Result<StatusCode, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>()
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -1368,12 +1491,20 @@ pub async fn remote_repeat(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<RemoteRepeatBody>,
 ) -> Result<StatusCode, ApiError> {
-    let app = state.app.as_ref().ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
+    let app = state
+        .app
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
     let mode = match body.mode.as_str() {
         "off" => crate::audio::RepeatMode::Off,
         "all" => crate::audio::RepeatMode::All,
         "one" => crate::audio::RepeatMode::One,
-        other => return Err(ApiError::new(StatusCode::BAD_REQUEST, format!("unknown repeat mode: {}", other))),
+        other => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("unknown repeat mode: {}", other),
+            ))
+        }
     };
     app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>()
         .lock()
@@ -1435,7 +1566,9 @@ pub async fn patch_track(
     let track_val = serde_json::to_value(&track)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state.notify_library_changed(None);
-    Ok(Json(json!({ "track": track_val, "fileWriteFailed": file_failed })))
+    Ok(Json(
+        json!({ "track": track_val, "fileWriteFailed": file_failed }),
+    ))
 }
 
 /// `POST /api/tracks/{trackId}/rating` のボディ。

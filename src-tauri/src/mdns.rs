@@ -24,14 +24,18 @@ const FALLBACK_INSTANCE_NAME: &str = "Crateforge";
 /// ハイフンに置換し、先頭・末尾のハイフンを除去した上で、最大 63 文字に切り詰める。
 /// 結果が空になった場合はフォールバック名を返す。
 fn instance_name() -> String {
-    let raw = gethostname::gethostname()
-        .into_string()
-        .unwrap_or_default();
+    let raw = gethostname::gethostname().into_string().unwrap_or_default();
 
     // ASCII 英数字・ハイフン以外はハイフンに変換し、連続ハイフンを1つに畳む。
     let sanitized: String = raw
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())
@@ -94,7 +98,10 @@ mod tests {
     #[test]
     fn instance_name_not_empty() {
         let name = instance_name();
-        assert!(!name.is_empty(), "instance_name() must never return empty string");
+        assert!(
+            !name.is_empty(),
+            "instance_name() must never return empty string"
+        );
     }
 
     #[test]

@@ -171,7 +171,10 @@ pub async fn download(app: &AppHandle) -> Result<PathBuf, String> {
         {
             bytes.extend_from_slice(&chunk);
             received += chunk.len() as u64;
-            let _ = app.emit("ffmpeg-progress", FfmpegProgress::Download { received, total });
+            let _ = app.emit(
+                "ffmpeg-progress",
+                FfmpegProgress::Download { received, total },
+            );
         }
 
         let _ = app.emit("ffmpeg-progress", FfmpegProgress::Extract);
@@ -185,7 +188,10 @@ pub async fn download(app: &AppHandle) -> Result<PathBuf, String> {
             Ok(p)
         }
         Err(e) => {
-            let _ = app.emit("ffmpeg-progress", FfmpegProgress::Error { message: e.clone() });
+            let _ = app.emit(
+                "ffmpeg-progress",
+                FfmpegProgress::Error { message: e.clone() },
+            );
             Err(e)
         }
     }
@@ -219,7 +225,8 @@ fn extract_ffmpeg(zip_bytes: &[u8], dest: &std::path::Path) -> Result<(), String
     let tmp = dest.with_extension("part");
     {
         let mut out = std::fs::File::create(&tmp).map_err(|e| format!("書き込みに失敗: {e}"))?;
-        out.write_all(&buf).map_err(|e| format!("書き込みに失敗: {e}"))?;
+        out.write_all(&buf)
+            .map_err(|e| format!("書き込みに失敗: {e}"))?;
     }
     std::fs::rename(&tmp, dest).map_err(|e| format!("保存に失敗: {e}"))?;
     Ok(())

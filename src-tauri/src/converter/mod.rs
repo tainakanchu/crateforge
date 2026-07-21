@@ -25,7 +25,8 @@ pub fn convert_tracks(
     if out_dir.as_os_str().is_empty() {
         return Err("Output folder is required".to_string());
     }
-    std::fs::create_dir_all(&out_dir).map_err(|e| format!("Creating output folder failed: {}", e))?;
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("Creating output folder failed: {}", e))?;
 
     let mut jobs: Vec<Track> = Vec::new();
     for id in &req.track_ids {

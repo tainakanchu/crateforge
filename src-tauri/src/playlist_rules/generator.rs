@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use super::schema::{
     BpmRangeGenerator, BpmRangeTemplate, Condition, FieldCondition, GeneratorEntry,
-    GeneratorTemplate, InlineGenerator, PlaylistRule, RangeEntry, RangesGenerator,
-    RangesTemplate, SortRule, TagsGenerator, TagsTemplate, TemplateRefGenerator,
+    GeneratorTemplate, InlineGenerator, PlaylistRule, RangeEntry, RangesGenerator, RangesTemplate,
+    SortRule, TagsGenerator, TagsTemplate, TemplateRefGenerator,
 };
 
 pub fn expand_generators(
@@ -196,9 +196,12 @@ fn resolve_template_ref(
     entry: &TemplateRefGenerator,
     templates: &HashMap<String, GeneratorTemplate>,
 ) -> Result<InlineGenerator, String> {
-    let tmpl = templates
-        .get(&entry.template)
-        .ok_or_else(|| format!("Generator references unknown template \"{}\"", entry.template))?;
+    let tmpl = templates.get(&entry.template).ok_or_else(|| {
+        format!(
+            "Generator references unknown template \"{}\"",
+            entry.template
+        )
+    })?;
 
     let sort: Option<Vec<SortRule>> = entry.sort.clone().or_else(|| match tmpl {
         GeneratorTemplate::BpmRange(t) => t.sort.clone(),
@@ -223,10 +226,7 @@ fn resolve_template_ref(
             sort,
         }),
         GeneratorTemplate::Ranges(RangesTemplate {
-            field,
-            ranges,
-            pad,
-            ..
+            field, ranges, pad, ..
         }) => InlineGenerator::Ranges(RangesGenerator {
             base_path: entry.base_path.clone(),
             source_playlist: entry.source_playlist.clone(),

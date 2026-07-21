@@ -67,10 +67,7 @@ fn evaluate(
     let existing = load_existing_playlists(db)?;
     let mut registry = PlaylistRegistry::new(existing, options);
 
-    let templates = rules_file
-        .templates
-        .clone()
-        .unwrap_or_else(HashMap::new);
+    let templates = rules_file.templates.clone().unwrap_or_else(HashMap::new);
 
     let mut all_rules: Vec<PlaylistRule> = rules_file.playlists.clone();
     let expanded = generator::expand_generators(&rules_file.generators, &templates)?;
@@ -160,9 +157,7 @@ fn persist_tree(
                     .map_err(|e| format!("Failed to create playlist \"{}\": {}", p.name, e))?;
                 if !p.track_ids.is_empty() {
                     db.add_tracks_to_playlist(new_pl.playlist_id, &p.track_ids)
-                        .map_err(|e| {
-                            format!("Failed to add tracks to \"{}\": {}", p.name, e)
-                        })?;
+                        .map_err(|e| format!("Failed to add tracks to \"{}\": {}", p.name, e))?;
                 }
             }
         }

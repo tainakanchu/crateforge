@@ -28,15 +28,12 @@ pub fn rip_cd(
     let (output_dir, is_temp) = if let Some(given) = output_dir_given {
         // 明示的な出力先が指定されている: 従来パス。
         let p = PathBuf::from(given);
-        std::fs::create_dir_all(&p)
-            .map_err(|e| format!("Failed to create output dir: {}", e))?;
+        std::fs::create_dir_all(&p).map_err(|e| format!("Failed to create output dir: {}", e))?;
         (p, false)
     } else if use_organizer {
         // 出力先なし + organize 有効: temp へ rip して後で整理。
-        let p = std::env::temp_dir()
-            .join(format!("crateforge-rip-{}", std::process::id()));
-        std::fs::create_dir_all(&p)
-            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+        let p = std::env::temp_dir().join(format!("crateforge-rip-{}", std::process::id()));
+        std::fs::create_dir_all(&p).map_err(|e| format!("Failed to create temp dir: {}", e))?;
         (p, true)
     } else {
         return Err(

@@ -253,7 +253,9 @@ mod tests {
         assert_eq!(meta.1.as_deref(), Some("android"));
 
         // 大小・空白は正規化される。
-        assert!(reg.peek_pending(&format!("  {}  ", code.to_lowercase())).is_some());
+        assert!(reg
+            .peek_pending(&format!("  {}  ", code.to_lowercase()))
+            .is_some());
 
         // 承認後は pending ではないので None。
         reg.approve_by_code(&code, "tok".to_string());
@@ -270,10 +272,7 @@ mod tests {
             let code = gen_code();
             assert_eq!(code.len(), 6);
             for ch in code.chars() {
-                assert!(
-                    SAFE_CHARS.contains(&(ch as u8)),
-                    "unexpected char: {ch}"
-                );
+                assert!(SAFE_CHARS.contains(&(ch as u8)), "unexpected char: {ch}");
             }
         }
     }

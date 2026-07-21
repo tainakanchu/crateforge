@@ -72,11 +72,7 @@ pub fn evaluate_rules(
             None
         };
 
-        let name = path
-            .rsplit('/')
-            .next()
-            .unwrap_or(path.as_str())
-            .to_string();
+        let name = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
 
         let pl = GeneratedPlaylist {
             name,

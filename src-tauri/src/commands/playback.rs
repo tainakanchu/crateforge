@@ -86,10 +86,7 @@ pub fn stop(app: AppHandle, player: tauri::State<'_, Mutex<AudioPlayer>>) -> Res
 }
 
 #[tauri::command]
-pub fn seek(
-    player: tauri::State<'_, Mutex<AudioPlayer>>,
-    position_ms: u64,
-) -> Result<(), String> {
+pub fn seek(player: tauri::State<'_, Mutex<AudioPlayer>>, position_ms: u64) -> Result<(), String> {
     player.lock().map_err(|e| e.to_string())?.seek(position_ms);
     Ok(())
 }
@@ -221,7 +218,10 @@ pub fn play_next(
     app: AppHandle,
     player: tauri::State<'_, Mutex<AudioPlayer>>,
 ) -> Result<Option<i64>, String> {
-    let next_id = player.lock().map_err(|e| e.to_string())?.advance_next(false);
+    let next_id = player
+        .lock()
+        .map_err(|e| e.to_string())?
+        .advance_next(false);
     if let Some(tid) = next_id {
         play_track_by_id(&app, tid)?;
         Ok(Some(tid))
@@ -264,10 +264,7 @@ pub fn play_prev(
 }
 
 #[tauri::command]
-pub fn set_shuffle(
-    player: tauri::State<'_, Mutex<AudioPlayer>>,
-    on: bool,
-) -> Result<(), String> {
+pub fn set_shuffle(player: tauri::State<'_, Mutex<AudioPlayer>>, on: bool) -> Result<(), String> {
     player.lock().map_err(|e| e.to_string())?.set_shuffle(on);
     Ok(())
 }
@@ -288,10 +285,7 @@ pub fn set_repeat(
 }
 
 #[tauri::command]
-pub fn set_volume(
-    player: tauri::State<'_, Mutex<AudioPlayer>>,
-    volume: f32,
-) -> Result<(), String> {
+pub fn set_volume(player: tauri::State<'_, Mutex<AudioPlayer>>, volume: f32) -> Result<(), String> {
     player.lock().map_err(|e| e.to_string())?.set_volume(volume);
     Ok(())
 }

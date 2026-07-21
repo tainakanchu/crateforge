@@ -84,18 +84,9 @@ fn parse_releases(json: &serde_json::Value) -> Vec<ReleaseCandidate> {
             .and_then(|v| v.as_str())
             .unwrap_or("(Unknown)")
             .to_string();
-        let date = r
-            .get("date")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let country = r
-            .get("country")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let barcode = r
-            .get("barcode")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        let date = r.get("date").and_then(|v| v.as_str()).map(String::from);
+        let country = r.get("country").and_then(|v| v.as_str()).map(String::from);
+        let barcode = r.get("barcode").and_then(|v| v.as_str()).map(String::from);
         let artist = artist_credit_string(r.get("artist-credit"));
 
         let tracks = extract_tracks(r);
@@ -156,10 +147,7 @@ fn extract_tracks(release: &serde_json::Value) -> Vec<ReleaseTrack> {
     for medium in media {
         if let Some(track_list) = medium.get("tracks").and_then(|v| v.as_array()) {
             for t in track_list {
-                let position = t
-                    .get("position")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as usize;
+                let position = t.get("position").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let title = t
                     .get("title")
                     .and_then(|v| v.as_str())

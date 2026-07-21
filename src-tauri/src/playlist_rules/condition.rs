@@ -72,12 +72,8 @@ pub fn evaluate(
     registry: &PlaylistRegistry,
 ) -> bool {
     match condition {
-        Condition::All { all } => all
-            .iter()
-            .all(|c| evaluate(track, c, options, registry)),
-        Condition::Any { any } => any
-            .iter()
-            .any(|c| evaluate(track, c, options, registry)),
+        Condition::All { all } => all.iter().all(|c| evaluate(track, c, options, registry)),
+        Condition::Any { any } => any.iter().any(|c| evaluate(track, c, options, registry)),
         Condition::Not { not } => !evaluate(track, not, options, registry),
         Condition::InPlaylist { in_playlist } => evaluate_in_playlist(track, in_playlist, registry),
         Condition::Field(c) => evaluate_field(track, c, options),
@@ -136,9 +132,7 @@ fn evaluate_field(track: &Track, c: &FieldCondition, opts: &BuildOptions) -> boo
 
 fn yaml_equals(value: &FieldValue, expected: &serde_yaml::Value, case_sensitive: bool) -> bool {
     match (value, expected) {
-        (FieldValue::Str(s), serde_yaml::Value::String(t)) => {
-            compare_strings(s, t, case_sensitive)
-        }
+        (FieldValue::Str(s), serde_yaml::Value::String(t)) => compare_strings(s, t, case_sensitive),
         (FieldValue::Int(n), serde_yaml::Value::Number(num)) => {
             num.as_i64().map(|v| v == *n).unwrap_or(false)
                 || num.as_f64().map(|v| v == *n as f64).unwrap_or(false)

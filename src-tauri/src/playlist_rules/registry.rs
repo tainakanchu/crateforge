@@ -77,7 +77,10 @@ impl PlaylistRegistry {
                 "Multiple existing playlists matched name \"{}\"; use nested path when available",
                 name
             )),
-            _ => Err(format!("Referenced existing playlist not found: \"{}\"", name)),
+            _ => Err(format!(
+                "Referenced existing playlist not found: \"{}\"",
+                name
+            )),
         }
     }
 

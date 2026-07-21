@@ -93,14 +93,14 @@ fn read_and_insert(db: &Database, path: &Path, library_root: Option<&Path>) -> R
     let bpm = tag.and_then(read_bpm);
 
     // Fall back to filename if no title tag.
-    let fallback_title = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(String::from);
+    let fallback_title = path.file_stem().and_then(|s| s.to_str()).map(String::from);
     let title = title.or(fallback_title);
 
     // Fall back: parent dir = album, grandparent = artist (Music/Artist/Album/Track.mp3).
-    let parent = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str());
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str());
     let grandparent = path
         .parent()
         .and_then(|p| p.parent())

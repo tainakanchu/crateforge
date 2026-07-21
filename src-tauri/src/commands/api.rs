@@ -63,9 +63,21 @@ fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 /// 設定 (enabled, port, lan_enabled, token) を DB から読む。
 fn read_full_config(app: &AppHandle) -> Result<(bool, u16, bool, Option<String>), String> {
     let db = open_db(app)?;
-    let enabled = db.get_state(KEY_ENABLED).map_err(|e| e.to_string())?.map(|v| v == "true").unwrap_or(false);
-    let port = db.get_state(KEY_PORT).map_err(|e| e.to_string())?.and_then(|v| v.parse::<u16>().ok()).unwrap_or(DEFAULT_PORT);
-    let lan_enabled = db.get_state(KEY_LAN_ENABLED).map_err(|e| e.to_string())?.map(|v| v == "true").unwrap_or(false);
+    let enabled = db
+        .get_state(KEY_ENABLED)
+        .map_err(|e| e.to_string())?
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let port = db
+        .get_state(KEY_PORT)
+        .map_err(|e| e.to_string())?
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT);
+    let lan_enabled = db
+        .get_state(KEY_LAN_ENABLED)
+        .map_err(|e| e.to_string())?
+        .map(|v| v == "true")
+        .unwrap_or(false);
     let token = db.get_state(KEY_TOKEN).map_err(|e| e.to_string())?;
     Ok((enabled, port, lan_enabled, token))
 }
@@ -114,7 +126,10 @@ pub fn get_api_server_status(
                 addrs.swap(0, pos);
             }
         }
-        addrs.into_iter().map(|v4| format!("http://{}:{}", v4, effective_port)).collect()
+        addrs
+            .into_iter()
+            .map(|v4| format!("http://{}:{}", v4, effective_port))
+            .collect()
     } else {
         Vec::new()
     };
@@ -170,7 +185,14 @@ pub fn set_api_server_config(
         let (_, _, lan_enabled, _) = read_full_config(&app)?;
         // api::start が起動時に DB から有効トークン集合を再構築するので、
         // ここでは共有の ValidTokens (Arc) を渡すだけでよい。
-        match api::start(dir, port, app.clone(), lan_enabled, valid_tokens.inner().clone(), pairings.inner().clone()) {
+        match api::start(
+            dir,
+            port,
+            app.clone(),
+            lan_enabled,
+            valid_tokens.inner().clone(),
+            pairings.inner().clone(),
+        ) {
             Ok(ctrl) => {
                 let mut guard = server.lock().map_err(|e| e.to_string())?;
                 *guard = Some(ctrl);
@@ -200,10 +222,18 @@ pub fn start_if_enabled(
     if lan_enabled && token.is_none() {
         let new_token = gen_token();
         let db = open_db(app)?;
-        db.set_state(KEY_TOKEN, &new_token).map_err(|e| e.to_string())?;
+        db.set_state(KEY_TOKEN, &new_token)
+            .map_err(|e| e.to_string())?;
     }
     let dir = app_data_dir(app)?;
-    let ctrl = api::start(dir, port, app.clone(), lan_enabled, valid_tokens.clone(), pairings.clone())?;
+    let ctrl = api::start(
+        dir,
+        port,
+        app.clone(),
+        lan_enabled,
+        valid_tokens.clone(),
+        pairings.clone(),
+    )?;
     let mut guard = server.lock().map_err(|e| e.to_string())?;
     *guard = Some(ctrl);
     Ok(())
@@ -228,7 +258,8 @@ pub fn set_api_lan_enabled(
             let token = db.get_state(KEY_TOKEN).map_err(|e| e.to_string())?;
             if token.is_none() {
                 let new_token = gen_token();
-                db.set_state(KEY_TOKEN, &new_token).map_err(|e| e.to_string())?;
+                db.set_state(KEY_TOKEN, &new_token)
+                    .map_err(|e| e.to_string())?;
             }
         }
     }
@@ -248,7 +279,14 @@ pub fn set_api_lan_enabled(
     let (api_enabled, port, lan_enabled, _) = read_full_config(&app)?;
     if api_enabled {
         let dir = app_data_dir(&app)?;
-        match api::start(dir, port, app.clone(), lan_enabled, valid_tokens.inner().clone(), pairings.inner().clone()) {
+        match api::start(
+            dir,
+            port,
+            app.clone(),
+            lan_enabled,
+            valid_tokens.inner().clone(),
+            pairings.inner().clone(),
+        ) {
             Ok(ctrl) => {
                 let mut guard = server.lock().map_err(|e| e.to_string())?;
                 *guard = Some(ctrl);
@@ -276,7 +314,8 @@ pub fn regenerate_api_token(
         let db = open_db(&app)?;
         let old_token = db.get_state(KEY_TOKEN).map_err(|e| e.to_string())?;
         let new_token = gen_token();
-        db.set_state(KEY_TOKEN, &new_token).map_err(|e| e.to_string())?;
+        db.set_state(KEY_TOKEN, &new_token)
+            .map_err(|e| e.to_string())?;
         if let Some(old) = old_token {
             valid_tokens.remove(&old);
         }
@@ -298,7 +337,14 @@ pub fn regenerate_api_token(
     let (api_enabled, port, lan_enabled, _) = read_full_config(&app)?;
     if api_enabled {
         let dir = app_data_dir(&app)?;
-        match api::start(dir, port, app.clone(), lan_enabled, valid_tokens.inner().clone(), pairings.inner().clone()) {
+        match api::start(
+            dir,
+            port,
+            app.clone(),
+            lan_enabled,
+            valid_tokens.inner().clone(),
+            pairings.inner().clone(),
+        ) {
             Ok(ctrl) => {
                 let mut guard = server.lock().map_err(|e| e.to_string())?;
                 *guard = Some(ctrl);
@@ -315,11 +361,8 @@ pub fn regenerate_api_token(
 #[tauri::command]
 pub fn lan_qr_svg(data: String) -> Result<String, String> {
     use qrcode::render::svg;
-    let code = qrcode::QrCode::new(data.as_bytes())
-        .map_err(|e| format!("QR encode failed: {e}"))?;
-    let svg_str = code
-        .render::<svg::Color>()
-        .min_dimensions(180, 180)
-        .build();
+    let code =
+        qrcode::QrCode::new(data.as_bytes()).map_err(|e| format!("QR encode failed: {e}"))?;
+    let svg_str = code.render::<svg::Color>().min_dimensions(180, 180).build();
     Ok(svg_str)
 }

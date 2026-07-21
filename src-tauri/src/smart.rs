@@ -315,6 +315,9 @@ mod tests {
             track(3, "C", Some(124), None),
         ];
         sort_tracks(&mut v, "bpm", true);
-        assert_eq!(v.iter().map(|t| t.track_id).collect::<Vec<_>>(), vec![2, 3, 1]);
+        assert_eq!(
+            v.iter().map(|t| t.track_id).collect::<Vec<_>>(),
+            vec![2, 3, 1]
+        );
     }
 }

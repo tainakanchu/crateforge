@@ -217,8 +217,8 @@ mod tests {
         };
         let base = mk(1, vec![0.0, 0.0], 128.0, "8A");
         let cands = vec![
-            mk(2, vec![0.1, 0.0], 128.0, "8A"), // closest + compatible
-            mk(3, vec![0.5, 0.0], 127.0, "9A"), // farther + compatible
+            mk(2, vec![0.1, 0.0], 128.0, "8A"),  // closest + compatible
+            mk(3, vec![0.5, 0.0], 127.0, "9A"),  // farther + compatible
             mk(4, vec![0.05, 0.0], 128.0, "2A"), // close but key-incompatible
         ];
         let opts = SimilarOpts {
@@ -228,6 +228,9 @@ mod tests {
         };
         let ranked = rank_similar(&base, &cands, &opts, 10);
         // 4 はキー非互換で除外、2 が 3 より近い。
-        assert_eq!(ranked.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(
+            ranked.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
     }
 }

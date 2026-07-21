@@ -6,13 +6,8 @@
 
 use serde::Serialize;
 
-const RELEASES_API: &str =
-    "https://api.github.com/repos/tainakanchu/crateforge/releases/latest";
-const USER_AGENT: &str = concat!(
-    "Crateforge/",
-    env!("CARGO_PKG_VERSION"),
-    " (update-check)"
-);
+const RELEASES_API: &str = "https://api.github.com/repos/tainakanchu/crateforge/releases/latest";
+const USER_AGENT: &str = concat!("Crateforge/", env!("CARGO_PKG_VERSION"), " (update-check)");
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -165,7 +160,10 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
     let available = is_newer(&latest_clean, &current);
     let installer_required = body_requires_installer(rel.body.as_deref());
     let download_url = pick_asset(&rel.assets, portable, installer_required);
-    let self_replace = download_url.as_deref().map(is_portable_zip_url).unwrap_or(false);
+    let self_replace = download_url
+        .as_deref()
+        .map(is_portable_zip_url)
+        .unwrap_or(false);
 
     Ok(UpdateInfo {
         available,
@@ -233,8 +231,8 @@ pub async fn download_and_run(url: &str) -> Result<String, String> {
 fn apply_portable_update(zip_bytes: &[u8]) -> Result<String, String> {
     use std::io::Read;
 
-    let cur = std::env::current_exe()
-        .map_err(|e| format!("現在の実行ファイルを取得できません: {e}"))?;
+    let cur =
+        std::env::current_exe().map_err(|e| format!("現在の実行ファイルを取得できません: {e}"))?;
     let dir = cur
         .parent()
         .ok_or("実行ファイルのフォルダを取得できません")?;
@@ -302,11 +300,16 @@ fn launch_installer(path: &std::path::Path) -> Result<(), String> {
         .unwrap_or("")
         .to_lowercase();
     let spawn = if ext == "msi" {
-        std::process::Command::new("msiexec").arg("/i").arg(path).spawn()
+        std::process::Command::new("msiexec")
+            .arg("/i")
+            .arg(path)
+            .spawn()
     } else {
         std::process::Command::new(path).spawn()
     };
-    spawn.map(|_| ()).map_err(|e| format!("Launching installer failed: {}", e))
+    spawn
+        .map(|_| ())
+        .map_err(|e| format!("Launching installer failed: {}", e))
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -400,7 +403,9 @@ mod tests {
 
     #[test]
     fn body_marker_detected() {
-        assert!(body_requires_installer(Some("notes...\n[installer-required]\nx")));
+        assert!(body_requires_installer(Some(
+            "notes...\n[installer-required]\nx"
+        )));
         assert!(body_requires_installer(Some("[Installer-Required]")));
         assert!(!body_requires_installer(Some("normal notes")));
         assert!(!body_requires_installer(None));

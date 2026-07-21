@@ -110,10 +110,7 @@ impl AudioPlayer {
     ) -> Result<Option<PlayReport>, String> {
         let report = self.stop_internal();
 
-        let device = self
-            ._device
-            .as_ref()
-            .ok_or("No audio output available")?;
+        let device = self._device.as_ref().ok_or("No audio output available")?;
 
         let path = Path::new(file_path);
         if !path.exists() {
