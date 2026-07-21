@@ -12,6 +12,7 @@ interface ToolbarProps {
   onLibraryChanged: () => void;
   onOpenRipDialog: () => void;
   onOpenRulesPanel: () => void;
+  onOpenSyncProvision: () => void;
   onOpenSettings: () => void;
 }
 
@@ -46,7 +47,13 @@ const VIEW_TITLE: Record<ViewMode, string> = {
   playlist: "Playlist",
 };
 
-export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, onOpenSettings }: ToolbarProps) {
+export function Toolbar({
+  onLibraryChanged,
+  onOpenRipDialog,
+  onOpenRulesPanel,
+  onOpenSyncProvision,
+  onOpenSettings,
+}: ToolbarProps) {
   const {
     viewMode,
     displayMode,
@@ -398,6 +405,13 @@ export function Toolbar({ onLibraryChanged, onOpenRipDialog, onOpenRulesPanel, o
         <div className="cb-tb-spacer" />
 
         <div className="cb-tb-actions">
+          <button
+            className="cb-btn"
+            onClick={onOpenSyncProvision}
+            title="接続済みサーバーからプレイリストと曲を取り寄せる"
+          >
+            <Icon name="download" size={15} /> サーバーから取り寄せ
+          </button>
           <button
             className="cb-btn cb-btn-iconly primary"
             onClick={handleImport}

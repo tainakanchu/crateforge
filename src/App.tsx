@@ -21,6 +21,7 @@ import { Toaster } from "./components/Toaster";
 import { RipStatusBar } from "./components/RipStatusBar";
 import { DropImportOverlay } from "./components/DropImportOverlay";
 import { ShortcutHelp } from "./components/ShortcutHelp";
+import { SyncProvisionDialog } from "./components/SyncProvisionDialog";
 import { useStore } from "./store/useStore";
 import { useDiscWatcher } from "./hooks/useDiscWatcher";
 import * as libraryApi from "./api/library";
@@ -97,6 +98,7 @@ export default function App() {
   } | null>(null);
   const [installing, setInstalling] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [syncProvisionOpen, setSyncProvisionOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const { detectedDisc, dismiss: dismissDisc } = useDiscWatcher({
     enabled: !ripOpen && ripStatus?.phase !== "ripping",
@@ -677,6 +679,7 @@ export default function App() {
           onLibraryChanged={triggerReload}
           onOpenRipDialog={() => setRipOpen(true)}
           onOpenRulesPanel={() => setRulesOpen(true)}
+          onOpenSyncProvision={() => setSyncProvisionOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
         />
         {isAlbumView ? (
@@ -736,6 +739,12 @@ export default function App() {
       )}
       {settingsOpen && (
         <SettingsDialog onClose={() => setSettingsOpen(false)} />
+      )}
+      {syncProvisionOpen && (
+        <SyncProvisionDialog
+          onClose={() => setSyncProvisionOpen(false)}
+          onLibraryChanged={triggerReload}
+        />
       )}
       {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
       {detectedDisc && (

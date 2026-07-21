@@ -70,6 +70,8 @@ interface PersistedSettings {
   autoExportPath: string | null;
   ripFormat: EncodeFormat;
   ripOutputDir: string | null;
+  // サーバーから取り寄せる際に最後に選んだ保存先。
+  lastSyncDestRoot: string | null;
 }
 
 // 「前回入れたプレイリスト」ショートカットで保持する件数
@@ -166,6 +168,7 @@ interface AppState extends PersistedSettings {
   setAutoExport: (enabled: boolean, path: string | null) => void;
   setRipFormat: (f: EncodeFormat) => void;
   setRipOutputDir: (dir: string | null) => void;
+  setLastSyncDestRoot: (dir: string | null) => void;
 
   // Analysis
   setAnalyses: (list: TrackAnalysis[]) => void;
@@ -238,6 +241,7 @@ export const useStore = create<AppState>()(
       autoExportPath: null,
       ripFormat: "alac",
       ripOutputDir: null,
+      lastSyncDestRoot: null,
 
       setViewMode: (mode) => set({ viewMode: mode }),
       setSelectedPlaylistId: (id) => set({ selectedPlaylistId: id }),
@@ -378,6 +382,7 @@ export const useStore = create<AppState>()(
         set({ autoExportEnabled, autoExportPath }),
       setRipFormat: (ripFormat) => set({ ripFormat }),
       setRipOutputDir: (ripOutputDir) => set({ ripOutputDir }),
+      setLastSyncDestRoot: (lastSyncDestRoot) => set({ lastSyncDestRoot }),
 
       setAnalyses: (list) =>
         set({ analysisByTrack: new Map(list.map((a) => [a.trackId, a])) }),
@@ -407,7 +412,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 10,
+      version: 11,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -430,6 +435,7 @@ export const useStore = create<AppState>()(
           autoExportPath: state.autoExportPath,
           ripFormat: state.ripFormat,
           ripOutputDir: state.ripOutputDir,
+          lastSyncDestRoot: state.lastSyncDestRoot,
         }) satisfies PersistedSettings,
       // v1(visibleColumns) からの移行: 旧キーは破棄してデフォルトに倒す。
       // v3: recentPlaylistIds を追加（旧データには無いので配列で補完）。
@@ -496,6 +502,11 @@ export const useStore = create<AppState>()(
             p.sortField = "albumArtist";
             p.sortOrder = "asc";
           }
+        }
+        // v11: サーバー取り寄せの前回保存先を追加。
+        if (version < 11 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (p.lastSyncDestRoot === undefined) p.lastSyncDestRoot = null;
         }
         return persisted as PersistedSettings;
       },
