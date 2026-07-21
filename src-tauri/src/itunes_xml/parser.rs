@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -36,6 +36,9 @@ pub fn import_library(xml_path: &str, db: &Database) -> Result<(usize, usize, us
     let (tracks, playlists) = parse_itunes_xml(&content)?;
 
     let mut missing_files = 0;
+    let mut track_id_map = HashMap::new();
+    let mut imported_track_persistent_ids = HashSet::new();
+    let mut claimed_track_ids = HashSet::new();
     db.begin_import().map_err(|e| e.to_string())?;
 
     for track in &tracks {
@@ -58,13 +61,29 @@ pub fn import_library(xml_path: &str, db: &Database) -> Result<(usize, usize, us
             missing_files += 1;
         }
 
-        db.insert_track(track, &location_path, file_exists)
+        let db_track_id = db
+            .insert_track(
+                track,
+                &location_path,
+                file_exists,
+                &mut imported_track_persistent_ids,
+                &mut claimed_track_ids,
+            )
             .map_err(|e| e.to_string())?;
+        track_id_map.insert(track.get_int("Track ID").unwrap_or(0), db_track_id);
     }
 
+    let mut imported_playlist_persistent_ids = HashSet::new();
+    let mut claimed_playlist_ids = HashSet::new();
     for (idx, playlist) in playlists.iter().enumerate() {
-        db.insert_playlist(playlist, idx as i64)
-            .map_err(|e| e.to_string())?;
+        db.insert_playlist(
+            playlist,
+            idx as i64,
+            &track_id_map,
+            &mut imported_playlist_persistent_ids,
+            &mut claimed_playlist_ids,
+        )
+        .map_err(|e| e.to_string())?;
     }
 
     db.finish_import().map_err(|e| e.to_string())?;

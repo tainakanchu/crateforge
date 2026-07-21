@@ -1,4 +1,7 @@
-use rusqlite::{params, Result};
+use std::{collections::HashSet, path::Path};
+
+use chrono::DateTime;
+use rusqlite::{params, OptionalExtension, Result};
 use serde::Serialize;
 
 use super::Database;
@@ -117,7 +120,11 @@ fn sort_field_to_column(sort_field: &str) -> Option<(&'static str, bool)> {
 /// アルバム粒度の ORDER BY 句を組み立てる。
 /// SQL インジェクション防止のため sort_field/sort_order は match で固定文字列に変換する。
 fn album_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String {
-    let dir = if matches!(sort_order, Some("desc")) { "DESC" } else { "ASC" };
+    let dir = if matches!(sort_order, Some("desc")) {
+        "DESC"
+    } else {
+        "ASC"
+    };
     match sort_field {
         Some("albumArtist") => format!(
             "album_artist COLLATE NOCASE {dir}, album COLLATE NOCASE ASC"
@@ -232,7 +239,10 @@ pub(super) fn build_order_by(
     let mut order = format!("({prefix}{col} IS NULL), {prefix}{col}{collate} {dir}");
 
     // アルバム文脈のソートだけ、収録順のタイブレークを足す (主キーと同じ列はスキップ)。
-    if matches!(sort_field, Some("artist") | Some("albumArtist") | Some("album")) {
+    if matches!(
+        sort_field,
+        Some("artist") | Some("albumArtist") | Some("album")
+    ) {
         for tb in ["album", "disc_number", "track_number", "name"] {
             if tb == col {
                 continue;
@@ -254,29 +264,87 @@ pub(super) fn build_order_by(
 }
 
 impl Database {
+    /// XML マージ全体を包むトランザクションを開始する。
     pub fn begin_import(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "
-            DELETE FROM playlist_tracks;
-            DELETE FROM playlists;
-            DELETE FROM tracks;
-            BEGIN TRANSACTION;
-            ",
-        )?;
+        self.conn.execute_batch("BEGIN TRANSACTION;")?;
         Ok(())
     }
 
     pub fn finish_import(&self) -> Result<()> {
-        self.conn.execute_batch("COMMIT;")?;
+        // XML の整数 ID が衝突して再採番された場合に、永続 ID から派生キャッシュを張り直す。
+        // 未接続の解析行も残し、後のインポートで同じ曲が来れば接続できるようにする。
+        self.conn.execute_batch(
+            "UPDATE track_analysis
+             SET track_id = (
+                 SELECT tracks.track_id
+                 FROM tracks
+                 WHERE tracks.persistent_id = track_analysis.persistent_id
+             );
+             COMMIT;",
+        )?;
         Ok(())
     }
 
+    /// XML トラックを persistent_id 優先・location 補助でマージし、実際の DB track_id を返す。
     pub fn insert_track(
         &self,
         raw: &RawTrack,
         location_path: &str,
         file_exists: bool,
-    ) -> Result<()> {
+        imported_persistent_ids: &mut HashSet<String>,
+        claimed_track_ids: &mut HashSet<i64>,
+    ) -> Result<i64> {
+        let xml_track_id = raw.get_int("Track ID").unwrap_or(0);
+        let supplied_persistent_id = raw.get_str("Persistent ID").filter(|id| !id.is_empty());
+        let mut matched = if let Some(persistent_id) = supplied_persistent_id {
+            if imported_persistent_ids.insert(persistent_id.to_string()) {
+                let candidate = self
+                    .conn
+                    .query_row(
+                        "SELECT track_id, date_modified, location_path
+                         FROM tracks WHERE persistent_id = ?1",
+                        [persistent_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                candidate.filter(|(track_id, _, _)| !claimed_track_ids.contains(track_id))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // PID が欠損・重複・未一致なら、同一取り込み内で未使用の location を補助キーにする。
+        if matched.is_none() {
+            let location_raw = raw.get_str("Location").unwrap_or("");
+            let mut stmt = self.conn.prepare(
+                "SELECT track_id, date_modified, location_path
+                 FROM tracks
+                 WHERE (?1 <> '' AND location_raw = ?1)
+                    OR (?2 <> '' AND location_path = ?2)
+                 ORDER BY track_id",
+            )?;
+            let mut rows = stmt.query(params![location_raw, location_path])?;
+            while let Some(row) = rows.next()? {
+                let track_id = row.get::<_, i64>(0)?;
+                if !claimed_track_ids.contains(&track_id) {
+                    matched = Some((
+                        track_id,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ));
+                    break;
+                }
+            }
+        }
+
         // 検索高速パス用の正規化済みテキスト (compute_search_text が単一の真実の源)。
         let search_text = compute_search_text([
             raw.get_str("Name"),
@@ -286,45 +354,155 @@ impl Database {
             raw.get_str("Genre"),
             raw.get_str("Comments"),
         ]);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO tracks (track_id, persistent_id, name, artist, album_artist, composer,
-             album, genre, year, rating, play_count, skip_count, total_time_ms,
-             date_added, date_modified, bpm, comments, location_raw, location_path,
-             track_type, disabled, compilation, disc_number, disc_count,
-             track_number, track_count, file_exists, search_text)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
-            params![
-                raw.get_int("Track ID").unwrap_or(0),
-                raw.get_str("Persistent ID"),
-                raw.get_str("Name"),
-                raw.get_str("Artist"),
-                raw.get_str("Album Artist"),
-                raw.get_str("Composer"),
-                raw.get_str("Album"),
-                raw.get_str("Genre"),
-                raw.get_int("Year"),
-                raw.get_int("Rating"),
-                raw.get_int("Play Count").unwrap_or(0),
-                raw.get_int("Skip Count").unwrap_or(0),
-                raw.get_int("Total Time"),
-                raw.get_date("Date Added"),
-                raw.get_date("Date Modified"),
-                raw.get_int("BPM"),
-                raw.get_str("Comments"),
-                raw.get_str("Location"),
-                location_path,
-                raw.get_str("Track Type"),
-                raw.get_bool("Disabled") as i32,
-                raw.get_bool("Compilation") as i32,
-                raw.get_int("Disc Number"),
-                raw.get_int("Disc Count"),
-                raw.get_int("Track Number"),
-                raw.get_int("Track Count"),
-                file_exists as i32,
-                search_text,
-            ],
-        )?;
-        Ok(())
+
+        if let Some((track_id, local_modified, local_path)) = matched {
+            claimed_track_ids.insert(track_id);
+            let xml_modified = raw
+                .get_date("Date Modified")
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok());
+            let local_modified = local_modified
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok());
+
+            // XML の更新日時が厳密に新しい時だけ、XML 管轄のメタデータを更新する。
+            // rating 等のアプリ管轄フィールドはこの UPDATE に含めない。
+            let xml_is_newer = match (xml_modified.as_ref(), local_modified.as_ref()) {
+                (Some(xml), Some(local)) => xml > local,
+                (Some(_), None) => true,
+                _ => false,
+            };
+            if xml_is_newer {
+                self.conn.execute(
+                    "UPDATE tracks SET
+                         name = ?1, artist = ?2, album_artist = ?3, composer = ?4,
+                         album = ?5, genre = ?6, year = ?7, bpm = ?8, comments = ?9,
+                         total_time_ms = ?10, track_number = ?11, track_count = ?12,
+                         disc_number = ?13, disc_count = ?14, compilation = ?15,
+                         track_type = ?16, date_added = ?17, date_modified = ?18,
+                         search_text = ?19
+                     WHERE track_id = ?20",
+                    params![
+                        raw.get_str("Name"),
+                        raw.get_str("Artist"),
+                        raw.get_str("Album Artist"),
+                        raw.get_str("Composer"),
+                        raw.get_str("Album"),
+                        raw.get_str("Genre"),
+                        raw.get_int("Year"),
+                        raw.get_int("BPM"),
+                        raw.get_str("Comments"),
+                        raw.get_int("Total Time"),
+                        raw.get_int("Track Number"),
+                        raw.get_int("Track Count"),
+                        raw.get_int("Disc Number"),
+                        raw.get_int("Disc Count"),
+                        raw.get_bool("Compilation") as i32,
+                        raw.get_str("Track Type"),
+                        raw.get_date("Date Added"),
+                        raw.get_date("Date Modified"),
+                        search_text,
+                        track_id,
+                    ],
+                )?;
+            }
+
+            // 整理済みのローカルファイルが現在も存在する場合だけ、アプリ側の場所を正とする。
+            let local_file_exists = local_path
+                .as_deref()
+                .filter(|path| !path.trim().is_empty())
+                .is_some_and(|path| Path::new(path).exists());
+            if local_file_exists {
+                self.conn.execute(
+                    "UPDATE tracks SET file_exists = 1 WHERE track_id = ?1",
+                    [track_id],
+                )?;
+            } else {
+                self.conn.execute(
+                    "UPDATE tracks
+                     SET location_raw = ?1, location_path = ?2, file_exists = ?3
+                     WHERE track_id = ?4",
+                    params![
+                        raw.get_str("Location"),
+                        location_path,
+                        file_exists as i32,
+                        track_id,
+                    ],
+                )?;
+            }
+
+            return Ok(track_id);
+        }
+
+        let mut attempt = 0;
+        loop {
+            let track_id: i64 = if self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tracks WHERE track_id = ?1)",
+                [xml_track_id],
+                |row| row.get(0),
+            )? {
+                self.conn.query_row(
+                    "SELECT COALESCE(MAX(track_id), 0) + 1 FROM tracks",
+                    [],
+                    |row| row.get(0),
+                )?
+            } else {
+                xml_track_id
+            };
+            let persistent_id = super::persistent_id_for_insert(
+                &self.conn,
+                "tracks",
+                supplied_persistent_id,
+                track_id as u64,
+            )?;
+            match self.conn.execute(
+                "INSERT INTO tracks (track_id, persistent_id, name, artist, album_artist, composer,
+                 album, genre, year, rating, play_count, skip_count, total_time_ms,
+                 date_added, date_modified, bpm, comments, location_raw, location_path,
+                 track_type, disabled, compilation, disc_number, disc_count,
+                 track_number, track_count, file_exists, last_played, search_text)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)",
+                params![
+                    track_id,
+                    persistent_id,
+                    raw.get_str("Name"),
+                    raw.get_str("Artist"),
+                    raw.get_str("Album Artist"),
+                    raw.get_str("Composer"),
+                    raw.get_str("Album"),
+                    raw.get_str("Genre"),
+                    raw.get_int("Year"),
+                    raw.get_int("Rating"),
+                    raw.get_int("Play Count").unwrap_or(0),
+                    raw.get_int("Skip Count").unwrap_or(0),
+                    raw.get_int("Total Time"),
+                    raw.get_date("Date Added"),
+                    raw.get_date("Date Modified"),
+                    raw.get_int("BPM"),
+                    raw.get_str("Comments"),
+                    raw.get_str("Location"),
+                    location_path,
+                    raw.get_str("Track Type"),
+                    raw.get_bool("Disabled") as i32,
+                    raw.get_bool("Compilation") as i32,
+                    raw.get_int("Disc Number"),
+                    raw.get_int("Disc Count"),
+                    raw.get_int("Track Number"),
+                    raw.get_int("Track Count"),
+                    file_exists as i32,
+                    raw.get_date("Play Date UTC"),
+                    search_text,
+                ],
+            ) {
+                Ok(_) => {
+                    claimed_track_ids.insert(track_id);
+                    return Ok(track_id);
+                }
+                Err(err) if super::should_retry_constraint(&err, attempt) => {
+                    attempt += 1;
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     /// 新規トラックを挿入し、割り当てられた track_id を返す。
@@ -346,54 +524,53 @@ impl Database {
         location_path: &str,
         location_url: &str,
     ) -> Result<i64> {
-        let next_id: i64 = self.conn.query_row(
-            "SELECT COALESCE(MAX(track_id), 0) + 1 FROM tracks",
-            [],
-            |r| r.get(0),
-        )?;
-
-        let persistent_id = format!(
-            "{:016X}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0)
-                ^ (next_id as u64),
-        );
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
         // 検索高速パス用の正規化済みテキスト (comments は取り込み時に無いので None)。
-        let search_text =
-            compute_search_text([name, artist, album, album_artist, genre, None]);
+        let search_text = compute_search_text([name, artist, album, album_artist, genre, None]);
 
-        self.conn.execute(
-            "INSERT INTO tracks (track_id, persistent_id, name, artist, album_artist, album, genre,
-                                 year, track_number, track_count, disc_number, disc_count,
-                                 total_time_ms, date_added, location_raw, location_path,
-                                 track_type, file_exists, search_text)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'File', 1, ?17)",
-            params![
-                next_id,
-                persistent_id,
-                name,
-                artist,
-                album_artist,
-                album,
-                genre,
-                year,
-                track_number,
-                track_count,
-                disc_number,
-                disc_count,
-                total_time_ms,
-                now,
-                location_url,
-                location_path,
-                search_text,
-            ],
-        )?;
-
-        Ok(next_id)
+        let mut attempt = 0;
+        loop {
+            let next_id: i64 = self.conn.query_row(
+                "SELECT COALESCE(MAX(track_id), 0) + 1 FROM tracks",
+                [],
+                |r| r.get(0),
+            )?;
+            let persistent_id =
+                super::generate_unique_persistent_id(&self.conn, "tracks", next_id as u64)?;
+            match self.conn.execute(
+                "INSERT INTO tracks (track_id, persistent_id, name, artist, album_artist, album, genre,
+                                     year, track_number, track_count, disc_number, disc_count,
+                                     total_time_ms, date_added, location_raw, location_path,
+                                     track_type, file_exists, search_text)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'File', 1, ?17)",
+                params![
+                    next_id,
+                    persistent_id,
+                    name,
+                    artist,
+                    album_artist,
+                    album,
+                    genre,
+                    year,
+                    track_number,
+                    track_count,
+                    disc_number,
+                    disc_count,
+                    total_time_ms,
+                    now,
+                    location_url,
+                    location_path,
+                    search_text,
+                ],
+            ) {
+                Ok(_) => return Ok(next_id),
+                Err(err) if super::should_retry_constraint(&err, attempt) => {
+                    attempt += 1;
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     /// 既存行の `search_text` を、現在の name/artist/album/album_artist/genre/comments から
@@ -449,7 +626,10 @@ impl Database {
 
         // 検索の字体ゆれ吸収レベル。Off のときは下の分岐で従来と完全に同じ SQL/バインドを使う。
         let level = crate::text_fold::FoldLevel::from_state(
-            self.get_state("search_fold_level").ok().flatten().as_deref(),
+            self.get_state("search_fold_level")
+                .ok()
+                .flatten()
+                .as_deref(),
         );
 
         // 各トークンを AND 結合。bpm:/key:/energy: は track_analysis への絞り込み、
@@ -684,13 +864,10 @@ impl Database {
     }
 
     pub fn set_rating(&self, track_id: i64, rating: i64) -> Result<()> {
+        // date_modified は XML メタデータの LWW 時計なので、保護フィールドの rating では進めない。
         self.conn.execute(
-            "UPDATE tracks SET rating = ?1, date_modified = ?2 WHERE track_id = ?3",
-            params![
-                rating,
-                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-                track_id
-            ],
+            "UPDATE tracks SET rating = ?1 WHERE track_id = ?2",
+            params![rating, track_id],
         )?;
         Ok(())
     }
@@ -1054,6 +1231,8 @@ pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::{common_dir_prefix, compute_search_text};
     use crate::db::Database;
 
@@ -1065,7 +1244,9 @@ mod tests {
         use crate::itunes_xml::parser::{PlistValue, RawTrack};
         let db = Database::open_memory().unwrap();
         // 既定 (search_fold_level 未設定) は Standard なので高速パスが効く。
-        let mk = |tid: i64, name: &str, artist: &str| {
+        let mut imported_persistent_ids = HashSet::new();
+        let mut imported_track_ids = HashSet::new();
+        let mut mk = |tid: i64, name: &str, artist: &str| {
             let mut raw = RawTrack::default();
             raw.fields
                 .insert("Track ID".to_string(), PlistValue::Int(tid));
@@ -1073,7 +1254,14 @@ mod tests {
                 .insert("Name".to_string(), PlistValue::Str(name.to_string()));
             raw.fields
                 .insert("Artist".to_string(), PlistValue::Str(artist.to_string()));
-            db.insert_track(&raw, "", true).unwrap();
+            db.insert_track(
+                &raw,
+                "",
+                true,
+                &mut imported_persistent_ids,
+                &mut imported_track_ids,
+            )
+            .unwrap();
         };
         mk(1, "さくら", "ＡＢＣ"); // ひらがな + 全角英字
         mk(2, "桜の歌", "圖書館"); // 繁体字を含む
@@ -1123,13 +1311,26 @@ mod tests {
         };
         db.update_track(1, &edit).unwrap();
         // カタカナで検索 → 更新後の名前にヒット。
-        assert_eq!(db.search_tracks("ミドリ", 100, 0, None, None).unwrap().len(), 1);
+        assert_eq!(
+            db.search_tracks("ミドリ", 100, 0, None, None)
+                .unwrap()
+                .len(),
+            1
+        );
         // 古い名前ではヒットしない。
-        assert_eq!(db.search_tracks("old", 100, 0, None, None).unwrap().len(), 0);
+        assert_eq!(
+            db.search_tracks("old", 100, 0, None, None).unwrap().len(),
+            0
+        );
 
         // genre タグ追加でも search_text が更新される。
         db.add_genre_tag(1, "ハウス").unwrap();
-        assert_eq!(db.search_tracks("はうす", 100, 0, None, None).unwrap().len(), 1);
+        assert_eq!(
+            db.search_tracks("はうす", 100, 0, None, None)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// Rust 側 compute_search_text と SQL 側 SEARCH_TEXT_EXPR が一致すること
@@ -1155,7 +1356,10 @@ mod tests {
         let sql_val: String = db
             .conn
             .query_row(
-                &format!("SELECT {} FROM tracks WHERE track_id = 1", super::SEARCH_TEXT_EXPR),
+                &format!(
+                    "SELECT {} FROM tracks WHERE track_id = 1",
+                    super::SEARCH_TEXT_EXPR
+                ),
                 [],
                 |r| r.get(0),
             )
@@ -1173,8 +1377,8 @@ mod tests {
             (10, Some("Beta"), Some("AA1")),
             (11, Some("Beta"), Some("AA1")),
             (12, Some("alpha"), Some("AA2")),
-            (13, Some(""), None),  // 空 album → 除外
-            (14, None, None),      // NULL album → 除外
+            (13, Some(""), None), // 空 album → 除外
+            (14, None, None),     // NULL album → 除外
         ];
         for (tid, album, aa) in rows {
             db.conn
@@ -1209,11 +1413,11 @@ mod tests {
         let db = Database::open_memory().unwrap();
         let rows = [
             // (track_id, artist, album_artist)
-            (10, Some("Beta"), Some("VA")),   // artist=Beta / album_artist=VA
-            (11, Some("Beta"), Some("VA")),   // 同 artist=Beta、別 album_artist と組み合わせ
+            (10, Some("Beta"), Some("VA")), // artist=Beta / album_artist=VA
+            (11, Some("Beta"), Some("VA")), // 同 artist=Beta、別 album_artist と組み合わせ
             (12, Some("alpha"), Some("alpha")),
-            (13, Some(""), Some("Comp AA")),  // artist 空 → grouping=artist では album_artist にフォールバック
-            (14, None, None),                  // 両方無し → "Unknown Artist"
+            (13, Some(""), Some("Comp AA")), // artist 空 → grouping=artist では album_artist にフォールバック
+            (14, None, None),                // 両方無し → "Unknown Artist"
         ];
         for (tid, artist, aa) in rows {
             db.conn
@@ -1237,7 +1441,10 @@ mod tests {
         let comp = artists.iter().find(|a| a.artist == "Comp AA").unwrap();
         assert_eq!(comp.track_count, 1);
         assert_eq!(comp.sample_track_id, 13);
-        let unknown = artists.iter().find(|a| a.artist == "Unknown Artist").unwrap();
+        let unknown = artists
+            .iter()
+            .find(|a| a.artist == "Unknown Artist")
+            .unwrap();
         assert_eq!(unknown.track_count, 1);
         assert_eq!(unknown.sample_track_id, 14);
 
@@ -1277,7 +1484,7 @@ mod tests {
     fn none_when_too_few_or_divergent() {
         assert_eq!(common_dir_prefix(&[]), None);
         assert_eq!(common_dir_prefix(&["/a/b/c.mp3".to_string()]), None); // 1件
-        // 異なるドライブ → 共通プレフィックス無し。
+                                                                          // 異なるドライブ → 共通プレフィックス無し。
         let p = vec!["C:\\x\\1.mp3".to_string(), "D:\\y\\2.mp3".to_string()];
         assert_eq!(common_dir_prefix(&p), None);
     }

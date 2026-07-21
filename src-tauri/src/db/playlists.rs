@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, OptionalExtension, Result};
 
@@ -8,8 +8,16 @@ use crate::itunes_xml::parser::RawPlaylist;
 use crate::models::{Playlist, SmartCriteria, Track, TrackAnalysis};
 
 impl Database {
-    pub fn insert_playlist(&self, raw: &RawPlaylist, sort_order: i64) -> Result<()> {
-        let playlist_id = raw.get_int("Playlist ID").unwrap_or(0);
+    /// XML プレイリストを persistent_id 優先・名前/親 PID 補助でマージし、track_id を解決する。
+    pub fn insert_playlist(
+        &self,
+        raw: &RawPlaylist,
+        sort_order: i64,
+        track_id_map: &HashMap<i64, i64>,
+        imported_persistent_ids: &mut HashSet<String>,
+        claimed_playlist_ids: &mut HashSet<i64>,
+    ) -> Result<()> {
+        let xml_playlist_id = raw.get_int("Playlist ID").unwrap_or(0);
         let is_smart =
             raw.get_str("Smart Info").is_some() || raw.get_str("Smart Criteria").is_some();
 
@@ -19,25 +27,133 @@ impl Database {
             return Ok(());
         }
 
-        self.conn.execute(
-            "INSERT OR REPLACE INTO playlists (playlist_id, persistent_id, parent_persistent_id, name, is_folder, is_smart, is_user_created, sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
-            params![
-                playlist_id,
-                raw.get_str("Playlist Persistent ID"),
-                raw.get_str("Parent Persistent ID"),
-                raw.get_str("Name").unwrap_or("Untitled"),
-                raw.get_bool("Folder") as i32,
-                is_smart as i32,
-                sort_order,
-            ],
-        )?;
+        let supplied_persistent_id = raw
+            .get_str("Playlist Persistent ID")
+            .filter(|id| !id.is_empty());
+        let mut matched_playlist_id = if let Some(persistent_id) = supplied_persistent_id {
+            if imported_persistent_ids.insert(persistent_id.to_string()) {
+                let candidate = self
+                    .conn
+                    .query_row(
+                        "SELECT playlist_id FROM playlists WHERE persistent_id = ?1",
+                        [persistent_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                candidate.filter(|playlist_id| !claimed_playlist_ids.contains(playlist_id))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-        for (idx, track_id) in raw.track_ids.iter().enumerate() {
-            self.conn.execute(
-                "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES (?1, ?2, ?3)",
-                params![playlist_id, track_id, idx as i64],
+        // PID が欠損・重複・未一致なら、未使用の XML 由来 playlist を名前と親 PID で照合する。
+        if matched_playlist_id.is_none() {
+            let name = raw.get_str("Name").unwrap_or("Untitled");
+            let parent_persistent_id = raw.get_str("Parent Persistent ID");
+            let mut stmt = self.conn.prepare(
+                "SELECT playlist_id FROM playlists
+                 WHERE name = ?1
+                   AND parent_persistent_id IS ?2
+                   AND is_user_created = 0
+                 ORDER BY playlist_id",
             )?;
+            let mut rows = stmt.query(params![name, parent_persistent_id])?;
+            while let Some(row) = rows.next()? {
+                let playlist_id = row.get::<_, i64>(0)?;
+                if !claimed_playlist_ids.contains(&playlist_id) {
+                    matched_playlist_id = Some(playlist_id);
+                    break;
+                }
+            }
+        }
+
+        let playlist_id = if let Some(playlist_id) = matched_playlist_id {
+            claimed_playlist_ids.insert(playlist_id);
+            // is_smart/is_user_created/smart_criteria はローカル値を維持する。
+            self.conn.execute(
+                "UPDATE playlists
+                 SET parent_persistent_id = ?1, name = ?2, is_folder = ?3, sort_order = ?4
+                 WHERE playlist_id = ?5",
+                params![
+                    raw.get_str("Parent Persistent ID"),
+                    raw.get_str("Name").unwrap_or("Untitled"),
+                    raw.get_bool("Folder") as i32,
+                    sort_order,
+                    playlist_id,
+                ],
+            )?;
+            self.conn.execute(
+                "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+                [playlist_id],
+            )?;
+            playlist_id
+        } else {
+            let mut attempt = 0;
+            loop {
+                let playlist_id: i64 = if self.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM playlists WHERE playlist_id = ?1)",
+                    [xml_playlist_id],
+                    |row| row.get(0),
+                )? {
+                    self.conn.query_row(
+                        "SELECT COALESCE(MAX(playlist_id), 0) + 1 FROM playlists",
+                        [],
+                        |row| row.get(0),
+                    )?
+                } else {
+                    xml_playlist_id
+                };
+                let persistent_id = super::persistent_id_for_insert(
+                    &self.conn,
+                    "playlists",
+                    supplied_persistent_id,
+                    (playlist_id as u64) << 32,
+                )?;
+
+                match self.conn.execute(
+                    "INSERT INTO playlists (playlist_id, persistent_id, parent_persistent_id, name, is_folder, is_smart, is_user_created, sort_order)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+                    params![
+                        playlist_id,
+                        persistent_id,
+                        raw.get_str("Parent Persistent ID"),
+                        raw.get_str("Name").unwrap_or("Untitled"),
+                        raw.get_bool("Folder") as i32,
+                        is_smart as i32,
+                        sort_order,
+                    ],
+                ) {
+                    Ok(_) => {
+                        claimed_playlist_ids.insert(playlist_id);
+                        break playlist_id;
+                    }
+                    Err(err) if super::should_retry_constraint(&err, attempt) => {
+                        attempt += 1;
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+        };
+
+        let mut skipped_refs = 0usize;
+        for (idx, xml_track_id) in raw.track_ids.iter().enumerate() {
+            if let Some(track_id) = track_id_map.get(xml_track_id) {
+                self.conn.execute(
+                    "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES (?1, ?2, ?3)",
+                    params![playlist_id, track_id, idx as i64],
+                )?;
+            } else {
+                skipped_refs += 1;
+            }
+        }
+        if skipped_refs > 0 {
+            eprintln!(
+                "Warning: playlist '{}' skipped {} track reference(s) missing from the import",
+                raw.get_str("Name").unwrap_or("Untitled"),
+                skipped_refs
+            );
         }
 
         Ok(())
@@ -131,21 +247,10 @@ impl Database {
     }
 
     fn next_playlist_id(&self) -> Result<i64> {
-        let max: Option<i64> = self
-            .conn
-            .query_row("SELECT MAX(playlist_id) FROM playlists", [], |r| r.get(0))?;
+        let max: Option<i64> =
+            self.conn
+                .query_row("SELECT MAX(playlist_id) FROM playlists", [], |r| r.get(0))?;
         Ok(max.unwrap_or(0) + 1)
-    }
-
-    fn next_persistent_id(&self) -> Result<String> {
-        let max: Option<i64> = self
-            .conn
-            .query_row("SELECT MAX(playlist_id) FROM playlists", [], |r| r.get(0))?;
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
-        Ok(format!("{:016X}", ts ^ ((max.unwrap_or(0) as u64) << 32)))
     }
 
     pub fn create_playlist(
@@ -154,26 +259,39 @@ impl Database {
         parent_persistent_id: Option<&str>,
         is_folder: bool,
     ) -> Result<Playlist> {
-        let playlist_id = self.next_playlist_id()?;
-        let persistent_id = self.next_persistent_id()?;
         let sort_order: i64 = self.conn.query_row(
             "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM playlists",
             [],
             |r| r.get(0),
         )?;
 
-        self.conn.execute(
-            "INSERT INTO playlists (playlist_id, persistent_id, parent_persistent_id, name, is_folder, is_smart, is_user_created, sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, 1, ?6)",
-            params![
-                playlist_id,
-                persistent_id,
-                parent_persistent_id,
-                name,
-                is_folder as i32,
-                sort_order,
-            ],
-        )?;
+        let mut attempt = 0;
+        let (playlist_id, persistent_id) = loop {
+            let playlist_id = self.next_playlist_id()?;
+            let persistent_id = super::generate_unique_persistent_id(
+                &self.conn,
+                "playlists",
+                (playlist_id as u64) << 32,
+            )?;
+            match self.conn.execute(
+                "INSERT INTO playlists (playlist_id, persistent_id, parent_persistent_id, name, is_folder, is_smart, is_user_created, sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, 1, ?6)",
+                params![
+                    playlist_id,
+                    persistent_id,
+                    parent_persistent_id,
+                    name,
+                    is_folder as i32,
+                    sort_order,
+                ],
+            ) {
+                Ok(_) => break (playlist_id, persistent_id),
+                Err(err) if super::should_retry_constraint(&err, attempt) => {
+                    attempt += 1;
+                }
+                Err(err) => return Err(err),
+            }
+        };
 
         Ok(Playlist {
             id: 0,
@@ -400,7 +518,10 @@ impl Database {
 
         // テキスト比較の字体ゆれ吸収レベル (検索と同じ設定を共有)。
         let level = crate::text_fold::FoldLevel::from_state(
-            self.get_state("search_fold_level").ok().flatten().as_deref(),
+            self.get_state("search_fold_level")
+                .ok()
+                .flatten()
+                .as_deref(),
         );
 
         let mut matched: Vec<Track> = all
@@ -412,7 +533,10 @@ impl Database {
         let (field, desc) = match sort_field {
             Some(f) => (f.to_string(), matches!(sort_order, Some("desc"))),
             None => (
-                criteria.sort_by.clone().unwrap_or_else(|| "name".to_string()),
+                criteria
+                    .sort_by
+                    .clone()
+                    .unwrap_or_else(|| "name".to_string()),
                 criteria.sort_desc,
             ),
         };
@@ -448,7 +572,10 @@ mod tests {
             )
             .unwrap();
         db.conn
-            .execute("INSERT INTO playlists (playlist_id, name) VALUES (10, 'P')", [])
+            .execute(
+                "INSERT INTO playlists (playlist_id, name) VALUES (10, 'P')",
+                [],
+            )
             .unwrap();
         db.conn
             .execute(
@@ -463,6 +590,9 @@ mod tests {
 
         // 同じ row_to_track を使う他経路も一緒に守る。
         assert_eq!(db.get_tracks(100, 0, None, None).unwrap().len(), 1);
-        assert_eq!(db.search_tracks("Song", 100, 0, None, None).unwrap().len(), 1);
+        assert_eq!(
+            db.search_tracks("Song", 100, 0, None, None).unwrap().len(),
+            1
+        );
     }
 }

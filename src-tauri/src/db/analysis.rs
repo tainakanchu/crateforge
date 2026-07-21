@@ -38,16 +38,19 @@ const SELECT_COLS: &str = "track_id, version, analyzed_at, bpm, key_camelot, key
                            energy, loudness_lufs, replaygain_db, vector";
 
 impl Database {
-    /// 解析結果を挿入 / 更新する (track_id を主キーに upsert)。
-    pub fn upsert_analysis(&self, a: &TrackAnalysis) -> Result<()> {
+    /// 解析結果を挿入 / 更新する (永続 ID を主キーに upsert)。
+    /// track_id は現在の tracks から導出し、曲がインポート中に消えた場合は NULL にする。
+    pub fn upsert_analysis(&self, persistent_id: &str, a: &TrackAnalysis) -> Result<()> {
         let vector_json = serde_json::to_string(&a.vector).unwrap_or_else(|_| "[]".to_string());
         let peaks_json = serde_json::to_string(&a.peaks).unwrap_or_else(|_| "[]".to_string());
         self.conn.execute(
             "INSERT INTO track_analysis
-                (track_id, version, analyzed_at, bpm, key_camelot, key_name,
+                (persistent_id, track_id, version, analyzed_at, bpm, key_camelot, key_name,
                  energy, loudness_lufs, replaygain_db, vector, peaks)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-             ON CONFLICT(track_id) DO UPDATE SET
+             VALUES (?1, (SELECT track_id FROM tracks WHERE persistent_id = ?1),
+                     ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(persistent_id) DO UPDATE SET
+                track_id = excluded.track_id,
                 version = excluded.version,
                 analyzed_at = excluded.analyzed_at,
                 bpm = excluded.bpm,
@@ -59,7 +62,7 @@ impl Database {
                 vector = excluded.vector,
                 peaks = excluded.peaks",
             params![
-                a.track_id,
+                persistent_id,
                 a.version,
                 a.analyzed_at,
                 a.bpm,
@@ -101,7 +104,7 @@ impl Database {
 
     /// 解析済みの全曲を取得 (類似度計算の母集合に使う)。
     pub fn get_all_analysis(&self) -> Result<Vec<TrackAnalysis>> {
-        let sql = format!("SELECT {SELECT_COLS} FROM track_analysis");
+        let sql = format!("SELECT {SELECT_COLS} FROM track_analysis WHERE track_id IS NOT NULL");
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], row_to_analysis)?;
         rows.collect()
@@ -109,29 +112,35 @@ impl Database {
 
     /// 指定曲が「現行バージョンで解析済み」かどうか。未解析・旧バージョンなら true。
     pub fn needs_analysis(&self, track_id: i64) -> Result<bool> {
-        let v: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT version FROM track_analysis WHERE track_id = ?1",
-                params![track_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(v != Some(ANALYSIS_VERSION))
+        let analyzed: bool = self.conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM tracks
+                 JOIN track_analysis
+                   ON track_analysis.persistent_id = tracks.persistent_id
+                 WHERE tracks.track_id = ?1 AND track_analysis.version = ?2
+             )",
+            params![track_id, ANALYSIS_VERSION],
+            |r| r.get(0),
+        )?;
+        Ok(!analyzed)
     }
 
     /// (現行バージョンで解析済みの曲数, ファイルが存在する曲の総数)。
     pub fn analysis_status(&self) -> Result<(i64, i64)> {
         let analyzed: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM track_analysis WHERE version = ?1",
+            "SELECT COUNT(*)
+             FROM track_analysis
+             JOIN tracks ON tracks.persistent_id = track_analysis.persistent_id
+             WHERE track_analysis.version = ?1",
             params![ANALYSIS_VERSION],
             |r| r.get(0),
         )?;
-        let total: i64 =
-            self.conn
-                .query_row("SELECT COUNT(*) FROM tracks WHERE file_exists = 1", [], |r| {
-                    r.get(0)
-                })?;
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM tracks WHERE file_exists = 1",
+            [],
+            |r| r.get(0),
+        )?;
         Ok((analyzed, total))
     }
 }
