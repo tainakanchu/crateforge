@@ -21,6 +21,13 @@ pub struct SyncSource {
     pub last_sync_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncedTrackState {
+    Missing,
+    Owned(Option<String>),
+    Collision,
+}
+
 impl Database {
     pub fn upsert_sync_source(
         &self,
@@ -73,28 +80,43 @@ impl Database {
         rows.collect()
     }
 
-    /// sync_track 記録と、現在のローカルファイルの場所を返す。
-    pub fn synced_track_state(&self, persistent_id: &str) -> Result<(bool, Option<String>)> {
-        let recorded: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sync_track WHERE persistent_id = ?1)",
-            [persistent_id],
-            |row| row.get(0),
-        )?;
-        let path = self
+    /// 同期元が所有する既存曲か、未登録か、衝突しているローカル曲かを返す。
+    pub fn synced_track_state(
+        &self,
+        persistent_id: &str,
+        source_id: i64,
+    ) -> Result<SyncedTrackState> {
+        let row = self
             .conn
             .query_row(
-                "SELECT location_path FROM tracks WHERE persistent_id = ?1",
+                "SELECT t.location_path, st.source_id
+                 FROM tracks t
+                 LEFT JOIN sync_track st ON st.persistent_id = t.persistent_id
+                 WHERE t.persistent_id = ?1",
                 [persistent_id],
-                |row| row.get::<_, Option<String>>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                    ))
+                },
             )
-            .optional()?
-            .flatten();
-        Ok((recorded, path))
+            .optional()?;
+        Ok(match row {
+            None => SyncedTrackState::Missing,
+            Some((path, Some(owner))) if owner == source_id => SyncedTrackState::Owned(path),
+            Some(_) => SyncedTrackState::Collision,
+        })
     }
 
     /// master DTO を正としてメタデータを更新し、ローカルの persistent_id を維持する。
     /// 既存行では track_id を変えず、新規行だけ MAX+1 を割り当てる。
-    pub fn upsert_synced_track(&self, track: &Track, path: &Path) -> Result<i64> {
+    pub fn upsert_synced_track(
+        &self,
+        track: &Track,
+        path: &Path,
+        source_id: i64,
+    ) -> Result<Option<i64>> {
         let persistent_id = track
             .persistent_id
             .as_deref()
@@ -105,17 +127,23 @@ impl Database {
             .map(|url| url.to_string())
             .unwrap_or_else(|_| format!("file://{location_path}"));
 
-        if let Some(track_id) = self
+        if let Some((track_id, owner)) = self
             .conn
             .query_row(
-                "SELECT track_id FROM tracks WHERE persistent_id = ?1",
+                "SELECT t.track_id, st.source_id
+                 FROM tracks t
+                 LEFT JOIN sync_track st ON st.persistent_id = t.persistent_id
+                 WHERE t.persistent_id = ?1",
                 [persistent_id],
-                |row| row.get::<_, i64>(0),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
             .optional()?
         {
+            if owner != Some(source_id) {
+                return Ok(None);
+            }
             self.update_synced_track(track_id, track, &location_raw, &location_path)?;
-            return Ok(track_id);
+            return Ok(Some(track_id));
         }
 
         let mut attempt = 0;
@@ -167,25 +195,31 @@ impl Database {
             match inserted {
                 Ok(_) => {
                     self.recompute_synced_search_text(track_id)?;
-                    return Ok(track_id);
+                    return Ok(Some(track_id));
                 }
                 Err(err) if super::should_retry_constraint(&err, attempt) => {
-                    if let Some(existing_id) = self
+                    if let Some((existing_id, owner)) = self
                         .conn
                         .query_row(
-                            "SELECT track_id FROM tracks WHERE persistent_id = ?1",
+                            "SELECT t.track_id, st.source_id
+                             FROM tracks t
+                             LEFT JOIN sync_track st ON st.persistent_id = t.persistent_id
+                             WHERE t.persistent_id = ?1",
                             [persistent_id],
-                            |row| row.get::<_, i64>(0),
+                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
                         )
                         .optional()?
                     {
+                        if owner != Some(source_id) {
+                            return Ok(None);
+                        }
                         self.update_synced_track(
                             existing_id,
                             track,
                             &location_raw,
                             &location_path,
                         )?;
-                        return Ok(existing_id);
+                        return Ok(Some(existing_id));
                     }
                     attempt += 1;
                 }
@@ -250,7 +284,7 @@ impl Database {
         Ok(())
     }
 
-    /// master playlist の persistent_id を保ち、所属曲を master 順で全置換する。
+    /// master playlist の persistent_id を保ち、ルート直下で所属曲を全置換する。
     pub fn create_or_replace_playlist_with_pid(
         &self,
         playlist: &Playlist,
@@ -271,10 +305,9 @@ impl Database {
             .optional()?;
         let playlist_id = if let Some(playlist_id) = existing {
             tx.execute(
-                "UPDATE playlists SET parent_persistent_id=?1, name=?2, is_folder=?3,
-                     is_smart=?4, is_user_created=0 WHERE playlist_id=?5",
+                "UPDATE playlists SET parent_persistent_id=NULL, name=?1, is_folder=?2,
+                     is_smart=?3, is_user_created=0 WHERE playlist_id=?4",
                 params![
-                    playlist.parent_persistent_id,
                     playlist.name,
                     playlist.is_folder as i32,
                     playlist.is_smart as i32,
@@ -297,11 +330,10 @@ impl Database {
                 "INSERT INTO playlists
                     (playlist_id, persistent_id, parent_persistent_id, name, is_folder,
                      is_smart, is_user_created, sort_order)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, 0, ?6)",
                 params![
                     playlist_id,
                     persistent_id,
-                    playlist.parent_persistent_id,
                     playlist.name,
                     playlist.is_folder as i32,
                     playlist.is_smart as i32,
@@ -440,9 +472,12 @@ mod tests {
     #[test]
     fn synced_track_preserves_pid_allocates_id_and_refreshes_metadata() {
         let db = Database::open_memory().unwrap();
+        let source = db
+            .upsert_sync_source("server-one", Some("One"), "http://one", "token")
+            .unwrap();
         db.conn
             .execute(
-                "INSERT INTO tracks (track_id, persistent_id, name) VALUES (41, 'OTHERPID00000001', 'Other')",
+                "INSERT INTO tracks (track_id, persistent_id, name) VALUES (41, '0000111122223333', 'Other')",
                 [],
             )
             .unwrap();
@@ -451,20 +486,26 @@ mod tests {
         std::fs::write(&path, b"audio").unwrap();
 
         let first = db
-            .upsert_synced_track(&track("MASTERPID0000001", "First", 80), &path)
+            .upsert_synced_track(&track("AAAABBBBCCCCDD01", "First", 80), &path, source.id)
             .unwrap();
-        assert_eq!(first, 42);
+        assert_eq!(first, Some(42));
+        db.record_sync_track("AAAABBBBCCCCDD01", source.id, "{}")
+            .unwrap();
         let second = db
-            .upsert_synced_track(&track("MASTERPID0000001", "Refreshed", 100), &path)
+            .upsert_synced_track(
+                &track("AAAABBBBCCCCDD01", "Refreshed", 100),
+                &path,
+                source.id,
+            )
             .unwrap();
         assert_eq!(second, first);
 
         let stored = db
-            .get_tracks_by_persistent_ids(&["MASTERPID0000001".to_string()])
+            .get_tracks_by_persistent_ids(&["AAAABBBBCCCCDD01".to_string()])
             .unwrap()
             .pop()
             .unwrap();
-        assert_eq!(stored.persistent_id.as_deref(), Some("MASTERPID0000001"));
+        assert_eq!(stored.persistent_id.as_deref(), Some("AAAABBBBCCCCDD01"));
         assert_eq!(stored.name.as_deref(), Some("Refreshed"));
         assert_eq!(stored.rating, Some(100));
         assert_eq!(stored.play_count, Some(7));
@@ -473,7 +514,7 @@ mod tests {
         let count: i64 = db
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM tracks WHERE persistent_id='MASTERPID0000001'",
+                "SELECT COUNT(*) FROM tracks WHERE persistent_id='AAAABBBBCCCCDD01'",
                 [],
                 |row| row.get(0),
             )
@@ -482,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn synced_playlist_keeps_pid_and_replaces_membership() {
+    fn synced_playlist_keeps_pid_flattens_parent_and_replaces_membership() {
         let db = Database::open_memory().unwrap();
         for id in 1..=3 {
             db.conn
@@ -495,8 +536,8 @@ mod tests {
         let playlist = Playlist {
             id: 99,
             playlist_id: 100,
-            persistent_id: Some("MASTERPLAYLIST01".to_string()),
-            parent_persistent_id: None,
+            persistent_id: Some("1111222233334444".to_string()),
+            parent_persistent_id: Some("FFFFEEEEDDDDCCCC".to_string()),
             name: "Remote".to_string(),
             is_folder: false,
             is_smart: false,
@@ -511,14 +552,92 @@ mod tests {
             .unwrap();
         assert_eq!(first, second);
         assert_eq!(db.get_playlist_track_ids(first).unwrap(), vec![3, 1]);
-        let pid: String = db
+        let (pid, parent): (String, Option<String>) = db
             .conn
             .query_row(
-                "SELECT persistent_id FROM playlists WHERE playlist_id=?1",
+                "SELECT persistent_id, parent_persistent_id FROM playlists WHERE playlist_id=?1",
                 [first],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(pid, "MASTERPLAYLIST01");
+        assert_eq!(pid, "1111222233334444");
+        assert_eq!(parent, None);
+    }
+
+    #[test]
+    fn synced_track_rejects_local_and_cross_source_collisions() {
+        let db = Database::open_memory().unwrap();
+        let source_one = db
+            .upsert_sync_source("server-one", Some("One"), "http://one", "token-one")
+            .unwrap();
+        let source_two = db
+            .upsert_sync_source("server-two", Some("Two"), "http://two", "token-two")
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.mp3");
+        std::fs::write(&path, b"audio").unwrap();
+        let path_string = path.to_string_lossy().to_string();
+
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, persistent_id, name, location_path)
+                 VALUES (1, '0000000000000001', 'Local', ?1)",
+                [path_string],
+            )
+            .unwrap();
+        assert_eq!(
+            db.synced_track_state("0000000000000001", source_one.id)
+                .unwrap(),
+            SyncedTrackState::Collision
+        );
+        assert_eq!(
+            db.upsert_synced_track(
+                &track("0000000000000001", "Remote", 100),
+                &path,
+                source_one.id,
+            )
+            .unwrap(),
+            None
+        );
+
+        let owned_id = db
+            .upsert_synced_track(
+                &track("0000000000000002", "From One", 80),
+                &path,
+                source_one.id,
+            )
+            .unwrap()
+            .unwrap();
+        db.record_sync_track("0000000000000002", source_one.id, "{}")
+            .unwrap();
+        assert_eq!(
+            db.synced_track_state("0000000000000002", source_two.id)
+                .unwrap(),
+            SyncedTrackState::Collision
+        );
+        assert_eq!(
+            db.upsert_synced_track(
+                &track("0000000000000002", "From Two", 100),
+                &path,
+                source_two.id,
+            )
+            .unwrap(),
+            None
+        );
+        let names: (String, String) = (
+            db.conn
+                .query_row("SELECT name FROM tracks WHERE track_id=1", [], |row| {
+                    row.get(0)
+                })
+                .unwrap(),
+            db.conn
+                .query_row(
+                    "SELECT name FROM tracks WHERE track_id=?1",
+                    [owned_id],
+                    |row| row.get(0),
+                )
+                .unwrap(),
+        );
+        assert_eq!(names, ("Local".to_string(), "From One".to_string()));
     }
 }

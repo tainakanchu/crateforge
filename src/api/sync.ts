@@ -16,7 +16,7 @@ export interface PairingStart {
 }
 
 export interface PairedSource {
-  token: string;
+  sourceId: number;
   serverId: string;
   name: string;
 }

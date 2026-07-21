@@ -115,6 +115,7 @@ fn migrate(conn: &Connection) -> Result<()> {
 
 /// federation slave 側の同期元・選択・取得済み曲を保持する side table を作る。
 fn migrate_sync_tables(conn: &Connection) -> Result<()> {
+    // token は既存設計に合わせて DB 保存し、将来の hardening で keychain 移行を検討する。
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS sync_source (
              id INTEGER PRIMARY KEY,
