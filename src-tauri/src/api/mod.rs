@@ -246,7 +246,8 @@ pub(crate) async fn pair_poll(
 /// - ループバック (127.x, ::1) は無条件通過。
 /// - public パス (PWA 資産) はトークン不要で通過。
 /// - それ以外は token クエリパラメータまたは X-API-Token ヘッダを照合する。
-/// - GET メソッドと /api/remote/* のみ LAN から許可 (それ以外の書き込みは 403)。
+/// - GET メソッド、読み取り専用 lookup POST、/api/remote/* のみ LAN から許可
+///   (それ以外の書き込みは 403)。
 async fn auth_guard(
     axum::extract::State(state): axum::extract::State<ApiState>,
     req: axum::http::Request<axum::body::Body>,
@@ -304,6 +305,7 @@ async fn auth_guard(
     }
 
     // LAN からの書き込みは原則 /api/remote/* と GET のみ許可する。
+    // federation lookup は POST だが DB を変更しない読み取り API なので例外として許可する。
     // 例外: `POST /api/tracks/{id}/rating` と `PUT`/`DELETE /api/tracks/{id}/artwork` のみ許可する。
     // rating はレーティングを DB に書くだけの最小権限エンドポイントで、ファイルタグや
     // 他メタデータには触れない (モバイルから★を設定する用)。artwork は実ファイルの
@@ -311,6 +313,8 @@ async fn auth_guard(
     // (`PATCH /api/tracks/{id}`) や一括書き込みは引き続き LAN から拒否する。
     let method = req.method().clone();
     let is_read_only_method = method == axum::http::Method::GET;
+    let is_read_only_lookup = method == axum::http::Method::POST
+        && matches!(path.as_str(), "/api/tracks/lookup" | "/api/analysis/lookup");
     let is_remote_path = path.starts_with("/api/remote");
     let is_rating_write = method == axum::http::Method::POST && is_rating_path(&path);
     // アートワーク設定 (PUT)・削除 (DELETE) も LAN から token 認証つきで許可する。
@@ -319,7 +323,12 @@ async fn auth_guard(
         || method == axum::http::Method::DELETE)
         && is_artwork_path(&path);
 
-    if !is_read_only_method && !is_remote_path && !is_rating_write && !is_artwork_write {
+    if !is_read_only_method
+        && !is_read_only_lookup
+        && !is_remote_path
+        && !is_rating_write
+        && !is_artwork_write
+    {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -348,6 +357,8 @@ pub fn router(state: ApiState) -> Router {
             get(handlers::list_tracks).patch(handlers::patch_tracks_bulk),
         )
         .route("/api/tracks/by-ids", post(handlers::tracks_by_ids))
+        .route("/api/tracks/lookup", post(handlers::tracks_lookup))
+        .route("/api/analysis/lookup", post(handlers::analysis_lookup))
         // GET と PATCH を 1 つの MethodRouter に合流させる (axum 0.8 は同一パスを
         // 別 .route で重ねると panic するため)。PATCH ハンドラは下の「書き込み」節参照。
         .route(
@@ -383,6 +394,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/artists", get(handlers::get_artists))
         .route("/api/playlists", get(handlers::list_playlists))
         .route("/api/playlists/{playlistId}", get(handlers::get_playlist))
+        .route(
+            "/api/playlists/{playlistId}/size-estimate",
+            get(handlers::playlist_size_estimate),
+        )
         .route(
             "/api/playlists/{playlistId}/tracks",
             get(handlers::playlist_tracks),
@@ -723,7 +738,7 @@ mod tests {
                     (persistent_id, track_id, version, analyzed_at, bpm, key_camelot, key_name,
                      energy, loudness_lufs, replaygain_db, vector, peaks)
                  SELECT persistent_id, track_id, 2, '2026-01-01T00:00:00Z',
-                        ?2, ?3, NULL, ?4, NULL, NULL, ?5, '[]'
+                        ?2, ?3, NULL, ?4, NULL, NULL, ?5, '[0.25, 0.75]'
                  FROM tracks WHERE track_id = ?1",
                 rusqlite::params![track_id, bpm, key, energy, vector_json],
             )
@@ -757,12 +772,27 @@ mod tests {
     // ===== ケース 1: health =====
     #[tokio::test]
     async fn case01_health_reports_track_count() {
-        let (_dir, app) = setup();
-        let (status, body) = req(app, "GET", "/api/health", None).await;
+        let (dir, app) = setup();
+        let (status, body) = req(app.clone(), "GET", "/api/health", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["name"], "crateforge");
         assert_eq!(body["trackCount"], 5);
         assert!(body["version"].is_string());
+        let server_id = body["serverId"].as_str().unwrap();
+        assert_eq!(server_id.len(), 16);
+        assert!(server_id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+        // 2 回目も app_state に保存された同じ ID を返す。
+        let (_, second) = req(app.clone(), "GET", "/api/health", None).await;
+        assert_eq!(second["serverId"], body["serverId"]);
+
+        // server_name が設定されていれば既定名より優先する。
+        crate::db::Database::open(dir.path())
+            .unwrap()
+            .set_state("server_name", "Studio Master")
+            .unwrap();
+        let (_, named) = req(app, "GET", "/api/health", None).await;
+        assert_eq!(named["name"], "Studio Master");
     }
 
     // ===== ケース 2: 全件 / limit / offset =====
@@ -884,6 +914,30 @@ mod tests {
         assert_eq!(arr[1]["trackId"], 1);
     }
 
+    // ===== federation: persistent ID で Track をまとめて解決 =====
+    #[tokio::test]
+    async fn case_tracks_lookup_omits_missing_persistent_ids() {
+        let (_dir, app) = setup();
+        let (status, body) = req(
+            app,
+            "POST",
+            "/api/tracks/lookup",
+            Some(json!({
+                "persistentIds": [
+                    "0000000000000003",
+                    "FFFFFFFFFFFFFFFF",
+                    "0000000000000001"
+                ]
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let tracks = body.as_array().unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0]["persistentId"], "0000000000000003");
+        assert_eq!(tracks[1]["persistentId"], "0000000000000001");
+    }
+
     // ===== ケース 9: analysis (未解析なら null) =====
     #[tokio::test]
     async fn case09_track_analysis_null_path() {
@@ -900,6 +954,40 @@ mod tests {
         assert_eq!(body["trackId"], 1);
         assert_eq!(body["bpm"], 128.0);
         assert_eq!(body["keyCamelot"], "8A");
+    }
+
+    // ===== federation: analysis lookup の peaks 選択 =====
+    #[tokio::test]
+    async fn case_analysis_lookup_respects_include_peaks() {
+        let (_dir, app) = setup();
+        let request_ids = json!({
+            "persistentIds": ["0000000000000002", "FFFFFFFFFFFFFFFF"]
+        });
+        let (status, without_peaks) = req(
+            app.clone(),
+            "POST",
+            "/api/analysis/lookup",
+            Some(request_ids.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let analyses = without_peaks.as_array().unwrap();
+        assert_eq!(analyses.len(), 1);
+        assert_eq!(analyses[0]["persistentId"], "0000000000000002");
+        assert!(analyses[0].get("peaks").is_none());
+
+        let (status, with_peaks) = req(
+            app,
+            "POST",
+            "/api/analysis/lookup",
+            Some(json!({
+                "persistentIds": ["0000000000000002"],
+                "includePeaks": true
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(with_peaks[0]["peaks"], json!([0.25, 0.75]));
     }
 
     // ===== 追加: similar (解析済みの有意味なケース) =====
@@ -1142,6 +1230,44 @@ mod tests {
         let arr = body.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["trackId"], 1);
+    }
+
+    // ===== federation: playlist 実ファイル容量見積もり =====
+    #[tokio::test]
+    async fn case_playlist_size_estimate_counts_bytes_and_missing_files() {
+        let (dir, app) = setup();
+        let real_path = dir.path().join("present-track.bin");
+        std::fs::write(&real_path, b"1234567").unwrap();
+        let missing_path = dir.path().join("missing-track.bin");
+        let real_path = real_path.to_string_lossy().into_owned();
+        let missing_path = missing_path.to_string_lossy().into_owned();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        db.conn
+            .execute(
+                "UPDATE tracks SET location_path = ?1 WHERE track_id = 1",
+                [&real_path],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE tracks SET location_path = ?1 WHERE track_id = 2",
+                [&missing_path],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index)
+                 VALUES (100, 2, 1)",
+                [],
+            )
+            .unwrap();
+
+        let (status, body) =
+            req(app, "GET", "/api/playlists/100/size-estimate", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["trackCount"], 2);
+        assert_eq!(body["totalBytes"], 7);
+        assert_eq!(body["missingFiles"], 1);
     }
 
     // ===== メタデータ書き込み: ジャンルタグ追記 (#39-1) =====
@@ -1686,7 +1812,35 @@ mod tests {
         let resp = app.clone().oneshot(bad).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-        // 4. ループバックからはトークン不要で 200 (後方互換)。
+        // 4. 読み取り専用 lookup POST は、有効トークン付き LAN から許可する。
+        let lookup = with_lan(
+            Request::builder()
+                .method("POST")
+                .uri("/api/tracks/lookup")
+                .header("X-API-Token", "devtok")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "persistentIds": ["0000000000000001"] }).to_string(),
+                ))
+                .unwrap(),
+        );
+        let resp = app.clone().oneshot(lookup).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // 5. lookup 以外の一般 POST は、同じ有効トークンでも引き続き 403。
+        let unrelated_post = with_lan(
+            Request::builder()
+                .method("POST")
+                .uri("/api/tracks/by-ids")
+                .header("X-API-Token", "devtok")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "trackIds": [1] }).to_string()))
+                .unwrap(),
+        );
+        let resp = app.clone().oneshot(unrelated_post).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // 6. ループバックからはトークン不要で 200 (後方互換)。
         let loopback = Request::builder()
             .method("GET")
             .uri("/api/health")

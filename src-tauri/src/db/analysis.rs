@@ -4,6 +4,8 @@
 //! 特徴ベクトルは `Vec<f64>` を JSON 文字列にして `vector` 列に格納する
 //! (BLOB より可読・移植性が高く、~20 次元なのでサイズも問題にならない)。
 
+use std::collections::HashMap;
+
 use rusqlite::{params, OptionalExtension, Result};
 
 use super::Database;
@@ -100,6 +102,72 @@ impl Database {
                 .unwrap_or_default();
         }
         Ok(base)
+    }
+
+    /// persistent_id 群に対応する解析結果を入力順で返す。見つからない ID は省略する。
+    /// SQLite の変数上限を避けるため IN 句を分割し、peaks は要求された場合だけ読む。
+    pub fn get_analysis_by_persistent_ids(
+        &self,
+        persistent_ids: &[String],
+        include_peaks: bool,
+    ) -> Result<Vec<(String, TrackAnalysis)>> {
+        const CHUNK_SIZE: usize = 900;
+        let mut found = HashMap::with_capacity(persistent_ids.len());
+
+        for chunk in persistent_ids.chunks(CHUNK_SIZE) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let peaks_column = if include_peaks { "peaks" } else { "NULL" };
+            let sql = format!(
+                "SELECT persistent_id, {SELECT_COLS}, {peaks_column}
+                 FROM track_analysis
+                 WHERE track_id IS NOT NULL AND persistent_id IN ({placeholders})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                let persistent_id: String = row.get(0)?;
+                let vector_json: Option<String> = row.get(10)?;
+                let peaks_json: Option<String> = row.get(11)?;
+                Ok((
+                    persistent_id,
+                    TrackAnalysis {
+                        track_id: row.get(1)?,
+                        version: row.get(2)?,
+                        analyzed_at: row.get(3)?,
+                        bpm: row.get(4)?,
+                        key_camelot: row.get(5)?,
+                        key_name: row.get(6)?,
+                        energy: row.get(7)?,
+                        loudness_lufs: row.get(8)?,
+                        replaygain_db: row.get(9)?,
+                        vector: vector_json
+                            .and_then(|value| serde_json::from_str(&value).ok())
+                            .unwrap_or_default(),
+                        peaks: peaks_json
+                            .and_then(|value| serde_json::from_str(&value).ok())
+                            .unwrap_or_default(),
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (persistent_id, analysis) = row?;
+                found.insert(persistent_id, analysis);
+            }
+        }
+
+        Ok(persistent_ids
+            .iter()
+            .filter_map(|persistent_id| {
+                found
+                    .get(persistent_id)
+                    .cloned()
+                    .map(|analysis| (persistent_id.clone(), analysis))
+            })
+            .collect())
     }
 
     /// 解析済みの全曲を取得 (類似度計算の母集合に使う)。

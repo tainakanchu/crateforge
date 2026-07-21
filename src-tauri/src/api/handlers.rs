@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use tauri::Manager;
@@ -46,8 +46,19 @@ fn display_artist(first: Option<&str>, second: Option<&str>) -> String {
 pub async fn health(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
     let stats = db.library_stats()?;
+    let server_id = match db.get_state("server_id")? {
+        Some(server_id) => server_id,
+        None => {
+            let generated = crate::db::generate_persistent_id(stats.track_count as u64);
+            db.get_or_create_state("server_id", &generated)?
+        }
+    };
+    let name = db
+        .get_state("server_name")?
+        .unwrap_or_else(|| "crateforge".to_string());
     Ok(Json(json!({
-        "name": "crateforge",
+        "name": name,
+        "serverId": server_id,
         "version": env!("CARGO_PKG_VERSION"),
         "trackCount": stats.track_count,
     })))
@@ -241,6 +252,83 @@ pub async fn tracks_by_ids(
     Ok(Json(tracks))
 }
 
+/// federation lookup 共通の persistent ID 配列。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistentIdsBody {
+    pub persistent_ids: Vec<String>,
+}
+
+/// `POST /api/tracks/lookup` — persistent ID 列を入力順のまま Track へ解決する。
+pub async fn tracks_lookup(
+    State(state): State<ApiState>,
+    ExtractJson(body): ExtractJson<PersistentIdsBody>,
+) -> Result<Json<Vec<Track>>, ApiError> {
+    let tracks = state
+        .db()?
+        .get_tracks_by_persistent_ids(&body.persistent_ids)?;
+    Ok(Json(tracks))
+}
+
+/// `POST /api/analysis/lookup` のボディ。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisLookupBody {
+    pub persistent_ids: Vec<String>,
+    #[serde(default)]
+    pub include_peaks: bool,
+}
+
+/// federation 用の解析結果。既存 TrackAnalysis に persistentId を加え、
+/// peaks は明示的に要求された場合だけシリアライズする。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisLookupItem {
+    pub persistent_id: String,
+    pub track_id: i64,
+    pub version: i64,
+    pub analyzed_at: String,
+    pub bpm: Option<f64>,
+    pub key_camelot: Option<String>,
+    pub key_name: Option<String>,
+    pub energy: Option<f64>,
+    pub loudness_lufs: Option<f64>,
+    pub replaygain_db: Option<f64>,
+    pub vector: Vec<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peaks: Option<Vec<f32>>,
+}
+
+/// `POST /api/analysis/lookup` — persistent ID 列に対応する解析結果を返す。
+pub async fn analysis_lookup(
+    State(state): State<ApiState>,
+    ExtractJson(body): ExtractJson<AnalysisLookupBody>,
+) -> Result<Json<Vec<AnalysisLookupItem>>, ApiError> {
+    let include_peaks = body.include_peaks;
+    let analyses = state
+        .db()?
+        .get_analysis_by_persistent_ids(&body.persistent_ids, include_peaks)?;
+    Ok(Json(
+        analyses
+            .into_iter()
+            .map(|(persistent_id, analysis)| AnalysisLookupItem {
+                persistent_id,
+                track_id: analysis.track_id,
+                version: analysis.version,
+                analyzed_at: analysis.analyzed_at,
+                bpm: analysis.bpm,
+                key_camelot: analysis.key_camelot,
+                key_name: analysis.key_name,
+                energy: analysis.energy,
+                loudness_lufs: analysis.loudness_lufs,
+                replaygain_db: analysis.replaygain_db,
+                vector: analysis.vector,
+                peaks: include_peaks.then_some(analysis.peaks),
+            })
+            .collect(),
+    ))
+}
+
 /// `GET /api/tracks/:trackId/analysis` — 解析結果 (未解析なら JSON null, 200)。
 pub async fn get_track_analysis(
     State(state): State<ApiState>,
@@ -382,6 +470,45 @@ pub async fn playlist_tracks(
         q.order.as_deref(),
     )?;
     Ok(Json(tracks))
+}
+
+/// federation 転送前のプレイリスト容量見積もり。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistSizeEstimate {
+    pub track_count: usize,
+    pub total_bytes: u64,
+    pub missing_files: usize,
+}
+
+/// `GET /api/playlists/:playlistId/size-estimate` — 所属曲の実ファイル容量を合計する。
+pub async fn playlist_size_estimate(
+    State(state): State<ApiState>,
+    Path(playlist_id): Path<i64>,
+) -> Result<Json<PlaylistSizeEstimate>, ApiError> {
+    let db = state.db()?;
+    if db.get_playlist(playlist_id)?.is_none() {
+        return Err(ApiError::not_found("playlist not found"));
+    }
+    let tracks = db.get_playlist_tracks(playlist_id, ALL_ROWS, 0, None, None)?;
+    let mut total_bytes = 0;
+    let mut missing_files = 0;
+    for track in &tracks {
+        let metadata = track
+            .location_path
+            .as_deref()
+            .filter(|path| !path.is_empty())
+            .map(std::fs::metadata);
+        match metadata {
+            Some(Ok(metadata)) => total_bytes += metadata.len(),
+            Some(Err(_)) | None => missing_files += 1,
+        }
+    }
+    Ok(Json(PlaylistSizeEstimate {
+        track_count: tracks.len(),
+        total_bytes,
+        missing_files,
+    }))
 }
 
 // ===== 書き込み =====
