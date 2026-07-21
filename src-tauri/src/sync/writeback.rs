@@ -43,8 +43,10 @@ const STRING_FIELDS: [&str; 7] = [
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldDiff {
     Unchanged,
-    LocalOnly(Value),
-    MasterOnly(Value),
+    /// push 対象。`previous` は母艦上で上書きされる現在値（= base と同じ）。
+    LocalOnly { value: Value, previous: Value },
+    /// pull 対象。`previous` は手元で上書きされる現在値（= base と同じ）。
+    MasterOnly { value: Value, previous: Value },
     BothSame,
     Conflict {
         local: Value,
@@ -58,6 +60,8 @@ pub enum FieldDiff {
 pub struct FieldUpdate {
     pub field: String,
     pub value: Value,
+    /// 上書きされる直前の値。push なら母艦の現在値、pull なら手元の現在値。UI の old→new 表示用。
+    pub previous: Value,
 }
 
 /// 同じ曲への PATCH / local pull は fields をまとめて 1 回にする。
@@ -335,8 +339,14 @@ pub fn classify_field(
     let master_changed = !field_values_equal(field, &master, &base);
     match (local_changed, master_changed) {
         (false, false) => FieldDiff::Unchanged,
-        (true, false) => FieldDiff::LocalOnly(local),
-        (false, true) => FieldDiff::MasterOnly(master),
+        (true, false) => FieldDiff::LocalOnly {
+            value: local,
+            previous: master,
+        },
+        (false, true) => FieldDiff::MasterOnly {
+            value: master,
+            previous: local,
+        },
         (true, true) if field_values_equal(field, &local, &master) => FieldDiff::BothSame,
         (true, true) => FieldDiff::Conflict {
             local,
@@ -401,13 +411,15 @@ fn compute_plan(local: &LocalInput, remote: &RemoteInput) -> Result<WritebackPla
                 master.date_modified.as_deref(),
             ) {
                 FieldDiff::Unchanged | FieldDiff::BothSame => {}
-                FieldDiff::LocalOnly(value) => pushes.push(FieldUpdate {
+                FieldDiff::LocalOnly { value, previous } => pushes.push(FieldUpdate {
                     field: field.to_string(),
                     value,
+                    previous,
                 }),
-                FieldDiff::MasterOnly(value) => pulls.push(FieldUpdate {
+                FieldDiff::MasterOnly { value, previous } => pulls.push(FieldUpdate {
                     field: field.to_string(),
                     value,
+                    previous,
                 }),
                 FieldDiff::Conflict {
                     local,
@@ -523,7 +535,12 @@ where
     Ok(plan)
 }
 
-fn merge_update(target: &mut Vec<TrackChange>, conflict: &WritebackConflict, value: Value) {
+fn merge_update(
+    target: &mut Vec<TrackChange>,
+    conflict: &WritebackConflict,
+    value: Value,
+    previous: Value,
+) {
     if let Some(change) = target
         .iter_mut()
         .find(|change| change.persistent_id == conflict.persistent_id)
@@ -531,6 +548,7 @@ fn merge_update(target: &mut Vec<TrackChange>, conflict: &WritebackConflict, val
         change.fields.push(FieldUpdate {
             field: conflict.field.clone(),
             value,
+            previous,
         });
     } else {
         target.push(TrackChange {
@@ -539,6 +557,7 @@ fn merge_update(target: &mut Vec<TrackChange>, conflict: &WritebackConflict, val
             fields: vec![FieldUpdate {
                 field: conflict.field.clone(),
                 value,
+                previous,
             }],
         });
     }
@@ -567,12 +586,18 @@ fn resolve_conflicts(plan: &mut WritebackPlan, resolutions: &[ConflictResolution
                 }
             });
         match choice {
-            ResolutionChoice::Local => {
-                merge_update(&mut plan.track_changes, conflict, conflict.local.clone())
-            }
-            ResolutionChoice::Master => {
-                merge_update(&mut plan.pulls, conflict, conflict.master.clone())
-            }
+            ResolutionChoice::Local => merge_update(
+                &mut plan.track_changes,
+                conflict,
+                conflict.local.clone(),
+                conflict.master.clone(),
+            ),
+            ResolutionChoice::Master => merge_update(
+                &mut plan.pulls,
+                conflict,
+                conflict.master.clone(),
+                conflict.local.clone(),
+            ),
         }
     }
 }
@@ -844,11 +869,17 @@ mod tests {
         );
         assert_eq!(
             classify_field("year", value(2024), value(2025), value(2024), None, None),
-            FieldDiff::LocalOnly(value(2025))
+            FieldDiff::LocalOnly {
+                value: value(2025),
+                previous: value(2024),
+            }
         );
         assert_eq!(
             classify_field("year", value(2024), value(2024), value(2026), None, None),
-            FieldDiff::MasterOnly(value(2026))
+            FieldDiff::MasterOnly {
+                value: value(2026),
+                previous: value(2024),
+            }
         );
         assert_eq!(
             classify_field("year", value(2024), value(2025), value(2025), None, None),
@@ -900,7 +931,10 @@ mod tests {
                 Some("2026-07-22T00:00:00Z"),
                 Some("2026-07-22T00:00:00Z"),
             ),
-            FieldDiff::LocalOnly(value(100))
+            FieldDiff::LocalOnly {
+                value: value(100),
+                previous: value(60),
+            }
         );
     }
 
@@ -919,6 +953,11 @@ mod tests {
         };
         resolve_conflicts(&mut local_newer, &[]);
         assert_eq!(local_newer.track_changes[0].fields[0].value, value("Local"));
+        // push なので previous は上書きされる母艦側の現在値。
+        assert_eq!(
+            local_newer.track_changes[0].fields[0].previous,
+            value("Master")
+        );
 
         let mut master_newer = WritebackPlan {
             conflicts: vec![WritebackConflict {
@@ -929,6 +968,8 @@ mod tests {
         };
         resolve_conflicts(&mut master_newer, &[]);
         assert_eq!(master_newer.pulls[0].fields[0].value, value("Master"));
+        // pull なので previous は上書きされる手元側の現在値。
+        assert_eq!(master_newer.pulls[0].fields[0].previous, value("Local"));
     }
 
     #[test]
@@ -948,6 +989,7 @@ mod tests {
                 fields: vec![FieldUpdate {
                     field: "rating".to_string(),
                     value: value(80),
+                    previous: value(60),
                 }],
             }],
             conflicts: Vec::new(),
@@ -962,6 +1004,7 @@ mod tests {
         };
         let json = serde_json::to_value(plan).unwrap();
         assert_eq!(json["trackChanges"][0]["persistentId"], "AAAABBBBCCCCDDDD");
+        assert_eq!(json["trackChanges"][0]["fields"][0]["previous"], 60);
         assert_eq!(json["playlistOps"][0]["op"], "replaceTracks");
         assert_eq!(json["playlistOps"][0]["overwritesMasterOrdering"], true);
         assert!(json.get("pulls").is_some());
@@ -1134,14 +1177,26 @@ mod tests {
             .iter()
             .find(|change| change.persistent_id == "AAAABBBBCCCC0001")
             .unwrap();
-        assert!(pushed.fields.iter().any(|field| field.field == "rating"));
+        let pushed_rating = pushed
+            .fields
+            .iter()
+            .find(|field| field.field == "rating")
+            .unwrap();
+        assert_eq!(pushed_rating.value, value(100));
+        // 母艦のレートは変更されていないので、previous は上書き前の母艦側の値。
+        assert_eq!(pushed_rating.previous, value(60));
         assert!(planned.conflicts.iter().any(|conflict| {
             conflict.persistent_id == "AAAABBBBCCCC0001" && conflict.field == "name"
         }));
-        assert!(planned.pulls.iter().any(|pull| {
-            pull.persistent_id == "AAAABBBBCCCC0001"
-                && pull.fields.iter().any(|field| field.field == "album")
-        }));
+        let pulled_album = planned
+            .pulls
+            .iter()
+            .find(|pull| pull.persistent_id == "AAAABBBBCCCC0001")
+            .and_then(|pull| pull.fields.iter().find(|field| field.field == "album"))
+            .unwrap();
+        assert_eq!(pulled_album.value, value("Master Album"));
+        // 手元のアルバムは変更されていないので、previous は上書き前の手元側の値。
+        assert_eq!(pulled_album.previous, value("Base Album"));
         assert!(planned
             .playlist_ops
             .iter()

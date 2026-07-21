@@ -64,6 +64,7 @@ export type WritebackValue = string | number | boolean | null;
 export interface WritebackFieldUpdate {
   field: string;
   value: WritebackValue;
+  previous: WritebackValue;
 }
 
 export interface WritebackTrackChange {
@@ -102,7 +103,7 @@ export type WritebackPlaylistOp =
       masterPlaylistId: number;
       name: string;
       trackPersistentIds: string[];
-      overwritesMasterOrdering: true;
+      overwritesMasterOrdering: boolean;
     }
   | {
       op: "skippedDelete";
