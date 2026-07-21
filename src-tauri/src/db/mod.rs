@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod playlists;
 pub mod schema;
 pub mod stats;
+pub mod sync;
 pub mod tracks;
 
 use std::path::Path;
@@ -108,6 +109,39 @@ fn migrate(conn: &Connection) -> Result<()> {
     migrate_persistent_ids(conn)?;
     migrate_track_analysis(conn)?;
     migrate_search_text(conn)?;
+    migrate_sync_tables(conn)?;
+    Ok(())
+}
+
+/// federation slave 側の同期元・選択・取得済み曲を保持する side table を作る。
+fn migrate_sync_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_source (
+             id INTEGER PRIMARY KEY,
+             server_id TEXT NOT NULL UNIQUE,
+             name TEXT,
+             base_url TEXT NOT NULL,
+             token TEXT NOT NULL,
+             last_sync_at TEXT
+         );
+         CREATE TABLE IF NOT EXISTS sync_selection (
+             id INTEGER PRIMARY KEY,
+             source_id INTEGER NOT NULL,
+             kind TEXT NOT NULL DEFAULT 'playlist',
+             remote_pid TEXT NOT NULL,
+             name TEXT,
+             policy TEXT NOT NULL DEFAULT 'snapshot',
+             quality TEXT NOT NULL DEFAULT 'original',
+             created_at TEXT,
+             UNIQUE(source_id, kind, remote_pid)
+         );
+         CREATE TABLE IF NOT EXISTS sync_track (
+             persistent_id TEXT PRIMARY KEY,
+             source_id INTEGER NOT NULL,
+             pulled_at TEXT NOT NULL,
+             base_meta TEXT
+         );",
+    )?;
     Ok(())
 }
 

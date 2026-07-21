@@ -28,7 +28,7 @@ percent-encoding = "2"
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 # HTTP client for MusicBrainz / Cover Art Archive lookup
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 # Manual disc-id calculation (used as fallback + for unit tests).
 sha1 = "0.10"
 base64 = "0.22"

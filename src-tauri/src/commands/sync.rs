@@ -1,0 +1,227 @@
+//! federation slave 側の Tauri コマンド。
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::db::sync::SyncSource;
+use crate::db::Database;
+use crate::models::Playlist;
+use crate::sync::{
+    PairedSource, PairingStart, PlaylistSizeEstimate, ProvisionSummary, SyncProgress,
+};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisionStatus {
+    pub state: String,
+    pub summary: Option<ProvisionSummary>,
+    pub error: Option<String>,
+}
+
+impl Default for ProvisionStatus {
+    fn default() -> Self {
+        Self {
+            state: "idle".to_string(),
+            summary: None,
+            error: None,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct SyncRuntime {
+    pending_pairings: Mutex<HashMap<String, String>>,
+    provision: Mutex<ProvisionStatus>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisionStarted {
+    pub started: bool,
+}
+
+fn open_db(app: &AppHandle) -> Result<Database, String> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("Failed to get app data dir: {err}"))?;
+    Database::open(&app_dir).map_err(|err| format!("Failed to open database: {err}"))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sync_pair_start(
+    base_url: String,
+    device_name: String,
+    runtime: tauri::State<'_, SyncRuntime>,
+) -> Result<PairingStart, String> {
+    let result = crate::sync::pair_with_master(&base_url, &device_name)
+        .await
+        .map_err(|err| err.to_string())?;
+    runtime
+        .pending_pairings
+        .lock()
+        .map_err(|_| "sync pairing state is poisoned".to_string())?
+        .insert(result.session_id.clone(), base_url);
+    Ok(result)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sync_pair_poll(
+    app: AppHandle,
+    session_id: String,
+    runtime: tauri::State<'_, SyncRuntime>,
+) -> Result<Option<PairedSource>, String> {
+    let base_url = runtime
+        .pending_pairings
+        .lock()
+        .map_err(|_| "sync pairing state is poisoned".to_string())?
+        .get(&session_id)
+        .cloned()
+        .ok_or_else(|| "unknown pairing session".to_string())?;
+    let db = open_db(&app)?;
+    let result = crate::sync::poll_pairing(db, &base_url, &session_id)
+        .await
+        .map_err(|err| err.to_string())?;
+    if result.is_some() {
+        runtime
+            .pending_pairings
+            .lock()
+            .map_err(|_| "sync pairing state is poisoned".to_string())?
+            .remove(&session_id);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn sync_list_sources(app: AppHandle) -> Result<Vec<SyncSource>, String> {
+    open_db(&app)?
+        .list_sync_sources()
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sync_list_remote_playlists(
+    app: AppHandle,
+    source_id: i64,
+) -> Result<Vec<Playlist>, String> {
+    let source = open_db(&app)?
+        .get_sync_source(source_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "sync source not found".to_string())?;
+    crate::sync::list_remote_playlists(&source)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sync_playlist_size_estimate(
+    app: AppHandle,
+    source_id: i64,
+    playlist_id: i64,
+) -> Result<PlaylistSizeEstimate, String> {
+    let source = open_db(&app)?
+        .get_sync_source(source_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "sync source not found".to_string())?;
+    crate::sync::playlist_size_estimate(&source, playlist_id)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn sync_provision(
+    app: AppHandle,
+    source_id: i64,
+    remote_pids: Vec<String>,
+    dest_root: String,
+    runtime: tauri::State<'_, SyncRuntime>,
+) -> Result<ProvisionStarted, String> {
+    if remote_pids.is_empty() {
+        return Err("at least one remote playlist persistent ID is required".to_string());
+    }
+    if dest_root.trim().is_empty() {
+        return Err("destination root is required".to_string());
+    }
+    let source = open_db(&app)?
+        .get_sync_source(source_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "sync source not found".to_string())?;
+    {
+        let mut status = runtime
+            .provision
+            .lock()
+            .map_err(|_| "sync provision state is poisoned".to_string())?;
+        if status.state == "running" {
+            return Err("a sync provision job is already running".to_string());
+        }
+        *status = ProvisionStatus {
+            state: "running".to_string(),
+            summary: None,
+            error: None,
+        };
+    }
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("Failed to get app data dir: {err}"))?;
+    let task_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = match Database::open(&app_dir) {
+            Ok(db) => {
+                let event_app = task_app.clone();
+                crate::sync::provision(
+                    db,
+                    source,
+                    remote_pids,
+                    PathBuf::from(dest_root),
+                    move |progress: SyncProgress| {
+                        let _ = event_app.emit("sync-progress", progress);
+                    },
+                )
+                .await
+            }
+            Err(err) => Err(crate::sync::SyncError::Database(err)),
+        };
+        let state = task_app.state::<SyncRuntime>();
+        match result {
+            Ok(summary) => {
+                if let Ok(mut status) = state.provision.lock() {
+                    *status = ProvisionStatus {
+                        state: "complete".to_string(),
+                        summary: Some(summary.clone()),
+                        error: None,
+                    };
+                }
+                let _ = task_app.emit("sync-complete", summary);
+                let _ = task_app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if let Ok(mut status) = state.provision.lock() {
+                    *status = ProvisionStatus {
+                        state: "failed".to_string(),
+                        summary: None,
+                        error: Some(message.clone()),
+                    };
+                }
+                let _ = task_app.emit("sync-error", serde_json::json!({ "error": message }));
+            }
+        }
+    });
+    Ok(ProvisionStarted { started: true })
+}
+
+#[tauri::command]
+pub fn sync_provision_status(
+    runtime: tauri::State<'_, SyncRuntime>,
+) -> Result<ProvisionStatus, String> {
+    runtime
+        .provision
+        .lock()
+        .map(|status| status.clone())
+        .map_err(|_| "sync provision state is poisoned".to_string())
+}

@@ -21,6 +21,7 @@ mod playlist_rules;
 mod proc;
 mod smart;
 mod smtc;
+mod sync;
 mod text_fold;
 mod updater;
 
@@ -117,6 +118,7 @@ pub fn run() {
         .manage(api_server)
         .manage(pairing_registry)
         .manage(valid_tokens)
+        .manage(commands::sync::SyncRuntime::default())
         .setup(|app| {
             // クラッシュ痕跡を残すためのファイルロガー + panic フックを最初に仕込む
             // (GUI 起動で stderr が残らない。panic=abort でも abort 前にフックが走る)。
@@ -161,9 +163,17 @@ pub fn run() {
                 let server_state = app.state::<Mutex<Option<api::ServerControl>>>();
                 let pairing_reg = app.state::<pairing::PairingRegistry>();
                 let valid = app.state::<devices::ValidTokens>();
-                if let Err(e) = commands::api::start_if_enabled(app.handle(), &server_state, &pairing_reg, &valid) {
+                if let Err(e) = commands::api::start_if_enabled(
+                    app.handle(),
+                    &server_state,
+                    &pairing_reg,
+                    &valid,
+                ) {
                     eprintln!("API server auto-start failed (non-fatal): {}", e);
-                    logging::write_line("warn", &format!("API server auto-start failed (non-fatal): {}", e));
+                    logging::write_line(
+                        "warn",
+                        &format!("API server auto-start failed (non-fatal): {}", e),
+                    );
                 }
             }
             Ok(())
@@ -269,6 +279,14 @@ pub fn run() {
             commands::pairing::list_pending_pairings,
             commands::pairing::list_paired_devices,
             commands::pairing::revoke_device,
+            // federation slave sync
+            commands::sync::sync_pair_start,
+            commands::sync::sync_pair_poll,
+            commands::sync::sync_list_sources,
+            commands::sync::sync_list_remote_playlists,
+            commands::sync::sync_playlist_size_estimate,
+            commands::sync::sync_provision,
+            commands::sync::sync_provision_status,
             // フォント
             commands::fonts::list_system_fonts,
             commands::fonts::get_ui_font,
