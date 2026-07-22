@@ -159,6 +159,9 @@ function persistPlaylists(playlists: Record<number, DownloadedPlaylist>): void {
   }
 }
 
+/** syncPinnedPlaylists の再入防止用 in-flight Promise（モジュールスコープ、zustand state ではない）。 */
+let syncInFlight: Promise<void> | null = null;
+
 export const useDownloads = create<DownloadsState>((set, get) => ({
   entries: {},
   downloading: {},
@@ -330,53 +333,66 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
   getDownloadedPlaylist: (playlistId) => get().playlists[playlistId] ?? null,
   isPlaylistPinned: (playlistId) => get().playlists[playlistId]?.pinned === true,
 
-  syncPinnedPlaylists: async (fetchMembers) => {
-    const pinned = Object.values(get().playlists).filter((p) => p.pinned === true);
-    if (pinned.length === 0) return;
+  syncPinnedPlaylists: (fetchMembers) => {
+    // 再入防止: 接続復帰が短時間に複数回起きても実行は 1 本化する（coalesce）。
+    // 2 本目以降は新規に走らせず、進行中の Promise をそのまま返す。進行中の run が
+    // 完了した時点で get().playlists は最新化されているため、後から来た呼び出し側も
+    // その Promise を await すれば整合した状態を得られる。
+    if (syncInFlight) return syncInFlight;
 
-    // 先に全 pin の現在メンバーを取得し、A から削除・B に追加された共有曲を不要に消さない。
-    const fetched = await Promise.all(
-      pinned.map(async (playlist) => {
-        try {
-          return { playlist, tracks: await fetchMembers(playlist.playlistId) };
-        } catch (e) {
-          // 1 件の取得失敗で他の pin の同期まで止めない。失敗した pin は旧メンバーを保持する。
-          console.warn("[downloads] syncPinnedPlaylists failed:", playlist.playlistId, e);
-          return null;
+    const run = async () => {
+      const pinned = Object.values(get().playlists).filter((p) => p.pinned === true);
+      if (pinned.length === 0) return;
+
+      // 先に全 pin の現在メンバーを取得し、A から削除・B に追加された共有曲を不要に消さない。
+      const fetched = await Promise.all(
+        pinned.map(async (playlist) => {
+          try {
+            return { playlist, tracks: await fetchMembers(playlist.playlistId) };
+          } catch (e) {
+            // 1 件の取得失敗で他の pin の同期まで止めない。失敗した pin は旧メンバーを保持する。
+            console.warn("[downloads] syncPinnedPlaylists failed:", playlist.playlistId, e);
+            return null;
+          }
+        }),
+      );
+
+      const removedCandidates = new Set<number>();
+      const nextPlaylists = { ...get().playlists };
+      const successful: Track[][] = [];
+      for (const result of fetched) {
+        if (!result) continue;
+        const current = nextPlaylists[result.playlist.playlistId];
+        // 取得中にユーザーが pin 解除した場合は復活させない。
+        if (current?.pinned !== true) continue;
+        const nextIds = result.tracks.map((track) => track.trackId);
+        const nextIdSet = new Set(nextIds);
+        for (const oldId of current.trackIds) {
+          if (!nextIdSet.has(oldId)) removedCandidates.add(oldId);
         }
-      }),
-    );
-
-    const removedCandidates = new Set<number>();
-    const nextPlaylists = { ...get().playlists };
-    const successful: Track[][] = [];
-    for (const result of fetched) {
-      if (!result) continue;
-      const current = nextPlaylists[result.playlist.playlistId];
-      // 取得中にユーザーが pin 解除した場合は復活させない。
-      if (current?.pinned !== true) continue;
-      const nextIds = result.tracks.map((track) => track.trackId);
-      const nextIdSet = new Set(nextIds);
-      for (const oldId of current.trackIds) {
-        if (!nextIdSet.has(oldId)) removedCandidates.add(oldId);
+        nextPlaylists[current.playlistId] = { ...current, trackIds: nextIds };
+        successful.push(result.tracks);
       }
-      nextPlaylists[current.playlistId] = { ...current, trackIds: nextIds };
-      successful.push(result.tracks);
-    }
-    persistPlaylists(nextPlaylists);
-    set({ playlists: nextPlaylists });
+      persistPlaylists(nextPlaylists);
+      set({ playlists: nextPlaylists });
 
-    // 新規メンバーだけ downloadTrack 内の既存判定を抜けて、記憶済みの設定音質で保存される。
-    for (const tracks of successful) await get().downloadMany(tracks);
+      // 新規メンバーだけ downloadTrack 内の既存判定を抜けて、記憶済みの設定音質で保存される。
+      for (const tracks of successful) await get().downloadMany(tracks);
 
-    const referenced = new Set(
-      Object.values(get().playlists)
-        .filter((p) => p.pinned === true)
-        .flatMap((p) => p.trackIds),
-    );
-    for (const trackId of removedCandidates) {
-      if (!referenced.has(trackId)) await get().removeDownload(trackId);
-    }
+      const referenced = new Set(
+        Object.values(get().playlists)
+          .filter((p) => p.pinned === true)
+          .flatMap((p) => p.trackIds),
+      );
+      for (const trackId of removedCandidates) {
+        if (!referenced.has(trackId)) await get().removeDownload(trackId);
+      }
+    };
+
+    syncInFlight = run().finally(() => {
+      syncInFlight = null;
+    });
+    return syncInFlight;
   },
 
   removeDownload: async (trackId) => {

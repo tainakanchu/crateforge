@@ -236,6 +236,40 @@ describe("useDownloads", () => {
     expect(deleteFile).toHaveBeenCalledTimes(1);
   });
 
+  it("syncPinnedPlaylists の同時呼び出しは 1 回分の実行に合流する（再入防止）", async () => {
+    setTestConnection({ token: "tok" });
+    const t1 = makeTrack({ trackId: 41, id: 41 });
+    const t2 = makeTrack({ trackId: 42, id: 42 });
+    const shared = makeTrack({ trackId: 43, id: 43 });
+    const t4 = makeTrack({ trackId: 44, id: 44 });
+    const added = makeTrack({ trackId: 45, id: 45 });
+    await useDownloads.getState().downloadPlaylist(1, "A", [t1, t2, shared], true);
+    await useDownloads.getState().downloadPlaylist(2, "B", [shared, t4], true);
+    jest.clearAllMocks();
+
+    const fetchMembers = jest.fn(async (playlistId: number) =>
+      playlistId === 1 ? [t2, shared, added] : [shared, t4],
+    );
+
+    // 再接続の連続発火（接続フラップ）を模して同時に 2 回呼ぶ。coalesce されるなら
+    // 実行は 1 本化され、fetchMembers は pinned 数（2 件）ぶんしか呼ばれない
+    // （2 回分の実行が走れば 4 回になるはず）。
+    await Promise.all([
+      useDownloads.getState().syncPinnedPlaylists(fetchMembers),
+      useDownloads.getState().syncPinnedPlaylists(fetchMembers),
+    ]);
+
+    expect(fetchMembers).toHaveBeenCalledTimes(2);
+
+    // 終状態も 1 回分の実行として正しいこと（membership 同期・孤立曲の削除は 1 回だけ）。
+    expect(useDownloads.getState().playlists[1].trackIds).toEqual([42, 43, 45]);
+    expect(useDownloads.getState().isDownloaded(45)).toBe(true);
+    expect(useDownloads.getState().isDownloaded(41)).toBe(false);
+    expect(useDownloads.getState().isDownloaded(43)).toBe(true);
+    expect(audioDownloadCount()).toBe(1);
+    expect(deleteFile).toHaveBeenCalledTimes(1);
+  });
+
   it("pin 解除は専有曲を削除し、別の pin と共有する曲を残す", async () => {
     setTestConnection({ token: "tok" });
     const onlyA = makeTrack({ trackId: 51, id: 51 });
