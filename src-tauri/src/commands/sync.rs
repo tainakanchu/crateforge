@@ -353,7 +353,9 @@ pub async fn sync_resync(app: AppHandle, source_id: i64) -> Result<ResyncSummary
     .await
     .map_err(writeback_error)?;
     let _ = app.emit("resync-complete", summary.clone());
-    let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    if summary.mutations_committed {
+        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    }
     Ok(summary)
 }
 
@@ -384,10 +386,17 @@ pub fn sync_eviction_candidates(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub fn sync_evict(app: AppHandle, persistent_ids: Vec<String>) -> Result<EvictionSummary, String> {
-    let summary =
-        crate::sync::evict(&open_db(&app)?, &persistent_ids).map_err(|error| error.to_string())?;
-    let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+pub async fn sync_evict(
+    app: AppHandle,
+    persistent_ids: Vec<String>,
+) -> Result<EvictionSummary, String> {
+    let mut db = open_db(&app)?;
+    let summary = crate::sync::evict(&mut db, &persistent_ids)
+        .await
+        .map_err(|error| error.to_string())?;
+    if summary.evicted > 0 {
+        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    }
     Ok(summary)
 }
 

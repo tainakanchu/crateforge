@@ -690,6 +690,7 @@ pub async fn apply<F>(
 where
     F: Fn(SyncProgress) + Send + Sync,
 {
+    let _sync_guard = super::lock_mutating_sync().await;
     let local = collect_local(&db, source.id)?;
     let client = MasterClient::from_source(&source)?;
     let remote = collect_remote(&client, &local).await?;

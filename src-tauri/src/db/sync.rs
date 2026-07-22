@@ -2,8 +2,9 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
-use rusqlite::{params, OptionalExtension, Result};
+use rusqlite::{params, OptionalExtension, Result, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 use super::tracks::SEARCH_TEXT_EXPR;
@@ -53,14 +54,33 @@ pub struct SyncSelectionRecord {
     pub name: String,
     pub policy: String,
     pub landing_root: Option<String>,
+    pub base_membership: Option<Vec<String>>,
+    pub base_name: Option<String>,
 }
 
 /// eviction 前に検証する、同期が所有する曲と着地先の記録。
 #[derive(Debug, Clone)]
 pub struct SyncedTrackFileRecord {
-    pub persistent_id: String,
     pub location_path: Option<String>,
     pub landing_root: Option<String>,
+    pub landed_size: Option<i64>,
+    pub landed_mtime: Option<i64>,
+}
+
+fn file_fingerprint(path: &Path) -> (Option<i64>, Option<i64>) {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return (None, None);
+    };
+    if !metadata.file_type().is_file() {
+        return (None, None);
+    }
+    let size = i64::try_from(metadata.len()).ok();
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .and_then(|value| i64::try_from(value.as_secs()).ok());
+    (size, mtime)
 }
 
 impl Database {
@@ -410,13 +430,39 @@ impl Database {
         landing_root: Option<&Path>,
     ) -> Result<()> {
         let landing_root = landing_root.map(|path| path.to_string_lossy().to_string());
+        let location_path = self
+            .conn
+            .query_row(
+                "SELECT location_path FROM tracks WHERE persistent_id = ?1",
+                [persistent_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let (landed_size, landed_mtime) = location_path
+            .as_deref()
+            .map(Path::new)
+            .map(file_fingerprint)
+            .unwrap_or((None, None));
         self.conn.execute(
-            "INSERT INTO sync_track (persistent_id, source_id, pulled_at, base_meta, landing_root)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO sync_track
+                (persistent_id, source_id, pulled_at, base_meta, landing_root,
+                 landed_size, landed_mtime)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(persistent_id) DO UPDATE SET source_id=excluded.source_id,
                  pulled_at=excluded.pulled_at, base_meta=excluded.base_meta,
-                 landing_root=COALESCE(excluded.landing_root, sync_track.landing_root)",
-            params![persistent_id, source_id, now(), base_meta, landing_root],
+                 landing_root=COALESCE(excluded.landing_root, sync_track.landing_root),
+                 landed_size=COALESCE(excluded.landed_size, sync_track.landed_size),
+                 landed_mtime=COALESCE(excluded.landed_mtime, sync_track.landed_mtime)",
+            params![
+                persistent_id,
+                source_id,
+                now(),
+                base_meta,
+                landing_root,
+                landed_size,
+                landed_mtime
+            ],
         )?;
         Ok(())
     }
@@ -445,6 +491,39 @@ impl Database {
              ON CONFLICT(source_id, kind, remote_pid) DO UPDATE SET name=excluded.name,
                  landing_root=COALESCE(excluded.landing_root, sync_selection.landing_root)",
             params![source_id, remote_pid, name, landing_root, now()],
+        )?;
+        Ok(())
+    }
+
+    /// follow の三者比較基準を、母艦で確認できた曲順・名前へ更新する。
+    pub fn record_sync_selection_baseline_with_root(
+        &self,
+        source_id: i64,
+        remote_pid: &str,
+        name: &str,
+        base_membership: &[String],
+        landing_root: Option<&Path>,
+    ) -> Result<()> {
+        let landing_root = landing_root.map(|path| path.to_string_lossy().to_string());
+        let base_membership = serde_json::to_string(base_membership)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        self.conn.execute(
+            "INSERT INTO sync_selection
+                (source_id, kind, remote_pid, name, policy, quality, landing_root,
+                 base_membership, base_name, created_at)
+             VALUES (?1, 'playlist', ?2, ?3, 'snapshot', 'original', ?4, ?5, ?3, ?6)
+             ON CONFLICT(source_id, kind, remote_pid) DO UPDATE SET name=excluded.name,
+                 landing_root=COALESCE(excluded.landing_root, sync_selection.landing_root),
+                 base_membership=excluded.base_membership,
+                 base_name=excluded.base_name",
+            params![
+                source_id,
+                remote_pid,
+                name,
+                landing_root,
+                base_membership,
+                now()
+            ],
         )?;
         Ok(())
     }
@@ -503,7 +582,8 @@ impl Database {
 
     pub fn list_sync_selection_records(&self, source_id: i64) -> Result<Vec<SyncSelectionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, remote_pid, COALESCE(name, ''), policy, landing_root
+            "SELECT id, remote_pid, COALESCE(name, ''), policy, landing_root,
+                    base_membership, base_name
              FROM sync_selection
              WHERE source_id = ?1 AND kind = 'playlist' ORDER BY id",
         )?;
@@ -514,6 +594,10 @@ impl Database {
                 name: row.get(2)?,
                 policy: row.get(3)?,
                 landing_root: row.get(4)?,
+                base_membership: row
+                    .get::<_, Option<String>>(5)?
+                    .and_then(|value| serde_json::from_str(&value).ok()),
+                base_name: row.get(6)?,
             })
         })?;
         rows.collect()
@@ -566,7 +650,7 @@ impl Database {
         Ok(())
     }
 
-    /// 全同期選択の現在のローカル所属から外れた、指定 source 所有曲を返す。
+    /// どのプレイリストからも参照されていない、指定 source 所有曲を返す。
     pub fn unreferenced_synced_track_snapshots(
         &self,
         source_id: i64,
@@ -574,11 +658,9 @@ impl Database {
         let referenced = {
             let mut stmt = self.conn.prepare(
                 "SELECT DISTINCT t.persistent_id
-                 FROM sync_selection ss
-                 JOIN playlists p ON p.persistent_id = ss.remote_pid
-                 JOIN playlist_tracks pt ON pt.playlist_id = p.playlist_id
+                 FROM playlist_tracks pt
                  JOIN tracks t ON t.track_id = pt.track_id
-                 WHERE ss.kind = 'playlist' AND t.persistent_id IS NOT NULL",
+                 WHERE t.persistent_id IS NOT NULL",
             )?;
             let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
             rows.collect::<Result<HashSet<_>>>()?
@@ -596,42 +678,56 @@ impl Database {
     ) -> Result<Option<SyncedTrackFileRecord>> {
         self.conn
             .query_row(
-                "SELECT st.persistent_id, t.location_path, st.landing_root
+                "SELECT t.location_path, st.landing_root,
+                        st.landed_size, st.landed_mtime
                  FROM sync_track st
                  JOIN tracks t ON t.persistent_id = st.persistent_id
                  WHERE st.persistent_id = ?1",
                 [persistent_id],
                 |row| {
                     Ok(SyncedTrackFileRecord {
-                        persistent_id: row.get(0)?,
-                        location_path: row.get(1)?,
-                        landing_root: row.get(2)?,
+                        location_path: row.get(0)?,
+                        landing_root: row.get(1)?,
+                        landed_size: row.get(2)?,
+                        landed_mtime: row.get(3)?,
                     })
                 },
             )
             .optional()
     }
 
-    /// 曲ごとに参照・解析・所有行・本体を一つの transaction で消す。
-    pub fn delete_synced_track(&self, persistent_id: &str) -> Result<bool> {
-        let tx = self.conn.unchecked_transaction()?;
-        let track_id = tx
+    /// IMMEDIATE transaction 内で所有・全 playlist 参照・metadata dirty を再確認して削除する。
+    pub fn delete_synced_track_if_eligible(&self, persistent_id: &str) -> Result<bool> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let owned = tx
             .query_row(
-                "SELECT t.track_id FROM tracks t
+                "SELECT t.track_id, COALESCE(st.base_meta, '') FROM tracks t
                  JOIN sync_track st ON st.persistent_id = t.persistent_id
                  WHERE t.persistent_id = ?1",
                 [persistent_id],
-                |row| row.get::<_, i64>(0),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()?;
-        let Some(track_id) = track_id else {
+        let Some((track_id, base_meta)) = owned else {
             tx.rollback()?;
             return Ok(false);
         };
-        tx.execute(
-            "DELETE FROM playlist_tracks WHERE track_id = ?1",
+        let referenced: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM playlist_tracks WHERE track_id = ?1)",
             [track_id],
+            |row| row.get(0),
         )?;
+        let local = tx.query_row(
+            "SELECT * FROM tracks WHERE track_id = ?1",
+            [track_id],
+            super::tracks::row_to_track,
+        )?;
+        if referenced
+            || crate::sync::writeback::has_local_changes(&base_meta, &local).unwrap_or(true)
+        {
+            tx.rollback()?;
+            return Ok(false);
+        }
         tx.execute(
             "DELETE FROM track_analysis WHERE persistent_id = ?1",
             [persistent_id],
@@ -868,6 +964,17 @@ mod tests {
                 .unwrap();
             assert!(exists, "missing {table}");
         }
+        for (table, column) in [
+            ("sync_selection", "base_membership"),
+            ("sync_selection", "base_name"),
+            ("sync_track", "landed_size"),
+            ("sync_track", "landed_mtime"),
+        ] {
+            assert!(
+                super::super::column_exists(&db.conn, table, column).unwrap(),
+                "missing {table}.{column}"
+            );
+        }
     }
 
     #[test]
@@ -909,7 +1016,10 @@ mod tests {
         let selection = db.list_sync_selection_records(source.id).unwrap().remove(0);
 
         assert!(db.remove_sync_selection(selection.id).unwrap());
-        assert!(db.list_sync_selection_records(source.id).unwrap().is_empty());
+        assert!(db
+            .list_sync_selection_records(source.id)
+            .unwrap()
+            .is_empty());
         assert!(!db.remove_sync_selection(selection.id).unwrap());
 
         let track_count: i64 = db
@@ -945,6 +1055,12 @@ mod tests {
         assert_eq!(first, Some(42));
         db.record_sync_track("AAAABBBBCCCCDD01", source.id, "{}")
             .unwrap();
+        let fingerprint = db
+            .synced_track_file_record("AAAABBBBCCCCDD01")
+            .unwrap()
+            .unwrap();
+        assert_eq!(fingerprint.landed_size, Some(5));
+        assert!(fingerprint.landed_mtime.is_some());
         let second = db
             .upsert_synced_track(
                 &track("AAAABBBBCCCCDD01", "Refreshed", 100),

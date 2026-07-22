@@ -134,6 +134,8 @@ fn migrate_sync_tables(conn: &Connection) -> Result<()> {
              policy TEXT NOT NULL DEFAULT 'snapshot',
              quality TEXT NOT NULL DEFAULT 'original',
              landing_root TEXT,
+             base_membership TEXT,
+             base_name TEXT,
              created_at TEXT,
              UNIQUE(source_id, kind, remote_pid)
          );
@@ -142,7 +144,9 @@ fn migrate_sync_tables(conn: &Connection) -> Result<()> {
              source_id INTEGER NOT NULL,
              pulled_at TEXT NOT NULL,
              base_meta TEXT,
-             landing_root TEXT
+             landing_root TEXT,
+             landed_size INTEGER,
+             landed_mtime INTEGER
          );",
     )?;
     if !column_exists(conn, "sync_selection", "landing_root")? {
@@ -150,6 +154,19 @@ fn migrate_sync_tables(conn: &Connection) -> Result<()> {
     }
     if !column_exists(conn, "sync_track", "landing_root")? {
         conn.execute_batch("ALTER TABLE sync_track ADD COLUMN landing_root TEXT;")?;
+    }
+    if !column_exists(conn, "sync_track", "landed_size")? {
+        conn.execute_batch("ALTER TABLE sync_track ADD COLUMN landed_size INTEGER;")?;
+    }
+    // OS をまたいでも比較しやすいよう、mtime は Unix epoch 秒で保存する。
+    if !column_exists(conn, "sync_track", "landed_mtime")? {
+        conn.execute_batch("ALTER TABLE sync_track ADD COLUMN landed_mtime INTEGER;")?;
+    }
+    if !column_exists(conn, "sync_selection", "base_membership")? {
+        conn.execute_batch("ALTER TABLE sync_selection ADD COLUMN base_membership TEXT;")?;
+    }
+    if !column_exists(conn, "sync_selection", "base_name")? {
+        conn.execute_batch("ALTER TABLE sync_selection ADD COLUMN base_name TEXT;")?;
     }
     Ok(())
 }

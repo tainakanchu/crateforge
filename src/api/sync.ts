@@ -63,6 +63,14 @@ export interface SyncSelection {
   name: string;
   policy: SyncSelectionPolicy;
   landingRoot: string | null;
+  baseMembership: string[] | null;
+  baseName: string | null;
+}
+
+export interface SelectionMergeWarning {
+  persistentId: string;
+  playlistName: string;
+  changes: Array<"membership" | "name">;
 }
 
 export interface ResyncSummary {
@@ -72,6 +80,9 @@ export interface ResyncSummary {
   tracksUpdated: number;
   membershipReplaced: number;
   evictionCandidates: number;
+  localEditsPreserved: SelectionMergeWarning[];
+  membershipOverwritten: SelectionMergeWarning[];
+  dirtyExcludedNote: string | null;
   failures: SyncFailure[];
 }
 
@@ -88,6 +99,7 @@ export interface EvictionSummary {
   evicted: number;
   filesDeleted: number;
   freedBytes: number;
+  dirtyExcludedNote: string | null;
   failures: SyncFailure[];
 }
 

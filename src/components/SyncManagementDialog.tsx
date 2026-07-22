@@ -60,6 +60,10 @@ function Failures({ failures }: { failures: ResyncSummary["failures"] }) {
   );
 }
 
+function mergeChanges(changes: Array<"membership" | "name">): string {
+  return changes.map((change) => change === "membership" ? "曲順・所属" : "名前").join("、");
+}
+
 export function SyncManagementDialog({
   source,
   onBack,
@@ -435,6 +439,35 @@ export function SyncManagementDialog({
                 <div><dt>更新</dt><dd>{resyncSummary.tracksUpdated.toLocaleString()} 曲</dd></div>
                 <div><dt>エビクション候補</dt><dd>{resyncSummary.evictionCandidates.toLocaleString()} 曲</dd></div>
               </dl>
+              {resyncSummary.localEditsPreserved.length > 0 && (
+                <details className="sync-failures">
+                  <summary>ローカル編集を保持（{resyncSummary.localEditsPreserved.length.toLocaleString()} 件）</summary>
+                  <ul>
+                    {resyncSummary.localEditsPreserved.map((warning) => (
+                      <li key={`preserved-${warning.persistentId}`}>
+                        <strong>{warning.playlistName}</strong>
+                        <span>{mergeChanges(warning.changes)}のローカル編集を保持しました。</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {resyncSummary.membershipOverwritten.length > 0 && (
+                <details className="sync-failures">
+                  <summary>母艦の内容で上書き（{resyncSummary.membershipOverwritten.length.toLocaleString()} 件）</summary>
+                  <ul>
+                    {resyncSummary.membershipOverwritten.map((warning) => (
+                      <li key={`overwritten-${warning.persistentId}`}>
+                        <strong>{warning.playlistName}</strong>
+                        <span>{mergeChanges(warning.changes)}に双方の変更があり、母艦の内容を適用しました。</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {resyncSummary.dirtyExcludedNote && (
+                <div className="sync-error" role="status">{resyncSummary.dirtyExcludedNote}</div>
+              )}
               <Failures failures={resyncSummary.failures} />
               <div className="sync-actions">
                 <button className="toolbar-btn" onClick={() => setStep("manage")}>管理画面に戻る</button>
@@ -542,6 +575,9 @@ export function SyncManagementDialog({
                 <div><dt>ファイル削除</dt><dd>{evictionSummary.filesDeleted.toLocaleString()} 件</dd></div>
                 <div><dt>解放された容量</dt><dd>{formatBytes(evictionSummary.freedBytes)}</dd></div>
               </dl>
+              {evictionSummary.dirtyExcludedNote && (
+                <div className="sync-error" role="status">{evictionSummary.dirtyExcludedNote}</div>
+              )}
               <Failures failures={evictionSummary.failures} />
               <div className="sync-actions">
                 <button className="toolbar-btn" onClick={() => void loadManagement()} data-autofocus>管理画面に戻る</button>
