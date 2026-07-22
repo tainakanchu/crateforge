@@ -1,6 +1,12 @@
 //! federation slave 側のペアリング・参照・snapshot provisioning。
 
+pub mod phase3;
 pub mod writeback;
+
+pub use phase3::{
+    compute_eviction_candidates, evict, resync, storage_usage, EvictionCandidate, EvictionSummary,
+    ResyncSummary, StorageUsage,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -657,10 +663,10 @@ where
                 continue;
             }
         };
-        let (landed, downloaded_bytes) = match existing_path {
-            Some(path) => (path, 0),
+        let (landed, downloaded_bytes, downloaded) = match existing_path {
+            Some(path) => (path, 0, false),
             None => match client.download_track(track, &dest_root).await {
-                Ok(result) => result,
+                Ok((path, bytes)) => (path, bytes, true),
                 Err(error @ SyncError::Authentication(_)) => return Err(error),
                 Err(error) => {
                     summary.failures.push(SyncFailure {
@@ -681,7 +687,12 @@ where
                 }
                 let base_meta = serde_json::to_string(track)
                     .map_err(|err| SyncError::InvalidResponse(err.to_string()))?;
-                db.record_sync_track(pid, source.id, &base_meta)?;
+                db.record_sync_track_with_root(
+                    pid,
+                    source.id,
+                    &base_meta,
+                    downloaded.then_some(dest_root.as_path()),
+                )?;
                 local_ids.insert(pid.to_string(), track_id);
                 summary.tracks += 1;
                 summary.bytes += downloaded_bytes;
@@ -741,10 +752,11 @@ where
             continue;
         }
         db.create_or_replace_playlist_with_pid(&item.playlist, &membership)?;
-        db.record_sync_selection(
+        db.record_sync_selection_with_root(
             source.id,
             required_playlist_pid(&item.playlist)?,
             &item.playlist.name,
+            Some(&dest_root),
         )?;
         summary.playlists += 1;
         progress(SyncProgress {

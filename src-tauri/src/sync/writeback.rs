@@ -12,7 +12,7 @@ use crate::db::sync::{SyncSource, SyncedPlaylistSnapshot, SyncedTrackSnapshot};
 use crate::db::Database;
 use crate::models::{Playlist, Track};
 
-const WRITEBACK_FIELDS: [&str; 15] = [
+pub(crate) const WRITEBACK_FIELDS: [&str; 15] = [
     "rating",
     "name",
     "artist",
@@ -395,12 +395,26 @@ fn is_local_newer(local: Option<&str>, master: Option<&str>) -> bool {
     }
 }
 
-fn track_json(track: &Track) -> Result<Value, SyncError> {
+pub(crate) fn track_json(track: &Track) -> Result<Value, SyncError> {
     serde_json::to_value(track).map_err(|error| SyncError::InvalidResponse(error.to_string()))
 }
 
-fn field_value(track: &Value, field: &str) -> Value {
+pub(crate) fn field_value(track: &Value, field: &str) -> Value {
     track.get(field).cloned().unwrap_or(Value::Null)
+}
+
+/// eviction 用の軽量判定。母艦へ送る値または競合になり得るローカル差分があれば dirty。
+pub(crate) fn has_local_changes(base_meta: &str, local: &Track) -> Result<bool, SyncError> {
+    let base: Value = serde_json::from_str(base_meta)
+        .map_err(|error| SyncError::InvalidResponse(format!("invalid base_meta: {error}")))?;
+    let local = track_json(local)?;
+    Ok(WRITEBACK_FIELDS.iter().any(|field| {
+        !field_values_equal(
+            field,
+            &field_value(&base, field),
+            &field_value(&local, field),
+        )
+    }))
 }
 
 fn overlay_updated_fields(base: &mut Value, updated: &Value, fields: &[FieldUpdate]) {

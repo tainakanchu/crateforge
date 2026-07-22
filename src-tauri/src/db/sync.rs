@@ -44,6 +44,24 @@ pub struct SyncedPlaylistSnapshot {
     pub track_persistent_ids: Vec<String>,
 }
 
+/// follow 再同期と容量表示に必要な選択行。
+#[derive(Debug, Clone)]
+pub struct SyncSelectionRecord {
+    pub id: i64,
+    pub remote_pid: String,
+    pub name: String,
+    pub policy: String,
+    pub landing_root: Option<String>,
+}
+
+/// eviction 前に検証する、同期が所有する曲と着地先の記録。
+#[derive(Debug, Clone)]
+pub struct SyncedTrackFileRecord {
+    pub persistent_id: String,
+    pub location_path: Option<String>,
+    pub landing_root: Option<String>,
+}
+
 impl Database {
     pub fn upsert_sync_source(
         &self,
@@ -379,12 +397,25 @@ impl Database {
         source_id: i64,
         base_meta: &str,
     ) -> Result<()> {
+        self.record_sync_track_with_root(persistent_id, source_id, base_meta, None)
+    }
+
+    /// provisioning で使った着地ルートも保存し、eviction のファイル境界に使う。
+    pub fn record_sync_track_with_root(
+        &self,
+        persistent_id: &str,
+        source_id: i64,
+        base_meta: &str,
+        landing_root: Option<&Path>,
+    ) -> Result<()> {
+        let landing_root = landing_root.map(|path| path.to_string_lossy().to_string());
         self.conn.execute(
-            "INSERT INTO sync_track (persistent_id, source_id, pulled_at, base_meta)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO sync_track (persistent_id, source_id, pulled_at, base_meta, landing_root)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(persistent_id) DO UPDATE SET source_id=excluded.source_id,
-                 pulled_at=excluded.pulled_at, base_meta=excluded.base_meta",
-            params![persistent_id, source_id, now(), base_meta],
+                 pulled_at=excluded.pulled_at, base_meta=excluded.base_meta,
+                 landing_root=COALESCE(excluded.landing_root, sync_track.landing_root)",
+            params![persistent_id, source_id, now(), base_meta, landing_root],
         )?;
         Ok(())
     }
@@ -395,12 +426,24 @@ impl Database {
         remote_pid: &str,
         name: &str,
     ) -> Result<()> {
+        self.record_sync_selection_with_root(source_id, remote_pid, name, None)
+    }
+
+    pub fn record_sync_selection_with_root(
+        &self,
+        source_id: i64,
+        remote_pid: &str,
+        name: &str,
+        landing_root: Option<&Path>,
+    ) -> Result<()> {
+        let landing_root = landing_root.map(|path| path.to_string_lossy().to_string());
         self.conn.execute(
             "INSERT INTO sync_selection
-                (source_id, kind, remote_pid, name, policy, quality, created_at)
-             VALUES (?1, 'playlist', ?2, ?3, 'snapshot', 'original', ?4)
-             ON CONFLICT(source_id, kind, remote_pid) DO UPDATE SET name=excluded.name",
-            params![source_id, remote_pid, name, now()],
+                (source_id, kind, remote_pid, name, policy, quality, landing_root, created_at)
+             VALUES (?1, 'playlist', ?2, ?3, 'snapshot', 'original', ?4, ?5)
+             ON CONFLICT(source_id, kind, remote_pid) DO UPDATE SET name=excluded.name,
+                 landing_root=COALESCE(excluded.landing_root, sync_selection.landing_root)",
+            params![source_id, remote_pid, name, landing_root, now()],
         )?;
         Ok(())
     }
@@ -455,6 +498,127 @@ impl Database {
         )?;
         let rows = stmt.query_map([source_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect()
+    }
+
+    pub fn list_sync_selection_records(&self, source_id: i64) -> Result<Vec<SyncSelectionRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, remote_pid, COALESCE(name, ''), policy, landing_root
+             FROM sync_selection
+             WHERE source_id = ?1 AND kind = 'playlist' ORDER BY id",
+        )?;
+        let rows = stmt.query_map([source_id], |row| {
+            Ok(SyncSelectionRecord {
+                id: row.get(0)?,
+                remote_pid: row.get(1)?,
+                name: row.get(2)?,
+                policy: row.get(3)?,
+                landing_root: row.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// 指定 PID のローカル track_id を、入力順を保って解決する。
+    pub fn synced_track_ids(&self, persistent_ids: &[String]) -> Result<Vec<Option<i64>>> {
+        persistent_ids
+            .iter()
+            .map(|persistent_id| {
+                self.conn
+                    .query_row(
+                        "SELECT track_id FROM tracks WHERE persistent_id = ?1",
+                        [persistent_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+            })
+            .collect()
+    }
+
+    pub fn update_sync_track_base(&self, persistent_id: &str, base_meta: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sync_track SET base_meta = ?1, pulled_at = ?2 WHERE persistent_id = ?3",
+            params![base_meta, now(), persistent_id],
+        )?;
+        Ok(())
+    }
+
+    /// 全同期選択の現在のローカル所属から外れた、指定 source 所有曲を返す。
+    pub fn unreferenced_synced_track_snapshots(
+        &self,
+        source_id: i64,
+    ) -> Result<Vec<SyncedTrackSnapshot>> {
+        let referenced = {
+            let mut stmt = self.conn.prepare(
+                "SELECT DISTINCT t.persistent_id
+                 FROM sync_selection ss
+                 JOIN playlists p ON p.persistent_id = ss.remote_pid
+                 JOIN playlist_tracks pt ON pt.playlist_id = p.playlist_id
+                 JOIN tracks t ON t.track_id = pt.track_id
+                 WHERE ss.kind = 'playlist' AND t.persistent_id IS NOT NULL",
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<HashSet<_>>>()?
+        };
+        Ok(self
+            .list_synced_track_snapshots(source_id)?
+            .into_iter()
+            .filter(|row| !referenced.contains(&row.persistent_id))
+            .collect())
+    }
+
+    pub fn synced_track_file_record(
+        &self,
+        persistent_id: &str,
+    ) -> Result<Option<SyncedTrackFileRecord>> {
+        self.conn
+            .query_row(
+                "SELECT st.persistent_id, t.location_path, st.landing_root
+                 FROM sync_track st
+                 JOIN tracks t ON t.persistent_id = st.persistent_id
+                 WHERE st.persistent_id = ?1",
+                [persistent_id],
+                |row| {
+                    Ok(SyncedTrackFileRecord {
+                        persistent_id: row.get(0)?,
+                        location_path: row.get(1)?,
+                        landing_root: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    /// 曲ごとに参照・解析・所有行・本体を一つの transaction で消す。
+    pub fn delete_synced_track(&self, persistent_id: &str) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        let track_id = tx
+            .query_row(
+                "SELECT t.track_id FROM tracks t
+                 JOIN sync_track st ON st.persistent_id = t.persistent_id
+                 WHERE t.persistent_id = ?1",
+                [persistent_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(track_id) = track_id else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        tx.execute(
+            "DELETE FROM playlist_tracks WHERE track_id = ?1",
+            [track_id],
+        )?;
+        tx.execute(
+            "DELETE FROM track_analysis WHERE persistent_id = ?1",
+            [persistent_id],
+        )?;
+        tx.execute(
+            "DELETE FROM sync_track WHERE persistent_id = ?1",
+            [persistent_id],
+        )?;
+        tx.execute("DELETE FROM tracks WHERE track_id = ?1", [track_id])?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// provisioning 済み、または source 所有曲だけを含むローカル作成プレイリストを返す。

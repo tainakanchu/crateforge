@@ -287,6 +287,10 @@ pub fn run() {
             commands::sync::sync_playlist_size_estimate,
             commands::sync::sync_provision,
             commands::sync::sync_provision_status,
+            commands::sync::sync_resync,
+            commands::sync::sync_eviction_candidates,
+            commands::sync::sync_evict,
+            commands::sync::sync_storage_usage,
             commands::sync::sync_writeback_plan,
             commands::sync::sync_writeback_apply,
             // フォント

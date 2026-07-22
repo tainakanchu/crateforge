@@ -133,6 +133,7 @@ fn migrate_sync_tables(conn: &Connection) -> Result<()> {
              name TEXT,
              policy TEXT NOT NULL DEFAULT 'snapshot',
              quality TEXT NOT NULL DEFAULT 'original',
+             landing_root TEXT,
              created_at TEXT,
              UNIQUE(source_id, kind, remote_pid)
          );
@@ -140,9 +141,16 @@ fn migrate_sync_tables(conn: &Connection) -> Result<()> {
              persistent_id TEXT PRIMARY KEY,
              source_id INTEGER NOT NULL,
              pulled_at TEXT NOT NULL,
-             base_meta TEXT
+             base_meta TEXT,
+             landing_root TEXT
          );",
     )?;
+    if !column_exists(conn, "sync_selection", "landing_root")? {
+        conn.execute_batch("ALTER TABLE sync_selection ADD COLUMN landing_root TEXT;")?;
+    }
+    if !column_exists(conn, "sync_track", "landing_root")? {
+        conn.execute_batch("ALTER TABLE sync_track ADD COLUMN landing_root TEXT;")?;
+    }
     Ok(())
 }
 
