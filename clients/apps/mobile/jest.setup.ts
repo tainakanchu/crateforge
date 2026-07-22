@@ -58,14 +58,19 @@ jest.mock("expo-audio", () => {
 jest.mock("expo-file-system", () => {
   class MockFile {
     uri: string;
-    exists = false;
+    exists: boolean;
     size = 0;
     constructor(...parts: unknown[]) {
-      this.uri =
+      const directUri = parts.length === 1 && typeof parts[0] === "string" && parts[0].startsWith("file://")
+        ? parts[0]
+        : null;
+      this.uri = directUri ??
         "file:///mock/" +
-        parts
-          .map((p) => (typeof p === "string" ? p : ((p as { uri?: string })?.uri ?? "")))
-          .join("/");
+          parts
+            .map((p) => (typeof p === "string" ? p : ((p as { uri?: string })?.uri ?? "")))
+            .join("/");
+      // 既存 file:// URI から開いた File はダウンロード済みファイルとして扱う。
+      this.exists = directUri != null;
     }
     create() {}
     delete() {

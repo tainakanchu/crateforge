@@ -165,6 +165,8 @@ export interface DownloadedPlaylist {
   /** 保存時点のメンバー trackId（順序保持）。 */
   trackIds: number[];
   createdAt: number;
+  /** true のとき、再接続時にサーバー側メンバーと同期する。旧データでは未定義。 */
+  pinned?: boolean;
 }
 
 /** `GET /api/tracks/{id}/similar` のクエリ。 */

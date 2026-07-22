@@ -107,11 +107,22 @@ export interface DownloadsState {
   /** album 名でライブラリから曲を引いて一括ダウンロード。 */
   downloadAlbum: (albumName: string) => Promise<void>;
   /** プレイリストをコレクションとして記録しつつ、曲を一括ダウンロードする。 */
-  downloadPlaylist: (playlistId: number, name: string, tracks: Track[]) => Promise<void>;
-  /** 保存済みプレイリストのコレクション記録を削除する（曲ファイルは消さない）。 */
-  removeDownloadedPlaylist: (playlistId: number) => void;
+  downloadPlaylist: (
+    playlistId: number,
+    name: string,
+    tracks: Track[],
+    pinned?: boolean,
+  ) => Promise<void>;
+  /** 保存済みプレイリストを削除。pin は他の pin が参照しない曲ファイルも削除する。 */
+  removeDownloadedPlaylist: (playlistId: number) => Promise<void>;
   /** 保存済みプレイリストを取得（無ければ null）。 */
   getDownloadedPlaylist: (playlistId: number) => DownloadedPlaylist | null;
+  /** pin 済みか。 */
+  isPlaylistPinned: (playlistId: number) => boolean;
+  /** pin 済みプレイリストをサーバーの現在メンバーと差分同期する。 */
+  syncPinnedPlaylists: (
+    fetchMembers: (playlistId: number) => Promise<Track[]>,
+  ) => Promise<void>;
 
   /** ファイルとエントリを削除する。 */
   removeDownload: (trackId: number) => Promise<void>;
@@ -119,6 +130,8 @@ export interface DownloadsState {
   clearAll: () => Promise<void>;
 
   totalBytes: () => number;
+  /** 1 プレイリストが参照する実ファイルの合計 bytes（重複 trackId は一度だけ）。 */
+  playlistBytes: (playlistId: number) => number;
   count: () => number;
 }
 
@@ -272,12 +285,20 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
     }
   },
 
-  downloadPlaylist: async (playlistId, name, tracks) => {
+  downloadPlaylist: async (playlistId, name, tracks, pinned = false) => {
     // 先にコレクションを記録（DL途中でも一覧に出るように）。
     set((s) => {
+      const current = s.playlists[playlistId];
       const playlists = {
         ...s.playlists,
-        [playlistId]: { playlistId, name, trackIds: tracks.map((t) => t.trackId), createdAt: Date.now() },
+        [playlistId]: {
+          playlistId,
+          name,
+          trackIds: tracks.map((t) => t.trackId),
+          createdAt: current?.createdAt ?? Date.now(),
+          // 通常の一括DLで既存 pin を解除しない。解除は明示的な remove だけで行う。
+          pinned: pinned || current?.pinned === true,
+        },
       };
       persistPlaylists(playlists);
       return { playlists };
@@ -285,16 +306,78 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
     await get().downloadMany(tracks);
   },
 
-  removeDownloadedPlaylist: (playlistId) => {
-    set((s) => {
-      const playlists = { ...s.playlists };
-      delete playlists[playlistId];
-      persistPlaylists(playlists);
-      return { playlists };
-    });
+  removeDownloadedPlaylist: async (playlistId) => {
+    const removed = get().playlists[playlistId];
+    if (!removed) return;
+
+    const playlists = { ...get().playlists };
+    delete playlists[playlistId];
+    persistPlaylists(playlists);
+    set({ playlists });
+
+    // one-shot の保存解除は従来どおり曲を残す。pin 解除時だけ、他の pin が所有しない曲を消す。
+    if (removed.pinned !== true) return;
+    const referenced = new Set(
+      Object.values(playlists)
+        .filter((p) => p.pinned === true)
+        .flatMap((p) => p.trackIds),
+    );
+    for (const trackId of new Set(removed.trackIds)) {
+      if (!referenced.has(trackId)) await get().removeDownload(trackId);
+    }
   },
 
   getDownloadedPlaylist: (playlistId) => get().playlists[playlistId] ?? null,
+  isPlaylistPinned: (playlistId) => get().playlists[playlistId]?.pinned === true,
+
+  syncPinnedPlaylists: async (fetchMembers) => {
+    const pinned = Object.values(get().playlists).filter((p) => p.pinned === true);
+    if (pinned.length === 0) return;
+
+    // 先に全 pin の現在メンバーを取得し、A から削除・B に追加された共有曲を不要に消さない。
+    const fetched = await Promise.all(
+      pinned.map(async (playlist) => {
+        try {
+          return { playlist, tracks: await fetchMembers(playlist.playlistId) };
+        } catch (e) {
+          // 1 件の取得失敗で他の pin の同期まで止めない。失敗した pin は旧メンバーを保持する。
+          console.warn("[downloads] syncPinnedPlaylists failed:", playlist.playlistId, e);
+          return null;
+        }
+      }),
+    );
+
+    const removedCandidates = new Set<number>();
+    const nextPlaylists = { ...get().playlists };
+    const successful: Track[][] = [];
+    for (const result of fetched) {
+      if (!result) continue;
+      const current = nextPlaylists[result.playlist.playlistId];
+      // 取得中にユーザーが pin 解除した場合は復活させない。
+      if (current?.pinned !== true) continue;
+      const nextIds = result.tracks.map((track) => track.trackId);
+      const nextIdSet = new Set(nextIds);
+      for (const oldId of current.trackIds) {
+        if (!nextIdSet.has(oldId)) removedCandidates.add(oldId);
+      }
+      nextPlaylists[current.playlistId] = { ...current, trackIds: nextIds };
+      successful.push(result.tracks);
+    }
+    persistPlaylists(nextPlaylists);
+    set({ playlists: nextPlaylists });
+
+    // 新規メンバーだけ downloadTrack 内の既存判定を抜けて、記憶済みの設定音質で保存される。
+    for (const tracks of successful) await get().downloadMany(tracks);
+
+    const referenced = new Set(
+      Object.values(get().playlists)
+        .filter((p) => p.pinned === true)
+        .flatMap((p) => p.trackIds),
+    );
+    for (const trackId of removedCandidates) {
+      if (!referenced.has(trackId)) await get().removeDownload(trackId);
+    }
+  },
 
   removeDownload: async (trackId) => {
     const entry = get().entries[trackId];
@@ -338,5 +421,13 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
 
   totalBytes: () =>
     Object.values(get().entries).reduce((sum, e) => sum + (e.bytes || 0), 0),
+  playlistBytes: (playlistId) => {
+    const playlist = get().playlists[playlistId];
+    if (!playlist) return 0;
+    return [...new Set(playlist.trackIds)].reduce(
+      (sum, trackId) => sum + (get().entries[trackId]?.bytes || 0),
+      0,
+    );
+  },
   count: () => Object.keys(get().entries).length,
 }));
