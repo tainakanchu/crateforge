@@ -45,7 +45,8 @@ pub struct SyncedPlaylistSnapshot {
 }
 
 /// follow 再同期と容量表示に必要な選択行。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncSelectionRecord {
     pub id: i64,
     pub remote_pid: String,
@@ -518,6 +519,29 @@ impl Database {
         rows.collect()
     }
 
+    /// UI から変更できる selection policy を snapshot / follow に限定する。
+    pub fn set_sync_selection_policy(&self, selection_id: i64, policy: &str) -> Result<()> {
+        if !matches!(policy, "snapshot" | "follow") {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let updated = self.conn.execute(
+            "UPDATE sync_selection SET policy = ?1 WHERE id = ?2 AND kind = 'playlist'",
+            params![policy, selection_id],
+        )?;
+        if updated == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
+    }
+
+    /// selection の参照だけを外す。sync_track/tracks は eviction が孤立曲として扱うため触らない。
+    pub fn remove_sync_selection(&self, selection_id: i64) -> Result<bool> {
+        let deleted = self
+            .conn
+            .execute("DELETE FROM sync_selection WHERE id = ?1", [selection_id])?;
+        Ok(deleted > 0)
+    }
+
     /// 指定 PID のローカル track_id を、入力順を保って解決する。
     pub fn synced_track_ids(&self, persistent_ids: &[String]) -> Result<Vec<Option<i64>>> {
         persistent_ids
@@ -844,6 +868,59 @@ mod tests {
                 .unwrap();
             assert!(exists, "missing {table}");
         }
+    }
+
+    #[test]
+    fn selection_policy_update_is_limited_to_supported_values() {
+        let db = Database::open_memory().unwrap();
+        let source = db
+            .upsert_sync_source("policy-server", Some("Policy"), "http://policy", "token")
+            .unwrap();
+        db.record_sync_selection(source.id, "AAAABBBBCCCCDDDD", "Selection")
+            .unwrap();
+        let selection = db.list_sync_selection_records(source.id).unwrap().remove(0);
+
+        db.set_sync_selection_policy(selection.id, "follow")
+            .unwrap();
+        assert_eq!(
+            db.list_sync_selection_records(source.id).unwrap()[0].policy,
+            "follow"
+        );
+        assert!(db
+            .set_sync_selection_policy(selection.id, "writeback")
+            .is_err());
+        assert!(db.set_sync_selection_policy(-1, "snapshot").is_err());
+    }
+
+    #[test]
+    fn remove_sync_selection_deletes_only_the_selection_row() {
+        let db = Database::open_memory().unwrap();
+        let source = db
+            .upsert_sync_source("remove-server", Some("Remove"), "http://remove", "token")
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, persistent_id, name) VALUES (1, 'AAAABBBBCCCCDDDD', 'Kept')",
+                [],
+            )
+            .unwrap();
+        db.record_sync_selection(source.id, "REMOVEPID0000001", "Selection")
+            .unwrap();
+        let selection = db.list_sync_selection_records(source.id).unwrap().remove(0);
+
+        assert!(db.remove_sync_selection(selection.id).unwrap());
+        assert!(db.list_sync_selection_records(source.id).unwrap().is_empty());
+        assert!(!db.remove_sync_selection(selection.id).unwrap());
+
+        let track_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM tracks WHERE persistent_id='AAAABBBBCCCCDDDD'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(track_count, 1);
     }
 
     #[test]

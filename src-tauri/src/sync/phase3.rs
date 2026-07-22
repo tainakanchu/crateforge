@@ -42,6 +42,8 @@ pub struct EvictionCandidate {
 pub struct EvictionSummary {
     pub evicted: usize,
     pub files_deleted: usize,
+    /// 実際に削除できたファイルの合計サイズ（削除前に stat した値のみ加算）。
+    pub freed_bytes: u64,
     pub failures: Vec<SyncFailure>,
 }
 
@@ -487,8 +489,13 @@ pub fn evict(db: &Database, persistent_ids: &[String]) -> Result<EvictionSummary
         }
         summary.evicted += 1;
         if let Some(file) = safe_file {
+            // 削除後だとサイズが取得できないため、削除前に stat しておく。
+            let size = std::fs::metadata(&file).map(|metadata| metadata.len()).unwrap_or(0);
             match std::fs::remove_file(&file) {
-                Ok(()) => summary.files_deleted += 1,
+                Ok(()) => {
+                    summary.files_deleted += 1;
+                    summary.freed_bytes += size;
+                }
                 Err(error) => summary.failures.push(failure(
                     Some(persistent_id.clone()),
                     None,
@@ -1005,6 +1012,7 @@ mod tests {
         let evicted = evict(&slave, &["AAAAAAAAAAAA0001".to_string()]).unwrap();
         assert_eq!(evicted.evicted, 1);
         assert_eq!(evicted.files_deleted, 1);
+        assert!(evicted.freed_bytes > 0);
         assert!(evicted.failures.is_empty());
         assert!(!Path::new(&removed_file).exists());
         for pid in ["AAAAAAAAAAAA0001"] {

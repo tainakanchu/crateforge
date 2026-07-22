@@ -51,6 +51,65 @@ export interface ProvisionStarted {
   started: boolean;
 }
 
+export type SyncSelectionPolicy = "snapshot" | "follow" | "writeback";
+export type EditableSyncSelectionPolicy = Extract<
+  SyncSelectionPolicy,
+  "snapshot" | "follow"
+>;
+
+export interface SyncSelection {
+  id: number;
+  remotePid: string;
+  name: string;
+  policy: SyncSelectionPolicy;
+  landingRoot: string | null;
+}
+
+export interface ResyncSummary {
+  selectionsSynced: number;
+  selectionsSkipped: number;
+  tracksAdded: number;
+  tracksUpdated: number;
+  membershipReplaced: number;
+  evictionCandidates: number;
+  failures: SyncFailure[];
+}
+
+export interface EvictionCandidate {
+  persistentId: string;
+  name: string | null;
+  artist: string | null;
+  filePath: string | null;
+  bytes: number;
+  dirty: boolean;
+}
+
+export interface EvictionSummary {
+  evicted: number;
+  filesDeleted: number;
+  freedBytes: number;
+  failures: SyncFailure[];
+}
+
+export interface SelectionStorageUsage {
+  selectionId: number;
+  name: string;
+  trackCount: number;
+  bytes: number;
+  missingFiles: number;
+}
+
+export interface StorageUsageTotal {
+  trackCount: number;
+  bytes: number;
+  missingFiles: number;
+}
+
+export interface StorageUsage {
+  selections: SelectionStorageUsage[];
+  total: StorageUsageTotal;
+}
+
 export type ProvisionState = "idle" | "running" | "complete" | "failed";
 
 export interface ProvisionStatus {
@@ -154,6 +213,21 @@ export async function syncListSources(): Promise<SyncSource[]> {
   return invoke("sync_list_sources");
 }
 
+export async function syncListSelections(sourceId: number): Promise<SyncSelection[]> {
+  return invoke("sync_list_selections", { sourceId });
+}
+
+export async function syncSetSelectionPolicy(
+  selectionId: number,
+  policy: EditableSyncSelectionPolicy,
+): Promise<void> {
+  return invoke("sync_set_selection_policy", { selectionId, policy });
+}
+
+export async function syncRemoveSelection(selectionId: number): Promise<boolean> {
+  return invoke("sync_remove_selection", { selectionId });
+}
+
 export async function syncListRemotePlaylists(sourceId: number): Promise<Playlist[]> {
   return invoke("sync_list_remote_playlists", { sourceId });
 }
@@ -189,12 +263,34 @@ export async function syncWritebackApply(
   return invoke("sync_writeback_apply", { sourceId, planId, resolutions });
 }
 
+export async function syncResync(sourceId: number): Promise<ResyncSummary> {
+  return invoke("sync_resync", { sourceId });
+}
+
+export async function syncEvictionCandidates(
+  sourceId?: number,
+): Promise<EvictionCandidate[]> {
+  return invoke("sync_eviction_candidates", { sourceId });
+}
+
+export async function syncEvict(persistentIds: string[]): Promise<EvictionSummary> {
+  return invoke("sync_evict", { persistentIds });
+}
+
+export async function syncStorageUsage(sourceId: number): Promise<StorageUsage> {
+  return invoke("sync_storage_usage", { sourceId });
+}
+
 export function onSyncProgress(cb: (progress: SyncProgress) => void): Promise<UnlistenFn> {
   return listen<SyncProgress>("sync-progress", (event) => cb(event.payload));
 }
 
 export function onSyncComplete(cb: (summary: ProvisionSummary) => void): Promise<UnlistenFn> {
   return listen<ProvisionSummary>("sync-complete", (event) => cb(event.payload));
+}
+
+export function onResyncComplete(cb: (summary: ResyncSummary) => void): Promise<UnlistenFn> {
+  return listen<ResyncSummary>("resync-complete", (event) => cb(event.payload));
 }
 
 export function onSyncError(cb: (error: string) => void): Promise<UnlistenFn> {

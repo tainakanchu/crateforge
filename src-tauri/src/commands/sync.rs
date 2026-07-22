@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::db::sync::SyncSource;
+use crate::db::sync::{SyncSelectionRecord, SyncSource};
 use crate::db::Database;
 use crate::models::Playlist;
 use crate::sync::writeback::{ConflictResolution, WritebackPlan, WritebackSummary};
@@ -140,6 +140,38 @@ pub fn sync_list_sources(app: AppHandle) -> Result<Vec<SyncSource>, String> {
     open_db(&app)?
         .list_sync_sources()
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn sync_list_selections(
+    app: AppHandle,
+    source_id: i64,
+) -> Result<Vec<SyncSelectionRecord>, String> {
+    let db = open_db(&app)?;
+    db.get_sync_source(source_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sync source not found".to_string())?;
+    db.list_sync_selection_records(source_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn sync_set_selection_policy(
+    app: AppHandle,
+    selection_id: i64,
+    policy: String,
+) -> Result<(), String> {
+    open_db(&app)?
+        .set_sync_selection_policy(selection_id, &policy)
+        .map_err(|error| error.to_string())
+}
+
+/// selection の参照だけを外す。孤立した曲は次の eviction candidate 一覧で扱う。
+#[tauri::command(rename_all = "camelCase")]
+pub fn sync_remove_selection(app: AppHandle, selection_id: i64) -> Result<bool, String> {
+    open_db(&app)?
+        .remove_sync_selection(selection_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]
