@@ -161,6 +161,47 @@ fn is_artwork_path(path: &str) -> bool {
     !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
 }
 
+fn is_numeric_id(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// sync 役割にだけ追加許可する LAN 書き込みパスを厳密に判定する。
+fn is_sync_write(method: &axum::http::Method, path: &str) -> bool {
+    use axum::http::Method;
+
+    if method == Method::POST
+        && matches!(
+            path,
+            "/api/tracks/genre-tags/add" | "/api/tracks/genre-tags/remove" | "/api/playlists"
+        )
+    {
+        return true;
+    }
+
+    if method == Method::PATCH {
+        if let Some(track_id) = path.strip_prefix("/api/tracks/") {
+            return is_numeric_id(track_id);
+        }
+    }
+
+    let Some(rest) = path.strip_prefix("/api/playlists/") else {
+        return false;
+    };
+    let segments: Vec<&str> = rest.split('/').collect();
+    match segments.as_slice() {
+        [playlist_id] if method == Method::PATCH || method == Method::DELETE => {
+            is_numeric_id(playlist_id)
+        }
+        [playlist_id, "tracks"] if method == Method::POST || method == Method::PUT => {
+            is_numeric_id(playlist_id)
+        }
+        [playlist_id, "tracks", track_id] if method == Method::DELETE => {
+            is_numeric_id(playlist_id) && is_numeric_id(track_id)
+        }
+        _ => false,
+    }
+}
+
 // ────────────────────── ペアリングエンドポイント ──────────────────────────
 
 /// POST /api/pair/start のリクエストボディ (全フィールド任意・後方互換)。
@@ -245,8 +286,8 @@ pub(crate) async fn pair_poll(
 /// - ループバック (127.x, ::1) は無条件通過。
 /// - public パス (PWA 資産) はトークン不要で通過。
 /// - それ以外は token クエリパラメータまたは X-API-Token ヘッダを照合する。
-/// - GET メソッド、読み取り専用 lookup POST、/api/remote/* のみ LAN から許可
-///   (それ以外の書き込みは 403)。
+/// - remote は従来どおり GET、lookup POST、/api/remote/*、rating/artwork のみ許可。
+/// - sync は同期に必要な曲メタデータ・プレイリスト書き込みも追加で許可。
 async fn auth_guard(
     axum::extract::State(state): axum::extract::State<ApiState>,
     req: axum::http::Request<axum::body::Body>,
@@ -302,11 +343,9 @@ async fn auth_guard(
     // 提示されたトークンが有効集合に含まれるか。これにより共有トークンと
     // デバイス別トークンのどちらでも認証できる (後方互換)。
     let provided = query_token.or(header_token);
-    let authorized = provided
-        .as_deref()
-        .is_some_and(|t| state.tokens.contains(t));
+    let role = provided.as_deref().and_then(|t| state.tokens.role_for(t));
 
-    if !authorized {
+    if role.is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
@@ -328,12 +367,15 @@ async fn auth_guard(
     let is_artwork_write = (method == axum::http::Method::PUT
         || method == axum::http::Method::DELETE)
         && is_artwork_path(&path);
+    let is_sync_write =
+        role == Some(crate::devices::DeviceRole::Sync) && is_sync_write(&method, &path);
 
     if !is_read_only_method
         && !is_read_only_lookup
         && !is_remote_path
         && !is_rating_write
         && !is_artwork_write
+        && !is_sync_write
     {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -395,22 +437,27 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/genres", get(handlers::get_genres))
         .route("/api/albums", get(handlers::get_albums))
         .route("/api/artists", get(handlers::get_artists))
-        .route("/api/playlists", get(handlers::list_playlists))
-        .route("/api/playlists/{playlistId}", get(handlers::get_playlist))
+        .route(
+            "/api/playlists",
+            get(handlers::list_playlists).post(handlers::create_playlist),
+        )
+        .route(
+            "/api/playlists/{playlistId}",
+            get(handlers::get_playlist)
+                .patch(handlers::patch_playlist)
+                .delete(handlers::delete_playlist),
+        )
         .route(
             "/api/playlists/{playlistId}/size-estimate",
             get(handlers::playlist_size_estimate),
         )
         .route(
             "/api/playlists/{playlistId}/tracks",
-            get(handlers::playlist_tracks),
+            get(handlers::playlist_tracks)
+                .post(handlers::add_tracks)
+                .put(handlers::replace_playlist_tracks),
         )
         // 書き込み
-        .route("/api/playlists", post(handlers::create_playlist))
-        .route(
-            "/api/playlists/{playlistId}/tracks",
-            post(handlers::add_tracks),
-        )
         .route(
             "/api/playlists/{playlistId}/tracks/{trackId}",
             delete(handlers::remove_track),
@@ -765,6 +812,43 @@ mod tests {
         let resp = app.oneshot(request).await.unwrap();
         let status = resp.status();
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        (status, value)
+    }
+
+    /// 非ループバックの LAN リクエストを流す。`token=None` はトークン未提示。
+    async fn lan_req(
+        app: Router,
+        token: Option<&str>,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        use axum::extract::ConnectInfo;
+
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(token) = token {
+            builder = builder.header("X-API-Token", token);
+        }
+        let mut request = match body {
+            Some(body) => builder
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+            None => builder.body(Body::empty()).unwrap(),
+        };
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([192, 168, 1, 50], 54321))));
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let value = if bytes.is_empty() {
@@ -1194,6 +1278,88 @@ mod tests {
         let arr = tracks.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["trackId"], 3);
+    }
+
+    #[tokio::test]
+    async fn supplied_playlist_pid_is_idempotent_and_strictly_validated() {
+        let (_dir, app) = setup();
+        let body = json!({
+            "name": "Federated List",
+            "persistentId": "AAAABBBBCCCCDDDD"
+        });
+
+        let (status, first) = req(app.clone(), "POST", "/api/playlists", Some(body.clone())).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(first["persistentId"], "AAAABBBBCCCCDDDD");
+
+        let (status, second) = req(app.clone(), "POST", "/api/playlists", Some(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(second["playlistId"], first["playlistId"]);
+
+        let (status, error) = req(
+            app.clone(),
+            "POST",
+            "/api/playlists",
+            Some(json!({ "name": "Bad", "persistentId": "aaaabbbbccccdddd" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(error["error"].as_str().unwrap().contains("16桁"));
+
+        let (_, playlists) = req(app, "GET", "/api/playlists", None).await;
+        assert_eq!(
+            playlists
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|playlist| playlist["persistentId"] == "AAAABBBBCCCCDDDD")
+                .count(),
+            1
+        );
+    }
+
+    // ===== プレイリスト全置換: 入力順・重複を保持し、不正 ID は全体をロールバック =====
+    #[tokio::test]
+    async fn case_replace_playlist_tracks_is_ordered_and_atomic() {
+        let (_dir, app) = setup();
+
+        let (status, _) = req(
+            app.clone(),
+            "PUT",
+            "/api/playlists/100/tracks",
+            Some(json!({ "trackIds": [3, 2, 3] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (_, tracks) = req(app.clone(), "GET", "/api/playlists/100/tracks", None).await;
+        let ids: Vec<i64> = tracks
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|track| track["trackId"].as_i64().unwrap())
+            .collect();
+        assert_eq!(ids, vec![3, 2, 3]);
+
+        // DELETE 後に 4 を挿入し、9999 で失敗する経路でもトランザクション全体が戻る。
+        let (status, body) = req(
+            app.clone(),
+            "PUT",
+            "/api/playlists/100/tracks",
+            Some(json!({ "trackIds": [4, 9999] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "track not found: 9999");
+
+        let (_, tracks) = req(app, "GET", "/api/playlists/100/tracks", None).await;
+        let ids: Vec<i64> = tracks
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|track| track["trackId"].as_i64().unwrap())
+            .collect();
+        assert_eq!(ids, vec![3, 2, 3], "失敗前の所属と順序を維持する");
     }
 
     // ===== ケース 14: 不正な JSON ボディ → 4xx =====
@@ -1856,6 +2022,206 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(loopback).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// remote/sync の権限差、未提示トークン、ループバック例外をまとめて固定する。
+    #[tokio::test]
+    async fn case_lan_device_role_matrix() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        let tokens = crate::devices::ValidTokens::default();
+        tokens.insert("remote-token".into());
+        tokens.insert_with_role("sync-token".into(), crate::devices::DeviceRole::Sync);
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens,
+            pairings: crate::pairing::PairingRegistry::default(),
+        });
+
+        // remote は従来どおり rating と artwork には到達できる。
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("remote-token"),
+            "POST",
+            "/api/tracks/1/rating",
+            Some(json!({ "rating": 60 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("remote-token"),
+            "DELETE",
+            "/api/tracks/1/artwork",
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "auth guard は artwork を通す"
+        );
+
+        // remote では sync 専用書き込みがすべて 403 のまま。
+        let remote_cases = [
+            ("PATCH", "/api/tracks/1", Some(json!({ "genre": "X" }))),
+            (
+                "POST",
+                "/api/tracks/genre-tags/add",
+                Some(json!({ "trackIds": [1], "tag": "X" })),
+            ),
+            (
+                "POST",
+                "/api/tracks/genre-tags/remove",
+                Some(json!({ "trackIds": [1], "tag": "X" })),
+            ),
+            ("POST", "/api/playlists", Some(json!({ "name": "X" }))),
+            (
+                "POST",
+                "/api/playlists/100/tracks",
+                Some(json!({ "trackIds": [2] })),
+            ),
+            ("DELETE", "/api/playlists/100/tracks/1", None),
+            ("PATCH", "/api/playlists/100", Some(json!({ "name": "X" }))),
+            ("DELETE", "/api/playlists/100", None),
+            (
+                "PUT",
+                "/api/playlists/100/tracks",
+                Some(json!({ "trackIds": [2] })),
+            ),
+        ];
+        for (method, uri, body) in remote_cases {
+            let (status, _) = lan_req(app.clone(), Some("remote-token"), method, uri, body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+        }
+
+        // sync は曲メタデータと既存・新規のプレイリスト書き込みへ到達できる。
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("sync-token"),
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "genre": "Sync Genre" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("sync-token"),
+            "POST",
+            "/api/tracks/genre-tags/add",
+            Some(json!({ "trackIds": [1], "tag": "Sync" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("sync-token"),
+            "POST",
+            "/api/tracks/genre-tags/remove",
+            Some(json!({ "trackIds": [1], "tag": "Sync" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, created) = lan_req(
+            app.clone(),
+            Some("sync-token"),
+            "POST",
+            "/api/playlists",
+            Some(json!({ "name": "Sync List" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let created_id = created["playlistId"].as_i64().unwrap();
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("sync-token"),
+            "POST",
+            "/api/playlists/100/tracks",
+            Some(json!({ "trackIds": [2] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("sync-token"),
+            "DELETE",
+            "/api/playlists/100/tracks/1",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("sync-token"),
+            "PATCH",
+            "/api/playlists/100",
+            Some(json!({ "name": "Renamed by sync" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, playlist) = req(app.clone(), "GET", "/api/playlists/100", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(playlist["name"], "Renamed by sync");
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("sync-token"),
+            "PUT",
+            "/api/playlists/100/tracks",
+            Some(json!({ "trackIds": [3, 2] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, tracks) = req(app.clone(), "GET", "/api/playlists/100/tracks", None).await;
+        let track_ids: Vec<i64> = tracks
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|track| track["trackId"].as_i64().unwrap())
+            .collect();
+        assert_eq!(track_ids, vec![3, 2]);
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("sync-token"),
+            "DELETE",
+            &format!("/api/playlists/{created_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = req(
+            app.clone(),
+            "GET",
+            &format!("/api/playlists/{created_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // 有効トークンが存在する状態で未提示なら従来どおり 401。
+        let (status, _) = lan_req(app.clone(), None, "GET", "/api/health", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = lan_req(
+            app.clone(),
+            None,
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "genre": "No token" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // ループバックは役割・トークンに関係なく従来どおり書き込み可能。
+        let (status, _) = req(
+            app,
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "genre": "Loopback" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     /// 有効トークン集合が空なら、LAN からのデータアクセスは 403 (FORBIDDEN)。

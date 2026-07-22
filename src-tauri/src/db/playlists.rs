@@ -7,6 +7,14 @@ use super::Database;
 use crate::itunes_xml::parser::RawPlaylist;
 use crate::models::{Playlist, SmartCriteria, Track, TrackAnalysis};
 
+/// プレイリスト曲順の全置換結果。入力不備もトランザクション内で判定する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplacePlaylistTracksResult {
+    Replaced,
+    PlaylistNotFound,
+    TrackNotFound(i64),
+}
+
 impl Database {
     /// XML プレイリストを persistent_id 優先・名前/親 PID 補助でマージし、track_id を解決する。
     pub fn insert_playlist(
@@ -210,6 +218,32 @@ impl Database {
             .optional()
     }
 
+    pub fn get_playlist_by_persistent_id(&self, persistent_id: &str) -> Result<Option<Playlist>> {
+        self.conn
+            .query_row(
+                "SELECT p.id, p.playlist_id, p.persistent_id, p.parent_persistent_id,
+                        p.name, p.is_folder, p.is_smart, p.is_user_created,
+                        (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = p.playlist_id) as track_count
+                 FROM playlists p
+                 WHERE p.persistent_id = ?1",
+                [persistent_id],
+                |row| {
+                    Ok(Playlist {
+                        id: row.get(0)?,
+                        playlist_id: row.get(1)?,
+                        persistent_id: row.get(2)?,
+                        parent_persistent_id: row.get(3)?,
+                        name: row.get(4)?,
+                        is_folder: row.get::<_, i32>(5)? != 0,
+                        is_smart: row.get::<_, i32>(6)? != 0,
+                        is_user_created: row.get::<_, i32>(7)? != 0,
+                        track_count: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
     pub fn get_playlist_tracks(
         &self,
         playlist_id: i64,
@@ -304,6 +338,61 @@ impl Database {
             is_user_created: true,
             track_count: 0,
         })
+    }
+
+    /// federation WRITE-BACK 用。指定 PID が既にあれば既存行を成功として返す。
+    pub fn create_playlist_with_persistent_id(
+        &self,
+        name: &str,
+        parent_persistent_id: Option<&str>,
+        is_folder: bool,
+        persistent_id: &str,
+    ) -> Result<(Playlist, bool)> {
+        if let Some(existing) = self.get_playlist_by_persistent_id(persistent_id)? {
+            return Ok((existing, false));
+        }
+        let sort_order: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM playlists",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut attempt = 0;
+        loop {
+            let playlist_id = self.next_playlist_id()?;
+            match self.conn.execute(
+                "INSERT INTO playlists
+                    (playlist_id, persistent_id, parent_persistent_id, name, is_folder,
+                     is_smart, is_user_created, sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, 1, ?6)",
+                params![
+                    playlist_id,
+                    persistent_id,
+                    parent_persistent_id,
+                    name,
+                    is_folder as i32,
+                    sort_order,
+                ],
+            ) {
+                Ok(_) => {
+                    let playlist = self
+                        .get_playlist(playlist_id)?
+                        .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+                    return Ok((playlist, true));
+                }
+                Err(err) if super::should_retry_constraint(&err, attempt) => {
+                    if let Some(existing) = self.get_playlist_by_persistent_id(persistent_id)? {
+                        return Ok((existing, false));
+                    }
+                    attempt += 1;
+                }
+                Err(err) => {
+                    if let Some(existing) = self.get_playlist_by_persistent_id(persistent_id)? {
+                        return Ok((existing, false));
+                    }
+                    return Err(err);
+                }
+            }
+        }
     }
 
     pub fn rename_playlist(&self, playlist_id: i64, name: &str) -> Result<()> {
@@ -462,6 +551,47 @@ impl Database {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// プレイリストの所属曲を入力順どおりに全置換する。
+    ///
+    /// 削除・各 track_id の存在確認・挿入を同じトランザクションで行うため、途中に
+    /// 不正な track_id があれば削除も含めてロールバックされる。重複 ID は保持する。
+    pub fn replace_playlist_tracks(
+        &self,
+        playlist_id: i64,
+        ordered_track_ids: &[i64],
+    ) -> Result<ReplacePlaylistTracksResult> {
+        let tx = self.conn.unchecked_transaction()?;
+        let playlist_exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM playlists WHERE playlist_id = ?1)",
+            params![playlist_id],
+            |row| row.get(0),
+        )?;
+        if !playlist_exists {
+            return Ok(ReplacePlaylistTracksResult::PlaylistNotFound);
+        }
+
+        tx.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+            params![playlist_id],
+        )?;
+        for (i, track_id) in ordered_track_ids.iter().enumerate() {
+            let track_exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tracks WHERE track_id = ?1)",
+                params![track_id],
+                |row| row.get(0),
+            )?;
+            if !track_exists {
+                return Ok(ReplacePlaylistTracksResult::TrackNotFound(*track_id));
+            }
+            tx.execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES (?1, ?2, ?3)",
+                params![playlist_id, track_id, i as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(ReplacePlaylistTracksResult::Replaced)
     }
 
     // ===== Smart playlists =====

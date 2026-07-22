@@ -59,6 +59,86 @@ export interface ProvisionStatus {
   error: string | null;
 }
 
+export type WritebackValue = string | number | boolean | null;
+
+export interface WritebackFieldUpdate {
+  field: string;
+  value: WritebackValue;
+  previous: WritebackValue;
+}
+
+export interface WritebackTrackChange {
+  persistentId: string;
+  trackName: string | null;
+  fields: WritebackFieldUpdate[];
+}
+
+export interface WritebackConflict {
+  persistentId: string;
+  trackName: string | null;
+  field: string;
+  local: WritebackValue;
+  master: WritebackValue;
+  localNewer: boolean;
+}
+
+export type WritebackPlaylistOp =
+  | {
+      op: "create";
+      localPlaylistId: number;
+      persistentId: string;
+      name: string;
+      trackPersistentIds: string[];
+    }
+  | {
+      op: "rename";
+      persistentId: string;
+      masterPlaylistId: number;
+      from: string;
+      to: string;
+    }
+  | {
+      op: "replaceTracks";
+      persistentId: string;
+      masterPlaylistId: number;
+      name: string;
+      trackPersistentIds: string[];
+      masterTrackPersistentIds: string[];
+      overwritesMasterOrdering: boolean;
+    }
+  | {
+      op: "skippedDelete";
+      persistentId: string;
+      name: string;
+      reason: string;
+    };
+
+export interface WritebackPlan {
+  planId: string;
+  trackChanges: WritebackTrackChange[];
+  conflicts: WritebackConflict[];
+  playlistOps: WritebackPlaylistOp[];
+  pulls: WritebackTrackChange[];
+}
+
+export interface WritebackResolution {
+  persistentId: string;
+  field: string;
+  choose: "local" | "master";
+}
+
+export interface WritebackSummary {
+  pushed: number;
+  pulled: number;
+  playlistOps: number;
+  failures: SyncFailure[];
+}
+
+export interface WritebackApplyError {
+  code: "stalePlan" | "writebackFailed";
+  message: string;
+}
+
 export async function syncPairStart(
   baseUrl: string,
   deviceName: string,
@@ -97,6 +177,18 @@ export async function syncProvisionStatus(): Promise<ProvisionStatus> {
   return invoke("sync_provision_status");
 }
 
+export async function syncWritebackPlan(sourceId: number): Promise<WritebackPlan> {
+  return invoke("sync_writeback_plan", { sourceId });
+}
+
+export async function syncWritebackApply(
+  sourceId: number,
+  planId: string,
+  resolutions: WritebackResolution[],
+): Promise<WritebackSummary> {
+  return invoke("sync_writeback_apply", { sourceId, planId, resolutions });
+}
+
 export function onSyncProgress(cb: (progress: SyncProgress) => void): Promise<UnlistenFn> {
   return listen<SyncProgress>("sync-progress", (event) => cb(event.payload));
 }
@@ -107,4 +199,10 @@ export function onSyncComplete(cb: (summary: ProvisionSummary) => void): Promise
 
 export function onSyncError(cb: (error: string) => void): Promise<UnlistenFn> {
   return listen<{ error: string }>("sync-error", (event) => cb(event.payload.error));
+}
+
+export function onWritebackComplete(
+  cb: (summary: WritebackSummary) => void,
+): Promise<UnlistenFn> {
+  return listen<WritebackSummary>("writeback-complete", (event) => cb(event.payload));
 }

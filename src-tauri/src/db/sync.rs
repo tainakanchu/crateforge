@@ -1,5 +1,6 @@
 //! federation slave 側の同期用 DB 操作。
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::{params, OptionalExtension, Result};
@@ -26,6 +27,21 @@ pub enum SyncedTrackState {
     Missing,
     Owned(Option<String>),
     Collision,
+}
+
+/// WRITE-BACK の三者比較に必要な、pull 時点の基準値と現在のローカル行。
+#[derive(Debug, Clone)]
+pub struct SyncedTrackSnapshot {
+    pub persistent_id: String,
+    pub base_meta: String,
+    pub local: Track,
+}
+
+/// WRITE-BACK 対象になり得るローカルプレイリストと、その曲順（persistent ID）。
+#[derive(Debug, Clone)]
+pub struct SyncedPlaylistSnapshot {
+    pub playlist: Playlist,
+    pub track_persistent_ids: Vec<String>,
 }
 
 impl Database {
@@ -396,6 +412,203 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// source が所有する全曲を、基準 snapshot と現在値の組で返す。
+    pub fn list_synced_track_snapshots(&self, source_id: i64) -> Result<Vec<SyncedTrackSnapshot>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT persistent_id, COALESCE(base_meta, '{}')
+             FROM sync_track WHERE source_id = ?1 ORDER BY persistent_id",
+        )?;
+        let rows = stmt.query_map([source_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let baselines = rows.collect::<Result<Vec<_>>>()?;
+        let persistent_ids = baselines
+            .iter()
+            .map(|(persistent_id, _)| persistent_id.clone())
+            .collect::<Vec<_>>();
+        let locals = self.get_tracks_by_persistent_ids(&persistent_ids)?;
+        let local_by_pid = locals
+            .into_iter()
+            .filter_map(|track| track.persistent_id.clone().map(|pid| (pid, track)))
+            .collect::<std::collections::HashMap<_, _>>();
+        Ok(baselines
+            .into_iter()
+            .filter_map(|(persistent_id, base_meta)| {
+                local_by_pid
+                    .get(&persistent_id)
+                    .cloned()
+                    .map(|local| SyncedTrackSnapshot {
+                        persistent_id,
+                        base_meta,
+                        local,
+                    })
+            })
+            .collect())
+    }
+
+    /// provisioning で選択したプレイリスト（削除済みを含む）の PID と当時の名前。
+    pub fn list_sync_selections(&self, source_id: i64) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT remote_pid, COALESCE(name, '') FROM sync_selection
+             WHERE source_id = ?1 AND kind = 'playlist' ORDER BY id",
+        )?;
+        let rows = stmt.query_map([source_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// provisioning 済み、または source 所有曲だけを含むローカル作成プレイリストを返す。
+    /// 空のローカル作成プレイリストは同期元を特定できないため対象外にする。
+    pub fn list_synced_playlist_snapshots(
+        &self,
+        source_id: i64,
+    ) -> Result<Vec<SyncedPlaylistSnapshot>> {
+        let selected = self
+            .list_sync_selections(source_id)?
+            .into_iter()
+            .map(|(pid, _)| pid)
+            .collect::<HashSet<_>>();
+        let owned = self
+            .list_synced_track_snapshots(source_id)?
+            .into_iter()
+            .map(|row| row.persistent_id)
+            .collect::<HashSet<_>>();
+        let mut output = Vec::new();
+        for playlist in self.get_playlists()? {
+            let Some(pid) = playlist.persistent_id.as_deref() else {
+                continue;
+            };
+            let tracks = self.get_playlist_tracks(playlist.playlist_id, i64::MAX, 0, None, None)?;
+            let track_persistent_ids = tracks
+                .into_iter()
+                .filter_map(|track| track.persistent_id)
+                .collect::<Vec<_>>();
+            let provisioned = selected.contains(pid);
+            let local_for_source = playlist.is_user_created
+                && !playlist.is_folder
+                && !playlist.is_smart
+                && !track_persistent_ids.is_empty()
+                && track_persistent_ids.iter().all(|pid| owned.contains(pid));
+            if provisioned || local_for_source {
+                output.push(SyncedPlaylistSnapshot {
+                    playlist,
+                    track_persistent_ids,
+                });
+            }
+        }
+        Ok(output)
+    }
+
+    /// master-only 値を scoped metadata だけに反映する。再生統計などは一切触らない。
+    pub fn apply_writeback_pull(
+        &self,
+        persistent_id: &str,
+        fields: &[(String, serde_json::Value, serde_json::Value)],
+        master_date_modified: Option<&str>,
+    ) -> Result<Vec<String>> {
+        fn sql_value(value: &serde_json::Value) -> Result<rusqlite::types::Value> {
+            Ok(match value {
+                serde_json::Value::Null => rusqlite::types::Value::Null,
+                serde_json::Value::String(value) => rusqlite::types::Value::Text(value.clone()),
+                serde_json::Value::Bool(value) => {
+                    rusqlite::types::Value::Integer(i64::from(*value))
+                }
+                serde_json::Value::Number(value) => rusqlite::types::Value::Integer(
+                    value.as_i64().ok_or(rusqlite::Error::InvalidQuery)?,
+                ),
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            })
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        let mut skipped = Vec::new();
+        let mut applied = 0usize;
+        let mut touches_search = false;
+        for (field, value, previous) in fields {
+            let (column, search) = match field.as_str() {
+                "rating" => ("rating", false),
+                "name" => ("name", true),
+                "artist" => ("artist", true),
+                "albumArtist" => ("album_artist", true),
+                "composer" => ("composer", false),
+                "album" => ("album", true),
+                "genre" => ("genre", true),
+                "comments" => ("comments", true),
+                "year" => ("year", false),
+                "bpm" => ("bpm", false),
+                "trackNumber" => ("track_number", false),
+                "trackCount" => ("track_count", false),
+                "discNumber" => ("disc_number", false),
+                "discCount" => ("disc_count", false),
+                "compilation" => ("compilation", false),
+                _ => continue,
+            };
+            let changed = tx.execute(
+                &format!(
+                    "UPDATE tracks SET {column} = ?1
+                     WHERE persistent_id = ?2 AND {column} IS ?3"
+                ),
+                rusqlite::params![sql_value(value)?, persistent_id, sql_value(previous)?],
+            )?;
+            if changed == 0 {
+                skipped.push(field.clone());
+            } else {
+                applied += 1;
+                touches_search |= search;
+            }
+        }
+        // 一部でも競合した場合は、そのローカル編集の時計を母艦時刻で潰さない。
+        if applied > 0 && skipped.is_empty() {
+            tx.execute(
+                "UPDATE tracks SET date_modified = ?1 WHERE persistent_id = ?2",
+                rusqlite::params![master_date_modified, persistent_id],
+            )?;
+        }
+        if touches_search {
+            tx.execute(
+                &format!(
+                    "UPDATE tracks SET search_text = {SEARCH_TEXT_EXPR} WHERE persistent_id = ?1"
+                ),
+                [persistent_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(skipped)
+    }
+
+    /// ローカル作成 playlist を master が採番した persistent ID へ結び直す。
+    pub fn adopt_master_playlist_identity(
+        &self,
+        playlist_id: i64,
+        source_id: i64,
+        master_pid: &str,
+        name: &str,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let old_pid: Option<String> = tx.query_row(
+            "SELECT persistent_id FROM playlists WHERE playlist_id = ?1",
+            [playlist_id],
+            |row| row.get(0),
+        )?;
+        if let Some(old_pid) = old_pid {
+            tx.execute(
+                "UPDATE playlists SET parent_persistent_id = ?1 WHERE parent_persistent_id = ?2",
+                params![master_pid, old_pid],
+            )?;
+        }
+        tx.execute(
+            "UPDATE playlists SET persistent_id = ?1 WHERE playlist_id = ?2",
+            params![master_pid, playlist_id],
+        )?;
+        tx.execute(
+            "INSERT INTO sync_selection
+                (source_id, kind, remote_pid, name, policy, quality, created_at)
+             VALUES (?1, 'playlist', ?2, ?3, 'writeback', 'original', ?4)
+             ON CONFLICT(source_id, kind, remote_pid) DO UPDATE SET name=excluded.name",
+            params![source_id, master_pid, name, now()],
+        )?;
+        tx.commit()
+    }
 }
 
 fn row_to_source(row: &rusqlite::Row) -> Result<SyncSource> {
@@ -520,6 +733,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn writeback_pull_skips_a_field_changed_after_planning() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks
+                    (track_id, persistent_id, name, album, rating, search_text)
+                 VALUES (1, 'AAAABBBBCCCCDDDD', 'Song', 'Local Edit', 60, '')",
+                [],
+            )
+            .unwrap();
+
+        let skipped = db
+            .apply_writeback_pull(
+                "AAAABBBBCCCCDDDD",
+                &[(
+                    "album".to_string(),
+                    serde_json::json!("Master"),
+                    serde_json::json!("Planned Local"),
+                )],
+                Some("2026-07-22T00:00:00Z"),
+            )
+            .unwrap();
+
+        assert_eq!(skipped, vec!["album"]);
+        let album: String = db
+            .conn
+            .query_row(
+                "SELECT album FROM tracks WHERE persistent_id='AAAABBBBCCCCDDDD'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(album, "Local Edit");
     }
 
     #[test]

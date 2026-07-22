@@ -518,23 +518,95 @@ pub struct CreatePlaylistBody {
     pub name: String,
     pub parent_persistent_id: Option<String>,
     pub is_folder: Option<bool>,
+    pub persistent_id: Option<String>,
 }
 
-/// `POST /api/playlists` — 新規プレイリスト作成 → 201 + Playlist。
+fn valid_playlist_persistent_id(persistent_id: &str) -> bool {
+    persistent_id.len() == 16
+        && persistent_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
+}
+
+/// `POST /api/playlists` — 新規は 201、指定 PID が既存なら 200 + Playlist。
 pub async fn create_playlist(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<CreatePlaylistBody>,
 ) -> Result<(StatusCode, Json<Playlist>), ApiError> {
     let db = state.db()?;
-    // create_playlist は parent: Option<&str>, is_folder: bool を取る (Option ではない)。
-    let playlist = db.create_playlist(
-        &body.name,
-        body.parent_persistent_id.as_deref(),
-        body.is_folder.unwrap_or(false),
-    )?;
-    // 作成成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
-    state.notify_library_changed(Some(playlist.playlist_id));
-    Ok((StatusCode::CREATED, Json(playlist)))
+    let (playlist, created) = match body.persistent_id.as_deref() {
+        Some(persistent_id) => {
+            if !valid_playlist_persistent_id(persistent_id) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "persistentId は16桁の大文字16進数で指定してください",
+                ));
+            }
+            db.create_playlist_with_persistent_id(
+                &body.name,
+                body.parent_persistent_id.as_deref(),
+                body.is_folder.unwrap_or(false),
+                persistent_id,
+            )?
+        }
+        None => (
+            db.create_playlist(
+                &body.name,
+                body.parent_persistent_id.as_deref(),
+                body.is_folder.unwrap_or(false),
+            )?,
+            true,
+        ),
+    };
+    if created {
+        // 作成成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
+        state.notify_library_changed(Some(playlist.playlist_id));
+    }
+    Ok((
+        if created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(playlist),
+    ))
+}
+
+/// `PATCH /api/playlists/:playlistId` のボディ。将来の拡張を見越して全項目任意。
+#[derive(Debug, Deserialize)]
+pub struct PatchPlaylistBody {
+    pub name: Option<String>,
+}
+
+/// `PATCH /api/playlists/:playlistId` — 指定されたプレイリスト名を変更 → 204。
+pub async fn patch_playlist(
+    State(state): State<ApiState>,
+    Path(playlist_id): Path<i64>,
+    ExtractJson(body): ExtractJson<PatchPlaylistBody>,
+) -> Result<StatusCode, ApiError> {
+    let db = state.db()?;
+    if db.get_playlist(playlist_id)?.is_none() {
+        return Err(ApiError::not_found("playlist not found"));
+    }
+    if let Some(name) = body.name {
+        db.rename_playlist(playlist_id, &name)?;
+        state.notify_library_changed(Some(playlist_id));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/playlists/:playlistId` — プレイリストを削除 → 204。
+pub async fn delete_playlist(
+    State(state): State<ApiState>,
+    Path(playlist_id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
+    let db = state.db()?;
+    if db.get_playlist(playlist_id)?.is_none() {
+        return Err(ApiError::not_found("playlist not found"));
+    }
+    db.delete_playlist(playlist_id)?;
+    state.notify_library_changed(Some(playlist_id));
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/playlists/:playlistId/tracks` — 曲を追加 → { added: n }。
@@ -560,6 +632,31 @@ pub async fn remove_track(
     // 削除成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
     state.notify_library_changed(Some(playlist_id));
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT /api/playlists/:playlistId/tracks` — 所属曲を入力順どおりに全置換 → 204。
+/// 不正な trackId が 1 件でもあれば 400 とし、既存の所属・順序は変更しない。
+pub async fn replace_playlist_tracks(
+    State(state): State<ApiState>,
+    Path(playlist_id): Path<i64>,
+    ExtractJson(body): ExtractJson<ByIdsBody>,
+) -> Result<StatusCode, ApiError> {
+    use crate::db::playlists::ReplacePlaylistTracksResult;
+
+    let db = state.db()?;
+    match db.replace_playlist_tracks(playlist_id, &body.track_ids)? {
+        ReplacePlaylistTracksResult::Replaced => {
+            state.notify_library_changed(Some(playlist_id));
+            Ok(StatusCode::NO_CONTENT)
+        }
+        ReplacePlaylistTracksResult::PlaylistNotFound => {
+            Err(ApiError::not_found("playlist not found"))
+        }
+        ReplacePlaylistTracksResult::TrackNotFound(track_id) => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("track not found: {track_id}"),
+        )),
+    }
 }
 
 // ===== 曲メタデータ書き込み =====

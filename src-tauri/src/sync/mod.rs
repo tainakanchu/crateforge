@@ -1,5 +1,7 @@
 //! federation slave 側のペアリング・参照・snapshot provisioning。
 
+pub mod writeback;
+
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -36,6 +38,10 @@ pub enum SyncError {
     Database(#[from] rusqlite::Error),
     #[error("file operation failed: {0}")]
     File(String),
+    #[error("母艦または手元の状態が変わりました。内容を確認し直してください")]
+    StaleWritebackPlan,
+    #[error("母艦側でプレイリストが変更されたため置換をスキップしました")]
+    PlaylistChangedDuringWriteback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

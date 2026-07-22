@@ -287,6 +287,8 @@ pub fn run() {
             commands::sync::sync_playlist_size_estimate,
             commands::sync::sync_provision,
             commands::sync::sync_provision_status,
+            commands::sync::sync_writeback_plan,
+            commands::sync::sync_writeback_apply,
             // フォント
             commands::fonts::list_system_fonts,
             commands::fonts::get_ui_font,

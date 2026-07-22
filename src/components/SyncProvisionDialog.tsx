@@ -11,6 +11,7 @@ import type {
 import type { Playlist } from "../types";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
+import { SyncWritebackDialog } from "./SyncWritebackDialog";
 
 interface SyncProvisionDialogProps {
   onClose: () => void;
@@ -68,6 +69,7 @@ export function SyncProvisionDialog({
   const [sources, setSources] = useState<SyncSource[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const [selectedSource, setSelectedSource] = useState<SyncSource | null>(null);
+  const [writebackSource, setWritebackSource] = useState<SyncSource | null>(null);
   const [remotePlaylists, setRemotePlaylists] = useState<Playlist[]>([]);
   const [playlistsLoading, setPlaylistsLoading] = useState(false);
   const [selectedPids, setSelectedPids] = useState<Set<string>>(new Set());
@@ -118,7 +120,7 @@ export function SyncProvisionDialog({
       (target ?? dialogRef.current)?.focus();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [step, sourcesLoading, playlistsLoading]);
+  }, [step, sourcesLoading, playlistsLoading, writebackSource]);
 
   useEffect(() => {
     let disposed = false;
@@ -381,6 +383,17 @@ export function SyncProvisionDialog({
     ? Math.min(100, Math.round((progress.current / progress.total) * 100))
     : 0;
 
+  if (writebackSource) {
+    return (
+      <SyncWritebackDialog
+        source={writebackSource}
+        onBack={() => setWritebackSource(null)}
+        onClose={onClose}
+        onLibraryChanged={onLibraryChanged}
+      />
+    );
+  }
+
   return (
     <div
       className="modal-overlay"
@@ -421,20 +434,34 @@ export function SyncProvisionDialog({
               ) : sources.length > 0 ? (
                 <div className="sync-source-list">
                   {sources.map((source, index) => (
-                    <button
-                      key={source.id}
-                      className="sync-source"
-                      onClick={() => loadPlaylists(source)}
-                      data-autofocus={index === 0 ? true : undefined}
-                    >
+                    <div key={source.id} className="sync-source">
                       <Icon name="disc" size={18} />
                       <span className="sync-source-copy">
                         <strong>{source.name?.trim() || source.baseUrl}</strong>
                         <span>{source.baseUrl}</span>
                       </span>
                       <span className="sync-source-meta">{formatLastSync(source.lastSyncAt)}</span>
-                      <Icon name="chevronR" size={15} />
-                    </button>
+                      <span className="sync-source-actions">
+                        <button
+                          className="toolbar-btn"
+                          type="button"
+                          onClick={() => loadPlaylists(source)}
+                          data-autofocus={index === 0 ? true : undefined}
+                        >
+                          <Icon name="download" size={14} /> 取り寄せ
+                        </button>
+                        <button
+                          className="toolbar-btn"
+                          type="button"
+                          onClick={() => {
+                            setError(null);
+                            setWritebackSource(source);
+                          }}
+                        >
+                          <Icon name="upload" size={14} /> 母艦へ書き戻す
+                        </button>
+                      </span>
+                    </div>
                   ))}
                 </div>
               ) : (

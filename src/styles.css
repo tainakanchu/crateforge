@@ -2513,24 +2513,19 @@ input {
   align-items: center;
   gap: 11px;
   padding: 12px;
-  border: 0;
   border-bottom: 1px solid var(--bd);
   background: var(--bg2);
   color: var(--tx);
   text-align: left;
-  cursor: pointer;
 }
 .sync-source:last-child,
 .sync-playlist:last-child {
   border-bottom: 0;
 }
-.sync-source:hover,
-.sync-source:focus-visible,
 .sync-playlist:hover,
 .sync-playlist:focus-within {
   background: var(--hover);
 }
-.sync-source:focus-visible,
 .sync-playlist:focus-within {
   outline: 1px solid var(--ac);
   outline-offset: -1px;
@@ -2561,6 +2556,15 @@ input {
 }
 .sync-source-meta {
   flex-shrink: 0;
+}
+.sync-source-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+.sync-source-actions .toolbar-btn {
+  padding: 6px 9px;
+  font-size: 11px;
 }
 .sync-actions {
   display: flex;
@@ -2815,6 +2819,188 @@ input {
 .sync-failures li span {
   margin-top: 2px;
   color: var(--mut);
+}
+
+/* ============================================================
+   Sync write-back modal
+   ============================================================ */
+.writeback-modal {
+  width: 680px;
+}
+.writeback-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.writeback-section {
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  background: var(--bg2);
+  overflow: hidden;
+}
+.writeback-section > h4 {
+  margin: 0;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--bd);
+  color: var(--tx);
+  font-size: 12px;
+  font-weight: 680;
+}
+.writeback-track-list,
+.writeback-track-list ul,
+.writeback-playlist-list,
+.writeback-conflicts > ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.writeback-track {
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--bd);
+}
+.writeback-track:last-child,
+.writeback-playlist-op:last-child,
+.writeback-conflict:last-child {
+  border-bottom: 0;
+}
+.writeback-track > strong {
+  display: block;
+  margin-bottom: 5px;
+  overflow: hidden;
+  color: var(--tx);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.writeback-track ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.writeback-track ul li {
+  display: grid;
+  grid-template-columns: 125px minmax(0, 1fr);
+  gap: 10px;
+  color: var(--mut);
+  font-size: 11px;
+}
+.writeback-field-value {
+  overflow-wrap: anywhere;
+  color: var(--tx2);
+}
+.writeback-playlist-op {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 10px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--bd);
+  font-size: 11.5px;
+}
+.writeback-op-label {
+  color: var(--ac);
+  font-weight: 650;
+}
+.writeback-op-detail {
+  overflow-wrap: anywhere;
+  color: var(--tx2);
+}
+.writeback-order-warning {
+  grid-column: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #e4b76d;
+  font-size: 10.5px;
+}
+.writeback-conflicts > p {
+  margin: 0;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--bd);
+  color: var(--mut);
+  font-size: 11px;
+}
+.writeback-conflict {
+  padding: 10px 11px;
+  border-bottom: 1px solid var(--bd);
+}
+.writeback-conflict-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+  font-size: 11.5px;
+}
+.writeback-conflict-heading strong {
+  overflow: hidden;
+  color: var(--tx);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.writeback-conflict-heading span {
+  flex-shrink: 0;
+  color: var(--mut);
+}
+.writeback-choice {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+.writeback-choice label {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  background: var(--bg3);
+  cursor: pointer;
+}
+.writeback-choice label.selected {
+  border-color: var(--ac);
+  background: var(--ac-16);
+}
+.writeback-choice input {
+  flex-shrink: 0;
+  margin: 2px 0 0;
+  accent-color: var(--ac);
+}
+.writeback-choice label > span {
+  min-width: 0;
+}
+.writeback-choice small,
+.writeback-choice strong {
+  display: block;
+}
+.writeback-choice small {
+  margin-bottom: 3px;
+  color: var(--mut);
+  font-size: 10.5px;
+}
+.writeback-choice strong {
+  overflow-wrap: anywhere;
+  color: var(--tx);
+  font-size: 11.5px;
+}
+.writeback-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 18px 12px 8px;
+  text-align: center;
+}
+.writeback-empty .sync-result-icon {
+  margin-bottom: 10px;
+}
+.writeback-empty > strong {
+  color: var(--tx);
+  font-size: 14px;
+}
+.writeback-empty > span {
+  margin-top: 5px;
+  color: var(--mut);
+  font-size: 11.5px;
 }
 
 .rip-row {
