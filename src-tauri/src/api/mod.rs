@@ -680,9 +680,9 @@ mod tests {
             db.conn
                 .execute(
                     "INSERT INTO tracks
-                        (track_id, name, artist, album, genre, year, rating,
+                        (track_id, persistent_id, name, artist, album, genre, year, rating,
                          total_time_ms, file_exists)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 200000, 1)",
+                     VALUES (?1, printf('%016X', ?1), ?2, ?3, ?4, ?5, ?6, ?7, 200000, 1)",
                     rusqlite::params![tid, name, artist, album, genre, year, rating],
                 )
                 .unwrap();
@@ -720,9 +720,11 @@ mod tests {
         db.conn
             .execute(
                 "INSERT INTO track_analysis
-                    (track_id, version, analyzed_at, bpm, key_camelot, key_name,
+                    (persistent_id, track_id, version, analyzed_at, bpm, key_camelot, key_name,
                      energy, loudness_lufs, replaygain_db, vector, peaks)
-                 VALUES (?1, 2, '2026-01-01T00:00:00Z', ?2, ?3, NULL, ?4, NULL, NULL, ?5, '[]')",
+                 SELECT persistent_id, track_id, 2, '2026-01-01T00:00:00Z',
+                        ?2, ?3, NULL, ?4, NULL, NULL, ?5, '[]'
+                 FROM tracks WHERE track_id = ?1",
                 rusqlite::params![track_id, bpm, key, energy, vector_json],
             )
             .unwrap();

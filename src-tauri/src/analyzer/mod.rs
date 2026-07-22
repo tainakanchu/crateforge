@@ -88,7 +88,7 @@ fn process_batch(app: &AppHandle, ids: Vec<i64>, force: bool) {
 
     // 重複排除 + 「ファイルがあり、未解析 (or force)」だけに絞る。
     let mut seen = std::collections::HashSet::new();
-    let mut todo: Vec<(i64, String)> = Vec::new();
+    let mut todo: Vec<(i64, String, String)> = Vec::new();
     for id in ids {
         if !seen.insert(id) {
             continue;
@@ -98,9 +98,9 @@ fn process_batch(app: &AppHandle, ids: Vec<i64>, force: bool) {
             continue;
         }
         if let Ok(Some(t)) = db.get_track_by_track_id(id) {
-            if let Some(p) = t.location_path {
-                if !p.is_empty() && Path::new(&p).exists() {
-                    todo.push((id, p));
+            if let (Some(persistent_id), Some(path)) = (t.persistent_id, t.location_path) {
+                if !persistent_id.is_empty() && !path.is_empty() && Path::new(&path).exists() {
+                    todo.push((id, persistent_id, path));
                 }
             }
         }
@@ -114,9 +114,11 @@ fn process_batch(app: &AppHandle, ids: Vec<i64>, force: bool) {
 
     let mut analyzed = 0usize;
     let mut failed = 0usize;
-    for (i, (id, path)) in todo.iter().enumerate() {
-        let result =
-            analyze_path(path, *id).and_then(|a| db.upsert_analysis(&a).map_err(|e| e.to_string()));
+    for (i, (id, persistent_id, path)) in todo.iter().enumerate() {
+        let result = analyze_path(path, *id).and_then(|a| {
+            db.upsert_analysis(persistent_id, &a)
+                .map_err(|e| e.to_string())
+        });
         let ok = result.is_ok();
         if let Err(e) = result {
             eprintln!("analyzer: track {id} failed: {e}");
