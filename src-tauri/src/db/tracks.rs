@@ -573,6 +573,91 @@ impl Database {
         }
     }
 
+    /// federation upload 用。クライアントが持つ persistent ID を変更せずに新規曲を追加する。
+    /// 呼び出し側は PID の形式検証と既存行の冪等判定を済ませてから呼ぶ。
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_imported_track_with_persistent_id(
+        &self,
+        persistent_id: &str,
+        name: Option<&str>,
+        artist: Option<&str>,
+        album_artist: Option<&str>,
+        album: Option<&str>,
+        genre: Option<&str>,
+        year: Option<i64>,
+        bpm: Option<i64>,
+        comments: Option<&str>,
+        track_number: Option<i64>,
+        track_count: Option<i64>,
+        disc_number: Option<i64>,
+        disc_count: Option<i64>,
+        compilation: bool,
+        rating: Option<i64>,
+        total_time_ms: Option<i64>,
+        location_path: &str,
+        location_url: &str,
+    ) -> Result<i64> {
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let search_text = compute_search_text([name, artist, album, album_artist, genre, comments]);
+
+        let mut attempt = 0;
+        loop {
+            let next_id: i64 = self.conn.query_row(
+                "SELECT COALESCE(MAX(track_id), 0) + 1 FROM tracks",
+                [],
+                |row| row.get(0),
+            )?;
+            match self.conn.execute(
+                "INSERT INTO tracks
+                    (track_id, persistent_id, name, artist, album_artist, album, genre, year,
+                     rating, total_time_ms, date_added, bpm, comments, location_raw,
+                     location_path, track_type, compilation, track_number, track_count,
+                     disc_number, disc_count, file_exists, search_text)
+                 VALUES
+                    (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                     ?15, 'File', ?16, ?17, ?18, ?19, ?20, 1, ?21)",
+                params![
+                    next_id,
+                    persistent_id,
+                    name,
+                    artist,
+                    album_artist,
+                    album,
+                    genre,
+                    year,
+                    rating,
+                    total_time_ms,
+                    now,
+                    bpm,
+                    comments,
+                    location_url,
+                    location_path,
+                    compilation as i32,
+                    track_number,
+                    track_count,
+                    disc_number,
+                    disc_count,
+                    search_text,
+                ],
+            ) {
+                Ok(_) => return Ok(next_id),
+                Err(err) if super::should_retry_constraint(&err, attempt) => {
+                    // track_id の同時採番衝突だけ再試行する。PID 衝突は上書きしない。
+                    let pid_exists: bool = self.conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM tracks WHERE persistent_id = ?1)",
+                        [persistent_id],
+                        |row| row.get(0),
+                    )?;
+                    if pid_exists {
+                        return Err(err);
+                    }
+                    attempt += 1;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
     /// 既存行の `search_text` を、現在の name/artist/album/album_artist/genre/comments から
     /// 再計算する。SQL 側 `SEARCH_TEXT_EXPR` (= Rust 側 compute_search_text と等価) を使い、
     /// どの列が変わっても確実に正しい値へ更新できる。検索対象列を変える全 UPDATE 経路から呼ぶ。

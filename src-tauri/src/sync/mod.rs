@@ -1,11 +1,16 @@
 //! federation slave 側のペアリング・参照・snapshot provisioning。
 
 pub mod phase3;
+pub mod push;
 pub mod writeback;
 
 pub use phase3::{
     compute_eviction_candidates, evict, resync, storage_usage, EvictionCandidate, EvictionSummary,
     ResyncSummary, StorageUsage,
+};
+pub use push::{
+    list_pushable, push_analyses, push_tracks, PushAnalysesSummary, PushTracksSummary,
+    PushableTrack,
 };
 
 use std::collections::{HashMap, HashSet};

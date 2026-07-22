@@ -84,6 +84,36 @@ fn file_fingerprint(path: &Path) -> (Option<i64>, Option<i64>) {
 }
 
 impl Database {
+    /// どの同期元にもまだ所属していない、ローカル由来のファイル付き曲を返す。
+    pub fn list_local_origin_tracks(&self) -> Result<Vec<Track>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.track_id, t.persistent_id, t.name, t.artist, t.album_artist,
+                    t.composer, t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count,
+                    t.total_time_ms, t.date_added, t.date_modified, t.bpm, t.comments,
+                    t.location_raw, t.location_path, t.track_type, t.disabled, t.compilation,
+                    t.disc_number, t.disc_count, t.track_number, t.track_count, t.file_exists,
+                    t.last_played
+             FROM tracks t
+             WHERE t.file_exists = 1
+               AND t.location_path IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM sync_track st WHERE st.persistent_id = t.persistent_id
+               )
+             ORDER BY t.track_id",
+        )?;
+        let rows = stmt.query_map([], super::tracks::row_to_track)?;
+        rows.collect()
+    }
+
+    /// 指定 source に所属する PID を安定順で返す。
+    pub fn list_sync_track_persistent_ids(&self, source_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT persistent_id FROM sync_track WHERE source_id = ?1 ORDER BY persistent_id",
+        )?;
+        let rows = stmt.query_map([source_id], |row| row.get(0))?;
+        rows.collect()
+    }
+
     pub fn upsert_sync_source(
         &self,
         server_id: &str,

@@ -184,7 +184,7 @@ pub fn target_path(root: &Path, meta: &TrackMeta, source: &Path) -> PathBuf {
 }
 
 /// 既存の別ファイルと衝突する場合 ` (2)` などを付けて回避する。
-fn resolve_collision(target: &Path, source: &Path) -> PathBuf {
+pub(crate) fn resolve_collision(target: &Path, source: &Path) -> PathBuf {
     if !target.exists() {
         return target.to_path_buf();
     }

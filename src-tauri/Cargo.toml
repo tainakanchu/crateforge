@@ -52,7 +52,7 @@ fontdb = "0.23"
 # tauri は内部で tokio をランタイムに使うため、tauri::async_runtime 経由で
 # axum::serve を spawn できる。tokio の features は明示的に拾っておく。
 axum = "0.8"
-tokio = { version = "1", features = ["net", "sync", "rt", "macros", "io-util", "process"] }
+tokio = { version = "1", features = ["net", "sync", "rt", "macros", "io-util", "process", "fs"] }
 tower-http = { version = "0.6", features = ["fs"] }
 # ServeFile を 1 リクエストに oneshot で適用する (ストリーミング配信)。tests でも使う。
 tower = { version = "0.5", features = ["util"] }

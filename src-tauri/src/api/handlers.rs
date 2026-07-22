@@ -6,6 +6,9 @@
 //! 各ハンドラはリクエスト毎に `state.db()` で新しい `Database::open` を行う
 //! (rusqlite + WAL なので別コネクションでも安全)。
 
+use std::io::Write;
+use std::path::{Path as FsPath, PathBuf};
+
 use axum::extract::{Json as ExtractJson, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -21,6 +24,13 @@ use super::ApiState;
 use crate::analyzer::similarity::{rank_similar, SimilarOpts};
 use crate::db::tracks::{AlbumInfo, ArtistInfo};
 use crate::models::{GenreTagCount, LibraryStats, Playlist, SimilarHit, Track, TrackAnalysis};
+
+/// 音源本体は最大 2 GiB。multipart の framing 分は router 側で少し余裕を持たせる。
+pub(crate) const TRACK_UPLOAD_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub(crate) const ANALYSIS_UPLOAD_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+// PID の冪等確認から DB 挿入までを直列化し、同一プロセス内の同時 upload 競合を防ぐ。
+static TRACK_UPLOAD_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// `get_tracks` / `search_tracks` は `limit: i64` を直値で要求する。
 /// 「全件取得してから Rust 側で絞り込む」方針なので、実質的に無制限な上限を渡す。
@@ -323,6 +333,432 @@ pub async fn analysis_lookup(
             })
             .collect(),
     ))
+}
+
+// ===== federation reverse upload =====
+
+/// `POST /api/tracks/upload` の JSON metadata。
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackUploadMetadata {
+    pub persistent_id: String,
+    pub name: Option<String>,
+    pub artist: Option<String>,
+    pub album_artist: Option<String>,
+    pub album: Option<String>,
+    pub genre: Option<String>,
+    pub year: Option<i64>,
+    pub bpm: Option<i64>,
+    pub comments: Option<String>,
+    pub track_number: Option<i64>,
+    pub track_count: Option<i64>,
+    pub disc_number: Option<i64>,
+    pub disc_count: Option<i64>,
+    #[serde(default)]
+    pub compilation: bool,
+    pub rating: Option<i64>,
+    pub total_time_ms: Option<i64>,
+    pub file_name: String,
+    pub file_size: u64,
+}
+
+fn valid_track_pid(value: &str) -> bool {
+    value.len() == 16
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
+}
+
+fn upload_source_hint(file_name: &str) -> Result<PathBuf, ApiError> {
+    let extension = FsPath::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 10
+                && value
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric())
+        })
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "fileName has no valid extension"))?;
+    Ok(PathBuf::from(format!(
+        "upload.{}",
+        extension.to_ascii_lowercase()
+    )))
+}
+
+fn existing_track(
+    db: &crate::db::Database,
+    persistent_id: &str,
+) -> Result<Option<Track>, ApiError> {
+    Ok(db
+        .get_tracks_by_persistent_ids(&[persistent_id.to_string()])?
+        .into_iter()
+        .next())
+}
+
+struct TempUpload(PathBuf);
+
+impl Drop for TempUpload {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn create_upload_temp(parent: &FsPath) -> Result<(TempUpload, std::fs::File), ApiError> {
+    std::fs::create_dir_all(parent).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to create upload directory: {error}"),
+        )
+    })?;
+    for _ in 0..16 {
+        let mut random = [0u8; 16];
+        getrandom::getrandom(&mut random).map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to create upload temp name: {error}"),
+            )
+        })?;
+        let suffix = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = parent.join(format!(".crateforge-upload-{suffix}.part"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((TempUpload(path), file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to create upload temp file: {error}"),
+                ))
+            }
+        }
+    }
+    Err(ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "failed to allocate upload temp file",
+    ))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackUploadReady {
+    pub upload_id: String,
+}
+
+/// `POST /api/tracks/upload` — metadata を検証・保存し、raw body 用 uploadId を返す。
+/// 既存 PID は音源に触れず Track を 200 で返す。
+pub async fn prepare_track_upload(
+    State(state): State<ApiState>,
+    ExtractJson(metadata): ExtractJson<TrackUploadMetadata>,
+) -> Result<Response, ApiError> {
+    let _guard = TRACK_UPLOAD_MUTEX.lock().await;
+    if !valid_track_pid(&metadata.persistent_id) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "persistentId must be 16-character uppercase hexadecimal",
+        ));
+    }
+    if metadata.file_size > TRACK_UPLOAD_MAX_BYTES {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "fileSize exceeds the 2 GiB upload limit",
+        ));
+    }
+    upload_source_hint(&metadata.file_name)?;
+    let db = state.db()?;
+    if let Some(track) = existing_track(&db, &metadata.persistent_id)? {
+        return Ok((StatusCode::OK, Json(track)).into_response());
+    }
+
+    let pending_dir = state.app_data_dir.join(".sync-uploads");
+    std::fs::create_dir_all(&pending_dir).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to create pending upload directory: {error}"),
+        )
+    })?;
+    let target = pending_dir.join(format!("{}.json", metadata.persistent_id));
+    let (mut temp, mut file) = create_upload_temp(&pending_dir)?;
+    serde_json::to_writer(&mut file, &metadata).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to save upload metadata: {error}"),
+        )
+    })?;
+    file.flush()
+        .and_then(|_| file.sync_all())
+        .map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to flush upload metadata: {error}"),
+            )
+        })?;
+    drop(file);
+    if target.exists() {
+        std::fs::remove_file(&target).map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to replace upload metadata: {error}"),
+            )
+        })?;
+    }
+    std::fs::rename(&temp.0, target).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to publish upload metadata: {error}"),
+        )
+    })?;
+    temp.0 = PathBuf::new();
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(TrackUploadReady {
+            upload_id: metadata.persistent_id,
+        }),
+    )
+        .into_response())
+}
+
+/// `PUT /api/tracks/upload/{uploadId}` — raw 音源を逐次保存して size 検証し、
+/// 同一ディレクトリ内の rename 後に supplied PID で DB へ追加する。
+pub async fn upload_track_body(
+    State(state): State<ApiState>,
+    Path(upload_id): Path<String>,
+    body: axum::body::Body,
+) -> Result<Response, ApiError> {
+    use futures_util::StreamExt;
+
+    let _guard = TRACK_UPLOAD_MUTEX.lock().await;
+    if !valid_track_pid(&upload_id) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "uploadId must be 16-character uppercase hexadecimal",
+        ));
+    }
+    let metadata_path = state
+        .app_data_dir
+        .join(".sync-uploads")
+        .join(format!("{upload_id}.json"));
+    let metadata: TrackUploadMetadata = serde_json::from_reader(
+        std::fs::File::open(&metadata_path)
+            .map_err(|_| ApiError::not_found("upload metadata not found"))?,
+    )
+    .map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to read upload metadata: {error}"),
+        )
+    })?;
+    if metadata.persistent_id != upload_id {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "upload metadata does not match uploadId",
+        ));
+    }
+    let source_hint = upload_source_hint(&metadata.file_name)?;
+    let db = state.db()?;
+    if let Some(track) = existing_track(&db, &metadata.persistent_id)? {
+        return Ok((StatusCode::OK, Json(track)).into_response());
+    }
+
+    // 通常の organizer 設定を尊重し、未設定/無効時も管理下の退避先へ必ず着地させる。
+    let root = db
+        .organize_root()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.app_data_dir.join("Synced Uploads"));
+    let track_meta = crate::organizer::TrackMeta {
+        title: metadata.name.as_deref(),
+        artist: metadata.artist.as_deref(),
+        album_artist: metadata.album_artist.as_deref(),
+        album: metadata.album.as_deref(),
+        compilation: metadata.compilation,
+        track_number: metadata.track_number,
+        disc_number: metadata.disc_number,
+        disc_count: metadata.disc_count,
+    };
+    let target = crate::organizer::target_path(&root, &track_meta, &source_hint);
+    let target = crate::organizer::resolve_collision(&target, &source_hint);
+    let parent = target.parent().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "upload target has no parent",
+        )
+    })?;
+    let (mut temp, mut file) = create_upload_temp(parent)?;
+    let mut received = 0u64;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk =
+            chunk.map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?;
+        received = received.saturating_add(chunk.len() as u64);
+        if received > metadata.file_size || received > TRACK_UPLOAD_MAX_BYTES {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "received audio size exceeds fileSize (expected {}, got at least {received})",
+                    metadata.file_size
+                ),
+            ));
+        }
+        file.write_all(&chunk).map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to write upload: {error}"),
+            )
+        })?;
+    }
+    if received != metadata.file_size {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "received audio size does not match fileSize (expected {}, got {received})",
+                metadata.file_size
+            ),
+        ));
+    }
+    file.flush()
+        .and_then(|_| file.sync_all())
+        .map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to flush upload: {error}"),
+            )
+        })?;
+    drop(file);
+    std::fs::rename(&temp.0, &target).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to atomically land upload: {error}"),
+        )
+    })?;
+    temp.0 = PathBuf::new();
+
+    let location_path = target.to_string_lossy().to_string();
+    let location_url = crate::itunes_xml::writer::path_to_file_url(&location_path);
+    let track_id = match db.add_imported_track_with_persistent_id(
+        &metadata.persistent_id,
+        metadata.name.as_deref(),
+        metadata.artist.as_deref(),
+        metadata.album_artist.as_deref(),
+        metadata.album.as_deref(),
+        metadata.genre.as_deref(),
+        metadata.year,
+        metadata.bpm,
+        metadata.comments.as_deref(),
+        metadata.track_number,
+        metadata.track_count,
+        metadata.disc_number,
+        metadata.disc_count,
+        metadata.compilation,
+        metadata.rating,
+        metadata.total_time_ms,
+        &location_path,
+        &location_url,
+    ) {
+        Ok(track_id) => track_id,
+        Err(error) => {
+            let _ = std::fs::remove_file(&target);
+            if let Some(track) = existing_track(&db, &metadata.persistent_id)? {
+                return Ok((StatusCode::OK, Json(track)).into_response());
+            }
+            return Err(ApiError::from(error));
+        }
+    };
+    let track = db.get_track_by_track_id(track_id)?.ok_or_else(|| {
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "inserted track missing")
+    })?;
+    state.notify_library_changed(None);
+    Ok((StatusCode::CREATED, Json(track)).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisUploadRow {
+    pub persistent_id: String,
+    pub version: i64,
+    pub analyzed_at: String,
+    pub bpm: Option<f64>,
+    pub key_camelot: Option<String>,
+    pub key_name: Option<String>,
+    pub energy: Option<f64>,
+    pub loudness_lufs: Option<f64>,
+    pub replaygain_db: Option<f64>,
+    #[serde(default)]
+    pub vector: Vec<f64>,
+    #[serde(default)]
+    pub peaks: Vec<f32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisUploadResult {
+    pub persistent_id: String,
+    pub status: &'static str,
+}
+
+/// `POST /api/analysis` — 現行バージョンだけを PID 単位で条件付き upsert する。
+pub async fn upload_analyses(
+    State(state): State<ApiState>,
+    ExtractJson(rows): ExtractJson<Vec<AnalysisUploadRow>>,
+) -> Result<Json<Vec<AnalysisUploadResult>>, ApiError> {
+    let db = state.db()?;
+    let mut results = Vec::with_capacity(rows.len());
+    let mut changed = false;
+    for row in rows {
+        let status = if !valid_track_pid(&row.persistent_id)
+            || row.version != crate::db::analysis::ANALYSIS_VERSION
+        {
+            "rejected"
+        } else {
+            let Some(track) = existing_track(&db, &row.persistent_id)? else {
+                results.push(AnalysisUploadResult {
+                    persistent_id: row.persistent_id,
+                    status: "rejected",
+                });
+                continue;
+            };
+            let existing_version = db
+                .get_analysis(track.track_id)?
+                .map(|analysis| analysis.version);
+            if existing_version.is_some_and(|version| row.version < version) {
+                "skipped"
+            } else {
+                db.upsert_analysis(
+                    &row.persistent_id,
+                    &TrackAnalysis {
+                        track_id: track.track_id,
+                        version: row.version,
+                        analyzed_at: row.analyzed_at,
+                        bpm: row.bpm,
+                        key_camelot: row.key_camelot,
+                        key_name: row.key_name,
+                        energy: row.energy,
+                        loudness_lufs: row.loudness_lufs,
+                        replaygain_db: row.replaygain_db,
+                        vector: row.vector,
+                        peaks: row.peaks,
+                    },
+                )?;
+                changed = true;
+                "upserted"
+            }
+        };
+        results.push(AnalysisUploadResult {
+            persistent_id: row.persistent_id,
+            status,
+        });
+    }
+    if changed {
+        state.notify_library_changed(None);
+    }
+    Ok(Json(results))
 }
 
 /// `GET /api/tracks/:trackId/analysis` — 解析結果 (未解析なら JSON null, 200)。
