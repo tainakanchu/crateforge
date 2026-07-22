@@ -13,6 +13,7 @@ import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import { SyncWritebackDialog } from "./SyncWritebackDialog";
 import { SyncManagementDialog } from "./SyncManagementDialog";
+import { SyncPushDialog } from "./SyncPushDialog";
 
 interface SyncProvisionDialogProps {
   onClose: () => void;
@@ -65,13 +66,21 @@ export function SyncProvisionDialog({
 }: SyncProvisionDialogProps) {
   const lastSyncDestRoot = useStore((state) => state.lastSyncDestRoot);
   const setLastSyncDestRoot = useStore((state) => state.setLastSyncDestRoot);
+  const pushToast = useStore((state) => state.pushToast);
 
   const [step, setStep] = useState<Step>("sources");
   const [sources, setSources] = useState<SyncSource[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const [selectedSource, setSelectedSource] = useState<SyncSource | null>(null);
+  const [pushSource, setPushSource] = useState<SyncSource | null>(null);
   const [writebackSource, setWritebackSource] = useState<SyncSource | null>(null);
   const [managementSource, setManagementSource] = useState<SyncSource | null>(null);
+  const [analysesPushingSourceId, setAnalysesPushingSourceId] = useState<number | null>(null);
+  const [analysesResult, setAnalysesResult] = useState<{
+    sourceId: number;
+    message: string;
+    failed: boolean;
+  } | null>(null);
   const [remotePlaylists, setRemotePlaylists] = useState<Playlist[]>([]);
   const [playlistsLoading, setPlaylistsLoading] = useState(false);
   const [selectedPids, setSelectedPids] = useState<Set<string>>(new Set());
@@ -122,7 +131,7 @@ export function SyncProvisionDialog({
       (target ?? dialogRef.current)?.focus();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [step, sourcesLoading, playlistsLoading, writebackSource, managementSource]);
+  }, [step, sourcesLoading, playlistsLoading, pushSource, writebackSource, managementSource]);
 
   useEffect(() => {
     let disposed = false;
@@ -274,6 +283,28 @@ export function SyncProvisionDialog({
     setStep("connect");
   }, []);
 
+  const pushAnalysesOnly = useCallback(
+    async (source: SyncSource) => {
+      if (analysesPushingSourceId !== null) return;
+      setAnalysesPushingSourceId(source.id);
+      setAnalysesResult(null);
+      try {
+        const result = await syncApi.syncPushAnalyses(source.id);
+        const message = `解析送信 ${result.pushed.toLocaleString()} 件 / スキップ ${result.skipped.toLocaleString()} 件 / 失敗 ${result.failures.length.toLocaleString()} 件`;
+        const failed = result.failures.length > 0;
+        setAnalysesResult({ sourceId: source.id, message, failed });
+        pushToast(failed ? "error" : "success", message);
+      } catch (pushError) {
+        const message = `解析だけ送る処理に失敗しました: ${errorMessage(pushError)}`;
+        setAnalysesResult({ sourceId: source.id, message, failed: true });
+        pushToast("error", message);
+      } finally {
+        setAnalysesPushingSourceId(null);
+      }
+    },
+    [analysesPushingSourceId, pushToast],
+  );
+
   const togglePlaylist = useCallback(
     async (playlist: Playlist) => {
       const pid = playlist.persistentId;
@@ -385,6 +416,22 @@ export function SyncProvisionDialog({
     ? Math.min(100, Math.round((progress.current / progress.total) * 100))
     : 0;
 
+  const handlePushLibraryChanged = useCallback(() => {
+    void loadSources();
+    onLibraryChanged();
+  }, [loadSources, onLibraryChanged]);
+
+  if (pushSource) {
+    return (
+      <SyncPushDialog
+        source={pushSource}
+        onBack={() => setPushSource(null)}
+        onClose={onClose}
+        onLibraryChanged={handlePushLibraryChanged}
+      />
+    );
+  }
+
   if (writebackSource) {
     return (
       <SyncWritebackDialog
@@ -468,6 +515,16 @@ export function SyncProvisionDialog({
                           type="button"
                           onClick={() => {
                             setError(null);
+                            setPushSource(source);
+                          }}
+                        >
+                          <Icon name="upload" size={14} /> 母艦へ送る
+                        </button>
+                        <button
+                          className="toolbar-btn"
+                          type="button"
+                          onClick={() => {
+                            setError(null);
                             setWritebackSource(source);
                           }}
                         >
@@ -483,6 +540,23 @@ export function SyncProvisionDialog({
                         >
                           <Icon name="settings" size={14} /> 同期の管理
                         </button>
+                        <button
+                          className="toolbar-btn sync-analyses-action"
+                          type="button"
+                          onClick={() => void pushAnalysesOnly(source)}
+                          disabled={analysesPushingSourceId !== null}
+                        >
+                          <Icon name="waveform" size={12} />
+                          {analysesPushingSourceId === source.id ? "解析送信中…" : "解析だけ送る"}
+                        </button>
+                        {analysesResult?.sourceId === source.id && (
+                          <span
+                            className={`sync-analyses-result${analysesResult.failed ? " error" : ""}`}
+                            role="status"
+                          >
+                            {analysesResult.message}
+                          </span>
+                        )}
                       </span>
                     </div>
                   ))}
