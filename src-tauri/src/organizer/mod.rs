@@ -50,6 +50,11 @@ pub fn sanitize_component(name: &str) -> String {
     // 2. 前後の空白を除去 (Windows は末尾の空白を許さない)。
     let mut result = replaced.trim().to_string();
 
+    // `.` / `..` を含むドットだけの名前はパス要素として解釈させない。
+    if !result.is_empty() && result.chars().all(|c| c == '.') {
+        return "_".to_string();
+    }
+
     // 3. 末尾ドットを _ に置換 (Windows は末尾ドットを許さない)。
     //    iTunes は末尾の "." 1 個だけを "_" にする ("a.." → "a._")。
     if result.ends_with('.') {
@@ -88,11 +93,18 @@ fn pick_artist(artist: Option<&str>, album_artist: Option<&str>, compilation: bo
 /// ファイル名では後ろに拡張子が続くため末尾ドットにならず、実 iTunes も
 /// `God knows....mp3` のようにタイトルのドットを保持している。
 pub fn sanitize_title(name: &str) -> String {
-    name.chars()
+    let result = name
+        .chars()
         .map(|c| if FORBIDDEN.contains(&c) { '_' } else { c })
         .collect::<String>()
         .trim()
-        .to_string()
+        .to_string();
+    // 拡張子が無い入力でもファイル名が `.` / `..` にならないよう防ぐ。
+    if !result.is_empty() && result.chars().all(|c| c == '.') {
+        "_".to_string()
+    } else {
+        result
+    }
 }
 
 /// 整理対象トラックのメタデータ。`target_path` に渡す。
@@ -388,6 +400,17 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_replaces_dot_only_components() {
+        assert_eq!(sanitize_component("."), "_");
+        assert_eq!(sanitize_component(".."), "_");
+        assert_eq!(sanitize_component("..."), "_");
+        assert_eq!(sanitize_component("  ..  "), "_");
+        assert_eq!(sanitize_title("."), "_");
+        assert_eq!(sanitize_title(".."), "_");
+        assert_eq!(sanitize_title("..."), "_");
+    }
+
+    #[test]
     fn sanitize_trims_and_falls_back() {
         assert_eq!(sanitize_component("  spaced  "), "spaced");
         assert_eq!(sanitize_component("///"), "___");
@@ -512,6 +535,18 @@ mod tests {
         );
         let p = target_path(root, &m, src);
         assert_eq!(p, Path::new("/lib/Just Artist/Alb/Tune.flac"));
+    }
+
+    #[test]
+    fn target_path_keeps_dot_only_metadata_beneath_root() {
+        let root = Path::new("/lib");
+        let src = Path::new("/in/raw.flac");
+        for artist in [".", ".."] {
+            let m = meta(Some(".."), Some(artist), None, Some(".."), false, None);
+            let path = target_path(root, &m, src);
+            assert_eq!(path, Path::new("/lib/_/_/_.flac"));
+            assert!(path.starts_with(root));
+        }
     }
 
     #[test]

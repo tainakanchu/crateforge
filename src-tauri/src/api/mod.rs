@@ -2359,13 +2359,88 @@ mod tests {
         assert_eq!(std::fs::read(&landed).unwrap(), audio);
 
         // 同じ PID の metadata retry は既存 DTO を返し、既存ファイルを変更しない。
-        let mut changed = upload_metadata(pid, 999);
+        let mut changed = upload_metadata(pid, audio.len() as u64);
         changed["name"] = json!("Must Not Replace");
         let (status, existing) =
             req(app.clone(), "POST", "/api/tracks/upload", Some(changed)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(existing["name"], "Slave Song");
         assert_eq!(std::fs::read(&landed).unwrap(), audio);
+
+        // DB 行だけ残って実ファイルが消えた場合は、同じ track_id のまま修復する。
+        let original_track_id = track["trackId"].as_i64().unwrap();
+        std::fs::remove_file(&landed).unwrap();
+        let (status, ready) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/upload",
+            Some(upload_metadata(pid, audio.len() as u64)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(ready["uploadId"], pid);
+        let (status, repaired) = raw_req(
+            app.clone(),
+            "PUT",
+            &format!("/api/tracks/upload/{pid}"),
+            audio,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(repaired["trackId"], original_track_id);
+        let repaired_path = std::path::PathBuf::from(repaired["locationPath"].as_str().unwrap());
+        assert!(repaired_path.starts_with(&library_root));
+        assert_eq!(std::fs::read(&repaired_path).unwrap(), audio);
+
+        // dot-only の remote artist/album/title は root 内の安全な要素へ置換される。
+        for (dot_pid, artist) in [("AAAABBBBCCCC0001", "."), ("AAAABBBBCCCC0002", "..")] {
+            let mut dot_metadata = upload_metadata(dot_pid, audio.len() as u64);
+            dot_metadata["name"] = json!("..");
+            dot_metadata["artist"] = json!(artist);
+            dot_metadata["albumArtist"] = Value::Null;
+            dot_metadata["album"] = json!("..");
+            let (status, _) = req(
+                app.clone(),
+                "POST",
+                "/api/tracks/upload",
+                Some(dot_metadata),
+            )
+            .await;
+            assert_eq!(status, StatusCode::ACCEPTED);
+            let (status, dot_track) = raw_req(
+                app.clone(),
+                "PUT",
+                &format!("/api/tracks/upload/{dot_pid}"),
+                audio,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+            let dot_path = std::path::PathBuf::from(dot_track["locationPath"].as_str().unwrap());
+            assert!(dot_path
+                .canonicalize()
+                .unwrap()
+                .starts_with(library_root.canonicalize().unwrap()));
+            assert_eq!(
+                dot_path
+                    .parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy(),
+                "_"
+            );
+            assert_eq!(
+                dot_path
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy(),
+                "_"
+            );
+        }
 
         let (status, _) = req(
             app.clone(),
@@ -2440,6 +2515,13 @@ mod tests {
                 [],
             )
             .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO track_analysis (persistent_id, track_id, version, analyzed_at, bpm)
+                 VALUES ('0000000000000004', 4, 1, '2025-01-01T00:00:00Z', 90.0)",
+                [],
+            )
+            .unwrap();
         drop(db);
         let row = |pid: &str, version: i64, bpm: f64| {
             json!({
@@ -2464,7 +2546,8 @@ mod tests {
                 row("0000000000000001", 2, 130.0),
                 row("0000000000000002", 2, 131.0),
                 row("0000000000000003", 1, 132.0),
-                row("FFFFFFFFFFFFFFFF", 2, 133.0)
+                row("FFFFFFFFFFFFFFFF", 2, 133.0),
+                row("0000000000000004", 2, 134.0)
             ])),
         )
         .await;
@@ -2473,9 +2556,54 @@ mod tests {
         assert_eq!(results[1]["status"], "skipped");
         assert_eq!(results[2]["status"], "rejected");
         assert_eq!(results[3]["status"], "rejected");
+        assert_eq!(results[4]["status"], "upserted");
         let db = crate::db::Database::open(dir.path()).unwrap();
         assert_eq!(db.get_analysis(1).unwrap().unwrap().bpm, Some(130.0));
         assert_eq!(db.get_analysis(2).unwrap().unwrap().version, 3);
         assert!(db.get_analysis(3).unwrap().is_none());
+        assert_eq!(db.get_analysis(4).unwrap().unwrap().bpm, Some(134.0));
+    }
+
+    #[tokio::test]
+    async fn federation_analysis_equal_version_requires_strictly_newer_timestamp() {
+        let (dir, app) = setup();
+        let row = |analyzed_at: &str, bpm: f64| {
+            json!({
+                "persistentId": "0000000000000001",
+                "version": 2,
+                "analyzedAt": analyzed_at,
+                "bpm": bpm,
+                "keyCamelot": "8A",
+                "keyName": "A minor",
+                "energy": 0.75,
+                "loudnessLufs": -9.0,
+                "replaygainDb": -5.0,
+                "vector": [0.1, 0.2],
+                "peaks": [0.25, 0.75]
+            })
+        };
+        let (status, results) = req(
+            app,
+            "POST",
+            "/api/analysis",
+            Some(json!([
+                row("2025-12-31T23:59:59Z", 120.0),
+                row("2026-01-01T00:00:00Z", 121.0),
+                row("not-a-timestamp", 122.0),
+                row("2026-01-01T00:00:00.001Z", 130.0),
+                row("2026-01-01T00:00:00.001Z", 131.0)
+            ])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(results[0]["status"], "skipped");
+        assert_eq!(results[1]["status"], "skipped");
+        assert_eq!(results[2]["status"], "skipped");
+        assert_eq!(results[3]["status"], "upserted");
+        assert_eq!(results[4]["status"], "skipped");
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        let analysis = db.get_analysis(1).unwrap().unwrap();
+        assert_eq!(analysis.analyzed_at, "2026-01-01T00:00:00.001Z");
+        assert_eq!(analysis.bpm, Some(130.0));
     }
 }

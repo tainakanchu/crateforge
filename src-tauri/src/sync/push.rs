@@ -478,12 +478,21 @@ pub async fn push_analyses(
             summary.skipped += 1;
             continue;
         }
-        if master
-            .get(&persistent_id)
-            .is_some_and(|remote| remote.version >= analysis.version)
-        {
-            summary.skipped += 1;
-            continue;
+        if let Some(remote) = master.get(&persistent_id) {
+            let remote_is_current = if remote.version > analysis.version {
+                true
+            } else if remote.version < analysis.version {
+                false
+            } else {
+                let remote_at = chrono::DateTime::parse_from_rfc3339(&remote.analyzed_at).ok();
+                let local_at = chrono::DateTime::parse_from_rfc3339(&analysis.analyzed_at).ok();
+                // master 側も両時刻を解釈できる場合だけ equal-version を更新する。
+                !matches!((remote_at, local_at), (Some(remote), Some(local)) if local > remote)
+            };
+            if remote_is_current {
+                summary.skipped += 1;
+                continue;
+            }
         }
         candidates.push(AnalysisUploadRow::new(persistent_id, analysis.clone()));
     }
@@ -631,7 +640,7 @@ mod tests {
         assert_eq!(rows[0].name.as_deref(), Some("Origin Song"));
         let master_file = PathBuf::from(rows[0].location_path.as_ref().unwrap());
         assert!(master_file.starts_with(&master_library));
-        assert_eq!(std::fs::read(master_file).unwrap(), audio);
+        assert_eq!(std::fs::read(&master_file).unwrap(), audio);
         assert_eq!(
             master.get_analysis(rows[0].track_id).unwrap().unwrap().bpm,
             Some(126.5)
@@ -657,6 +666,71 @@ mod tests {
         assert_eq!(second.uploaded, 0);
         assert_eq!(second.already_existed, 1);
         assert!(second.failures.is_empty());
+
+        // master の DB 行だけ残して音源を消しても、再 push で同じ PID を修復・再編入する。
+        std::fs::remove_file(&master_file).unwrap();
+        let repaired_audio = push_tracks(
+            Database::open(slave_dir.path()).unwrap(),
+            source.clone(),
+            vec![persistent_id.to_string()],
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(repaired_audio.uploaded, 0);
+        assert_eq!(repaired_audio.already_existed, 1);
+        assert!(repaired_audio.failures.is_empty());
+        let master = Database::open(master_dir.path()).unwrap();
+        let repaired_track = master
+            .get_tracks_by_persistent_ids(&[persistent_id.to_string()])
+            .unwrap()
+            .remove(0);
+        assert_eq!(repaired_track.track_id, rows[0].track_id);
+        assert_eq!(
+            std::fs::read(repaired_track.location_path.as_ref().unwrap()).unwrap(),
+            audio
+        );
+        assert_eq!(
+            Database::open(slave_dir.path())
+                .unwrap()
+                .list_sync_track_persistent_ids(source.id)
+                .unwrap(),
+            vec![persistent_id.to_string()]
+        );
+        drop(master);
+
+        // 同じ解析版でも slave の analyzed_at が新しければ push し、同時刻 replay は skip。
+        let master = Database::open(master_dir.path()).unwrap();
+        master
+            .conn
+            .execute(
+                "UPDATE track_analysis
+                 SET analyzed_at='2026-01-01T00:00:00Z', bpm=100.0
+                 WHERE persistent_id=?1",
+                [persistent_id],
+            )
+            .unwrap();
+        drop(master);
+        let newer_analysis =
+            push_analyses(Database::open(slave_dir.path()).unwrap(), source.clone())
+                .await
+                .unwrap();
+        assert_eq!(newer_analysis.pushed, 1);
+        assert_eq!(newer_analysis.skipped, 0);
+        let replay = push_analyses(Database::open(slave_dir.path()).unwrap(), source.clone())
+            .await
+            .unwrap();
+        assert_eq!(replay.pushed, 0);
+        assert_eq!(replay.skipped, 1);
+        assert_eq!(
+            Database::open(master_dir.path())
+                .unwrap()
+                .get_analysis(rows[0].track_id)
+                .unwrap()
+                .unwrap()
+                .bpm,
+            Some(126.5)
+        );
 
         let master = Database::open(master_dir.path()).unwrap();
         master
