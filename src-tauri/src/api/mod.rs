@@ -1280,6 +1280,44 @@ mod tests {
         assert_eq!(arr[0]["trackId"], 3);
     }
 
+    #[tokio::test]
+    async fn supplied_playlist_pid_is_idempotent_and_strictly_validated() {
+        let (_dir, app) = setup();
+        let body = json!({
+            "name": "Federated List",
+            "persistentId": "AAAABBBBCCCCDDDD"
+        });
+
+        let (status, first) = req(app.clone(), "POST", "/api/playlists", Some(body.clone())).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(first["persistentId"], "AAAABBBBCCCCDDDD");
+
+        let (status, second) = req(app.clone(), "POST", "/api/playlists", Some(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(second["playlistId"], first["playlistId"]);
+
+        let (status, error) = req(
+            app.clone(),
+            "POST",
+            "/api/playlists",
+            Some(json!({ "name": "Bad", "persistentId": "aaaabbbbccccdddd" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(error["error"].as_str().unwrap().contains("16桁"));
+
+        let (_, playlists) = req(app, "GET", "/api/playlists", None).await;
+        assert_eq!(
+            playlists
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|playlist| playlist["persistentId"] == "AAAABBBBCCCCDDDD")
+                .count(),
+            1
+        );
+    }
+
     // ===== プレイリスト全置換: 入力順・重複を保持し、不正 ID は全体をロールバック =====
     #[tokio::test]
     async fn case_replace_playlist_tracks_is_ordered_and_atomic() {

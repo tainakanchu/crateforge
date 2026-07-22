@@ -503,13 +503,28 @@ impl Database {
     pub fn apply_writeback_pull(
         &self,
         persistent_id: &str,
-        fields: &[(String, serde_json::Value)],
+        fields: &[(String, serde_json::Value, serde_json::Value)],
         master_date_modified: Option<&str>,
-    ) -> Result<()> {
-        let mut sets = Vec::new();
-        let mut values = Vec::<rusqlite::types::Value>::new();
+    ) -> Result<Vec<String>> {
+        fn sql_value(value: &serde_json::Value) -> Result<rusqlite::types::Value> {
+            Ok(match value {
+                serde_json::Value::Null => rusqlite::types::Value::Null,
+                serde_json::Value::String(value) => rusqlite::types::Value::Text(value.clone()),
+                serde_json::Value::Bool(value) => {
+                    rusqlite::types::Value::Integer(i64::from(*value))
+                }
+                serde_json::Value::Number(value) => rusqlite::types::Value::Integer(
+                    value.as_i64().ok_or(rusqlite::Error::InvalidQuery)?,
+                ),
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            })
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        let mut skipped = Vec::new();
+        let mut applied = 0usize;
         let mut touches_search = false;
-        for (field, value) in fields {
+        for (field, value, previous) in fields {
             let (column, search) = match field.as_str() {
                 "rating" => ("rating", false),
                 "name" => ("name", true),
@@ -528,46 +543,37 @@ impl Database {
                 "compilation" => ("compilation", false),
                 _ => continue,
             };
-            sets.push(format!("{column} = ?"));
-            values.push(match value {
-                serde_json::Value::Null => rusqlite::types::Value::Null,
-                serde_json::Value::String(value) => rusqlite::types::Value::Text(value.clone()),
-                serde_json::Value::Bool(value) => {
-                    rusqlite::types::Value::Integer(i64::from(*value))
-                }
-                serde_json::Value::Number(value) => rusqlite::types::Value::Integer(
-                    value.as_i64().ok_or(rusqlite::Error::InvalidQuery)?,
+            let changed = tx.execute(
+                &format!(
+                    "UPDATE tracks SET {column} = ?1
+                     WHERE persistent_id = ?2 AND {column} IS ?3"
                 ),
-                _ => return Err(rusqlite::Error::InvalidQuery),
-            });
-            touches_search |= search;
+                rusqlite::params![sql_value(value)?, persistent_id, sql_value(previous)?],
+            )?;
+            if changed == 0 {
+                skipped.push(field.clone());
+            } else {
+                applied += 1;
+                touches_search |= search;
+            }
         }
-        if fields.is_empty() || sets.is_empty() {
-            return Ok(());
+        // 一部でも競合した場合は、そのローカル編集の時計を母艦時刻で潰さない。
+        if applied > 0 && skipped.is_empty() {
+            tx.execute(
+                "UPDATE tracks SET date_modified = ?1 WHERE persistent_id = ?2",
+                rusqlite::params![master_date_modified, persistent_id],
+            )?;
         }
-        sets.push("date_modified = ?".to_string());
-        values.push(
-            master_date_modified.map_or(rusqlite::types::Value::Null, |value| {
-                rusqlite::types::Value::Text(value.to_string())
-            }),
-        );
-        values.push(rusqlite::types::Value::Text(persistent_id.to_string()));
-        self.conn.execute(
-            &format!(
-                "UPDATE tracks SET {} WHERE persistent_id = ?",
-                sets.join(", ")
-            ),
-            rusqlite::params_from_iter(values),
-        )?;
         if touches_search {
-            self.conn.execute(
+            tx.execute(
                 &format!(
                     "UPDATE tracks SET search_text = {SEARCH_TEXT_EXPR} WHERE persistent_id = ?1"
                 ),
                 [persistent_id],
             )?;
         }
-        Ok(())
+        tx.commit()?;
+        Ok(skipped)
     }
 
     /// ローカル作成 playlist を master が採番した persistent ID へ結び直す。
@@ -727,6 +733,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn writeback_pull_skips_a_field_changed_after_planning() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks
+                    (track_id, persistent_id, name, album, rating, search_text)
+                 VALUES (1, 'AAAABBBBCCCCDDDD', 'Song', 'Local Edit', 60, '')",
+                [],
+            )
+            .unwrap();
+
+        let skipped = db
+            .apply_writeback_pull(
+                "AAAABBBBCCCCDDDD",
+                &[(
+                    "album".to_string(),
+                    serde_json::json!("Master"),
+                    serde_json::json!("Planned Local"),
+                )],
+                Some("2026-07-22T00:00:00Z"),
+            )
+            .unwrap();
+
+        assert_eq!(skipped, vec!["album"]);
+        let album: String = db
+            .conn
+            .query_row(
+                "SELECT album FROM tracks WHERE persistent_id='AAAABBBBCCCCDDDD'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(album, "Local Edit");
     }
 
     #[test]

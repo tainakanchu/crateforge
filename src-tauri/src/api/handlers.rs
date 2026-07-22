@@ -518,23 +518,58 @@ pub struct CreatePlaylistBody {
     pub name: String,
     pub parent_persistent_id: Option<String>,
     pub is_folder: Option<bool>,
+    pub persistent_id: Option<String>,
 }
 
-/// `POST /api/playlists` — 新規プレイリスト作成 → 201 + Playlist。
+fn valid_playlist_persistent_id(persistent_id: &str) -> bool {
+    persistent_id.len() == 16
+        && persistent_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
+}
+
+/// `POST /api/playlists` — 新規は 201、指定 PID が既存なら 200 + Playlist。
 pub async fn create_playlist(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<CreatePlaylistBody>,
 ) -> Result<(StatusCode, Json<Playlist>), ApiError> {
     let db = state.db()?;
-    // create_playlist は parent: Option<&str>, is_folder: bool を取る (Option ではない)。
-    let playlist = db.create_playlist(
-        &body.name,
-        body.parent_persistent_id.as_deref(),
-        body.is_folder.unwrap_or(false),
-    )?;
-    // 作成成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
-    state.notify_library_changed(Some(playlist.playlist_id));
-    Ok((StatusCode::CREATED, Json(playlist)))
+    let (playlist, created) = match body.persistent_id.as_deref() {
+        Some(persistent_id) => {
+            if !valid_playlist_persistent_id(persistent_id) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "persistentId は16桁の大文字16進数で指定してください",
+                ));
+            }
+            db.create_playlist_with_persistent_id(
+                &body.name,
+                body.parent_persistent_id.as_deref(),
+                body.is_folder.unwrap_or(false),
+                persistent_id,
+            )?
+        }
+        None => (
+            db.create_playlist(
+                &body.name,
+                body.parent_persistent_id.as_deref(),
+                body.is_folder.unwrap_or(false),
+            )?,
+            true,
+        ),
+    };
+    if created {
+        // 作成成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
+        state.notify_library_changed(Some(playlist.playlist_id));
+    }
+    Ok((
+        if created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(playlist),
+    ))
 }
 
 /// `PATCH /api/playlists/:playlistId` のボディ。将来の拡張を見越して全項目任意。

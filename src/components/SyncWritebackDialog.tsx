@@ -43,7 +43,24 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 function errorMessage(error: unknown): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
   return error instanceof Error ? error.message : String(error);
+}
+
+function isStalePlanError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "stalePlan"
+  );
 }
 
 function conflictKey(conflict: WritebackConflict): string {
@@ -289,9 +306,38 @@ export function SyncWritebackDialog({
         (conflict.localNewer ? "local" : "master"),
     }));
     try {
-      const result = await syncApi.syncWritebackApply(source.id, selected);
+      const result = await syncApi.syncWritebackApply(source.id, plan.planId, selected);
       finishApply(result);
     } catch (applyError) {
+      if (isStalePlanError(applyError)) {
+        setProgress({
+          phase: "writebackPlanning",
+          current: 0,
+          total: 1,
+          trackName: null,
+        });
+        try {
+          const refreshed = await syncApi.syncWritebackPlan(source.id);
+          setPlan(refreshed);
+          setResolutions(
+            Object.fromEntries(
+              refreshed.conflicts.map((conflict) => [
+                conflictKey(conflict),
+                conflict.localNewer ? "local" : "master",
+              ]),
+            ) as Record<string, ResolutionChoice>,
+          );
+          setError("母艦または手元の状態が変わりました。更新後の内容を確認してください。");
+          setProgress(null);
+          setStep("confirm");
+          return;
+        } catch (planError) {
+          setError(`更新後の内容を確認できませんでした: ${errorMessage(planError)}`);
+          setProgress(null);
+          setStep("failed");
+          return;
+        }
+      }
       setError(`書き戻しに失敗しました: ${errorMessage(applyError)}`);
       setProgress(null);
       setStep("failed");
@@ -364,6 +410,11 @@ export function SyncWritebackDialog({
 
           {step === "confirm" && plan && (
             <section>
+              {error && (
+                <div className="sync-error" role="status">
+                  {error}
+                </div>
+              )}
               <div className="sync-playlist-heading">
                 <div>
                   <h3 className="sync-section-title">書き戻す内容を確認</h3>

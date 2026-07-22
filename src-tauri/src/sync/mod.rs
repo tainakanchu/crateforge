@@ -38,6 +38,10 @@ pub enum SyncError {
     Database(#[from] rusqlite::Error),
     #[error("file operation failed: {0}")]
     File(String),
+    #[error("母艦または手元の状態が変わりました。内容を確認し直してください")]
+    StaleWritebackPlan,
+    #[error("母艦側でプレイリストが変更されたため置換をスキップしました")]
+    PlaylistChangedDuringWriteback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

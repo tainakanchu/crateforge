@@ -218,6 +218,32 @@ impl Database {
             .optional()
     }
 
+    pub fn get_playlist_by_persistent_id(&self, persistent_id: &str) -> Result<Option<Playlist>> {
+        self.conn
+            .query_row(
+                "SELECT p.id, p.playlist_id, p.persistent_id, p.parent_persistent_id,
+                        p.name, p.is_folder, p.is_smart, p.is_user_created,
+                        (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = p.playlist_id) as track_count
+                 FROM playlists p
+                 WHERE p.persistent_id = ?1",
+                [persistent_id],
+                |row| {
+                    Ok(Playlist {
+                        id: row.get(0)?,
+                        playlist_id: row.get(1)?,
+                        persistent_id: row.get(2)?,
+                        parent_persistent_id: row.get(3)?,
+                        name: row.get(4)?,
+                        is_folder: row.get::<_, i32>(5)? != 0,
+                        is_smart: row.get::<_, i32>(6)? != 0,
+                        is_user_created: row.get::<_, i32>(7)? != 0,
+                        track_count: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
     pub fn get_playlist_tracks(
         &self,
         playlist_id: i64,
@@ -312,6 +338,61 @@ impl Database {
             is_user_created: true,
             track_count: 0,
         })
+    }
+
+    /// federation WRITE-BACK 用。指定 PID が既にあれば既存行を成功として返す。
+    pub fn create_playlist_with_persistent_id(
+        &self,
+        name: &str,
+        parent_persistent_id: Option<&str>,
+        is_folder: bool,
+        persistent_id: &str,
+    ) -> Result<(Playlist, bool)> {
+        if let Some(existing) = self.get_playlist_by_persistent_id(persistent_id)? {
+            return Ok((existing, false));
+        }
+        let sort_order: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM playlists",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut attempt = 0;
+        loop {
+            let playlist_id = self.next_playlist_id()?;
+            match self.conn.execute(
+                "INSERT INTO playlists
+                    (playlist_id, persistent_id, parent_persistent_id, name, is_folder,
+                     is_smart, is_user_created, sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, 1, ?6)",
+                params![
+                    playlist_id,
+                    persistent_id,
+                    parent_persistent_id,
+                    name,
+                    is_folder as i32,
+                    sort_order,
+                ],
+            ) {
+                Ok(_) => {
+                    let playlist = self
+                        .get_playlist(playlist_id)?
+                        .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+                    return Ok((playlist, true));
+                }
+                Err(err) if super::should_retry_constraint(&err, attempt) => {
+                    if let Some(existing) = self.get_playlist_by_persistent_id(persistent_id)? {
+                        return Ok((existing, false));
+                    }
+                    attempt += 1;
+                }
+                Err(err) => {
+                    if let Some(existing) = self.get_playlist_by_persistent_id(persistent_id)? {
+                        return Ok((existing, false));
+                    }
+                    return Err(err);
+                }
+            }
+        }
     }
 
     pub fn rename_playlist(&self, playlist_id: i64, name: &str) -> Result<()> {

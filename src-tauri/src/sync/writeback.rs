@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use super::{MasterClient, SyncError, SyncFailure, SyncProgress, LOOKUP_CHUNK};
 use crate::db::sync::{SyncSource, SyncedPlaylistSnapshot, SyncedTrackSnapshot};
@@ -44,9 +45,15 @@ const STRING_FIELDS: [&str; 7] = [
 pub enum FieldDiff {
     Unchanged,
     /// push 対象。`previous` は母艦上で上書きされる現在値（= base と同じ）。
-    LocalOnly { value: Value, previous: Value },
+    LocalOnly {
+        value: Value,
+        previous: Value,
+    },
     /// pull 対象。`previous` は手元で上書きされる現在値（= base と同じ）。
-    MasterOnly { value: Value, previous: Value },
+    MasterOnly {
+        value: Value,
+        previous: Value,
+    },
     BothSame,
     Conflict {
         local: Value,
@@ -108,6 +115,7 @@ pub enum PlaylistOp {
         master_playlist_id: i64,
         name: String,
         track_persistent_ids: Vec<String>,
+        master_track_persistent_ids: Vec<String>,
         overwrites_master_ordering: bool,
     },
     #[serde(rename = "skippedDelete")]
@@ -121,6 +129,7 @@ pub enum PlaylistOp {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WritebackPlan {
+    pub plan_id: String,
     pub track_changes: Vec<TrackChange>,
     pub conflicts: Vec<WritebackConflict>,
     pub playlist_ops: Vec<PlaylistOp>,
@@ -222,11 +231,16 @@ impl MasterClient {
             .map_err(|error| SyncError::InvalidResponse(error.to_string()))
     }
 
-    async fn writeback_create_playlist(&self, name: &str) -> Result<Playlist, SyncError> {
+    async fn writeback_create_playlist(
+        &self,
+        name: &str,
+        persistent_id: &str,
+    ) -> Result<Playlist, SyncError> {
         let response = Self::checked(
             self.request(reqwest::Method::POST, "/api/playlists")
                 .json(&json!({
                     "name": name,
+                    "persistentId": persistent_id,
                     "parentPersistentId": null,
                     "isFolder": false,
                 }))
@@ -389,6 +403,23 @@ fn field_value(track: &Value, field: &str) -> Value {
     track.get(field).cloned().unwrap_or(Value::Null)
 }
 
+fn overlay_updated_fields(base: &mut Value, updated: &Value, fields: &[FieldUpdate]) {
+    let Some(base) = base.as_object_mut() else {
+        return;
+    };
+    for field in fields {
+        base.insert(field.field.clone(), field_value(updated, &field.field));
+    }
+}
+
+fn verify_playlist_membership(current: &[String], planned: &[String]) -> Result<(), SyncError> {
+    if current == planned {
+        Ok(())
+    } else {
+        Err(SyncError::PlaylistChangedDuringWriteback)
+    }
+}
+
 fn compute_plan(local: &LocalInput, remote: &RemoteInput) -> Result<WritebackPlan, SyncError> {
     let mut plan = WritebackPlan::default();
     for row in &local.tracks {
@@ -482,6 +513,7 @@ fn compute_plan(local: &LocalInput, remote: &RemoteInput) -> Result<WritebackPla
                         master_playlist_id: master.playlist_id,
                         name: row.playlist.name.clone(),
                         track_persistent_ids: row.track_persistent_ids.clone(),
+                        master_track_persistent_ids: membership.clone(),
                         overwrites_master_ordering: true,
                     });
                 }
@@ -505,7 +537,17 @@ fn compute_plan(local: &LocalInput, remote: &RemoteInput) -> Result<WritebackPla
             });
         }
     }
+    plan.plan_id = plan_hash(&plan)?;
     Ok(plan)
+}
+
+fn plan_hash(plan: &WritebackPlan) -> Result<String, SyncError> {
+    let mut hash_input = plan.clone();
+    hash_input.plan_id.clear();
+    let serialized = serde_json::to_vec(&hash_input)
+        .map_err(|error| SyncError::InvalidResponse(error.to_string()))?;
+    let digest = Sha256::digest(serialized);
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 pub async fn plan<F>(
@@ -563,7 +605,10 @@ fn merge_update(
     }
 }
 
-fn resolve_conflicts(plan: &mut WritebackPlan, resolutions: &[ConflictResolution]) {
+fn resolve_conflicts(
+    plan: &mut WritebackPlan,
+    resolutions: &[ConflictResolution],
+) -> Result<(), SyncError> {
     let selected = resolutions
         .iter()
         .map(|resolution| {
@@ -578,13 +623,7 @@ fn resolve_conflicts(plan: &mut WritebackPlan, resolutions: &[ConflictResolution
             .get(&(conflict.persistent_id.as_str(), conflict.field.as_str()))
             .copied()
             .cloned()
-            .unwrap_or_else(|| {
-                if conflict.local_newer {
-                    ResolutionChoice::Local
-                } else {
-                    ResolutionChoice::Master
-                }
-            });
+            .ok_or(SyncError::StaleWritebackPlan)?;
         match choice {
             ResolutionChoice::Local => merge_update(
                 &mut plan.track_changes,
@@ -600,6 +639,7 @@ fn resolve_conflicts(plan: &mut WritebackPlan, resolutions: &[ConflictResolution
             ),
         }
     }
+    Ok(())
 }
 
 fn failure(pid: Option<String>, name: Option<String>, error: impl ToString) -> SyncFailure {
@@ -629,6 +669,7 @@ fn auth_or_collect(
 pub async fn apply<F>(
     db: Database,
     source: SyncSource,
+    plan_id: String,
     resolutions: Vec<ConflictResolution>,
     progress: F,
 ) -> Result<WritebackSummary, SyncError>
@@ -639,7 +680,10 @@ where
     let client = MasterClient::from_source(&source)?;
     let remote = collect_remote(&client, &local).await?;
     let mut plan = compute_plan(&local, &remote)?;
-    resolve_conflicts(&mut plan, &resolutions);
+    if plan.plan_id != plan_id {
+        return Err(SyncError::StaleWritebackPlan);
+    }
+    resolve_conflicts(&mut plan, &resolutions)?;
     let total = plan.track_changes.len() + plan.pulls.len() + plan.playlist_ops.len();
     progress(SyncProgress {
         phase: "writebackApplying".to_string(),
@@ -651,6 +695,11 @@ where
     let mut summary = WritebackSummary::default();
     let mut completed = 0usize;
     let mut failed_tracks = HashSet::new();
+    let mut merged_baselines = remote
+        .tracks
+        .iter()
+        .map(|(pid, track)| track_json(track).map(|json| (pid.clone(), json)))
+        .collect::<Result<HashMap<_, _>, _>>()?;
     let mut current_master = remote.tracks;
 
     for change in &plan.track_changes {
@@ -668,6 +717,10 @@ where
             .await
         {
             Ok(updated) => {
+                if let Some(base) = merged_baselines.get_mut(&change.persistent_id) {
+                    let updated_json = track_json(&updated)?;
+                    overlay_updated_fields(base, &updated_json, &change.fields);
+                }
                 current_master.insert(change.persistent_id.clone(), updated);
                 summary.pushed += 1;
             }
@@ -697,10 +750,28 @@ where
         let fields = change
             .fields
             .iter()
-            .map(|field| (field.field.clone(), field.value.clone()))
+            .map(|field| {
+                (
+                    field.field.clone(),
+                    field.value.clone(),
+                    field.previous.clone(),
+                )
+            })
             .collect::<Vec<_>>();
         match db.apply_writeback_pull(&change.persistent_id, &fields, master_date) {
-            Ok(()) => summary.pulled += 1,
+            Ok(skipped) => {
+                if skipped.len() < fields.len() {
+                    summary.pulled += 1;
+                }
+                if !skipped.is_empty() {
+                    failed_tracks.insert(change.persistent_id.clone());
+                    summary.failures.push(failure(
+                        Some(change.persistent_id.clone()),
+                        change.track_name.clone(),
+                        "適用中に手元で変更されたため取り込みをスキップ",
+                    ));
+                }
+            }
             Err(error) => {
                 failed_tracks.insert(change.persistent_id.clone());
                 summary.failures.push(failure(
@@ -723,10 +794,10 @@ where
         let result = match op {
             PlaylistOp::Create {
                 local_playlist_id,
+                persistent_id,
                 name,
                 track_persistent_ids,
-                ..
-            } => match client.writeback_create_playlist(name).await {
+            } => match client.writeback_create_playlist(name, persistent_id).await {
                 Ok(created) => match created.persistent_id.clone() {
                     None => Err(SyncError::InvalidResponse(
                         "created playlist omitted persistentId".to_string(),
@@ -750,9 +821,20 @@ where
                                     "playlist contains a track missing on master".to_string(),
                                 ))
                             } else {
-                                client
-                                    .writeback_replace_playlist(created.playlist_id, &track_ids)
-                                    .await
+                                let current = client
+                                    .playlist_tracks(created.playlist_id)
+                                    .await?
+                                    .into_iter()
+                                    .filter_map(|track| track.persistent_id)
+                                    .collect::<Vec<_>>();
+                                if let Err(error) = verify_playlist_membership(&current, &[]) {
+                                    Err(error)
+                                } else {
+                                    // GET と PUT の間にはミリ秒単位の競合が残る。将来は ETag 付き conditional PUT で塞ぐ。
+                                    client
+                                        .writeback_replace_playlist(created.playlist_id, &track_ids)
+                                        .await
+                                }
                             }
                         }
                     },
@@ -771,6 +853,7 @@ where
             PlaylistOp::ReplaceTracks {
                 master_playlist_id,
                 track_persistent_ids,
+                master_track_persistent_ids,
                 ..
             } => {
                 let track_ids = track_persistent_ids
@@ -782,9 +865,22 @@ where
                         "playlist contains a track missing on master".to_string(),
                     ))
                 } else {
-                    client
-                        .writeback_replace_playlist(*master_playlist_id, &track_ids)
-                        .await
+                    let current = client
+                        .playlist_tracks(*master_playlist_id)
+                        .await?
+                        .into_iter()
+                        .filter_map(|track| track.persistent_id)
+                        .collect::<Vec<_>>();
+                    if let Err(error) =
+                        verify_playlist_membership(&current, master_track_persistent_ids)
+                    {
+                        Err(error)
+                    } else {
+                        // GET と PUT の間にはミリ秒単位の競合が残る。将来は ETag 付き conditional PUT で塞ぐ。
+                        client
+                            .writeback_replace_playlist(*master_playlist_id, &track_ids)
+                            .await
+                    }
                 }
             }
             PlaylistOp::SkippedDelete { .. } => {
@@ -820,23 +916,14 @@ where
         });
     }
 
-    // 成功した曲と無変更曲だけ、新しい母艦状態を次回の三者比較基準にする。
-    let persistent_ids = local
-        .tracks
-        .iter()
-        .map(|row| row.persistent_id.clone())
-        .collect::<Vec<_>>();
-    let final_tracks = client.writeback_tracks(&persistent_ids).await?;
-    for track in final_tracks {
-        let Some(pid) = track.persistent_id.as_deref() else {
-            continue;
-        };
-        if failed_tracks.contains(pid) {
+    // plan 時点の母艦値へ成功した push だけを重ね、実際に成立したマージ状態を基準にする。
+    for (pid, base) in merged_baselines {
+        if failed_tracks.contains(&pid) {
             continue;
         }
-        let base_meta = serde_json::to_string(&track)
+        let base_meta = serde_json::to_string(&base)
             .map_err(|error| SyncError::InvalidResponse(error.to_string()))?;
-        db.record_sync_track(pid, source.id, &base_meta)?;
+        db.record_sync_track(&pid, source.id, &base_meta)?;
     }
     db.touch_sync_source(source.id)?;
     progress(SyncProgress {
@@ -939,7 +1026,7 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_conflict_defaults_to_the_newer_side() {
+    fn unresolved_conflict_is_rejected() {
         let mut local_newer = WritebackPlan {
             conflicts: vec![WritebackConflict {
                 persistent_id: "AAAABBBBCCCCDDDD".to_string(),
@@ -951,7 +1038,19 @@ mod tests {
             }],
             ..WritebackPlan::default()
         };
-        resolve_conflicts(&mut local_newer, &[]);
+        assert!(matches!(
+            resolve_conflicts(&mut local_newer, &[]),
+            Err(SyncError::StaleWritebackPlan)
+        ));
+        resolve_conflicts(
+            &mut local_newer,
+            &[ConflictResolution {
+                persistent_id: "AAAABBBBCCCCDDDD".to_string(),
+                field: "name".to_string(),
+                choose: ResolutionChoice::Local,
+            }],
+        )
+        .unwrap();
         assert_eq!(local_newer.track_changes[0].fields[0].value, value("Local"));
         // push なので previous は上書きされる母艦側の現在値。
         assert_eq!(
@@ -966,7 +1065,15 @@ mod tests {
             }],
             ..WritebackPlan::default()
         };
-        resolve_conflicts(&mut master_newer, &[]);
+        resolve_conflicts(
+            &mut master_newer,
+            &[ConflictResolution {
+                persistent_id: "AAAABBBBCCCCDDDD".to_string(),
+                field: "name".to_string(),
+                choose: ResolutionChoice::Master,
+            }],
+        )
+        .unwrap();
         assert_eq!(master_newer.pulls[0].fields[0].value, value("Master"));
         // pull なので previous は上書きされる手元側の現在値。
         assert_eq!(master_newer.pulls[0].fields[0].previous, value("Local"));
@@ -981,8 +1088,52 @@ mod tests {
     }
 
     #[test]
+    fn baseline_overlays_only_successful_push_fields() {
+        let mut base = json!({
+            "rating": 60,
+            "album": "Plan-time Master",
+            "playCount": 1
+        });
+        let patch_response = json!({
+            "rating": 100,
+            "album": "Drifted Master",
+            "playCount": 999
+        });
+        overlay_updated_fields(
+            &mut base,
+            &patch_response,
+            &[FieldUpdate {
+                field: "rating".to_string(),
+                value: value(100),
+                previous: value(60),
+            }],
+        );
+
+        assert_eq!(base["rating"], 100);
+        assert_eq!(base["album"], "Plan-time Master");
+        assert_eq!(base["playCount"], 1);
+    }
+
+    #[test]
+    fn playlist_membership_drift_is_rejected() {
+        assert!(verify_playlist_membership(
+            &["AAAABBBBCCCC0001".to_string()],
+            &["AAAABBBBCCCC0001".to_string()]
+        )
+        .is_ok());
+        assert!(matches!(
+            verify_playlist_membership(
+                &["AAAABBBBCCCC0002".to_string()],
+                &["AAAABBBBCCCC0001".to_string()]
+            ),
+            Err(SyncError::PlaylistChangedDuringWriteback)
+        ));
+    }
+
+    #[test]
     fn serialized_plan_shape_is_stable_for_ui() {
-        let plan = WritebackPlan {
+        let mut plan = WritebackPlan {
+            plan_id: String::new(),
             track_changes: vec![TrackChange {
                 persistent_id: "AAAABBBBCCCCDDDD".to_string(),
                 track_name: Some("Song".to_string()),
@@ -998,14 +1149,29 @@ mod tests {
                 master_playlist_id: 9,
                 name: "List".to_string(),
                 track_persistent_ids: vec!["AAAABBBBCCCCDDDD".to_string()],
+                master_track_persistent_ids: vec!["EEEEFFFF00001111".to_string()],
                 overwrites_master_ordering: true,
             }],
             pulls: Vec::new(),
         };
+        plan.plan_id = plan_hash(&plan).unwrap();
+        assert_eq!(plan.plan_id.len(), 64);
+        assert!(plan
+            .plan_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        let mut same_payload = plan.clone();
+        same_payload.plan_id = "ignored-when-hashing".to_string();
+        assert_eq!(plan_hash(&same_payload).unwrap(), plan.plan_id);
         let json = serde_json::to_value(plan).unwrap();
         assert_eq!(json["trackChanges"][0]["persistentId"], "AAAABBBBCCCCDDDD");
+        assert_eq!(json["planId"].as_str().unwrap().len(), 64);
         assert_eq!(json["trackChanges"][0]["fields"][0]["previous"], 60);
         assert_eq!(json["playlistOps"][0]["op"], "replaceTracks");
+        assert_eq!(
+            json["playlistOps"][0]["masterTrackPersistentIds"][0],
+            "EEEEFFFF00001111"
+        );
         assert_eq!(json["playlistOps"][0]["overwritesMasterOrdering"], true);
         assert!(json.get("pulls").is_some());
     }
@@ -1210,9 +1376,44 @@ mod tests {
             } if persistent_id == "111122223333AAAA"
         )));
 
+        // 確認後に手元が変わった plan は、母艦へ一切適用せず拒否する。
+        let slave = Database::open(slave_dir.path()).unwrap();
+        slave.set_rating(local_tracks[0].track_id, 80).unwrap();
+        drop(slave);
+        let stale = apply(
+            Database::open(slave_dir.path()).unwrap(),
+            source.clone(),
+            planned.plan_id.clone(),
+            vec![ConflictResolution {
+                persistent_id: "AAAABBBBCCCC0001".to_string(),
+                field: "name".to_string(),
+                choose: ResolutionChoice::Local,
+            }],
+            |_| {},
+        )
+        .await;
+        assert!(matches!(stale, Err(SyncError::StaleWritebackPlan)));
+        let untouched = Database::open(master_dir.path()).unwrap();
+        assert_eq!(
+            untouched.get_track_by_track_id(1).unwrap().unwrap().rating,
+            Some(60)
+        );
+        drop(untouched);
+        let slave = Database::open(slave_dir.path()).unwrap();
+        slave.set_rating(local_tracks[0].track_id, 100).unwrap();
+        drop(slave);
+        let planned = plan(
+            Database::open(slave_dir.path()).unwrap(),
+            source.clone(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
         let summary = apply(
             Database::open(slave_dir.path()).unwrap(),
             source.clone(),
+            planned.plan_id.clone(),
             vec![ConflictResolution {
                 persistent_id: "AAAABBBBCCCC0001".to_string(),
                 field: "name".to_string(),
@@ -1240,6 +1441,7 @@ mod tests {
             .iter()
             .find(|playlist| playlist.name == "Slave Picks")
             .unwrap();
+        assert_eq!(created.persistent_id, local_playlist.persistent_id);
         assert_eq!(
             client
                 .playlist_tracks(created.playlist_id)
@@ -1247,6 +1449,24 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+        let retried = client
+            .writeback_create_playlist(
+                "Slave Picks",
+                local_playlist.persistent_id.as_deref().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retried.playlist_id, created.playlist_id);
+        assert_eq!(
+            client
+                .playlists()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|playlist| playlist.persistent_id == local_playlist.persistent_id)
+                .count(),
+            1
         );
         let provisioned_members = client.playlist_tracks(10).await.unwrap();
         assert_eq!(
@@ -1280,6 +1500,7 @@ mod tests {
         assert_eq!(base.name.as_deref(), Some("Local Title"));
         assert_eq!(base.album.as_deref(), Some("Master Album"));
         assert_eq!(base.rating, Some(100));
+        assert_eq!(base.play_count, Some(999));
         drop(slave);
 
         let second = plan(Database::open(slave_dir.path()).unwrap(), source, |_| {})

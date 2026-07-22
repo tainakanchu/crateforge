@@ -103,6 +103,7 @@ export type WritebackPlaylistOp =
       masterPlaylistId: number;
       name: string;
       trackPersistentIds: string[];
+      masterTrackPersistentIds: string[];
       overwritesMasterOrdering: boolean;
     }
   | {
@@ -113,6 +114,7 @@ export type WritebackPlaylistOp =
     };
 
 export interface WritebackPlan {
+  planId: string;
   trackChanges: WritebackTrackChange[];
   conflicts: WritebackConflict[];
   playlistOps: WritebackPlaylistOp[];
@@ -130,6 +132,11 @@ export interface WritebackSummary {
   pulled: number;
   playlistOps: number;
   failures: SyncFailure[];
+}
+
+export interface WritebackApplyError {
+  code: "stalePlan" | "writebackFailed";
+  message: string;
 }
 
 export async function syncPairStart(
@@ -176,9 +183,10 @@ export async function syncWritebackPlan(sourceId: number): Promise<WritebackPlan
 
 export async function syncWritebackApply(
   sourceId: number,
+  planId: string,
   resolutions: WritebackResolution[],
 ): Promise<WritebackSummary> {
-  return invoke("sync_writeback_apply", { sourceId, resolutions });
+  return invoke("sync_writeback_apply", { sourceId, planId, resolutions });
 }
 
 export function onSyncProgress(cb: (progress: SyncProgress) => void): Promise<UnlistenFn> {
