@@ -2,7 +2,10 @@ use std::path::Path;
 
 /// Cover Art Archive のフロント画像 URL (500px) を返す。
 pub fn front_url(release_mbid: &str) -> String {
-    format!("https://coverartarchive.org/release/{}/front-500", release_mbid)
+    format!(
+        "https://coverartarchive.org/release/{}/front-500",
+        release_mbid
+    )
 }
 
 /// Cover Art Archive から画像をダウンロードしてファイルに保存する。
@@ -21,7 +24,6 @@ pub async fn download(release_mbid: &str, output_path: &Path) -> Result<(), Stri
         .bytes()
         .await
         .map_err(|e| format!("Failed to read cover art: {}", e))?;
-    std::fs::write(output_path, &bytes)
-        .map_err(|e| format!("Failed to write cover art: {}", e))?;
+    std::fs::write(output_path, &bytes).map_err(|e| format!("Failed to write cover art: {}", e))?;
     Ok(())
 }

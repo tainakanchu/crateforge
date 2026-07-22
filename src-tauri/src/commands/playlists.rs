@@ -39,7 +39,8 @@ pub fn get_smart_criteria(
     playlist_id: i64,
 ) -> Result<Option<SmartCriteria>, String> {
     let db = open_db(&app)?;
-    db.get_smart_criteria(playlist_id).map_err(|e| e.to_string())
+    db.get_smart_criteria(playlist_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

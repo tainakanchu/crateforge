@@ -2477,6 +2477,346 @@ input {
   cursor: not-allowed;
 }
 
+/* ============================================================
+   Server sync provisioning modal
+   ============================================================ */
+.sync-modal {
+  width: 640px;
+}
+.sync-body {
+  padding: 18px;
+}
+.sync-section-title {
+  margin: 0 0 12px;
+  color: var(--tx);
+  font-size: 14px;
+  font-weight: 680;
+}
+.sync-empty {
+  padding: 24px 16px;
+  border: 1px dashed var(--bd);
+  border-radius: 9px;
+  color: var(--mut);
+  text-align: center;
+  font-size: 12.5px;
+}
+.sync-source-list,
+.sync-playlist-list {
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.sync-source {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px;
+  border: 0;
+  border-bottom: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--tx);
+  text-align: left;
+  cursor: pointer;
+}
+.sync-source:last-child,
+.sync-playlist:last-child {
+  border-bottom: 0;
+}
+.sync-source:hover,
+.sync-source:focus-visible,
+.sync-playlist:hover,
+.sync-playlist:focus-within {
+  background: var(--hover);
+}
+.sync-source:focus-visible,
+.sync-playlist:focus-within {
+  outline: 1px solid var(--ac);
+  outline-offset: -1px;
+}
+.sync-source > svg:first-child {
+  color: var(--ac);
+}
+.sync-source-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sync-source-copy strong,
+.sync-source-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sync-source-copy strong {
+  font-size: 13px;
+}
+.sync-source-copy span,
+.sync-source-meta {
+  color: var(--mut);
+  font-size: 11px;
+}
+.sync-source-meta {
+  flex-shrink: 0;
+}
+.sync-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.sync-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 13px;
+  color: var(--tx2);
+  font-size: 12px;
+}
+.sync-field .rip-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.sync-error {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border: 1px solid rgba(221, 104, 104, 0.4);
+  border-radius: 8px;
+  background: rgba(221, 104, 104, 0.09);
+  color: #f0b0b0;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.sync-error .rip-link {
+  margin-left: 8px;
+}
+.sync-pairing,
+.sync-progress-view,
+.sync-result {
+  text-align: center;
+}
+.sync-pairing-label {
+  color: var(--mut);
+  font-size: 12px;
+  margin-top: 5px;
+}
+.sync-code {
+  margin: 9px 0 18px;
+  color: var(--tx);
+  font-family: var(--mono);
+  font-size: 38px;
+  font-weight: 750;
+  letter-spacing: 0.22em;
+  padding-left: 0.22em;
+}
+.sync-pairing h3,
+.sync-progress-view h3,
+.sync-result h3 {
+  margin: 0 0 7px;
+  font-size: 15px;
+}
+.sync-pairing p,
+.sync-progress-view p {
+  margin: 0;
+  color: var(--mut);
+  font-size: 12px;
+}
+.sync-waiting {
+  margin-top: 18px;
+  color: var(--ac);
+  font-size: 12px;
+}
+.sync-playlist-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+.sync-playlist-heading .sync-section-title {
+  margin-bottom: 3px;
+}
+.sync-playlist-heading span {
+  color: var(--mut);
+  font-size: 11px;
+}
+.sync-playlist-list {
+  max-height: 270px;
+  overflow-y: auto;
+}
+.sync-playlist {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 76px 88px;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--bg2);
+  cursor: pointer;
+  font-size: 12px;
+}
+.sync-playlist.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.sync-playlist-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sync-playlist-count,
+.sync-playlist-size {
+  color: var(--mut);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.sync-selection-total {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--tx2);
+  font-size: 11.5px;
+}
+.sync-selection-total strong {
+  color: var(--tx);
+}
+.sync-selection-total .sync-missing {
+  margin-left: auto;
+  color: #e4b76d;
+}
+.sync-folder-row {
+  display: flex;
+  gap: 8px;
+}
+.sync-folder-row .rip-input {
+  min-width: 0;
+}
+.sync-folder-row .toolbar-btn {
+  flex-shrink: 0;
+}
+.sync-progress-view {
+  padding: 18px 8px 8px;
+}
+.sync-progress-icon,
+.sync-result-icon {
+  width: 50px;
+  height: 50px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  background: var(--ac-16);
+  color: var(--ac);
+}
+.sync-progress-view progress {
+  width: 100%;
+  height: 8px;
+  display: block;
+  margin-top: 22px;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  appearance: none;
+}
+.sync-progress-view progress::-webkit-progress-bar {
+  background: var(--bg3);
+}
+.sync-progress-view progress::-webkit-progress-value {
+  background: var(--ac);
+}
+.sync-progress-view progress::-moz-progress-bar {
+  background: var(--ac);
+}
+.sync-progress-numbers {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  color: var(--mut);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.sync-current-track {
+  min-height: 19px;
+  margin: 16px 0 7px;
+  overflow: hidden;
+  color: var(--tx2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sync-result {
+  padding-top: 7px;
+}
+.sync-result-icon.success {
+  background: rgba(86, 181, 128, 0.14);
+  color: #72cb98;
+}
+.sync-result-icon.error {
+  background: rgba(221, 104, 104, 0.14);
+  color: #e98181;
+}
+.sync-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 18px 0 0;
+}
+.sync-summary div {
+  padding: 11px;
+  border-radius: 8px;
+  background: var(--bg2);
+}
+.sync-summary dt {
+  color: var(--mut);
+  font-size: 11px;
+}
+.sync-summary dd {
+  margin: 5px 0 0;
+  color: var(--tx);
+  font-size: 14px;
+  font-weight: 650;
+}
+.sync-failures {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border: 1px solid rgba(221, 104, 104, 0.35);
+  border-radius: 8px;
+  background: rgba(221, 104, 104, 0.07);
+  color: #efb0b0;
+  text-align: left;
+  font-size: 12px;
+}
+.sync-failures summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.sync-failures ul {
+  max-height: 150px;
+  overflow-y: auto;
+  margin: 9px 0 0;
+  padding-left: 19px;
+}
+.sync-failures li {
+  margin-bottom: 7px;
+}
+.sync-failures li strong,
+.sync-failures li span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.sync-failures li span {
+  margin-top: 2px;
+  color: var(--mut);
+}
+
 .rip-row {
   display: flex;
   align-items: center;

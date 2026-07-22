@@ -132,9 +132,7 @@ fn hann(n: usize) -> Vec<f32> {
         return vec![1.0; n];
     }
     (0..n)
-        .map(|i| {
-            0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos()
-        })
+        .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos())
         .collect()
 }
 
@@ -364,7 +362,11 @@ fn rms(x: &[f32]) -> f64 {
 }
 
 fn compute_energy(rms: f64, centroid: f64, onset_rate: f64) -> f64 {
-    let rms_db = if rms > 1e-9 { 20.0 * rms.log10() } else { -80.0 };
+    let rms_db = if rms > 1e-9 {
+        20.0 * rms.log10()
+    } else {
+        -80.0
+    };
     let loud = ((rms_db + 40.0) / 40.0).clamp(0.0, 1.0);
     let bright = (centroid / 4000.0).clamp(0.0, 1.0);
     let drive = onset_rate.clamp(0.0, 1.0);
@@ -406,9 +408,13 @@ fn build_vector(
     lufs: Option<f64>,
     onset_rate: f64,
 ) -> Vec<f64> {
-    let bpm_n = bpm.map(|b| ((b - 70.0) / 110.0).clamp(0.0, 1.0)).unwrap_or(0.5);
+    let bpm_n = bpm
+        .map(|b| ((b - 70.0) / 110.0).clamp(0.0, 1.0))
+        .unwrap_or(0.5);
     let centroid_n = (centroid / 8000.0).clamp(0.0, 1.0);
-    let lufs_n = lufs.map(|l| ((l + 30.0) / 30.0).clamp(0.0, 1.0)).unwrap_or(0.5);
+    let lufs_n = lufs
+        .map(|l| ((l + 30.0) / 30.0).clamp(0.0, 1.0))
+        .unwrap_or(0.5);
 
     let mut v = Vec::with_capacity(5 + 12);
     v.push(bpm_n);
@@ -435,7 +441,9 @@ mod tests {
             .collect();
         let frames = stft_magnitudes(&sig);
         let chroma = chromagram(&frames, rate);
-        let argmax = (0..12).max_by(|&a, &b| chroma[a].total_cmp(&chroma[b])).unwrap();
+        let argmax = (0..12)
+            .max_by(|&a, &b| chroma[a].total_cmp(&chroma[b]))
+            .unwrap();
         assert_eq!(argmax, 9, "expected pitch class A, chroma={chroma:?}");
     }
 

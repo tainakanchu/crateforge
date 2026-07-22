@@ -6,7 +6,8 @@ use crate::db::Database;
 use crate::importer;
 use crate::itunes_xml::{parser, writer};
 use crate::models::{
-    AlbumRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult, LibraryStats, Track, TrackEdit,
+    AlbumRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult, LibraryStats, Track,
+    TrackEdit,
 };
 use crate::organizer;
 

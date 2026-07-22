@@ -11,4 +11,5 @@ pub mod playlists;
 pub mod ripping;
 pub mod rules;
 pub mod smtc;
+pub mod sync;
 pub mod updater;

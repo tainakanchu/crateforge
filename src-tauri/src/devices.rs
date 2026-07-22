@@ -198,7 +198,13 @@ mod tests {
         assert!(all_device_tokens(&db).is_empty());
 
         let tok = gen_token();
-        add_device_with_token(&db, Some("Phone".into()), Some("android".into()), tok.clone()).unwrap();
+        add_device_with_token(
+            &db,
+            Some("Phone".into()),
+            Some("android".into()),
+            tok.clone(),
+        )
+        .unwrap();
         assert_eq!(tok.len(), 48, "token は 48 文字 hex");
 
         let tokens = all_device_tokens(&db);

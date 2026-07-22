@@ -45,6 +45,21 @@ impl Database {
         }
     }
 
+    /// app_state の値を、未設定の場合だけ作成して返す。
+    /// 複数リクエストが同時に初期化しても、PRIMARY KEY と INSERT OR IGNORE により
+    /// 最初に保存された値を全リクエストが共有する。
+    pub fn get_or_create_state(&self, key: &str, default_value: &str) -> Result<String> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO app_state (key, value) VALUES (?1, ?2)",
+            params![key, default_value],
+        )?;
+        self.conn.query_row(
+            "SELECT value FROM app_state WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+    }
+
     /// 自動整理が有効なら整理先ルートを返す。
     /// `library_root` が未設定 / 空、または `organize_enabled == "0"` のときは `None`。
     /// これを `None` とする限り、取り込み・編集時の整理処理は完全にスキップされ、

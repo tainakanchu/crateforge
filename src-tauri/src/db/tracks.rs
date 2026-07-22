@@ -743,6 +743,29 @@ impl Database {
         Ok(out)
     }
 
+    /// 指定した persistent_id 群を、入力順を保って Track へ解決する。
+    /// 見つからない ID はスキップする。テーブルは小さいため prepared statement を再利用する。
+    pub fn get_tracks_by_persistent_ids(&self, persistent_ids: &[String]) -> Result<Vec<Track>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
+                    album, genre, year, rating, play_count, skip_count, total_time_ms,
+                    date_added, date_modified, bpm, comments, location_raw, location_path,
+                    track_type, disabled, compilation, disc_number, disc_count,
+                    track_number, track_count, file_exists, last_played
+             FROM tracks WHERE persistent_id = ?1",
+        )?;
+        let mut out = Vec::with_capacity(persistent_ids.len());
+        for persistent_id in persistent_ids {
+            if let Some(track) = stmt
+                .query_row(params![persistent_id], row_to_track)
+                .optional()?
+            {
+                out.push(track);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn get_all_tracks(&self) -> Result<Vec<Track>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,

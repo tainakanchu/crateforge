@@ -70,8 +70,8 @@ pub fn export_library(db: &Database, output_path: &str) -> Result<ExportResult, 
     let tmp = parent.join(format!("crateforge-{}-{}.tmp", pid, nanos));
 
     let write_result = (|| -> Result<(), String> {
-        let mut file = fs::File::create(&tmp)
-            .map_err(|e| format!("Failed to create tmp file: {}", e))?;
+        let mut file =
+            fs::File::create(&tmp).map_err(|e| format!("Failed to create tmp file: {}", e))?;
         file.write_all(buf.as_bytes())
             .map_err(|e| format!("Failed to write tmp file: {}", e))?;
         file.flush()
@@ -79,8 +79,7 @@ pub fn export_library(db: &Database, output_path: &str) -> Result<ExportResult, 
         file.sync_all()
             .map_err(|e| format!("Failed to sync tmp file: {}", e))?;
         drop(file);
-        fs::rename(&tmp, output_path)
-            .map_err(|e| format!("Failed to rename tmp file: {}", e))?;
+        fs::rename(&tmp, output_path).map_err(|e| format!("Failed to rename tmp file: {}", e))?;
         Ok(())
     })();
 
@@ -367,6 +366,10 @@ mod tests {
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
             .collect();
-        assert!(tmp_files.is_empty(), "orphan .tmp files remain: {:?}", tmp_files);
+        assert!(
+            tmp_files.is_empty(),
+            "orphan .tmp files remain: {:?}",
+            tmp_files
+        );
     }
 }

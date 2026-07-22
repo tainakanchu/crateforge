@@ -42,8 +42,7 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         let window = app
             .get_webview_window("main")
             .ok_or("main window not found")?;
-        let raw = window.hwnd().map_err(|e| format!("hwnd: {}", e))?.0
-            as *mut std::ffi::c_void;
+        let raw = window.hwnd().map_err(|e| format!("hwnd: {}", e))?.0 as *mut std::ffi::c_void;
         Some(raw)
     };
     #[cfg(not(target_os = "windows"))]
