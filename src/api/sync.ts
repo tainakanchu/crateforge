@@ -210,6 +210,28 @@ export interface WritebackApplyError {
   message: string;
 }
 
+export interface PushableTrack {
+  persistentId: string;
+  name: string | null;
+  artist: string | null;
+  album: string | null;
+  bytes: number;
+  hasAnalysis: boolean;
+}
+
+export interface PushTracksSummary {
+  uploaded: number;
+  alreadyExisted: number;
+  analysesPushed: number;
+  failures: SyncFailure[];
+}
+
+export interface PushAnalysesSummary {
+  pushed: number;
+  skipped: number;
+  failures: SyncFailure[];
+}
+
 export async function syncPairStart(
   baseUrl: string,
   deviceName: string,
@@ -293,6 +315,21 @@ export async function syncStorageUsage(sourceId: number): Promise<StorageUsage> 
   return invoke("sync_storage_usage", { sourceId });
 }
 
+export async function syncListPushable(sourceId: number): Promise<PushableTrack[]> {
+  return invoke("sync_list_pushable", { sourceId });
+}
+
+export async function syncPushTracks(
+  sourceId: number,
+  persistentIds: string[],
+): Promise<PushTracksSummary> {
+  return invoke("sync_push_tracks", { sourceId, persistentIds });
+}
+
+export async function syncPushAnalyses(sourceId: number): Promise<PushAnalysesSummary> {
+  return invoke("sync_push_analyses", { sourceId });
+}
+
 export function onSyncProgress(cb: (progress: SyncProgress) => void): Promise<UnlistenFn> {
   return listen<SyncProgress>("sync-progress", (event) => cb(event.payload));
 }
@@ -313,4 +350,8 @@ export function onWritebackComplete(
   cb: (summary: WritebackSummary) => void,
 ): Promise<UnlistenFn> {
   return listen<WritebackSummary>("writeback-complete", (event) => cb(event.payload));
+}
+
+export function onPushComplete(cb: (summary: PushTracksSummary) => void): Promise<UnlistenFn> {
+  return listen<PushTracksSummary>("push-complete", (event) => cb(event.payload));
 }

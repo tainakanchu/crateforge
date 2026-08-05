@@ -165,6 +165,17 @@ fn is_numeric_id(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// `/api/tracks/upload/{uploadId}` の raw body endpoint。uploadId は PID と同形式。
+fn is_track_upload_body_path(path: &str) -> bool {
+    let Some(upload_id) = path.strip_prefix("/api/tracks/upload/") else {
+        return false;
+    };
+    upload_id.len() == 16
+        && upload_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
+}
+
 /// sync 役割にだけ追加許可する LAN 書き込みパスを厳密に判定する。
 fn is_sync_write(method: &axum::http::Method, path: &str) -> bool {
     use axum::http::Method;
@@ -172,7 +183,11 @@ fn is_sync_write(method: &axum::http::Method, path: &str) -> bool {
     if method == Method::POST
         && matches!(
             path,
-            "/api/tracks/genre-tags/add" | "/api/tracks/genre-tags/remove" | "/api/playlists"
+            "/api/tracks/genre-tags/add"
+                | "/api/tracks/genre-tags/remove"
+                | "/api/tracks/upload"
+                | "/api/analysis"
+                | "/api/playlists"
         )
     {
         return true;
@@ -182,6 +197,10 @@ fn is_sync_write(method: &axum::http::Method, path: &str) -> bool {
         if let Some(track_id) = path.strip_prefix("/api/tracks/") {
             return is_numeric_id(track_id);
         }
+    }
+
+    if method == Method::PUT && is_track_upload_body_path(path) {
+        return true;
     }
 
     let Some(rest) = path.strip_prefix("/api/playlists/") else {
@@ -407,6 +426,12 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/tracks/by-ids", post(handlers::tracks_by_ids))
         .route("/api/tracks/lookup", post(handlers::tracks_lookup))
         .route("/api/analysis/lookup", post(handlers::analysis_lookup))
+        .route(
+            "/api/analysis",
+            post(handlers::upload_analyses).layer(axum::extract::DefaultBodyLimit::max(
+                handlers::ANALYSIS_UPLOAD_MAX_BYTES,
+            )),
+        )
         // GET と PATCH を 1 つの MethodRouter に合流させる (axum 0.8 は同一パスを
         // 別 .route で重ねると panic するため)。PATCH ハンドラは下の「書き込み」節参照。
         .route(
@@ -468,6 +493,15 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/api/tracks/genre-tags/remove",
             post(handlers::remove_genre_tags),
+        )
+        .route("/api/tracks/upload", post(handlers::prepare_track_upload))
+        .route(
+            "/api/tracks/upload/{uploadId}",
+            axum::routing::put(handlers::upload_track_body).layer(
+                axum::extract::DefaultBodyLimit::max(
+                    handlers::TRACK_UPLOAD_MAX_BYTES as usize + 1024 * 1024,
+                ),
+            ),
         )
         // ペアリング (public: トークン不要)
         .route("/api/pair/start", post(pair_start))
@@ -820,6 +854,50 @@ mod tests {
             serde_json::from_slice(&bytes).unwrap_or(Value::Null)
         };
         (status, value)
+    }
+
+    async fn raw_req(
+        app: Router,
+        method: &str,
+        uri: &str,
+        body: &'static [u8],
+    ) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, value)
+    }
+
+    fn upload_metadata(persistent_id: &str, file_size: u64) -> Value {
+        json!({
+            "persistentId": persistent_id,
+            "name": "Slave Song",
+            "artist": "Slave Artist",
+            "albumArtist": "Slave Album Artist",
+            "album": "Slave Album",
+            "genre": "House",
+            "year": 2026,
+            "bpm": 128,
+            "comments": "uploaded",
+            "trackNumber": 3,
+            "trackCount": 9,
+            "discNumber": 1,
+            "discCount": 1,
+            "compilation": false,
+            "rating": 80,
+            "totalTimeMs": 123456,
+            "fileName": "slave.flac",
+            "fileSize": file_size,
+        })
     }
 
     /// 非ループバックの LAN リクエストを流す。`token=None` はトークン未提示。
@@ -2240,5 +2318,292 @@ mod tests {
         req.extensions_mut().insert(ConnectInfo(lan_ip));
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn federation_upload_lands_is_idempotent_and_validates_requests() {
+        let (dir, app) = setup();
+        let library_root = dir.path().join("master-library");
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        db.set_state("library_root", &library_root.to_string_lossy())
+            .unwrap();
+        db.set_state("organize_enabled", "1").unwrap();
+        drop(db);
+
+        let pid = "AAAABBBBCCCCDDDD";
+        let audio = b"fLaC-slave-audio";
+        let (status, ready) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/upload",
+            Some(upload_metadata(pid, audio.len() as u64)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(ready["uploadId"], pid);
+        let (status, track) = raw_req(
+            app.clone(),
+            "PUT",
+            &format!("/api/tracks/upload/{pid}"),
+            audio,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(track["persistentId"], pid);
+        assert_eq!(track["name"], "Slave Song");
+        assert_eq!(track["albumArtist"], "Slave Album Artist");
+        assert_eq!(track["comments"], "uploaded");
+        assert_eq!(track["rating"], 80);
+        let landed = std::path::PathBuf::from(track["locationPath"].as_str().unwrap());
+        assert!(landed.starts_with(&library_root));
+        assert_eq!(std::fs::read(&landed).unwrap(), audio);
+
+        // 同じ PID の metadata retry は既存 DTO を返し、既存ファイルを変更しない。
+        let mut changed = upload_metadata(pid, audio.len() as u64);
+        changed["name"] = json!("Must Not Replace");
+        let (status, existing) =
+            req(app.clone(), "POST", "/api/tracks/upload", Some(changed)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(existing["name"], "Slave Song");
+        assert_eq!(std::fs::read(&landed).unwrap(), audio);
+
+        // DB 行だけ残って実ファイルが消えた場合は、同じ track_id のまま修復する。
+        let original_track_id = track["trackId"].as_i64().unwrap();
+        std::fs::remove_file(&landed).unwrap();
+        let (status, ready) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/upload",
+            Some(upload_metadata(pid, audio.len() as u64)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(ready["uploadId"], pid);
+        let (status, repaired) = raw_req(
+            app.clone(),
+            "PUT",
+            &format!("/api/tracks/upload/{pid}"),
+            audio,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(repaired["trackId"], original_track_id);
+        let repaired_path = std::path::PathBuf::from(repaired["locationPath"].as_str().unwrap());
+        assert!(repaired_path.starts_with(&library_root));
+        assert_eq!(std::fs::read(&repaired_path).unwrap(), audio);
+
+        // dot-only の remote artist/album/title は root 内の安全な要素へ置換される。
+        for (dot_pid, artist) in [("AAAABBBBCCCC0001", "."), ("AAAABBBBCCCC0002", "..")] {
+            let mut dot_metadata = upload_metadata(dot_pid, audio.len() as u64);
+            dot_metadata["name"] = json!("..");
+            dot_metadata["artist"] = json!(artist);
+            dot_metadata["albumArtist"] = Value::Null;
+            dot_metadata["album"] = json!("..");
+            let (status, _) = req(
+                app.clone(),
+                "POST",
+                "/api/tracks/upload",
+                Some(dot_metadata),
+            )
+            .await;
+            assert_eq!(status, StatusCode::ACCEPTED);
+            let (status, dot_track) = raw_req(
+                app.clone(),
+                "PUT",
+                &format!("/api/tracks/upload/{dot_pid}"),
+                audio,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+            let dot_path = std::path::PathBuf::from(dot_track["locationPath"].as_str().unwrap());
+            assert!(dot_path
+                .canonicalize()
+                .unwrap()
+                .starts_with(library_root.canonicalize().unwrap()));
+            assert_eq!(
+                dot_path
+                    .parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy(),
+                "_"
+            );
+            assert_eq!(
+                dot_path
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy(),
+                "_"
+            );
+        }
+
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/upload",
+            Some(upload_metadata("not-a-pid", 1)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let mismatch_pid = "AAAABBBBCCCCEEEE";
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/upload",
+            Some(upload_metadata(mismatch_pid, 99)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let (status, _) = raw_req(
+            app,
+            "PUT",
+            &format!("/api/tracks/upload/{mismatch_pid}"),
+            b"short",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(!library_root
+            .join("Slave Album Artist/Slave Album/03 Slave Song (2).flac")
+            .exists());
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        assert!(db
+            .get_tracks_by_persistent_ids(&[mismatch_pid.to_string()])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn federation_upload_is_sync_role_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let tokens = crate::devices::ValidTokens::default();
+        tokens.insert("remote-token".to_string());
+        tokens.insert_with_role("sync-token".to_string(), crate::devices::DeviceRole::Sync);
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens,
+            pairings: crate::pairing::PairingRegistry::default(),
+        });
+        let body = Some(upload_metadata("1111222233334444", 1));
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("remote-token"),
+            "POST",
+            "/api/tracks/upload",
+            body.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) =
+            lan_req(app, Some("sync-token"), "POST", "/api/tracks/upload", body).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn federation_analysis_upload_applies_version_rules_per_item() {
+        let (dir, app) = setup();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        db.conn
+            .execute(
+                "UPDATE track_analysis SET version=3 WHERE persistent_id='0000000000000002'",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO track_analysis (persistent_id, track_id, version, analyzed_at, bpm)
+                 VALUES ('0000000000000004', 4, 1, '2025-01-01T00:00:00Z', 90.0)",
+                [],
+            )
+            .unwrap();
+        drop(db);
+        let row = |pid: &str, version: i64, bpm: f64| {
+            json!({
+                "persistentId": pid,
+                "version": version,
+                "analyzedAt": "2026-07-22T00:00:00Z",
+                "bpm": bpm,
+                "keyCamelot": "8A",
+                "keyName": "A minor",
+                "energy": 0.75,
+                "loudnessLufs": -9.0,
+                "replaygainDb": -5.0,
+                "vector": [0.1, 0.2],
+                "peaks": [0.25, 0.75]
+            })
+        };
+        let (status, results) = req(
+            app,
+            "POST",
+            "/api/analysis",
+            Some(json!([
+                row("0000000000000001", 2, 130.0),
+                row("0000000000000002", 2, 131.0),
+                row("0000000000000003", 1, 132.0),
+                row("FFFFFFFFFFFFFFFF", 2, 133.0),
+                row("0000000000000004", 2, 134.0)
+            ])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(results[0]["status"], "upserted");
+        assert_eq!(results[1]["status"], "skipped");
+        assert_eq!(results[2]["status"], "rejected");
+        assert_eq!(results[3]["status"], "rejected");
+        assert_eq!(results[4]["status"], "upserted");
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        assert_eq!(db.get_analysis(1).unwrap().unwrap().bpm, Some(130.0));
+        assert_eq!(db.get_analysis(2).unwrap().unwrap().version, 3);
+        assert!(db.get_analysis(3).unwrap().is_none());
+        assert_eq!(db.get_analysis(4).unwrap().unwrap().bpm, Some(134.0));
+    }
+
+    #[tokio::test]
+    async fn federation_analysis_equal_version_requires_strictly_newer_timestamp() {
+        let (dir, app) = setup();
+        let row = |analyzed_at: &str, bpm: f64| {
+            json!({
+                "persistentId": "0000000000000001",
+                "version": 2,
+                "analyzedAt": analyzed_at,
+                "bpm": bpm,
+                "keyCamelot": "8A",
+                "keyName": "A minor",
+                "energy": 0.75,
+                "loudnessLufs": -9.0,
+                "replaygainDb": -5.0,
+                "vector": [0.1, 0.2],
+                "peaks": [0.25, 0.75]
+            })
+        };
+        let (status, results) = req(
+            app,
+            "POST",
+            "/api/analysis",
+            Some(json!([
+                row("2025-12-31T23:59:59Z", 120.0),
+                row("2026-01-01T00:00:00Z", 121.0),
+                row("not-a-timestamp", 122.0),
+                row("2026-01-01T00:00:00.001Z", 130.0),
+                row("2026-01-01T00:00:00.001Z", 131.0)
+            ])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(results[0]["status"], "skipped");
+        assert_eq!(results[1]["status"], "skipped");
+        assert_eq!(results[2]["status"], "skipped");
+        assert_eq!(results[3]["status"], "upserted");
+        assert_eq!(results[4]["status"], "skipped");
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        let analysis = db.get_analysis(1).unwrap().unwrap();
+        assert_eq!(analysis.analyzed_at, "2026-01-01T00:00:00.001Z");
+        assert_eq!(analysis.bpm, Some(130.0));
     }
 }

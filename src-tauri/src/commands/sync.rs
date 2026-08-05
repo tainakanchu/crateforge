@@ -13,7 +13,8 @@ use crate::models::Playlist;
 use crate::sync::writeback::{ConflictResolution, WritebackPlan, WritebackSummary};
 use crate::sync::{
     EvictionCandidate, EvictionSummary, PairedSource, PairingStart, PlaylistSizeEstimate,
-    ProvisionSummary, ResyncSummary, StorageUsage, SyncProgress,
+    ProvisionSummary, PushAnalysesSummary, PushTracksSummary, PushableTrack, ResyncSummary,
+    StorageUsage, SyncProgress,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -407,4 +408,48 @@ pub fn sync_storage_usage(app: AppHandle, source_id: i64) -> Result<StorageUsage
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "sync source not found".to_string())?;
     crate::sync::storage_usage(&db, source_id).map_err(|error| error.to_string())
+}
+
+/// master へ送れるローカル由来曲（どの sync_track にも未所属）を返す。
+#[tauri::command(rename_all = "camelCase")]
+pub fn sync_list_pushable(app: AppHandle, source_id: i64) -> Result<Vec<PushableTrack>, String> {
+    crate::sync::list_pushable(&open_db(&app)?, source_id).map_err(|error| error.to_string())
+}
+
+/// 選択曲を master へ upload し、成功分をこの source の sync_track へ編入する。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sync_push_tracks(
+    app: AppHandle,
+    source_id: i64,
+    persistent_ids: Vec<String>,
+) -> Result<PushTracksSummary, String> {
+    let db = open_db(&app)?;
+    let source = db
+        .get_sync_source(source_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sync source not found".to_string())?;
+    let event_app = app.clone();
+    let summary = crate::sync::push_tracks(db, source, persistent_ids, move |progress| {
+        let _ = event_app.emit("sync-progress", progress);
+    })
+    .await
+    .map_err(writeback_error)?;
+    let _ = app.emit("push-complete", summary.clone());
+    Ok(summary)
+}
+
+/// 編入済み曲の現行解析のうち、master に無い/古いものだけを送る。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sync_push_analyses(
+    app: AppHandle,
+    source_id: i64,
+) -> Result<PushAnalysesSummary, String> {
+    let db = open_db(&app)?;
+    let source = db
+        .get_sync_source(source_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sync source not found".to_string())?;
+    crate::sync::push_analyses(db, source)
+        .await
+        .map_err(writeback_error)
 }

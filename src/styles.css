@@ -2568,6 +2568,19 @@ input {
   padding: 6px 9px;
   font-size: 11px;
 }
+.sync-source-actions .sync-analyses-action {
+  padding: 4px 7px;
+  font-size: 10px;
+}
+.sync-analyses-result {
+  flex-basis: 100%;
+  color: #72cb98;
+  font-size: 10px;
+  text-align: right;
+}
+.sync-analyses-result.error {
+  color: #ef9d9d;
+}
 .sync-actions {
   display: flex;
   justify-content: flex-end;
@@ -2821,6 +2834,94 @@ input {
 .sync-failures li span {
   margin-top: 2px;
   color: var(--mut);
+}
+
+/* ============================================================
+   Sync push-to-master modal
+   ============================================================ */
+.sync-push-modal {
+  width: 820px;
+}
+.sync-push-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  color: var(--tx2);
+  cursor: pointer;
+  font-size: 11.5px;
+}
+.sync-push-select-all input,
+.sync-push-row input {
+  accent-color: var(--ac);
+}
+.sync-push-table {
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.sync-push-columns,
+.sync-push-row {
+  display: grid;
+  grid-template-columns: auto minmax(130px, 1.25fr) minmax(105px, 1fr) minmax(105px, 1fr) 72px 66px;
+  align-items: center;
+  gap: 10px;
+}
+.sync-push-columns {
+  padding: 7px 10px;
+  background: var(--bg3);
+  color: var(--mut);
+  font-size: 10.5px;
+}
+.sync-push-columns span:nth-last-child(-n + 2) {
+  text-align: right;
+}
+.sync-push-list {
+  max-height: 330px;
+  overflow-y: auto;
+}
+.sync-push-row {
+  min-height: 43px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--tx2);
+  cursor: pointer;
+  font-size: 11.5px;
+}
+.sync-push-row:hover,
+.sync-push-row:focus-within {
+  background: var(--hover);
+}
+.sync-push-row > strong,
+.sync-push-row > span:not(.sync-analysis-badge) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sync-push-row > strong {
+  color: var(--tx);
+  font-size: 12px;
+}
+.sync-push-row > span:nth-last-child(2) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.sync-analysis-badge {
+  justify-self: end;
+  padding: 2px 5px;
+  border: 1px solid var(--bd);
+  border-radius: 999px;
+  color: var(--mut);
+  font-size: 9.5px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.sync-analysis-badge.available {
+  border-color: rgba(86, 181, 128, 0.38);
+  background: rgba(86, 181, 128, 0.1);
+  color: #72cb98;
 }
 
 /* ============================================================

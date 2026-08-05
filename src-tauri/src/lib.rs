@@ -296,6 +296,9 @@ pub fn run() {
             commands::sync::sync_storage_usage,
             commands::sync::sync_writeback_plan,
             commands::sync::sync_writeback_apply,
+            commands::sync::sync_list_pushable,
+            commands::sync::sync_push_tracks,
+            commands::sync::sync_push_analyses,
             // フォント
             commands::fonts::list_system_fonts,
             commands::fonts::get_ui_font,
