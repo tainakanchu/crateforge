@@ -41,6 +41,9 @@ pnpm -C mobile test        # Jest（jest-expo）
 1. デスクトップの Crateforge 設定で LAN（HTTP API）を有効化し、API トークンを発行する。
 2. モバイルアプリ起動後、QR コードを読み取るか、ベース URL とトークンを手動入力する。
 
+LAN の外から接続する場合は、Tailscale などを経由して端末から到達できる URL を手動入力してください。
+アプリ自身は LAN 外向けの経路やトンネルを作成しません。
+
 平文 HTTP（`http://...`）での LAN 接続は、app.config.ts の expo-build-properties
 （`android.usesCleartextTraffic: true`）で許可済みです。
 
@@ -50,6 +53,8 @@ pnpm -C mobile test        # Jest（jest-expo）
 
 - **管理**: Downloads 画面でダウンロード済みを一覧・容量表示・削除できます。
 - **品質**: 設定の「ダウンロード品質」で 原本 / AAC-LC 256k / 192k / 128k を選択（既定は AAC-LC 192k）。
+- **ピン留め**: プレイリストをピン留めすると、再接続時に現在のメンバーとの差分を同期します。
+  追加曲は記憶済みの品質で保存し、削除曲は他のピン留めプレイリストと共有されていない場合だけ端末から削除します。
 - **変換**: 変換はデスクトップ側 ffmpeg が `/stream?fmt=aac&br=<kbps>` で実施し、端末は保存するだけ。
 - **自動ローカル再生**: ダウンロード済みの曲は自動でローカルファイルから再生します（`ExpoAudioEngine` が優先）。
 

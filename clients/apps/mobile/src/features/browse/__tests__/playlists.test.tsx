@@ -3,11 +3,12 @@
 // フォルダ行のタップで /folder/ へ、プレイリスト行で /playlist/ へ遷移することを確認する。
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react-native";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 
-import { type Playlist } from "@crateforge/core";
+import { type DownloadEntry, type Playlist, type Track, useDownloads, usePlayer } from "@crateforge/core";
 import { setTestConnection, createQueryWrapper, resetTestState, mockFetch } from "@/test-utils";
 import PlaylistsScreen from "@/app/(tabs)/playlists";
+import PlaylistScreen from "@/app/playlist/[id]";
 import { childrenOf, rootItems } from "@/features/browse/playlistTree";
 
 // SafeAreaProvider を張らずに insets を固定で返す。
@@ -30,9 +31,56 @@ function makePlaylist(overrides: Partial<Playlist> = {}): Playlist {
   };
 }
 
+function makeTrack(overrides: Partial<Track> = {}): Track {
+  return {
+    id: 1,
+    trackId: 701,
+    persistentId: null,
+    name: "Offline Song",
+    artist: "Offline Artist",
+    albumArtist: null,
+    composer: null,
+    album: "Offline Album",
+    genre: null,
+    year: null,
+    rating: null,
+    playCount: null,
+    skipCount: null,
+    totalTimeMs: null,
+    dateAdded: null,
+    dateModified: null,
+    bpm: null,
+    comments: null,
+    locationRaw: null,
+    locationPath: "/music/offline.m4a",
+    trackType: null,
+    disabled: false,
+    compilation: false,
+    discNumber: null,
+    discCount: null,
+    trackNumber: null,
+    trackCount: null,
+    fileExists: true,
+    lastPlayed: null,
+    ...overrides,
+  };
+}
+
+function makeEntry(track: Track): DownloadEntry {
+  return {
+    trackId: track.trackId,
+    track,
+    localUri: `file:///mock/${track.trackId}.m4a`,
+    quality: "aac192",
+    bytes: 1024,
+    createdAt: 1,
+  };
+}
+
 beforeEach(() => {
   resetTestState();
   (router.push as jest.Mock).mockClear();
+  (useLocalSearchParams as jest.Mock).mockReturnValue({});
 });
 
 describe("playlistTree", () => {
@@ -152,5 +200,42 @@ describe("PlaylistsScreen", () => {
     expect(await screen.findByText("オフライン保存されたプレイリストはありません")).toBeTruthy();
     // 接続導線のボタンテキストも表示される。
     expect(screen.getByText("サーバーに接続")).toBeTruthy();
+  });
+
+  test("persisted pin is browsable and playable without a client", async () => {
+    const track = makeTrack();
+    useDownloads.setState({
+      entries: { [track.trackId]: makeEntry(track) },
+      playlists: {
+        7: {
+          playlistId: 7,
+          name: "Pinned Offline",
+          trackIds: [track.trackId],
+          createdAt: 1,
+          pinned: true,
+        },
+      },
+    });
+    const Wrapper = createQueryWrapper();
+    const list = await render(
+      <Wrapper>
+        <PlaylistsScreen />
+      </Wrapper>,
+    );
+
+    fireEvent.press(await screen.findByText("Pinned Offline"));
+    expect(router.push).toHaveBeenCalledWith("/playlist/7");
+    list.unmount();
+
+    (useLocalSearchParams as jest.Mock).mockReturnValue({ id: "7" });
+    await render(
+      <Wrapper>
+        <PlaylistScreen />
+      </Wrapper>,
+    );
+    fireEvent.press(await screen.findByText("Offline Song"));
+
+    expect(usePlayer.getState().current()?.trackId).toBe(track.trackId);
+    expect(router.push).toHaveBeenCalledWith("/player");
   });
 });

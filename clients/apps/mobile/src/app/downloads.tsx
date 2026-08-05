@@ -15,6 +15,7 @@ import { formatBytes } from "@/features/offline/format";
 
 export default function DownloadsScreen() {
   const entries = useDownloads((s) => s.entries);
+  const playlists = useDownloads((s) => s.playlists);
   const removeDownload = useDownloads((s) => s.removeDownload);
   const clearAll = useDownloads((s) => s.clearAll);
 
@@ -26,6 +27,20 @@ export default function DownloadsScreen() {
   const totalBytes = useMemo(
     () => list.reduce((sum, e) => sum + (e.bytes || 0), 0),
     [list],
+  );
+  const pinnedPlaylists = useMemo(
+    () =>
+      Object.values(playlists)
+        .filter((playlist) => playlist.pinned === true)
+        .map((playlist) => ({
+          ...playlist,
+          bytes: [...new Set(playlist.trackIds)].reduce(
+            (sum, trackId) => sum + (entries[trackId]?.bytes || 0),
+            0,
+          ),
+        }))
+        .sort((a, b) => b.createdAt - a.createdAt),
+    [playlists, entries],
   );
 
   // 一覧の曲をキューに積んで、タップ位置から再生する。
@@ -54,7 +69,7 @@ export default function DownloadsScreen() {
         ) : null}
       </View>
 
-      {list.length === 0 ? (
+      {list.length === 0 && pinnedPlaylists.length === 0 ? (
         <EmptyView
           message="ダウンロード済みの曲はありません"
           icon="cloud-download-outline"
@@ -63,6 +78,32 @@ export default function DownloadsScreen() {
         <FlatList
           data={list}
           keyExtractor={(e: DownloadEntry) => String(e.trackId)}
+          ListHeaderComponent={
+            pinnedPlaylists.length > 0 ? (
+              <View style={styles.pinnedSection}>
+                <Text style={styles.sectionHeading}>ピン留め済みプレイリスト</Text>
+                {pinnedPlaylists.map((playlist) => (
+                  <View key={playlist.playlistId} style={styles.playlistRow}>
+                    <View style={styles.playlistText}>
+                      <Text style={styles.playlistName} numberOfLines={1}>
+                        {playlist.name}
+                      </Text>
+                      <Text style={styles.playlistMeta}>{playlist.trackIds.length}曲</Text>
+                    </View>
+                    <Text style={styles.bytes}>{formatBytes(playlist.bytes)}</Text>
+                  </View>
+                ))}
+                {list.length > 0 ? (
+                  <Text style={styles.sectionHeading}>ダウンロード済みの曲</Text>
+                ) : null}
+              </View>
+            ) : null
+          }
+          ListEmptyComponent={
+            pinnedPlaylists.length > 0 ? (
+              <EmptyView message="ダウンロード済みの曲はありません" icon="cloud-download-outline" />
+            ) : null
+          }
           renderItem={({ item, index }) => (
             <TrackRow
               track={item.track}
@@ -92,6 +133,39 @@ const styles = StyleSheet.create({
   listContent: {
     // ミニプレイヤー（全画面常時表示）に最下部の行が隠れないよう余白を確保。
     paddingBottom: 96,
+  },
+  pinnedSection: {
+    paddingTop: 4,
+    paddingBottom: 8,
+  },
+  sectionHeading: {
+    color: PALETTE.textDim,
+    fontSize: 13,
+    fontWeight: "700",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  playlistRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: PALETTE.border,
+  },
+  playlistText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  playlistName: {
+    color: PALETTE.text,
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  playlistMeta: {
+    color: PALETTE.textFaint,
+    fontSize: 12,
+    marginTop: 2,
   },
   header: {
     paddingHorizontal: 16,

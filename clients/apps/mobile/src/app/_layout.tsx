@@ -88,6 +88,7 @@ export default function RootLayout() {
         >
           <StatusBar style="light" />
           <Gate />
+          <PinnedPlaylistSync />
           {/* 描画エラーを捕捉したら再生を止める保険（主因の遷移クラッシュは別途修正済み）。 */}
           <ErrorBoundary>
             <Stack
@@ -110,6 +111,21 @@ export default function RootLayout() {
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
+}
+
+/** 接続が利用可能になった時だけ、pin 済みプレイリストをサーバーの現在メンバーへ同期する。 */
+function PinnedPlaylistSync() {
+  const status = useConnection((s) => s.status);
+  const client = useConnection((s) => s.client);
+
+  useEffect(() => {
+    if (status !== "connected" || !client) return;
+    void useDownloads.getState().syncPinnedPlaylists((playlistId) =>
+      client.playlistTracks(playlistId, { limit: 100000 }),
+    );
+  }, [status, client]);
+
+  return null;
 }
 
 /**

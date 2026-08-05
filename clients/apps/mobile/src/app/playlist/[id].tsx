@@ -1,8 +1,8 @@
 // Playlist 詳細。プレイリスト名 + 曲数 + 一括ダウンロードのヘッダを出し、
 // 曲を一覧する。タップでその位置からプレイリスト全体をキューにして再生する。
 
-import { useMemo } from "react";
-import { FlatList, Text, View, StyleSheet } from "react-native";
+import { useMemo, useState } from "react";
+import { ActivityIndicator, FlatList, Pressable, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
@@ -27,6 +27,10 @@ export default function PlaylistScreen() {
   // オフライン保存したプレイリストとその曲（client が無いときに使う）。
   const dp = useDownloads((s) => s.playlists[playlistId]);
   const entries = useDownloads((s) => s.entries);
+  const downloadPlaylist = useDownloads((s) => s.downloadPlaylist);
+  const removeDownloadedPlaylist = useDownloads((s) => s.removeDownloadedPlaylist);
+  const [pinBusy, setPinBusy] = useState(false);
+  const pinned = dp?.pinned === true;
   const offlineTracks = useMemo(() => {
     if (!dp) return [] as Track[];
     return dp.trackIds
@@ -42,6 +46,20 @@ export default function PlaylistScreen() {
     router.push("/player");
   };
 
+  const togglePin = async () => {
+    if (pinBusy) return;
+    setPinBusy(true);
+    try {
+      if (pinned) {
+        await removeDownloadedPlaylist(playlistId);
+      } else if (client && tracks.length > 0) {
+        await downloadPlaylist(playlistId, title, tracks, true);
+      }
+    } finally {
+      setPinBusy(false);
+    }
+  };
+
   return (
     <Screen edges={["top"]}>
       <View style={styles.header}>
@@ -53,8 +71,37 @@ export default function PlaylistScreen() {
             <Text style={styles.count}>{tracks.length}曲</Text>
           ) : null}
         </View>
-        {client && tracks.length > 0 ? (
-          <DownloadButton tracks={tracks} playlist={{ id: playlistId, name: title }} label="ダウンロード" />
+        {pinned || (client && tracks.length > 0) ? (
+          <View style={styles.headerActions}>
+            {!pinned && client ? (
+              <DownloadButton tracks={tracks} playlist={{ id: playlistId, name: title }} label="ダウンロード" />
+            ) : null}
+            <Pressable
+              onPress={() => void togglePin()}
+              disabled={pinBusy}
+              accessibilityRole="button"
+              accessibilityLabel={pinned ? "ピン留めを解除" : "ピン留め"}
+              accessibilityState={{ selected: pinned, disabled: pinBusy }}
+              style={({ pressed }) => [
+                styles.pinButton,
+                pinned && styles.pinButtonActive,
+                pressed && styles.pressed,
+              ]}
+            >
+              {pinBusy ? (
+                <ActivityIndicator size="small" color={PALETTE.accent} />
+              ) : (
+                <Ionicons
+                  name={pinned ? "pin" : "pin-outline"}
+                  size={19}
+                  color={pinned ? PALETTE.accent : PALETTE.textDim}
+                />
+              )}
+              <Text style={[styles.pinText, pinned && styles.pinTextActive]}>
+                {pinned ? "ピン留め済み" : "ピン留め"}
+              </Text>
+            </Pressable>
+          </View>
         ) : null}
       </View>
 
@@ -133,6 +180,31 @@ const styles = StyleSheet.create({
   headerText: {
     flex: 1,
     minWidth: 0,
+  },
+  headerActions: {
+    alignItems: "flex-end",
+  },
+  pinButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minHeight: 36,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
+  pinButtonActive: {
+    backgroundColor: PALETTE.surface,
+  },
+  pinText: {
+    color: PALETTE.textDim,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  pinTextActive: {
+    color: PALETTE.accent,
+  },
+  pressed: {
+    opacity: 0.7,
   },
   title: {
     color: PALETTE.text,
