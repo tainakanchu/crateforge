@@ -1,6 +1,12 @@
 //! federation slave 側のペアリング・参照・snapshot provisioning。
 
+pub mod phase3;
 pub mod writeback;
+
+pub use phase3::{
+    compute_eviction_candidates, evict, resync, storage_usage, EvictionCandidate, EvictionSummary,
+    ResyncSummary, StorageUsage,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -10,6 +16,7 @@ use std::time::Duration;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE};
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
 
 use crate::db::sync::{SyncSource, SyncedTrackState};
 use crate::db::Database;
@@ -19,6 +26,14 @@ use crate::organizer::{self, Mode, TrackMeta};
 const LOOKUP_CHUNK: usize = 200;
 const PLAYLIST_PAGE: i64 = 1_000;
 const DOWNLOAD_ATTEMPTS: usize = 3;
+
+// SQLite の transaction 境界だけでは HTTP/ファイル操作をまたぐ同期処理同士を防げないため、
+// このプロセス内の mutating sync は一本ずつ実行する。
+static MUTATING_SYNC_MUTEX: AsyncMutex<()> = AsyncMutex::const_new(());
+
+pub(crate) async fn lock_mutating_sync() -> AsyncMutexGuard<'static, ()> {
+    MUTATING_SYNC_MUTEX.lock().await
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
@@ -544,6 +559,7 @@ pub async fn provision<F>(
 where
     F: Fn(SyncProgress) + Send + Sync,
 {
+    let _sync_guard = lock_mutating_sync().await;
     std::fs::create_dir_all(&dest_root).map_err(|err| SyncError::File(err.to_string()))?;
     let client = MasterClient::from_source(&source)?;
     let remote = client.playlists().await?;
@@ -657,10 +673,10 @@ where
                 continue;
             }
         };
-        let (landed, downloaded_bytes) = match existing_path {
-            Some(path) => (path, 0),
+        let (landed, downloaded_bytes, downloaded) = match existing_path {
+            Some(path) => (path, 0, false),
             None => match client.download_track(track, &dest_root).await {
-                Ok(result) => result,
+                Ok((path, bytes)) => (path, bytes, true),
                 Err(error @ SyncError::Authentication(_)) => return Err(error),
                 Err(error) => {
                     summary.failures.push(SyncFailure {
@@ -681,7 +697,12 @@ where
                 }
                 let base_meta = serde_json::to_string(track)
                     .map_err(|err| SyncError::InvalidResponse(err.to_string()))?;
-                db.record_sync_track(pid, source.id, &base_meta)?;
+                db.record_sync_track_with_root(
+                    pid,
+                    source.id,
+                    &base_meta,
+                    downloaded.then_some(dest_root.as_path()),
+                )?;
                 local_ids.insert(pid.to_string(), track_id);
                 summary.tracks += 1;
                 summary.bytes += downloaded_bytes;
@@ -741,10 +762,20 @@ where
             continue;
         }
         db.create_or_replace_playlist_with_pid(&item.playlist, &membership)?;
-        db.record_sync_selection(
+        let base_membership = item
+            .tracks
+            .iter()
+            .map(required_pid)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        db.record_sync_selection_baseline_with_root(
             source.id,
             required_playlist_pid(&item.playlist)?,
             &item.playlist.name,
+            &base_membership,
+            Some(&dest_root),
         )?;
         summary.playlists += 1;
         progress(SyncProgress {

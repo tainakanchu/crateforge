@@ -12,6 +12,7 @@ import type { Playlist } from "../types";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import { SyncWritebackDialog } from "./SyncWritebackDialog";
+import { SyncManagementDialog } from "./SyncManagementDialog";
 
 interface SyncProvisionDialogProps {
   onClose: () => void;
@@ -70,6 +71,7 @@ export function SyncProvisionDialog({
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const [selectedSource, setSelectedSource] = useState<SyncSource | null>(null);
   const [writebackSource, setWritebackSource] = useState<SyncSource | null>(null);
+  const [managementSource, setManagementSource] = useState<SyncSource | null>(null);
   const [remotePlaylists, setRemotePlaylists] = useState<Playlist[]>([]);
   const [playlistsLoading, setPlaylistsLoading] = useState(false);
   const [selectedPids, setSelectedPids] = useState<Set<string>>(new Set());
@@ -120,7 +122,7 @@ export function SyncProvisionDialog({
       (target ?? dialogRef.current)?.focus();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [step, sourcesLoading, playlistsLoading, writebackSource]);
+  }, [step, sourcesLoading, playlistsLoading, writebackSource, managementSource]);
 
   useEffect(() => {
     let disposed = false;
@@ -394,6 +396,17 @@ export function SyncProvisionDialog({
     );
   }
 
+  if (managementSource) {
+    return (
+      <SyncManagementDialog
+        source={managementSource}
+        onBack={() => setManagementSource(null)}
+        onClose={onClose}
+        onLibraryChanged={onLibraryChanged}
+      />
+    );
+  }
+
   return (
     <div
       className="modal-overlay"
@@ -459,6 +472,16 @@ export function SyncProvisionDialog({
                           }}
                         >
                           <Icon name="upload" size={14} /> 母艦へ書き戻す
+                        </button>
+                        <button
+                          className="toolbar-btn"
+                          type="button"
+                          onClick={() => {
+                            setError(null);
+                            setManagementSource(source);
+                          }}
+                        >
+                          <Icon name="settings" size={14} /> 同期の管理
                         </button>
                       </span>
                     </div>

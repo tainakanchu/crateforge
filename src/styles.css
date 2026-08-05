@@ -2560,6 +2560,8 @@ input {
 .sync-source-actions {
   display: flex;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
 }
 .sync-source-actions .toolbar-btn {
@@ -2819,6 +2821,193 @@ input {
 .sync-failures li span {
   margin-top: 2px;
   color: var(--mut);
+}
+
+/* ============================================================
+   Sync selection management modal
+   ============================================================ */
+.sync-management-modal {
+  width: 760px;
+}
+.sync-management-list,
+.sync-eviction-list {
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.sync-management-columns,
+.sync-management-row,
+.sync-management-total {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) 210px 70px 82px 76px;
+  align-items: center;
+  gap: 10px;
+}
+.sync-management-columns {
+  padding: 7px 11px;
+  background: var(--bg3);
+  color: var(--mut);
+  font-size: 10.5px;
+}
+.sync-management-columns span:nth-child(n + 3) {
+  text-align: right;
+}
+.sync-management-row {
+  min-height: 45px;
+  padding: 8px 11px;
+  border-top: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--tx2);
+  font-size: 11.5px;
+}
+.sync-management-row > strong {
+  overflow: hidden;
+  color: var(--tx);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sync-management-row > span,
+.sync-management-total > span {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.sync-management-row small {
+  display: block;
+  margin-top: 2px;
+  color: #e4b76d;
+  font-size: 9.5px;
+}
+.sync-management-total {
+  padding: 9px 11px;
+  border-top: 1px solid var(--bd);
+  background: var(--bg3);
+  color: var(--tx2);
+  font-size: 11.5px;
+}
+.sync-management-total strong {
+  color: var(--tx);
+}
+.sync-policy-control {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 2px;
+  border: 1px solid var(--bd);
+  border-radius: 7px;
+  background: var(--bg1);
+}
+.sync-policy-control button {
+  min-height: 25px;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--mut);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10.5px;
+}
+.sync-policy-control button:hover:not(:disabled) {
+  color: var(--tx);
+}
+.sync-policy-control button:focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: 1px;
+}
+.sync-policy-control button.active {
+  background: var(--ac-16);
+  color: var(--ac);
+  font-weight: 650;
+}
+.sync-policy-control button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.sync-management-actions {
+  flex-wrap: wrap;
+}
+.sync-selection-remove {
+  min-height: 25px;
+  padding: 3px 8px;
+  gap: 4px;
+  font-size: 10.5px;
+  justify-self: center;
+}
+.sync-eviction-select-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--tx2);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.sync-eviction-list {
+  max-height: 310px;
+  overflow-y: auto;
+}
+.sync-eviction-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 88px;
+  align-items: center;
+  gap: 10px;
+  min-height: 43px;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--tx2);
+  cursor: pointer;
+  font-size: 11.5px;
+}
+.sync-eviction-row:last-child {
+  border-bottom: 0;
+}
+.sync-eviction-row:hover,
+.sync-eviction-row:focus-within {
+  background: var(--hover);
+}
+.sync-eviction-row > span:nth-child(2) {
+  min-width: 0;
+}
+.sync-eviction-row strong,
+.sync-eviction-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sync-eviction-row strong {
+  color: var(--tx);
+  font-size: 12px;
+}
+.sync-eviction-row small {
+  margin-top: 2px;
+  color: var(--mut);
+  font-size: 10.5px;
+}
+.sync-eviction-row > span:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.sync-destructive-warning {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(221, 104, 104, 0.45);
+  border-radius: 8px;
+  background: rgba(221, 104, 104, 0.1);
+  color: #f0b0b0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.toolbar-btn.danger {
+  border-color: rgba(221, 104, 104, 0.55);
+  background: rgba(221, 104, 104, 0.12);
+  color: #ef9d9d;
+}
+.toolbar-btn.danger:hover:not(:disabled) {
+  border-color: rgba(221, 104, 104, 0.8);
+  background: rgba(221, 104, 104, 0.22);
+  color: #ffc0c0;
 }
 
 /* ============================================================

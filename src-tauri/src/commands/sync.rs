@@ -7,12 +7,13 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::db::sync::SyncSource;
+use crate::db::sync::{SyncSelectionRecord, SyncSource};
 use crate::db::Database;
 use crate::models::Playlist;
 use crate::sync::writeback::{ConflictResolution, WritebackPlan, WritebackSummary};
 use crate::sync::{
-    PairedSource, PairingStart, PlaylistSizeEstimate, ProvisionSummary, SyncProgress,
+    EvictionCandidate, EvictionSummary, PairedSource, PairingStart, PlaylistSizeEstimate,
+    ProvisionSummary, ResyncSummary, StorageUsage, SyncProgress,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +140,38 @@ pub fn sync_list_sources(app: AppHandle) -> Result<Vec<SyncSource>, String> {
     open_db(&app)?
         .list_sync_sources()
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn sync_list_selections(
+    app: AppHandle,
+    source_id: i64,
+) -> Result<Vec<SyncSelectionRecord>, String> {
+    let db = open_db(&app)?;
+    db.get_sync_source(source_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sync source not found".to_string())?;
+    db.list_sync_selection_records(source_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn sync_set_selection_policy(
+    app: AppHandle,
+    selection_id: i64,
+    policy: String,
+) -> Result<(), String> {
+    open_db(&app)?
+        .set_sync_selection_policy(selection_id, &policy)
+        .map_err(|error| error.to_string())
+}
+
+/// selection の参照だけを外す。孤立した曲は次の eviction candidate 一覧で扱う。
+#[tauri::command(rename_all = "camelCase")]
+pub fn sync_remove_selection(app: AppHandle, selection_id: i64) -> Result<bool, String> {
+    open_db(&app)?
+        .remove_sync_selection(selection_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -303,4 +336,75 @@ pub async fn sync_writeback_apply(
     let _ = app.emit("writeback-complete", summary.clone());
     let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
     Ok(summary)
+}
+
+/// follow policy の選択だけを母艦へ追従させる pull-only 再同期。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sync_resync(app: AppHandle, source_id: i64) -> Result<ResyncSummary, String> {
+    let db = open_db(&app)?;
+    let source = db
+        .get_sync_source(source_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sync source not found".to_string())?;
+    let event_app = app.clone();
+    let summary = crate::sync::resync(db, source, move |progress| {
+        let _ = event_app.emit("sync-progress", progress);
+    })
+    .await
+    .map_err(writeback_error)?;
+    let _ = app.emit("resync-complete", summary.clone());
+    if summary.mutations_committed {
+        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    }
+    Ok(summary)
+}
+
+/// sourceId 省略時は全同期元の candidate をまとめて返す。
+#[tauri::command(rename_all = "camelCase")]
+pub fn sync_eviction_candidates(
+    app: AppHandle,
+    source_id: Option<i64>,
+) -> Result<Vec<EvictionCandidate>, String> {
+    let db = open_db(&app)?;
+    let sources = match source_id {
+        Some(source_id) => vec![db
+            .get_sync_source(source_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "sync source not found".to_string())?],
+        None => db.list_sync_sources().map_err(|error| error.to_string())?,
+    };
+    let mut candidates = Vec::new();
+    for source in sources {
+        candidates.extend(
+            crate::sync::compute_eviction_candidates(&db, source.id)
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    candidates.sort_by(|left, right| left.persistent_id.cmp(&right.persistent_id));
+    candidates.dedup_by(|left, right| left.persistent_id == right.persistent_id);
+    Ok(candidates)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sync_evict(
+    app: AppHandle,
+    persistent_ids: Vec<String>,
+) -> Result<EvictionSummary, String> {
+    let mut db = open_db(&app)?;
+    let summary = crate::sync::evict(&mut db, &persistent_ids)
+        .await
+        .map_err(|error| error.to_string())?;
+    if summary.evicted > 0 {
+        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    }
+    Ok(summary)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn sync_storage_usage(app: AppHandle, source_id: i64) -> Result<StorageUsage, String> {
+    let db = open_db(&app)?;
+    db.get_sync_source(source_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sync source not found".to_string())?;
+    crate::sync::storage_usage(&db, source_id).map_err(|error| error.to_string())
 }
