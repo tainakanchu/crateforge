@@ -3246,6 +3246,52 @@ input {
   color: #e4b76d;
   font-size: 10.5px;
 }
+.writeback-playlist-op.skippedConflict {
+  opacity: 0.82;
+}
+.writeback-playlist-op.skippedConflict .writeback-op-label {
+  color: var(--warn);
+}
+.writeback-skip-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid rgba(224, 163, 60, 0.35);
+  border-radius: 8px;
+  background: rgba(224, 163, 60, 0.1);
+  color: var(--warn);
+}
+.writeback-skip-notice strong {
+  display: block;
+  color: var(--tx);
+  font-size: 12.5px;
+}
+.writeback-skip-notice span {
+  color: var(--tx2);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.writeback-skipped-track {
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--bd);
+  font-size: 11.5px;
+}
+.writeback-skipped-track:last-child {
+  border-bottom: 0;
+}
+.writeback-skipped-track > strong {
+  display: block;
+  margin-bottom: 3px;
+  overflow: hidden;
+  color: var(--tx);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.writeback-skipped-track > span {
+  color: var(--mut);
+}
 .writeback-conflicts > p {
   margin: 0;
   padding: 8px 11px;
