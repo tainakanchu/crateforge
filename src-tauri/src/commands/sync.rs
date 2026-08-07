@@ -167,12 +167,23 @@ pub fn sync_set_selection_policy(
         .map_err(|error| error.to_string())
 }
 
-/// selection の参照だけを外す。孤立した曲は次の eviction candidate 一覧で扱う。
+/// selection の参照を外す。孤立した曲は次の eviction candidate 一覧で扱う。
+/// `deleteLocalPlaylist` を立てるとローカルプレイリストも消し、所属曲を候補へ戻す。
+/// 省略時は従来どおりプレイリストを残す。
 #[tauri::command(rename_all = "camelCase")]
-pub fn sync_remove_selection(app: AppHandle, selection_id: i64) -> Result<bool, String> {
-    open_db(&app)?
-        .remove_sync_selection(selection_id)
-        .map_err(|error| error.to_string())
+pub fn sync_remove_selection(
+    app: AppHandle,
+    selection_id: i64,
+    delete_local_playlist: Option<bool>,
+) -> Result<bool, String> {
+    let delete_local_playlist = delete_local_playlist.unwrap_or(false);
+    let removed = open_db(&app)?
+        .remove_sync_selection(selection_id, delete_local_playlist)
+        .map_err(|error| error.to_string())?;
+    if removed && delete_local_playlist {
+        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    }
+    Ok(removed)
 }
 
 #[tauri::command(rename_all = "camelCase")]
