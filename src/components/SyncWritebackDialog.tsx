@@ -548,15 +548,21 @@ export function SyncWritebackDialog({
 
           {step === "complete" && summary && (
             <section className="sync-result">
-              <div className="sync-result-icon success"><Icon name="check" size={26} /></div>
-              <h3>書き戻しが完了しました</h3>
+              <div className={`sync-result-icon${summary.failures.length > 0 ? " warning" : " success"}`}>
+                <Icon name={summary.failures.length > 0 ? "warning" : "check"} size={26} />
+              </div>
+              <h3>
+                {summary.failures.length > 0
+                  ? `書き戻しが完了しました（${summary.failures.length.toLocaleString()} 件の失敗あり）`
+                  : "書き戻しが完了しました"}
+              </h3>
               <dl className="sync-summary">
                 <div><dt>母艦へ反映</dt><dd>{summary.pushed.toLocaleString()} 曲</dd></div>
                 <div><dt>手元へ取り込み</dt><dd>{summary.pulled.toLocaleString()} 曲</dd></div>
                 <div><dt>プレイリスト操作</dt><dd>{summary.playlistOps.toLocaleString()} 件</dd></div>
               </dl>
               {summary.failures.length > 0 && (
-                <details className="sync-failures">
+                <details className="sync-failures" open>
                   <summary>失敗一覧（{summary.failures.length.toLocaleString()} 件）</summary>
                   <ul>
                     {summary.failures.map((failure, index) => (

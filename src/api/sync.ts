@@ -258,8 +258,11 @@ export async function syncSetSelectionPolicy(
   return invoke("sync_set_selection_policy", { selectionId, policy });
 }
 
-export async function syncRemoveSelection(selectionId: number): Promise<boolean> {
-  return invoke("sync_remove_selection", { selectionId });
+export async function syncRemoveSelection(
+  selectionId: number,
+  deleteLocalPlaylist?: boolean,
+): Promise<boolean> {
+  return invoke("sync_remove_selection", { selectionId, deleteLocalPlaylist });
 }
 
 export async function syncListRemotePlaylists(sourceId: number): Promise<Playlist[]> {

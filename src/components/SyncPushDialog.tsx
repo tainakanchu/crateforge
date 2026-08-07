@@ -356,8 +356,14 @@ export function SyncPushDialog({
 
           {step === "complete" && summary && (
             <section className="sync-result">
-              <div className="sync-result-icon success"><Icon name="check" size={26} /></div>
-              <h3>母艦への送信が完了しました</h3>
+              <div className={`sync-result-icon${summary.failures.length > 0 ? " warning" : " success"}`}>
+                <Icon name={summary.failures.length > 0 ? "warning" : "check"} size={26} />
+              </div>
+              <h3>
+                {summary.failures.length > 0
+                  ? `母艦への送信が完了しました（${summary.failures.length.toLocaleString()} 件の失敗あり）`
+                  : "母艦への送信が完了しました"}
+              </h3>
               <dl className="sync-summary">
                 <div><dt>アップロード済</dt><dd>{summary.uploaded.toLocaleString()} 曲</dd></div>
                 <div><dt>既存</dt><dd>{summary.alreadyExisted.toLocaleString()} 曲</dd></div>
