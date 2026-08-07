@@ -363,6 +363,7 @@ pub struct TrackUploadMetadata {
     pub name: Option<String>,
     pub artist: Option<String>,
     pub album_artist: Option<String>,
+    pub composer: Option<String>,
     pub album: Option<String>,
     pub genre: Option<String>,
     pub year: Option<i64>,
@@ -426,6 +427,64 @@ fn existing_track_file_matches(track: &Track, expected_size: u64) -> bool {
     };
     file.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() == expected_size)
+}
+
+/// 同一曲とみなせる再生時間の差。エンコード差で数十 ms ずれることがある。
+const UPLOAD_DURATION_TOLERANCE_MS: i64 = 2_000;
+
+fn normalized_field(value: Option<&str>) -> String {
+    value.unwrap_or_default().trim().to_lowercase()
+}
+
+/// 修復 upload に入る前に、母艦の既存行が本当に同じ曲かをメタデータで確かめる。
+/// persistent_id は送り出した端末の中でしか一意でないため、この照合を省くと
+/// PID 衝突で母艦の別の曲の実体だけを差し替えられてしまう。
+fn upload_matches_existing_track(metadata: &TrackUploadMetadata, track: &Track) -> bool {
+    if normalized_field(metadata.name.as_deref()) != normalized_field(track.name.as_deref()) {
+        return false;
+    }
+    if normalized_field(metadata.artist.as_deref()) != normalized_field(track.artist.as_deref()) {
+        return false;
+    }
+    match (metadata.total_time_ms, track.total_time_ms) {
+        (Some(uploaded), Some(existing)) => {
+            (uploaded - existing).abs() <= UPLOAD_DURATION_TOLERANCE_MS
+        }
+        _ => true,
+    }
+}
+
+fn persistent_id_collision() -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "persistent_id が母艦の別の曲と衝突しています",
+    )
+}
+
+/// 修復で location を差し替えたあと、どの曲からも参照されなくなった旧ファイルを消す。
+fn discard_replaced_upload_file(
+    db: &crate::db::Database,
+    track_id: i64,
+    previous: Option<&str>,
+    current: &str,
+) {
+    let Some(previous) = previous.map(str::trim).filter(|path| !path.is_empty()) else {
+        return;
+    };
+    if previous == current {
+        return;
+    }
+    let still_referenced = db
+        .conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM tracks WHERE location_path = ?1 AND track_id <> ?2)",
+            rusqlite::params![previous, track_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(true);
+    if !still_referenced {
+        let _ = std::fs::remove_file(previous);
+    }
 }
 
 /// organizer root を確定し、既存 symlink を解決した上で意図した親が root 配下か検証する。
@@ -599,6 +658,36 @@ pub struct TrackUploadReady {
     pub upload_id: String,
 }
 
+/// 十分に古い upload の残骸だけを掃除する。強制終了で残った staging の `.part` と、
+/// 本体 PUT が来ないまま放置された metadata JSON が対象。best-effort で失敗は無視する。
+pub fn gc_upload_artifacts(app_data_dir: &FsPath, organize_root: Option<&FsPath>) {
+    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+    let staging_root = organize_root
+        .map(FsPath::to_path_buf)
+        .unwrap_or_else(|| app_data_dir.join("Synced Uploads"));
+    for dir in [
+        app_data_dir.join(".sync-uploads"),
+        staging_root.join(".sync-upload-staging"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let stale = entry
+                .metadata()
+                .ok()
+                .filter(std::fs::Metadata::is_file)
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age > MAX_AGE);
+            if stale {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 /// `POST /api/tracks/upload` — metadata を検証・保存し、raw body 用 uploadId を返す。
 /// 既存 PID でも実ファイルを開けない、またはサイズ不一致なら修復 upload を受け付ける。
 pub async fn prepare_track_upload(
@@ -621,20 +710,25 @@ pub async fn prepare_track_upload(
     let upload_lock = track_upload_lock(&metadata.persistent_id).await;
     let _guard = upload_lock.lock().await;
     let db = state.db()?;
+    let pending_dir = state.app_data_dir.join(".sync-uploads");
+    let target = pending_dir.join(format!("{}.json", metadata.persistent_id));
     if let Some(track) = existing_track(&db, &metadata.persistent_id)? {
         if existing_track_file_matches(&track, metadata.file_size) {
+            // 本体 PUT が来ないまま冪等成功に落ちた場合、前回の受理記録は用済み。
+            let _ = std::fs::remove_file(&target);
             return Ok((StatusCode::OK, Json(track)).into_response());
+        }
+        if !upload_matches_existing_track(&metadata, &track) {
+            return Err(persistent_id_collision());
         }
     }
 
-    let pending_dir = state.app_data_dir.join(".sync-uploads");
     std::fs::create_dir_all(&pending_dir).map_err(|error| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to create pending upload directory: {error}"),
         )
     })?;
-    let target = pending_dir.join(format!("{}.json", metadata.persistent_id));
     let (mut temp, mut file) = create_upload_temp(&pending_dir)?;
     serde_json::to_writer(&mut file, &metadata).map_err(|error| {
         ApiError::new(
@@ -775,7 +869,12 @@ pub async fn upload_track_body(
     let db = state.db()?;
     if let Some(track) = existing_track(&db, &metadata.persistent_id)? {
         if existing_track_file_matches(&track, metadata.file_size) {
+            let _ = std::fs::remove_file(&metadata_path);
             return Ok((StatusCode::OK, Json(track)).into_response());
+        }
+        // 別曲の実体だけを差し替えないよう、着地させる前に照合する。
+        if !upload_matches_existing_track(&metadata, &track) {
+            return Err(persistent_id_collision());
         }
     }
 
@@ -826,11 +925,18 @@ pub async fn upload_track_body(
             let _ = std::fs::remove_file(&target);
             return Err(ApiError::from(error));
         }
+        discard_replaced_upload_file(
+            &db,
+            existing.track_id,
+            existing.location_path.as_deref(),
+            &location_path,
+        );
         let track = db
             .get_track_by_track_id(existing.track_id)?
             .ok_or_else(|| {
                 ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "repaired track missing")
             })?;
+        let _ = std::fs::remove_file(&metadata_path);
         state.notify_library_changed(None);
         return Ok((StatusCode::OK, Json(track)).into_response());
     }
@@ -839,6 +945,7 @@ pub async fn upload_track_body(
         metadata.name.as_deref(),
         metadata.artist.as_deref(),
         metadata.album_artist.as_deref(),
+        metadata.composer.as_deref(),
         metadata.album.as_deref(),
         metadata.genre.as_deref(),
         metadata.year,
@@ -859,6 +966,7 @@ pub async fn upload_track_body(
             let _ = std::fs::remove_file(&target);
             if let Some(track) = existing_track(&db, &metadata.persistent_id)? {
                 if existing_track_file_matches(&track, metadata.file_size) {
+                    let _ = std::fs::remove_file(&metadata_path);
                     return Ok((StatusCode::OK, Json(track)).into_response());
                 }
             }
@@ -868,6 +976,8 @@ pub async fn upload_track_body(
     let track = db.get_track_by_track_id(track_id)?.ok_or_else(|| {
         ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "inserted track missing")
     })?;
+    // 公開できた metadata は用済み。残すと次回の PUT が古い内容で通ってしまう。
+    let _ = std::fs::remove_file(&metadata_path);
     state.notify_library_changed(None);
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }

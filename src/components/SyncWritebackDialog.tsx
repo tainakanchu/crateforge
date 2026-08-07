@@ -466,6 +466,10 @@ export function SyncWritebackDialog({
                         {plan.conflicts.map((conflict, index) => {
                           const key = conflictKey(conflict);
                           const choice = resolutions[key];
+                          // rating など時計が動かない項目では新旧を判定できない。
+                          // 判定できたときだけ「新しい」と表示する (localNewer は既定の選択)。
+                          const newerKnown =
+                            "newerKnown" in conflict && conflict.newerKnown === true;
                           return (
                             <li key={key} className="writeback-conflict">
                               <div className="writeback-conflict-heading">
@@ -484,7 +488,9 @@ export function SyncWritebackDialog({
                                     }
                                   />
                                   <span>
-                                    <small>母艦の値{!conflict.localNewer ? "（新しい）" : ""}</small>
+                                    <small>
+                                      母艦の値{newerKnown && !conflict.localNewer ? "（新しい）" : ""}
+                                    </small>
                                     <strong>{formatValue(conflict.master)}</strong>
                                   </span>
                                 </label>
@@ -499,7 +505,9 @@ export function SyncWritebackDialog({
                                     }
                                   />
                                   <span>
-                                    <small>持ち出しの値{conflict.localNewer ? "（新しい）" : ""}</small>
+                                    <small>
+                                      持ち出しの値{newerKnown && conflict.localNewer ? "（新しい）" : ""}
+                                    </small>
                                     <strong>{formatValue(conflict.local)}</strong>
                                   </span>
                                 </label>

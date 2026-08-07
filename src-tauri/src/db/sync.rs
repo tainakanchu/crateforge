@@ -600,6 +600,35 @@ impl Database {
         Ok(())
     }
 
+    /// writeback で母艦へ反映できた分だけ三者比較の基準を進める。
+    /// 反映していない側を `None` にすることで、その基準は現状のまま残す。
+    /// 対応する selection 行が無い場合は何もしない（基準が無いままでも収束する）。
+    pub fn update_sync_selection_baseline(
+        &self,
+        source_id: i64,
+        remote_pid: &str,
+        base_name: Option<&str>,
+        base_membership: Option<&[String]>,
+    ) -> Result<()> {
+        if let Some(name) = base_name {
+            self.conn.execute(
+                "UPDATE sync_selection SET name = ?1, base_name = ?1
+                 WHERE source_id = ?2 AND kind = 'playlist' AND remote_pid = ?3",
+                params![name, source_id, remote_pid],
+            )?;
+        }
+        if let Some(membership) = base_membership {
+            let membership = serde_json::to_string(membership)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+            self.conn.execute(
+                "UPDATE sync_selection SET base_membership = ?1
+                 WHERE source_id = ?2 AND kind = 'playlist' AND remote_pid = ?3",
+                params![membership, source_id, remote_pid],
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn touch_sync_source(&self, source_id: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE sync_source SET last_sync_at = ?1 WHERE id = ?2",
