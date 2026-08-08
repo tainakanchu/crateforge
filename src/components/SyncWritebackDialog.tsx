@@ -8,6 +8,7 @@ import type {
   WritebackPlan,
   WritebackPlaylistOp,
   WritebackResolution,
+  WritebackSkippedTrack,
   WritebackSummary,
   WritebackTrackChange,
   WritebackValue,
@@ -113,6 +114,8 @@ function playlistOpLabel(op: WritebackPlaylistOp): string {
       return "並び順を置換";
     case "skippedDelete":
       return "削除をスキップ";
+    case "skippedConflict":
+      return "反映をスキップ";
   }
 }
 
@@ -131,6 +134,9 @@ function PlaylistOperation({ op }: { op: WritebackPlaylistOp }) {
     case "skippedDelete":
       detail = `${op.name} — ${op.reason}`;
       break;
+    case "skippedConflict":
+      detail = `${op.name} — ${op.reason}`;
+      break;
   }
 
   return (
@@ -143,6 +149,19 @@ function PlaylistOperation({ op }: { op: WritebackPlaylistOp }) {
         </span>
       )}
     </li>
+  );
+}
+
+function SkippedTracks({ skipped }: { skipped: WritebackSkippedTrack[] }) {
+  return (
+    <ul className="writeback-track-list">
+      {skipped.map((skip) => (
+        <li key={skip.persistentId} className="writeback-skipped-track">
+          <strong>{skip.trackName || skip.persistentId}</strong>
+          <span>{skip.reason}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -344,15 +363,25 @@ export function SyncWritebackDialog({
     }
   }, [finishApply, isApplying, plan, resolutions, source.id]);
 
-  const hasPlanItems = useMemo(
+  // skippedConflict は「反映しない」ことの通知であって適用可能な変更ではないため、
+  // 適用ボタンの表示可否はこれを除いた項目の有無で判定する。
+  const hasApplicableChanges = useMemo(
     () =>
       !!plan &&
       (plan.trackChanges.length > 0 ||
         plan.pulls.length > 0 ||
-        plan.playlistOps.length > 0 ||
-        plan.conflicts.length > 0),
+        plan.conflicts.length > 0 ||
+        plan.playlistOps.some((op) => op.op !== "skippedConflict")),
     [plan],
   );
+  const skippedConflictCount = useMemo(
+    () => plan?.playlistOps.filter((op) => op.op === "skippedConflict").length ?? 0,
+    [plan],
+  );
+  const skippedNoticeCount = (plan?.skippedTracks.length ?? 0) + skippedConflictCount;
+  const hasSkippedNotices = skippedNoticeCount > 0;
+  // 適用可能な変更が無くても、スキップの通知だけは見せる必要がある。
+  const hasPlanItems = hasApplicableChanges || hasSkippedNotices;
   const progressPercent = progress?.total
     ? Math.min(100, Math.round((progress.current / progress.total) * 100))
     : 0;
@@ -433,6 +462,20 @@ export function SyncWritebackDialog({
                 </div>
               ) : (
                 <div className="writeback-plan">
+                  {!hasApplicableChanges && (
+                    <div className="writeback-skip-notice" role="status">
+                      <Icon name="warning" size={16} />
+                      <div>
+                        <strong>
+                          反映できる変更はありません（スキップ {skippedNoticeCount.toLocaleString()} 件あり）
+                        </strong>
+                        <span>
+                          母艦側の変更と競合、または母艦から曲が消えているため、以下の内容は今回反映されません。
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
                   {plan.trackChanges.length > 0 && (
                     <section className="writeback-section">
                       <h4>母艦へ反映される変更</h4>
@@ -466,6 +509,9 @@ export function SyncWritebackDialog({
                         {plan.conflicts.map((conflict, index) => {
                           const key = conflictKey(conflict);
                           const choice = resolutions[key];
+                          // rating など時計が動かない項目では新旧を判定できない。
+                          // 判定できたときだけ「新しい」と表示する (localNewer は既定の選択)。
+                          const newerKnown = conflict.newerKnown;
                           return (
                             <li key={key} className="writeback-conflict">
                               <div className="writeback-conflict-heading">
@@ -484,7 +530,9 @@ export function SyncWritebackDialog({
                                     }
                                   />
                                   <span>
-                                    <small>母艦の値{!conflict.localNewer ? "（新しい）" : ""}</small>
+                                    <small>
+                                      母艦の値{newerKnown && !conflict.localNewer ? "（新しい）" : ""}
+                                    </small>
                                     <strong>{formatValue(conflict.master)}</strong>
                                   </span>
                                 </label>
@@ -499,7 +547,9 @@ export function SyncWritebackDialog({
                                     }
                                   />
                                   <span>
-                                    <small>持ち出しの値{conflict.localNewer ? "（新しい）" : ""}</small>
+                                    <small>
+                                      持ち出しの値{newerKnown && conflict.localNewer ? "（新しい）" : ""}
+                                    </small>
                                     <strong>{formatValue(conflict.local)}</strong>
                                   </span>
                                 </label>
@@ -510,6 +560,13 @@ export function SyncWritebackDialog({
                       </ul>
                     </section>
                   )}
+
+                  {plan.skippedTracks.length > 0 && (
+                    <section className="writeback-section writeback-skipped">
+                      <h4>反映されない変更</h4>
+                      <SkippedTracks skipped={plan.skippedTracks} />
+                    </section>
+                  )}
                 </div>
               )}
 
@@ -517,7 +574,7 @@ export function SyncWritebackDialog({
                 <button className="toolbar-btn" type="button" onClick={onBack} data-autofocus>
                   戻る
                 </button>
-                {hasPlanItems && (
+                {hasApplicableChanges && (
                   <button className="toolbar-btn primary" type="button" onClick={startApply}>
                     <Icon name="upload" size={14} /> この内容で書き戻す
                   </button>
@@ -548,15 +605,21 @@ export function SyncWritebackDialog({
 
           {step === "complete" && summary && (
             <section className="sync-result">
-              <div className="sync-result-icon success"><Icon name="check" size={26} /></div>
-              <h3>書き戻しが完了しました</h3>
+              <div className={`sync-result-icon${summary.failures.length > 0 ? " warning" : " success"}`}>
+                <Icon name={summary.failures.length > 0 ? "warning" : "check"} size={26} />
+              </div>
+              <h3>
+                {summary.failures.length > 0
+                  ? `書き戻しが完了しました（${summary.failures.length.toLocaleString()} 件の失敗あり）`
+                  : "書き戻しが完了しました"}
+              </h3>
               <dl className="sync-summary">
                 <div><dt>母艦へ反映</dt><dd>{summary.pushed.toLocaleString()} 曲</dd></div>
                 <div><dt>手元へ取り込み</dt><dd>{summary.pulled.toLocaleString()} 曲</dd></div>
                 <div><dt>プレイリスト操作</dt><dd>{summary.playlistOps.toLocaleString()} 件</dd></div>
               </dl>
               {summary.failures.length > 0 && (
-                <details className="sync-failures">
+                <details className="sync-failures" open>
                   <summary>失敗一覧（{summary.failures.length.toLocaleString()} 件）</summary>
                   <ul>
                     {summary.failures.map((failure, index) => (

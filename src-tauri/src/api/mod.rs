@@ -595,7 +595,14 @@ pub fn start(
     // すべて DB へ書かれているため、ここで再構築すれば再起動後も整合する。
     // DB を開けないのは致命ではない (既存の集合のまま続行) ので warn に留める。
     match crate::db::Database::open(&app_data_dir) {
-        Ok(db) => crate::devices::reload_valid_tokens(&db, &tokens),
+        Ok(db) => {
+            crate::devices::reload_valid_tokens(&db, &tokens);
+            // 前回の異常終了で残った upload の一時ファイル・metadata を掃除する。
+            handlers::gc_upload_artifacts(
+                &app_data_dir,
+                db.organize_root().map(PathBuf::from).as_deref(),
+            );
+        }
         Err(e) => crate::logging::write_line(
             "warn",
             &format!("valid token reload skipped (db open failed): {e}"),
@@ -2476,6 +2483,155 @@ mod tests {
             .get_tracks_by_persistent_ids(&[mismatch_pid.to_string()])
             .unwrap()
             .is_empty());
+    }
+
+    /// persistent_id は送り出した端末の中でしか一意でないため、母艦の別の曲を
+    /// 乗っ取らないようメタデータ照合で弾く。真の修復（同じ曲・母艦のファイル欠損）は通す。
+    #[tokio::test]
+    async fn federation_upload_rejects_persistent_id_collisions() {
+        let (dir, app) = setup();
+        let library_root = dir.path().join("master-library");
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        db.set_state("library_root", &library_root.to_string_lossy())
+            .unwrap();
+        db.set_state("organize_enabled", "1").unwrap();
+        drop(db);
+
+        let pid = "AAAABBBBCCCC1234";
+        let audio = b"fLaC-original-audio";
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/upload",
+            Some(upload_metadata(pid, audio.len() as u64)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let (status, track) = raw_req(
+            app.clone(),
+            "PUT",
+            &format!("/api/tracks/upload/{pid}"),
+            audio,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let landed = std::path::PathBuf::from(track["locationPath"].as_str().unwrap());
+        let track_id = track["trackId"].as_i64().unwrap();
+        // 公開できた metadata は残さない。
+        assert!(!dir
+            .path()
+            .join(".sync-uploads")
+            .join(format!("{pid}.json"))
+            .exists());
+
+        // 同じ PID・別メタデータ・別サイズは、母艦の実体を触らずに 409 で拒否する。
+        let mut colliding = upload_metadata(pid, (audio.len() + 7) as u64);
+        colliding["name"] = json!("Someone Else Song");
+        colliding["artist"] = json!("Someone Else");
+        let (status, _) = req(app.clone(), "POST", "/api/tracks/upload", Some(colliding)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(std::fs::read(&landed).unwrap(), audio);
+
+        // 同じ曲なら、母艦のファイルが消えていても修復できる。
+        std::fs::remove_file(&landed).unwrap();
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/upload",
+            Some(upload_metadata(pid, audio.len() as u64)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        // 受理後に母艦側が別の曲へ書き換わっていたら、着地させずに拒否する。
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            &format!("/api/tracks/{track_id}"),
+            Some(json!({ "name": "Rewritten", "artist": "Rewritten Artist" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = raw_req(
+            app.clone(),
+            "PUT",
+            &format!("/api/tracks/upload/{pid}"),
+            audio,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        assert_eq!(
+            db.get_track_by_track_id(track_id)
+                .unwrap()
+                .unwrap()
+                .location_path
+                .as_deref(),
+            landed.to_str()
+        );
+        assert!(!landed.exists());
+        drop(db);
+
+        // 名前を戻せば同じ track_id のまま修復が成立する。
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            &format!("/api/tracks/{track_id}"),
+            Some(json!({ "name": "Slave Song", "artist": "Slave Artist" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, repaired) = raw_req(
+            app.clone(),
+            "PUT",
+            &format!("/api/tracks/upload/{pid}"),
+            audio,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(repaired["trackId"], track_id);
+        assert_eq!(
+            std::fs::read(repaired["locationPath"].as_str().unwrap()).unwrap(),
+            audio
+        );
+        assert!(!dir
+            .path()
+            .join(".sync-uploads")
+            .join(format!("{pid}.json"))
+            .exists());
+    }
+
+    /// 十分に古い staging の `.part` と孤児 metadata だけを掃除する。
+    #[tokio::test]
+    async fn upload_artifact_gc_removes_only_stale_leftovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let organize_root = dir.path().join("library");
+        let pending = dir.path().join(".sync-uploads");
+        let staging = organize_root.join(".sync-upload-staging");
+        std::fs::create_dir_all(&pending).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        let stale = pending.join("AAAABBBBCCCCDDDD.json");
+        let fresh = pending.join("EEEEFFFF00001111.json");
+        let stale_part = staging.join(".crateforge-upload-dead.part");
+        let fresh_part = staging.join(".crateforge-upload-live.part");
+        for path in [&stale, &fresh, &stale_part, &fresh_part] {
+            std::fs::write(path, b"{}").unwrap();
+        }
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 60 * 60);
+        for path in [&stale, &stale_part] {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(old))
+                .unwrap();
+        }
+
+        handlers::gc_upload_artifacts(dir.path(), Some(&organize_root));
+
+        assert!(!stale.exists());
+        assert!(!stale_part.exists());
+        assert!(fresh.exists());
+        assert!(fresh_part.exists());
     }
 
     #[tokio::test]

@@ -143,6 +143,76 @@ fn push_merge_warning(
     }
 }
 
+/// 既存の同期曲に母艦 DTO を反映した結果。base_meta の扱いを resync と provision で共有する。
+pub(crate) enum MetadataMerge {
+    /// base_meta が JSON として読めず三者比較できない。
+    InvalidBase(String),
+    /// マージ済み。`updated` は母艦値を実際に取り込んだかどうか。
+    Merged { updated: bool },
+}
+
+/// 母艦 DTO を既存の同期曲へ反映する。LocalOnly / Conflict のフィールドは手元の値を残し、
+/// base_meta は実際に適用できたフィールドだけ母艦値へ進める。
+pub(crate) fn merge_synced_track_metadata(
+    db: &Database,
+    persistent_id: &str,
+    base_meta: &str,
+    local: &crate::models::Track,
+    master: &crate::models::Track,
+) -> Result<MetadataMerge, SyncError> {
+    let old_base: Value = match serde_json::from_str(base_meta) {
+        Ok(value) => value,
+        Err(error) => {
+            return Ok(MetadataMerge::InvalidBase(format!(
+                "invalid base_meta: {error}"
+            )))
+        }
+    };
+    let local_json = track_json(local)?;
+    let master_json = track_json(master)?;
+    let mut merged_base = old_base.clone();
+    let mut pulls = Vec::new();
+    let mut baseline_fields = HashSet::new();
+    for field in WRITEBACK_FIELDS {
+        match classify_field(
+            field,
+            field_value(&old_base, field),
+            field_value(&local_json, field),
+            field_value(&master_json, field),
+            local.date_modified.as_deref(),
+            master.date_modified.as_deref(),
+        ) {
+            FieldDiff::Unchanged | FieldDiff::BothSame => {
+                baseline_fields.insert(field.to_string());
+            }
+            FieldDiff::MasterOnly { value, previous } => {
+                pulls.push((field.to_string(), value, previous));
+            }
+            FieldDiff::LocalOnly { .. } | FieldDiff::Conflict { .. } => {}
+        }
+    }
+    let skipped =
+        db.apply_writeback_pull(persistent_id, &pulls, master.date_modified.as_deref())?;
+    for (field, _, _) in &pulls {
+        if !skipped.contains(field) {
+            baseline_fields.insert(field.clone());
+        }
+    }
+    if let Some(base) = merged_base.as_object_mut() {
+        for field in baseline_fields {
+            base.insert(field.clone(), field_value(&master_json, &field));
+        }
+    }
+    db.update_sync_track_base(
+        persistent_id,
+        &serde_json::to_string(&merged_base)
+            .map_err(|error| SyncError::InvalidResponse(error.to_string()))?,
+    )?;
+    Ok(MetadataMerge::Merged {
+        updated: pulls.len() > skipped.len(),
+    })
+}
+
 async fn resync_selection(
     db: &mut Database,
     source: &SyncSource,
@@ -315,59 +385,18 @@ async fn resync_selection(
         let Some(row) = snapshots.get(pid) else {
             continue;
         };
-        let old_base: Value = match serde_json::from_str(&row.base_meta) {
-            Ok(value) => value,
-            Err(error) => {
-                summary.failures.push(failure(
-                    Some(pid.to_string()),
-                    master.name.clone(),
-                    format!("invalid base_meta: {error}"),
-                ));
-                continue;
+        match merge_synced_track_metadata(db, pid, &row.base_meta, &row.local, master)? {
+            MetadataMerge::InvalidBase(error) => {
+                summary
+                    .failures
+                    .push(failure(Some(pid.to_string()), master.name.clone(), error));
             }
-        };
-        let local_json = track_json(&row.local)?;
-        let master_json = track_json(master)?;
-        let mut merged_base = old_base.clone();
-        let mut pulls = Vec::new();
-        let mut baseline_fields = HashSet::new();
-        for field in WRITEBACK_FIELDS {
-            match classify_field(
-                field,
-                field_value(&old_base, field),
-                field_value(&local_json, field),
-                field_value(&master_json, field),
-                row.local.date_modified.as_deref(),
-                master.date_modified.as_deref(),
-            ) {
-                FieldDiff::Unchanged | FieldDiff::BothSame => {
-                    baseline_fields.insert(field.to_string());
+            MetadataMerge::Merged { updated: applied } => {
+                summary.mutations_committed = true;
+                if applied {
+                    updated.insert(pid.to_string());
                 }
-                FieldDiff::MasterOnly { value, previous } => {
-                    pulls.push((field.to_string(), value, previous));
-                }
-                FieldDiff::LocalOnly { .. } | FieldDiff::Conflict { .. } => {}
             }
-        }
-        let skipped = db.apply_writeback_pull(pid, &pulls, master.date_modified.as_deref())?;
-        for (field, _, _) in &pulls {
-            if !skipped.contains(field) {
-                baseline_fields.insert(field.clone());
-            }
-        }
-        if let Some(base) = merged_base.as_object_mut() {
-            for field in baseline_fields {
-                base.insert(field.clone(), field_value(&master_json, &field));
-            }
-        }
-        db.update_sync_track_base(
-            pid,
-            &serde_json::to_string(&merged_base)
-                .map_err(|error| SyncError::InvalidResponse(error.to_string()))?,
-        )?;
-        summary.mutations_committed = true;
-        if pulls.len() > skipped.len() {
-            updated.insert(pid.to_string());
         }
     }
 
@@ -410,37 +439,21 @@ where
 {
     let _sync_guard = super::lock_mutating_sync().await;
     let mut summary = ResyncSummary::default();
-    let client = match MasterClient::from_source(&source) {
-        Ok(client) => client,
-        Err(error) => {
-            summary.failures.push(failure(None, None, error));
-            return Ok(summary);
-        }
-    };
-    let selections = match db.list_sync_selection_records(source.id) {
-        Ok(selections) => selections,
-        Err(error) => {
-            summary.failures.push(failure(None, None, error));
-            return Ok(summary);
-        }
-    };
+    // 母艦不達・一覧取得失敗は再同期全体が成立しないため、summary ではなく Err で返す。
+    let client = MasterClient::from_source(&source)?;
+    let selections = db.list_sync_selection_records(source.id)?;
     progress(SyncProgress {
         phase: "resyncing".to_string(),
         current: 0,
         total: selections.len(),
         track_name: None,
     });
-    let remote = match client.playlists().await {
-        Ok(playlists) => playlists
-            .into_iter()
-            .filter_map(|playlist| playlist.persistent_id.clone().map(|pid| (pid, playlist)))
-            .collect::<HashMap<_, _>>(),
-        Err(error @ SyncError::Authentication(_)) => return Err(error),
-        Err(error) => {
-            summary.failures.push(failure(None, None, error));
-            return Ok(summary);
-        }
-    };
+    let remote = client
+        .playlists()
+        .await?
+        .into_iter()
+        .filter_map(|playlist| playlist.persistent_id.clone().map(|pid| (pid, playlist)))
+        .collect::<HashMap<_, _>>();
     let mut added = HashSet::new();
     let mut updated = HashSet::new();
     let mut refreshed = HashSet::new();
@@ -513,6 +526,13 @@ enum ValidatedLandedFile {
     Missing,
 }
 
+/// 着地ルート配下かどうかを canonical path 同士で判定する。
+/// Windows の canonicalize は必ず verbatim prefix (`\\?\C:\...`) を返すため、
+/// 元のパスと比べると必ず不一致になる。両側を canonical にしてから比べる。
+fn is_within_root(canonical_path: &Path, canonical_root: &Path) -> bool {
+    canonical_path != canonical_root && canonical_path.starts_with(canonical_root)
+}
+
 fn validate_recorded_file(record: &SyncedTrackFileRecord) -> Result<ValidatedLandedFile, String> {
     let path = record
         .location_path
@@ -530,24 +550,16 @@ fn validate_recorded_file(record: &SyncedTrackFileRecord) -> Result<ValidatedLan
     let canonical_root = root
         .canonicalize()
         .map_err(|error| format!("着地ルートを確認できません: {error}"))?;
-    if canonical_root != root {
-        return Err("着地ルートにシンボリックリンクまたは非正規パスが含まれています".to_string());
-    }
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => {
+            // symlink_metadata なので、末端がシンボリックリンクならここで弾かれる。
             if !metadata.file_type().is_file() {
                 return Err("記録されたパスが通常ファイルではありません".to_string());
             }
             let canonical_path = path
                 .canonicalize()
                 .map_err(|error| format!("ファイル境界を確認できません: {error}"))?;
-            if canonical_path != path {
-                return Err(
-                    "記録されたファイルにシンボリックリンクまたは非正規パスが含まれています"
-                        .to_string(),
-                );
-            }
-            if !canonical_path.starts_with(&canonical_root) || canonical_path == canonical_root {
+            if !is_within_root(&canonical_path, &canonical_root) {
                 return Err("記録されたファイルが同期の着地ルート外にあります".to_string());
             }
             let mtime = metadata
@@ -571,10 +583,8 @@ fn validate_recorded_file(record: &SyncedTrackFileRecord) -> Result<ValidatedLan
             let canonical_parent = parent
                 .canonicalize()
                 .map_err(|error| format!("ファイルの親ディレクトリを確認できません: {error}"))?;
-            if canonical_parent != parent
-                || !canonical_parent.starts_with(&canonical_root)
-                || path == canonical_root
-            {
+            // 親ディレクトリはルート自身でもよいので、ここだけは同一を許す。
+            if !canonical_parent.starts_with(&canonical_root) {
                 return Err("記録された欠損ファイルのパス境界を確認できません".to_string());
             }
             Ok(ValidatedLandedFile::Missing)
@@ -862,6 +872,80 @@ mod tests {
         assert_eq!(
             classify_selection(&vec!["A"], &vec!["B"], &vec!["C"]),
             SelectionMerge::OverwriteLocal
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resync_reports_master_wide_failures_as_errors() {
+        let db = Database::open_memory().unwrap();
+        let invalid = db
+            .upsert_sync_source("bad-url", Some("Bad"), "ftp://master", "token")
+            .unwrap();
+        assert!(matches!(
+            resync(db, invalid, |_| {}).await.unwrap_err(),
+            SyncError::InvalidUrl(_)
+        ));
+
+        // 母艦不達は「完了しました」ではなく失敗として返す。
+        let db = Database::open_memory().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let unreachable = db
+            .upsert_sync_source(
+                "unreachable",
+                Some("Down"),
+                &format!("http://{address}"),
+                "token",
+            )
+            .unwrap();
+        assert!(resync(db, unreachable, |_| {}).await.is_err());
+    }
+
+    #[test]
+    fn landed_file_boundary_compares_canonical_paths() {
+        let root = Path::new("/data/library");
+        assert!(is_within_root(Path::new("/data/library/a/b.mp3"), root));
+        assert!(is_within_root(Path::new("/data/library/b.mp3"), root));
+        // ルート自身は「配下のファイル」ではない。
+        assert!(!is_within_root(root, root));
+        assert!(!is_within_root(Path::new("/data/other/b.mp3"), root));
+        // 文字列の接頭辞一致では配下と見なさない。
+        assert!(!is_within_root(Path::new("/data/library2/b.mp3"), root));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinked_landing_root_still_yields_candidates() {
+        let db = Database::open_memory().unwrap();
+        let real = tempdir().unwrap();
+        let parent = tempdir().unwrap();
+        // macOS の /tmp や Windows の verbatim prefix と同じく、root 自体が非正規パスになる場合。
+        let linked_root = parent.path().join("landing");
+        std::os::unix::fs::symlink(real.path(), &linked_root).unwrap();
+        let source = db
+            .upsert_sync_source("symlink", Some("Symlink"), "http://symlink", "token")
+            .unwrap();
+        let path = linked_root.join("song.mp3");
+        std::fs::write(&path, b"audio").unwrap();
+        let value = track("5A5A5A5A5A5A5A01", "Symlinked", &path);
+        db.upsert_synced_track(&value, &path, source.id).unwrap();
+        db.record_sync_track_with_root(
+            "5A5A5A5A5A5A5A01",
+            source.id,
+            &serde_json::to_string(&value).unwrap(),
+            Some(&linked_root),
+        )
+        .unwrap();
+
+        let scan = scan_eviction_candidates(&db, source.id).unwrap();
+        assert_eq!(scan.dirty_excluded, 0);
+        assert_eq!(
+            scan.candidates
+                .iter()
+                .map(|candidate| candidate.persistent_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["5A5A5A5A5A5A5A01"]
         );
     }
 

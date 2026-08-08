@@ -102,6 +102,7 @@ export function SyncProvisionDialog({
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const provisionStartingRef = useRef(false);
   const isProvisioning = step === "running";
 
   const loadSources = useCallback(async () => {
@@ -379,7 +380,10 @@ export function SyncProvisionDialog({
   }, [destRoot, setLastSyncDestRoot]);
 
   const startProvision = useCallback(async () => {
+    // ref で同期的にガードし、setStep("running") が反映されるまでの隙間での二重起動を防ぐ。
+    if (provisionStartingRef.current) return;
     if (!selectedSource || selectedPids.size === 0 || !destRoot.trim()) return;
+    provisionStartingRef.current = true;
     setLastSyncDestRoot(destRoot.trim());
     setSummary(null);
     setError(null);
@@ -401,6 +405,8 @@ export function SyncProvisionDialog({
       setError(errorMessage(provisionError));
       setProgress(null);
       setStep("failed");
+    } finally {
+      provisionStartingRef.current = false;
     }
   }, [selectedSource, selectedPids, destRoot, setLastSyncDestRoot]);
 
@@ -787,15 +793,21 @@ export function SyncProvisionDialog({
 
           {step === "complete" && summary && (
             <section className="sync-result">
-              <div className="sync-result-icon success"><Icon name="check" size={26} /></div>
-              <h3>取り寄せが完了しました</h3>
+              <div className={`sync-result-icon${summary.failures.length > 0 ? " warning" : " success"}`}>
+                <Icon name={summary.failures.length > 0 ? "warning" : "check"} size={26} />
+              </div>
+              <h3>
+                {summary.failures.length > 0
+                  ? `取り寄せが完了しました（${summary.failures.length.toLocaleString()} 件の失敗あり）`
+                  : "取り寄せが完了しました"}
+              </h3>
               <dl className="sync-summary">
                 <div><dt>曲数</dt><dd>{summary.tracks.toLocaleString()} 曲</dd></div>
                 <div><dt>プレイリスト数</dt><dd>{summary.playlists.toLocaleString()} 件</dd></div>
                 <div><dt>合計サイズ</dt><dd>{formatBytes(summary.bytes)}</dd></div>
               </dl>
               {summary.failures.length > 0 && (
-                <details className="sync-failures">
+                <details className="sync-failures" open>
                   <summary>失敗一覧（{summary.failures.length.toLocaleString()} 件）</summary>
                   <ul>
                     {summary.failures.map((failure, index) => (

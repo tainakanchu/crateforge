@@ -150,7 +150,10 @@ export interface WritebackConflict {
   field: string;
   local: WritebackValue;
   master: WritebackValue;
+  /// 既定で手元の値を選ぶか。新旧を判定できないときも手元へ倒す。
   localNewer: boolean;
+  /// date_modified で新旧を実際に比較できたか。false なら UI は新旧を示さない。
+  newerKnown: boolean;
 }
 
 export type WritebackPlaylistOp =
@@ -182,7 +185,19 @@ export type WritebackPlaylistOp =
       persistentId: string;
       name: string;
       reason: string;
+    }
+  | {
+      op: "skippedConflict";
+      persistentId: string;
+      name: string;
+      reason: string;
     };
+
+export interface WritebackSkippedTrack {
+  persistentId: string;
+  trackName: string | null;
+  reason: string;
+}
 
 export interface WritebackPlan {
   planId: string;
@@ -190,6 +205,8 @@ export interface WritebackPlan {
   conflicts: WritebackConflict[];
   playlistOps: WritebackPlaylistOp[];
   pulls: WritebackTrackChange[];
+  /// 母艦に無いなどの理由で反映されない曲。
+  skippedTracks: WritebackSkippedTrack[];
 }
 
 export interface WritebackResolution {
@@ -258,8 +275,11 @@ export async function syncSetSelectionPolicy(
   return invoke("sync_set_selection_policy", { selectionId, policy });
 }
 
-export async function syncRemoveSelection(selectionId: number): Promise<boolean> {
-  return invoke("sync_remove_selection", { selectionId });
+export async function syncRemoveSelection(
+  selectionId: number,
+  deleteLocalPlaylist?: boolean,
+): Promise<boolean> {
+  return invoke("sync_remove_selection", { selectionId, deleteLocalPlaylist });
 }
 
 export async function syncListRemotePlaylists(sourceId: number): Promise<Playlist[]> {

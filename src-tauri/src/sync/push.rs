@@ -52,6 +52,7 @@ struct TrackUploadMetadata<'a> {
     name: &'a Option<String>,
     artist: &'a Option<String>,
     album_artist: &'a Option<String>,
+    composer: &'a Option<String>,
     album: &'a Option<String>,
     genre: &'a Option<String>,
     year: Option<i64>,
@@ -155,6 +156,7 @@ impl MasterClient {
             name: &track.name,
             artist: &track.artist,
             album_artist: &track.album_artist,
+            composer: &track.composer,
             album: &track.album,
             genre: &track.genre,
             year: track.year,
@@ -569,6 +571,7 @@ mod tests {
                 Some("Origin Song"),
                 Some("Origin Artist"),
                 Some("Origin Album Artist"),
+                Some("Origin Composer"),
                 Some("Origin Album"),
                 Some("Techno"),
                 Some(2026),
@@ -638,6 +641,13 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name.as_deref(), Some("Origin Song"));
+        assert_eq!(rows[0].composer.as_deref(), Some("Origin Composer"));
+        // 公開できた upload metadata は母艦側に残さない。
+        assert!(!master_dir
+            .path()
+            .join(".sync-uploads")
+            .join(format!("{persistent_id}.json"))
+            .exists());
         let master_file = PathBuf::from(rows[0].location_path.as_ref().unwrap());
         assert!(master_file.starts_with(&master_library));
         assert_eq!(std::fs::read(&master_file).unwrap(), audio);

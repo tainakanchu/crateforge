@@ -655,6 +655,12 @@ where
         track_name: None,
     });
 
+    // 既に同期済みの曲は母艦 DTO で全上書きせず、resync と同じ三者マージで反映する。
+    let snapshots = db
+        .list_synced_track_snapshots(source.id)?
+        .into_iter()
+        .map(|row| (row.persistent_id.clone(), row))
+        .collect::<HashMap<_, _>>();
     let mut local_ids = HashMap::new();
     let mut processed = 0usize;
     for track in unique_tracks {
@@ -695,33 +701,63 @@ where
             },
         };
 
-        match db.upsert_synced_track(track, &landed, source.id) {
-            Ok(Some(track_id)) => {
+        match snapshots.get(pid) {
+            // 既存曲: ローカル編集と base_meta を保つため、母艦 DTO は三者マージで取り込む。
+            Some(snapshot) => {
+                if downloaded {
+                    db.update_synced_track_location(pid, &landed)?;
+                    db.record_sync_track_landing(pid, &dest_root)?;
+                }
                 if let Some(analysis) = analyses.remove(pid) {
                     db.upsert_analysis(pid, &analysis)?;
                 }
-                let base_meta = serde_json::to_string(track)
-                    .map_err(|err| SyncError::InvalidResponse(err.to_string()))?;
-                db.record_sync_track_with_root(
-                    pid,
-                    source.id,
-                    &base_meta,
-                    downloaded.then_some(dest_root.as_path()),
-                )?;
-                local_ids.insert(pid.to_string(), track_id);
+                if let phase3::MetadataMerge::InvalidBase(error) =
+                    phase3::merge_synced_track_metadata(
+                        &db,
+                        pid,
+                        &snapshot.base_meta,
+                        &snapshot.local,
+                        track,
+                    )?
+                {
+                    summary.failures.push(SyncFailure {
+                        persistent_id: Some(pid.to_string()),
+                        track_name: track.name.clone(),
+                        error,
+                    });
+                }
+                local_ids.insert(pid.to_string(), snapshot.local.track_id);
                 summary.tracks += 1;
                 summary.bytes += downloaded_bytes;
             }
-            Ok(None) => summary.failures.push(SyncFailure {
-                persistent_id: Some(pid.to_string()),
-                track_name: track.name.clone(),
-                error: "別のサーバー由来の曲と persistent_id が衝突しています".to_string(),
-            }),
-            Err(error) => summary.failures.push(SyncFailure {
-                persistent_id: Some(pid.to_string()),
-                track_name: track.name.clone(),
-                error: error.to_string(),
-            }),
+            None => match db.upsert_synced_track(track, &landed, source.id) {
+                Ok(Some(track_id)) => {
+                    if let Some(analysis) = analyses.remove(pid) {
+                        db.upsert_analysis(pid, &analysis)?;
+                    }
+                    let base_meta = serde_json::to_string(track)
+                        .map_err(|err| SyncError::InvalidResponse(err.to_string()))?;
+                    db.record_sync_track_with_root(
+                        pid,
+                        source.id,
+                        &base_meta,
+                        downloaded.then_some(dest_root.as_path()),
+                    )?;
+                    local_ids.insert(pid.to_string(), track_id);
+                    summary.tracks += 1;
+                    summary.bytes += downloaded_bytes;
+                }
+                Ok(None) => summary.failures.push(SyncFailure {
+                    persistent_id: Some(pid.to_string()),
+                    track_name: track.name.clone(),
+                    error: "別のサーバー由来の曲と persistent_id が衝突しています".to_string(),
+                }),
+                Err(error) => summary.failures.push(SyncFailure {
+                    persistent_id: Some(pid.to_string()),
+                    track_name: track.name.clone(),
+                    error: error.to_string(),
+                }),
+            },
         }
         processed += 1;
         progress(SyncProgress {
@@ -739,56 +775,61 @@ where
         track_name: None,
     });
     for (index, item) in pulled.iter().enumerate() {
+        // 着地した曲だけで作り直す。母艦の曲順は保ったまま、取得できなかった曲を抜く。
         let mut membership = Vec::with_capacity(item.tracks.len());
+        let mut landed_pids = Vec::with_capacity(item.tracks.len());
         let mut failed_members = 0usize;
         for track in &item.tracks {
             match required_pid(track)
                 .ok()
-                .and_then(|pid| local_ids.get(pid).copied())
+                .and_then(|pid| local_ids.get(pid).map(|track_id| (pid, *track_id)))
             {
-                Some(track_id) => membership.push(track_id),
+                Some((pid, track_id)) => {
+                    membership.push(track_id);
+                    landed_pids.push(pid.to_string());
+                }
                 None => failed_members += 1,
             }
         }
-        if failed_members > 0 {
-            summary.failures.push(SyncFailure {
-                persistent_id: item.playlist.persistent_id.clone(),
-                track_name: Some(item.playlist.name.clone()),
-                error: format!(
-                    "未取得の曲があるためプレイリストを更新しませんでした ({failed_members}件失敗)"
-                ),
-            });
+        let progress_done = |index: usize| {
             progress(SyncProgress {
                 phase: "playlists".to_string(),
                 current: index + 1,
                 total: pulled.len(),
                 track_name: None,
+            })
+        };
+        // 1 曲も着地しなかった場合だけは、既存プレイリストを空で潰さないよう作成を見送る。
+        if membership.is_empty() && !item.tracks.is_empty() {
+            summary.failures.push(SyncFailure {
+                persistent_id: item.playlist.persistent_id.clone(),
+                track_name: Some(item.playlist.name.clone()),
+                error: format!(
+                    "{failed_members} 曲を取得できなかったためプレイリストを作成できませんでした"
+                ),
             });
+            progress_done(index);
             continue;
         }
+        if failed_members > 0 {
+            summary.failures.push(SyncFailure {
+                persistent_id: item.playlist.persistent_id.clone(),
+                track_name: Some(item.playlist.name.clone()),
+                error: format!("{failed_members} 曲を取得できなかったため除外しました"),
+            });
+        }
         db.create_or_replace_playlist_with_pid(&item.playlist, &membership)?;
-        let base_membership = item
-            .tracks
-            .iter()
-            .map(required_pid)
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+        // base は実際に着地した曲だけにする。母艦の全曲を base にすると follow 再同期が
+        // 欠落を「手元で消した」と誤認して保持し、失敗曲を二度と取りに行かない。
         db.record_sync_selection_baseline_with_root(
             source.id,
             required_playlist_pid(&item.playlist)?,
             &item.playlist.name,
-            &base_membership,
+            &landed_pids,
             Some(&dest_root),
         )?;
         summary.playlists += 1;
-        progress(SyncProgress {
-            phase: "playlists".to_string(),
-            current: index + 1,
-            total: pulled.len(),
-            track_name: None,
-        });
+        progress_done(index);
     }
     db.touch_sync_source(source.id)?;
     progress(SyncProgress {
@@ -1254,7 +1295,140 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn partial_or_invalid_member_preserves_existing_playlist_and_reports_failure() {
+    async fn reprovision_merges_master_metadata_and_keeps_local_edits() {
+        let master_dir = tempfile::tempdir().unwrap();
+        let media_dir = master_dir.path().join("media");
+        std::fs::create_dir_all(&media_dir).unwrap();
+        let song = media_dir.join("song.mp3");
+        std::fs::write(&song, b"ID3-master-audio").unwrap();
+
+        let master = Database::open(master_dir.path()).unwrap();
+        let raw = url::Url::from_file_path(&song).unwrap().to_string();
+        master
+            .conn
+            .execute(
+                "INSERT INTO tracks
+                    (track_id, persistent_id, name, artist, album, genre, rating, comments,
+                     location_raw, location_path, track_type, track_number, file_exists)
+                 VALUES (1, 'AAAABBBBCCCC0011', 'Song', 'Artist', 'Album', 'Master Genre', 80,
+                         NULL, ?1, ?2, 'File', 1, 1)",
+                params![raw, song.to_string_lossy()],
+            )
+            .unwrap();
+        master
+            .conn
+            .execute(
+                "INSERT INTO playlists
+                    (playlist_id, persistent_id, name, is_folder, is_smart, is_user_created)
+                 VALUES (10, '111122223333BBBB', 'Merge List', 0, 0, 1)",
+                [],
+            )
+            .unwrap();
+        master
+            .conn
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES (10, 1, 0)",
+                [],
+            )
+            .unwrap();
+        master.set_state("server_id", "merge-master").unwrap();
+        master.set_state("server_name", "Merge Master").unwrap();
+        drop(master);
+
+        let app = api::router(ApiState {
+            app_data_dir: master_dir.path().to_path_buf(),
+            app: None,
+            tokens: ValidTokens::default(),
+            pairings: PairingRegistry::default(),
+        });
+        let (base_url, server) = serve(app).await;
+
+        let slave_dir = tempfile::tempdir().unwrap();
+        let destination = slave_dir.path().join("library");
+        let slave = Database::open(slave_dir.path()).unwrap();
+        let source = slave
+            .upsert_sync_source(
+                "merge-master",
+                Some("Merge Master"),
+                &base_url,
+                "test-token",
+            )
+            .unwrap();
+        let first = provision(
+            slave,
+            source.clone(),
+            vec!["111122223333BBBB".to_string()],
+            destination.clone(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(first.failures.is_empty());
+
+        // 手元だけの編集と、母艦だけの編集を同時に用意する。
+        let slave = Database::open(slave_dir.path()).unwrap();
+        slave
+            .conn
+            .execute(
+                "UPDATE tracks SET rating=20, comments='local note'
+                 WHERE persistent_id='AAAABBBBCCCC0011'",
+                [],
+            )
+            .unwrap();
+        drop(slave);
+        let master = Database::open(master_dir.path()).unwrap();
+        master
+            .conn
+            .execute(
+                "UPDATE tracks SET genre='Updated Genre' WHERE track_id=1",
+                [],
+            )
+            .unwrap();
+        drop(master);
+
+        let slave = Database::open(slave_dir.path()).unwrap();
+        let second = provision(
+            slave,
+            source,
+            vec!["111122223333BBBB".to_string()],
+            destination,
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.tracks, 1);
+        assert_eq!(second.bytes, 0);
+        assert!(second.failures.is_empty());
+
+        let slave = Database::open(slave_dir.path()).unwrap();
+        let stored = slave
+            .get_tracks_by_persistent_ids(&["AAAABBBBCCCC0011".to_string()])
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(stored.rating, Some(20));
+        assert_eq!(stored.comments.as_deref(), Some("local note"));
+        assert_eq!(stored.genre.as_deref(), Some("Updated Genre"));
+
+        // base_meta は適用できたフィールドだけ進める。rating は母艦値のままなので
+        // 次の書き戻しがローカル編集として検出できる。
+        let base_meta: String = slave
+            .conn
+            .query_row(
+                "SELECT base_meta FROM sync_track WHERE persistent_id='AAAABBBBCCCC0011'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let base: serde_json::Value = serde_json::from_str(&base_meta).unwrap();
+        assert_eq!(base["rating"], serde_json::json!(80));
+        assert_eq!(base["genre"], serde_json::json!("Updated Genre"));
+        assert!(writeback::has_local_changes(&base_meta, &stored).unwrap());
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn partial_member_failure_still_creates_playlist_with_landed_tracks() {
         let master_dir = tempfile::tempdir().unwrap();
         let media_dir = master_dir.path().join("media");
         std::fs::create_dir_all(&media_dir).unwrap();
@@ -1345,6 +1519,7 @@ mod tests {
                 "test-token",
             )
             .unwrap();
+        let source_id = source.id;
 
         let summary = provision(
             slave,
@@ -1357,14 +1532,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(summary.tracks, 1);
-        assert_eq!(summary.playlists, 0);
+        assert_eq!(summary.playlists, 1);
         assert!(summary.failures.iter().any(|failure| {
             failure.persistent_id.as_deref() == Some("bad/../persistent")
                 && failure.error.contains("persistentId")
         }));
         assert!(summary.failures.iter().any(|failure| {
             failure.track_name.as_deref() == Some("Remote Snapshot")
-                && failure.error == "未取得の曲があるためプレイリストを更新しませんでした (2件失敗)"
+                && failure.error == "2 曲を取得できなかったため除外しました"
         }));
 
         let slave = Database::open(slave_dir.path()).unwrap();
@@ -1376,9 +1551,26 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(name, "Existing Snapshot");
+        assert_eq!(name, "Remote Snapshot");
         assert_eq!(parent, None);
-        assert_eq!(slave.get_playlist_track_ids(20).unwrap(), vec![50]);
+        let landed_id: i64 = slave
+            .conn
+            .query_row(
+                "SELECT track_id FROM tracks WHERE persistent_id='AAAABBBBCCCC0001'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(slave.get_playlist_track_ids(20).unwrap(), vec![landed_id]);
+        // 着地分だけが base なら、follow 再同期は失敗曲を master との差分として取り直せる。
+        let selection = slave
+            .list_sync_selection_records(source_id)
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            selection.base_membership,
+            Some(vec!["AAAABBBBCCCC0001".to_string()])
+        );
         server.abort();
     }
 

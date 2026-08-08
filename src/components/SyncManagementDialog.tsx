@@ -25,6 +25,7 @@ type Step =
   | "manage"
   | "resyncing"
   | "resyncComplete"
+  | "removeConfirm"
   | "candidates"
   | "evictConfirm"
   | "evicting"
@@ -46,7 +47,7 @@ function formatBytes(bytes: number): string {
 function Failures({ failures }: { failures: ResyncSummary["failures"] }) {
   if (failures.length === 0) return null;
   return (
-    <details className="sync-failures">
+    <details className="sync-failures" open>
       <summary>失敗一覧（{failures.length.toLocaleString()} 件）</summary>
       <ul>
         {failures.map((failure, index) => (
@@ -75,6 +76,7 @@ export function SyncManagementDialog({
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [policyBusy, setPolicyBusy] = useState<Set<number>>(new Set());
   const [removeBusy, setRemoveBusy] = useState<Set<number>>(new Set());
+  const [removeTarget, setRemoveTarget] = useState<SyncSelection | null>(null);
   const [progress, setProgress] = useState<SyncProgress | null>(null);
   const [resyncSummary, setResyncSummary] = useState<ResyncSummary | null>(null);
   const [candidates, setCandidates] = useState<EvictionCandidate[]>([]);
@@ -228,7 +230,8 @@ export function SyncManagementDialog({
     try {
       const nextCandidates = await syncApi.syncEvictionCandidates(source.id);
       setCandidates(nextCandidates);
-      setSelectedCandidates(new Set(nextCandidates.map((candidate) => candidate.persistentId)));
+      // 破壊的な操作のため、デフォルトは未選択にして opt-in にする。
+      setSelectedCandidates(new Set());
       setStep("candidates");
     } catch (candidateError) {
       setError(`削除候補を読み込めませんでした: ${errorMessage(candidateError)}`);
@@ -236,18 +239,37 @@ export function SyncManagementDialog({
     }
   }, [source.id]);
 
-  // selection の参照だけを外す。孤立した曲は続けて削除候補画面で確認・削除する。
-  const removeSelection = useCallback(async (selection: SyncSelection) => {
+  // 解除方法（プレイリストを残すか削除するか）を確認する画面へ進む。
+  const requestRemoveSelection = useCallback((selection: SyncSelection) => {
     if (removeBusy.has(selection.id)) return;
-    if (!window.confirm("この selection を解除します。参照されなくなった曲は次の画面で削除できます")) return;
+    setError(null);
+    setRemoveTarget(selection);
+    setStep("removeConfirm");
+  }, [removeBusy]);
+
+  const cancelRemoveSelection = useCallback(() => {
+    setRemoveTarget(null);
+    setStep("manage");
+  }, []);
+
+  // deleteLocalPlaylist === false: 同期対象の参照だけを外し、ローカルのプレイリストは残す。
+  // deleteLocalPlaylist === true: ローカルのプレイリストも削除し、孤立した曲を削除候補画面へ回す。
+  const confirmRemoveSelection = useCallback(async (deleteLocalPlaylist: boolean) => {
+    const selection = removeTarget;
+    if (!selection || removeBusy.has(selection.id)) return;
     setRemoveBusy((current) => new Set(current).add(selection.id));
     setError(null);
     try {
-      await syncApi.syncRemoveSelection(selection.id);
-      await loadManagement();
-      await loadCandidates();
+      await syncApi.syncRemoveSelection(selection.id, deleteLocalPlaylist);
+      setRemoveTarget(null);
+      if (deleteLocalPlaylist) {
+        await loadCandidates();
+      } else {
+        await loadManagement();
+      }
     } catch (removeError) {
-      setError(`selection を解除できませんでした: ${errorMessage(removeError)}`);
+      setError(`同期対象を解除できませんでした: ${errorMessage(removeError)}`);
+      setStep("manage");
     } finally {
       setRemoveBusy((current) => {
         const next = new Set(current);
@@ -255,7 +277,7 @@ export function SyncManagementDialog({
         return next;
       });
     }
-  }, [removeBusy, loadManagement, loadCandidates]);
+  }, [removeBusy, removeTarget, loadManagement, loadCandidates]);
 
   const selectedCandidateBytes = useMemo(() => candidates.reduce(
     (total, candidate) => selectedCandidates.has(candidate.persistentId) ? total + candidate.bytes : total,
@@ -330,13 +352,17 @@ export function SyncManagementDialog({
             <section>
               <div className="sync-playlist-heading">
                 <div>
-                  <h3 className="sync-section-title">selection</h3>
+                  <h3 className="sync-section-title">同期対象</h3>
                   <span>{sourceName}</span>
                 </div>
               </div>
 
               {selections.length > 0 ? (
                 <div className="sync-management-list">
+                  <p className="sync-policy-hint">
+                    同期方法：<strong>スナップショット</strong>は取り寄せた時点のまま保持します。
+                    <strong>追従</strong>は再同期のたびに母艦の内容へ合わせるため、ローカルでの並び替えなどが上書きされることがあります。
+                  </p>
                   <div className="sync-management-columns" aria-hidden="true">
                     <span>名前</span><span>同期方法</span><span>曲数</span><span>容量</span><span></span>
                   </div>
@@ -355,6 +381,7 @@ export function SyncManagementDialog({
                             disabled={busy}
                             aria-pressed={selection.policy === "snapshot"}
                             data-autofocus={index === 0 ? true : undefined}
+                            title="スナップショット: 取り寄せた時点の内容のまま保持します。母艦の変更は再同期しても反映されません。"
                           >
                             スナップショット
                           </button>
@@ -364,6 +391,7 @@ export function SyncManagementDialog({
                             onClick={() => changePolicy(selection, "follow")}
                             disabled={busy}
                             aria-pressed={selection.policy === "follow"}
+                            title="追従: 再同期のたびに母艦の内容に合わせます。ローカルでの並び替えなどが上書きされることがあります。"
                           >
                             追従
                           </button>
@@ -378,9 +406,9 @@ export function SyncManagementDialog({
                         <button
                           type="button"
                           className="toolbar-btn sync-selection-remove"
-                          onClick={() => removeSelection(selection)}
+                          onClick={() => requestRemoveSelection(selection)}
                           disabled={removing}
-                          title="この selection を解除します"
+                          title="この同期対象を解除する方法を選びます"
                         >
                           <Icon name="x" size={12} /> 解除
                         </button>
@@ -395,7 +423,7 @@ export function SyncManagementDialog({
                   </div>
                 </div>
               ) : (
-                <div className="sync-empty">管理できる selection はありません。</div>
+                <div className="sync-empty">管理できる同期対象はありません。</div>
               )}
 
               {error && <div className="sync-error" role="alert">{error}</div>}
@@ -432,13 +460,24 @@ export function SyncManagementDialog({
 
           {step === "resyncComplete" && resyncSummary && (
             <section className="sync-result">
-              <div className="sync-result-icon success"><Icon name="check" size={26} /></div>
-              <h3>再同期が完了しました</h3>
+              <div className={`sync-result-icon${resyncSummary.failures.length > 0 ? " warning" : " success"}`}>
+                <Icon name={resyncSummary.failures.length > 0 ? "warning" : "check"} size={26} />
+              </div>
+              <h3>
+                {resyncSummary.failures.length > 0
+                  ? `再同期が完了しました（${resyncSummary.failures.length.toLocaleString()} 件の失敗あり）`
+                  : "再同期が完了しました"}
+              </h3>
               <dl className="sync-summary sync-resync-summary">
                 <div><dt>追加</dt><dd>{resyncSummary.tracksAdded.toLocaleString()} 曲</dd></div>
                 <div><dt>更新</dt><dd>{resyncSummary.tracksUpdated.toLocaleString()} 曲</dd></div>
                 <div><dt>エビクション候補</dt><dd>{resyncSummary.evictionCandidates.toLocaleString()} 曲</dd></div>
               </dl>
+              {resyncSummary.selectionsSkipped > 0 && (
+                <div className="sync-error" role="status">
+                  スナップショット設定のため {resyncSummary.selectionsSkipped.toLocaleString()} 件をスキップしました。
+                </div>
+              )}
               {resyncSummary.localEditsPreserved.length > 0 && (
                 <details className="sync-failures">
                   <summary>ローカル編集を保持（{resyncSummary.localEditsPreserved.length.toLocaleString()} 件）</summary>
@@ -476,6 +515,47 @@ export function SyncManagementDialog({
                     削除候補を確認
                   </button>
                 )}
+              </div>
+            </section>
+          )}
+
+          {step === "removeConfirm" && removeTarget && (
+            <section className="sync-result">
+              <div className="sync-result-icon warning"><Icon name="warning" size={26} /></div>
+              <h3>「{removeTarget.name || removeTarget.remotePid}」の同期を解除しますか？</h3>
+              <p className="sync-remove-explain">
+                プレイリストを残したまま同期だけ止めるか、ローカルのプレイリストごと削除して曲を削除候補に回すかを選べます。
+              </p>
+              {error && <div className="sync-error" role="alert">{error}</div>}
+              <div className="sync-remove-options">
+                <div className="sync-remove-option">
+                  <p>プレイリストと曲はそのまま残り、母艦との同期だけ止まります。</p>
+                  <button
+                    className="toolbar-btn primary"
+                    type="button"
+                    onClick={() => confirmRemoveSelection(false)}
+                    disabled={removeBusy.has(removeTarget.id)}
+                    data-autofocus
+                  >
+                    同期だけ解除（プレイリストは残す）
+                  </button>
+                </div>
+                <div className="sync-remove-option">
+                  <p>ローカルのプレイリストを削除します。他で使われていない曲は次の画面で削除候補として選べます。</p>
+                  <button
+                    className="toolbar-btn danger"
+                    type="button"
+                    onClick={() => confirmRemoveSelection(true)}
+                    disabled={removeBusy.has(removeTarget.id)}
+                  >
+                    プレイリストも削除して削除候補に回す
+                  </button>
+                </div>
+              </div>
+              <div className="sync-actions">
+                <button className="toolbar-btn" type="button" onClick={cancelRemoveSelection}>
+                  キャンセル
+                </button>
               </div>
             </section>
           )}
@@ -568,8 +648,14 @@ export function SyncManagementDialog({
 
           {step === "evictComplete" && evictionSummary && (
             <section className="sync-result">
-              <div className="sync-result-icon success"><Icon name="check" size={26} /></div>
-              <h3>削除処理が完了しました</h3>
+              <div className={`sync-result-icon${evictionSummary.failures.length > 0 ? " warning" : " success"}`}>
+                <Icon name={evictionSummary.failures.length > 0 ? "warning" : "check"} size={26} />
+              </div>
+              <h3>
+                {evictionSummary.failures.length > 0
+                  ? `削除処理が完了しました（${evictionSummary.failures.length.toLocaleString()} 件の失敗あり）`
+                  : "削除処理が完了しました"}
+              </h3>
               <dl className="sync-summary">
                 <div><dt>登録解除</dt><dd>{evictionSummary.evicted.toLocaleString()} 曲</dd></div>
                 <div><dt>ファイル削除</dt><dd>{evictionSummary.filesDeleted.toLocaleString()} 件</dd></div>

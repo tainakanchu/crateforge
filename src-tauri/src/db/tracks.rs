@@ -582,6 +582,7 @@ impl Database {
         name: Option<&str>,
         artist: Option<&str>,
         album_artist: Option<&str>,
+        composer: Option<&str>,
         album: Option<&str>,
         genre: Option<&str>,
         year: Option<i64>,
@@ -609,19 +610,20 @@ impl Database {
             )?;
             match self.conn.execute(
                 "INSERT INTO tracks
-                    (track_id, persistent_id, name, artist, album_artist, album, genre, year,
-                     rating, total_time_ms, date_added, bpm, comments, location_raw,
+                    (track_id, persistent_id, name, artist, album_artist, composer, album, genre,
+                     year, rating, total_time_ms, date_added, bpm, comments, location_raw,
                      location_path, track_type, compilation, track_number, track_count,
                      disc_number, disc_count, file_exists, search_text)
                  VALUES
                     (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                     ?15, 'File', ?16, ?17, ?18, ?19, ?20, 1, ?21)",
+                     ?15, ?16, 'File', ?17, ?18, ?19, ?20, ?21, 1, ?22)",
                 params![
                     next_id,
                     persistent_id,
                     name,
                     artist,
                     album_artist,
+                    composer,
                     album,
                     genre,
                     year,
@@ -971,6 +973,9 @@ impl Database {
         Ok(())
     }
 
+    /// rating は XML インポートの更新対象外なので、時計を進めなくても値は保護される。
+    /// 進めると逆に XML 側の正当な更新まで止まるため据え置く。結果として
+    /// 同期の書き戻しでは rating 衝突の新旧を判定できず、既定は手元の値になる。
     pub fn set_rating(&self, track_id: i64, rating: i64) -> Result<()> {
         // date_modified は XML メタデータの LWW 時計なので、保護フィールドの rating では進めない。
         self.conn.execute(

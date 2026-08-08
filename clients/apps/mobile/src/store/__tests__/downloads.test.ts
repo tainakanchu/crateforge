@@ -288,6 +288,48 @@ describe("useDownloads", () => {
     expect(deleteFile).toHaveBeenCalledTimes(1);
   });
 
+  it("pin 解除は、共有曲を非pinの一括DLプレイリストが参照していれば残す", async () => {
+    setTestConnection({ token: "tok" });
+    const onlyA = makeTrack({ trackId: 81, id: 81 });
+    const shared = makeTrack({ trackId: 82, id: 82 });
+    // pin: A（専有 81 + 共有 82）
+    await useDownloads.getState().downloadPlaylist(1, "A", [onlyA, shared], true);
+    // 非pin の一括DL: C（共有 82 のみ参照）
+    await useDownloads.getState().downloadPlaylist(3, "C", [shared], false);
+    jest.clearAllMocks();
+
+    await useDownloads.getState().removeDownloadedPlaylist(1);
+
+    expect(useDownloads.getState().playlists[1]).toBeUndefined();
+    // 非pin の C はそのまま残る。
+    expect(useDownloads.getState().playlists[3]).toBeTruthy();
+    // 専有曲は消えるが、非pinが参照する共有曲はサイレント削除されない。
+    expect(useDownloads.getState().isDownloaded(81)).toBe(false);
+    expect(useDownloads.getState().isDownloaded(82)).toBe(true);
+    expect(deleteFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("pin の差分同期は、共有曲を非pinの一括DLプレイリストが参照していれば残す", async () => {
+    setTestConnection({ token: "tok" });
+    const t1 = makeTrack({ trackId: 91, id: 91 });
+    const shared = makeTrack({ trackId: 92, id: 92 });
+    // pin: A（91 + 共有 92）。サーバー側で 92 が外れる想定。
+    await useDownloads.getState().downloadPlaylist(1, "A", [t1, shared], true);
+    // 非pin の一括DL: C（共有 92 のみ参照）
+    await useDownloads.getState().downloadPlaylist(3, "C", [shared], false);
+    jest.clearAllMocks();
+
+    await useDownloads.getState().syncPinnedPlaylists(async () => [t1]);
+
+    expect(useDownloads.getState().playlists[1].trackIds).toEqual([91]);
+    // 非pin の C はそのまま残る。
+    expect(useDownloads.getState().playlists[3]).toBeTruthy();
+    // pin から外れても、非pinの一括DLが参照する共有曲はサイレント削除されない。
+    expect(useDownloads.getState().isDownloaded(92)).toBe(true);
+    expect(useDownloads.getState().isDownloaded(91)).toBe(true);
+    expect(deleteFile).not.toHaveBeenCalled();
+  });
+
   it("pin は記憶済み品質を使い、プレイリスト単位の実容量を集計する", async () => {
     setTestConnection({ token: "tok" });
     useSettings.setState({ downloadQuality: "aac256" });

@@ -159,6 +159,15 @@ function persistPlaylists(playlists: Record<number, DownloadedPlaylist>): void {
   }
 }
 
+/**
+ * ダウンロード済み全プレイリスト（pin/非pin問わず）が参照する trackId の集合を作る。
+ * 一括DL（非pin）と pin が同じ曲を共有していても孤立曲として誤削除しないよう、
+ * 参照カウントは pinned に絞らず全プレイリストを対象にする。
+ */
+function referencedTrackIds(playlists: Record<number, DownloadedPlaylist>): Set<number> {
+  return new Set(Object.values(playlists).flatMap((p) => p.trackIds));
+}
+
 /** syncPinnedPlaylists の再入防止用 in-flight Promise（モジュールスコープ、zustand state ではない）。 */
 let syncInFlight: Promise<void> | null = null;
 
@@ -318,13 +327,10 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
     persistPlaylists(playlists);
     set({ playlists });
 
-    // one-shot の保存解除は従来どおり曲を残す。pin 解除時だけ、他の pin が所有しない曲を消す。
+    // one-shot の保存解除は従来どおり曲を残す。pin 解除時だけ、他のプレイリストが
+    // 参照しない曲を消す（削除対象自身は既に playlists から除かれている）。
     if (removed.pinned !== true) return;
-    const referenced = new Set(
-      Object.values(playlists)
-        .filter((p) => p.pinned === true)
-        .flatMap((p) => p.trackIds),
-    );
+    const referenced = referencedTrackIds(playlists);
     for (const trackId of new Set(removed.trackIds)) {
       if (!referenced.has(trackId)) await get().removeDownload(trackId);
     }
@@ -379,11 +385,7 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
       // 新規メンバーだけ downloadTrack 内の既存判定を抜けて、記憶済みの設定音質で保存される。
       for (const tracks of successful) await get().downloadMany(tracks);
 
-      const referenced = new Set(
-        Object.values(get().playlists)
-          .filter((p) => p.pinned === true)
-          .flatMap((p) => p.trackIds),
-      );
+      const referenced = referencedTrackIds(get().playlists);
       for (const trackId of removedCandidates) {
         if (!referenced.has(trackId)) await get().removeDownload(trackId);
       }

@@ -208,9 +208,7 @@ impl Database {
             .filter(|value| !value.is_empty())
             .ok_or(rusqlite::Error::InvalidQuery)?;
         let location_path = path.to_string_lossy().to_string();
-        let location_raw = url::Url::from_file_path(path)
-            .map(|url| url.to_string())
-            .unwrap_or_else(|_| format!("file://{location_path}"));
+        let location_raw = crate::itunes_xml::writer::path_to_file_url(&location_path);
 
         if let Some((track_id, owner)) = self
             .conn
@@ -361,6 +359,19 @@ impl Database {
         self.recompute_synced_search_text(track_id)
     }
 
+    /// 既存の同期曲を取り直したときの着地先だけを更新する。
+    /// メタデータは三者マージ側が扱うため触らない。
+    pub fn update_synced_track_location(&self, persistent_id: &str, path: &Path) -> Result<()> {
+        let location_path = path.to_string_lossy().to_string();
+        let location_raw = crate::itunes_xml::writer::path_to_file_url(&location_path);
+        self.conn.execute(
+            "UPDATE tracks SET location_raw=?1, location_path=?2, file_exists=1
+             WHERE persistent_id=?3",
+            params![location_raw, location_path, persistent_id],
+        )?;
+        Ok(())
+    }
+
     fn recompute_synced_search_text(&self, track_id: i64) -> Result<()> {
         self.conn.execute(
             &format!("UPDATE tracks SET search_text = {SEARCH_TEXT_EXPR} WHERE track_id = ?1"),
@@ -452,6 +463,8 @@ impl Database {
     }
 
     /// provisioning で使った着地ルートも保存し、eviction のファイル境界に使う。
+    /// `landing_root` を渡すのはこの実行で実際にファイルを着地させたときだけで、
+    /// 着地時フィンガープリントもそのときしか取り直さない（既存曲では既存値を残す）。
     pub fn record_sync_track_with_root(
         &self,
         persistent_id: &str,
@@ -459,21 +472,11 @@ impl Database {
         base_meta: &str,
         landing_root: Option<&Path>,
     ) -> Result<()> {
+        let (landed_size, landed_mtime) = match landing_root {
+            Some(_) => self.landed_fingerprint(persistent_id)?,
+            None => (None, None),
+        };
         let landing_root = landing_root.map(|path| path.to_string_lossy().to_string());
-        let location_path = self
-            .conn
-            .query_row(
-                "SELECT location_path FROM tracks WHERE persistent_id = ?1",
-                [persistent_id],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()?
-            .flatten();
-        let (landed_size, landed_mtime) = location_path
-            .as_deref()
-            .map(Path::new)
-            .map(file_fingerprint)
-            .unwrap_or((None, None));
         self.conn.execute(
             "INSERT INTO sync_track
                 (persistent_id, source_id, pulled_at, base_meta, landing_root,
@@ -495,6 +498,45 @@ impl Database {
             ],
         )?;
         Ok(())
+    }
+
+    /// 既存の同期曲を取り直したときの着地情報だけを更新する。
+    /// base_meta は三者マージ側が管理するため触らない。
+    pub fn record_sync_track_landing(
+        &self,
+        persistent_id: &str,
+        landing_root: &Path,
+    ) -> Result<()> {
+        let (landed_size, landed_mtime) = self.landed_fingerprint(persistent_id)?;
+        self.conn.execute(
+            "UPDATE sync_track SET landing_root=?1, landed_size=?2, landed_mtime=?3
+             WHERE persistent_id=?4",
+            params![
+                landing_root.to_string_lossy().to_string(),
+                landed_size,
+                landed_mtime,
+                persistent_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 現在の着地ファイルのサイズ・更新時刻。以後の dirty 判定の基準になる。
+    fn landed_fingerprint(&self, persistent_id: &str) -> Result<(Option<i64>, Option<i64>)> {
+        let location_path = self
+            .conn
+            .query_row(
+                "SELECT location_path FROM tracks WHERE persistent_id = ?1",
+                [persistent_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(location_path
+            .as_deref()
+            .map(Path::new)
+            .map(file_fingerprint)
+            .unwrap_or((None, None)))
     }
 
     pub fn record_sync_selection(
@@ -555,6 +597,35 @@ impl Database {
                 now()
             ],
         )?;
+        Ok(())
+    }
+
+    /// writeback で母艦へ反映できた分だけ三者比較の基準を進める。
+    /// 反映していない側を `None` にすることで、その基準は現状のまま残す。
+    /// 対応する selection 行が無い場合は何もしない（基準が無いままでも収束する）。
+    pub fn update_sync_selection_baseline(
+        &self,
+        source_id: i64,
+        remote_pid: &str,
+        base_name: Option<&str>,
+        base_membership: Option<&[String]>,
+    ) -> Result<()> {
+        if let Some(name) = base_name {
+            self.conn.execute(
+                "UPDATE sync_selection SET name = ?1, base_name = ?1
+                 WHERE source_id = ?2 AND kind = 'playlist' AND remote_pid = ?3",
+                params![name, source_id, remote_pid],
+            )?;
+        }
+        if let Some(membership) = base_membership {
+            let membership = serde_json::to_string(membership)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+            self.conn.execute(
+                "UPDATE sync_selection SET base_membership = ?1
+                 WHERE source_id = ?2 AND kind = 'playlist' AND remote_pid = ?3",
+                params![membership, source_id, remote_pid],
+            )?;
+        }
         Ok(())
     }
 
@@ -648,12 +719,38 @@ impl Database {
         Ok(())
     }
 
-    /// selection の参照だけを外す。sync_track/tracks は eviction が孤立曲として扱うため触らない。
-    pub fn remove_sync_selection(&self, selection_id: i64) -> Result<bool> {
-        let deleted = self
-            .conn
-            .execute("DELETE FROM sync_selection WHERE id = ?1", [selection_id])?;
-        Ok(deleted > 0)
+    /// selection の参照を外す。sync_track/tracks は eviction が孤立曲として扱うため触らない。
+    /// `delete_playlist` を立てると、この selection が指すローカルプレイリストも削除して
+    /// 所属曲を未参照（= eviction 候補）へ戻す。
+    pub fn remove_sync_selection(&self, selection_id: i64, delete_playlist: bool) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        let remote_pid: Option<String> = tx
+            .query_row(
+                "SELECT remote_pid FROM sync_selection WHERE id = ?1",
+                [selection_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(remote_pid) = remote_pid else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        tx.execute("DELETE FROM sync_selection WHERE id = ?1", [selection_id])?;
+        if delete_playlist {
+            // 対応する persistent_id のローカルプレイリスト 1 行だけを消す。
+            let playlist_id: Option<i64> = tx
+                .query_row(
+                    "SELECT playlist_id FROM playlists WHERE persistent_id = ?1",
+                    [&remote_pid],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(playlist_id) = playlist_id {
+                self.delete_playlist(playlist_id)?;
+            }
+        }
+        tx.commit()?;
+        Ok(true)
     }
 
     /// 指定 PID のローカル track_id を、入力順を保って解決する。
@@ -1045,12 +1142,12 @@ mod tests {
             .unwrap();
         let selection = db.list_sync_selection_records(source.id).unwrap().remove(0);
 
-        assert!(db.remove_sync_selection(selection.id).unwrap());
+        assert!(db.remove_sync_selection(selection.id, false).unwrap());
         assert!(db
             .list_sync_selection_records(source.id)
             .unwrap()
             .is_empty());
-        assert!(!db.remove_sync_selection(selection.id).unwrap());
+        assert!(!db.remove_sync_selection(selection.id, false).unwrap());
 
         let track_count: i64 = db
             .conn
@@ -1061,6 +1158,76 @@ mod tests {
             )
             .unwrap();
         assert_eq!(track_count, 1);
+    }
+
+    #[test]
+    fn remove_sync_selection_with_playlist_frees_tracks_for_eviction() {
+        let db = Database::open_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.mp3");
+        std::fs::write(&path, b"audio").unwrap();
+        let source = db
+            .upsert_sync_source("drop-server", Some("Drop"), "http://drop", "token")
+            .unwrap();
+        let value = track("DR0PDR0PDR0PDR01", "Dropped", 20);
+        let track_id = db
+            .upsert_synced_track(&value, &path, source.id)
+            .unwrap()
+            .unwrap();
+        db.record_sync_track_with_root(
+            "DR0PDR0PDR0PDR01",
+            source.id,
+            &serde_json::to_string(&value).unwrap(),
+            Some(dir.path()),
+        )
+        .unwrap();
+        let playlist = Playlist {
+            id: 1,
+            playlist_id: 1,
+            persistent_id: Some("DR0PL15TDR0PL151".to_string()),
+            parent_persistent_id: None,
+            name: "Dropped selection".to_string(),
+            is_folder: false,
+            is_smart: false,
+            is_user_created: false,
+            track_count: 1,
+        };
+        let playlist_id = db
+            .create_or_replace_playlist_with_pid(&playlist, &[track_id])
+            .unwrap();
+        db.record_sync_selection_with_root(
+            source.id,
+            "DR0PL15TDR0PL151",
+            "Dropped selection",
+            Some(dir.path()),
+        )
+        .unwrap();
+        let selection = db.list_sync_selection_records(source.id).unwrap().remove(0);
+        assert!(db
+            .unreferenced_synced_track_snapshots(source.id)
+            .unwrap()
+            .is_empty());
+
+        assert!(db.remove_sync_selection(selection.id, true).unwrap());
+
+        assert_eq!(
+            db.unreferenced_synced_track_snapshots(source.id)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.persistent_id)
+                .collect::<Vec<_>>(),
+            vec!["DR0PDR0PDR0PDR01"]
+        );
+        let playlist_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM playlists WHERE playlist_id=?1",
+                [playlist_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(playlist_count, 0);
+        assert!(db.get_playlist_track_ids(playlist_id).unwrap().is_empty());
     }
 
     #[test]
@@ -1083,7 +1250,7 @@ mod tests {
             .upsert_synced_track(&track("AAAABBBBCCCCDD01", "First", 80), &path, source.id)
             .unwrap();
         assert_eq!(first, Some(42));
-        db.record_sync_track("AAAABBBBCCCCDD01", source.id, "{}")
+        db.record_sync_track_with_root("AAAABBBBCCCCDD01", source.id, "{}", Some(dir.path()))
             .unwrap();
         let fingerprint = db
             .synced_track_file_record("AAAABBBBCCCCDD01")
@@ -1120,6 +1287,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn landed_fingerprint_only_moves_when_the_file_was_landed_again() {
+        let db = Database::open_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.mp3");
+        std::fs::write(&path, b"audio").unwrap();
+        let source = db
+            .upsert_sync_source("fp-server", Some("FP"), "http://fp", "token")
+            .unwrap();
+        let value = track("F1NGERPR1NT00001", "Landed", 40);
+        db.upsert_synced_track(&value, &path, source.id).unwrap();
+        db.record_sync_track_with_root(
+            "F1NGERPR1NT00001",
+            source.id,
+            &serde_json::to_string(&value).unwrap(),
+            Some(dir.path()),
+        )
+        .unwrap();
+        // 着地後にファイルが差し替わっても、着地させていない再記録では基準を進めない。
+        std::fs::write(&path, b"audio-modified-locally").unwrap();
+
+        db.record_sync_track("F1NGERPR1NT00001", source.id, "{}")
+            .unwrap();
+        let preserved = db
+            .synced_track_file_record("F1NGERPR1NT00001")
+            .unwrap()
+            .unwrap();
+        assert_eq!(preserved.landed_size, Some(5));
+        assert_eq!(preserved.landing_root.as_deref(), dir.path().to_str());
+
+        db.record_sync_track_landing("F1NGERPR1NT00001", dir.path())
+            .unwrap();
+        let relanded = db
+            .synced_track_file_record("F1NGERPR1NT00001")
+            .unwrap()
+            .unwrap();
+        assert_eq!(relanded.landed_size, Some(22));
     }
 
     #[test]

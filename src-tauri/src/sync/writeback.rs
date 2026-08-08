@@ -8,7 +8,9 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::{MasterClient, SyncError, SyncFailure, SyncProgress, LOOKUP_CHUNK};
-use crate::db::sync::{SyncSource, SyncedPlaylistSnapshot, SyncedTrackSnapshot};
+use crate::db::sync::{
+    SyncSelectionRecord, SyncSource, SyncedPlaylistSnapshot, SyncedTrackSnapshot,
+};
 use crate::db::Database;
 use crate::models::{Playlist, Track};
 
@@ -58,7 +60,8 @@ pub enum FieldDiff {
     Conflict {
         local: Value,
         master: Value,
-        local_newer: bool,
+        /// `None` は date_modified から新旧を判定できなかったことを表す。
+        local_newer: Option<bool>,
     },
 }
 
@@ -88,7 +91,19 @@ pub struct WritebackConflict {
     pub field: String,
     pub local: Value,
     pub master: Value,
+    /// 既定で手元の値を選ぶか。新旧を判定できないときも手元へ倒す。
     pub local_newer: bool,
+    /// date_modified で新旧を実際に比較できたか。false なら UI は新旧を示さない。
+    pub newer_known: bool,
+}
+
+/// 適用しないが確認画面で知らせる、母艦から消えた曲のローカル変更。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedTrackChange {
+    pub persistent_id: String,
+    pub track_name: Option<String>,
+    pub reason: String,
 }
 
 /// UI 確認画面でそのまま列挙できる playlist 操作。
@@ -124,6 +139,13 @@ pub enum PlaylistOp {
         name: String,
         reason: String,
     },
+    /// 手元と母艦が別々に変更されたため push しない通知。適用時は何もしない。
+    #[serde(rename = "skippedConflict")]
+    SkippedConflict {
+        persistent_id: String,
+        name: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -134,6 +156,8 @@ pub struct WritebackPlan {
     pub conflicts: Vec<WritebackConflict>,
     pub playlist_ops: Vec<PlaylistOp>,
     pub pulls: Vec<TrackChange>,
+    /// 母艦に無いなどの理由で反映されない曲。summary の failures にも計上する。
+    pub skipped_tracks: Vec<SkippedTrackChange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,7 +191,7 @@ pub struct WritebackSummary {
 struct LocalInput {
     tracks: Vec<SyncedTrackSnapshot>,
     playlists: Vec<SyncedPlaylistSnapshot>,
-    selections: Vec<(String, String)>,
+    selections: Vec<SyncSelectionRecord>,
 }
 
 #[derive(Debug)]
@@ -289,13 +313,44 @@ impl MasterClient {
         .await?;
         Ok(())
     }
+
+    async fn writeback_delete_playlist(&self, playlist_id: i64) -> Result<(), SyncError> {
+        Self::checked(
+            self.request(
+                reqwest::Method::DELETE,
+                &format!("/api/playlists/{playlist_id}"),
+            )
+            .send()
+            .await,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// 作成直後の空プレイリストへ曲順を書き込む。空でなければ他者が触ったとみなす。
+    async fn fill_created_playlist(
+        &self,
+        playlist_id: i64,
+        track_ids: &[i64],
+    ) -> Result<(), SyncError> {
+        let current = self
+            .playlist_tracks(playlist_id)
+            .await?
+            .into_iter()
+            .filter_map(|track| track.persistent_id)
+            .collect::<Vec<_>>();
+        verify_playlist_membership(&current, &[])?;
+        // GET と PUT の間にはミリ秒単位の競合が残る。将来は ETag 付き conditional PUT で塞ぐ。
+        self.writeback_replace_playlist(playlist_id, track_ids)
+            .await
+    }
 }
 
 fn collect_local(db: &Database, source_id: i64) -> Result<LocalInput, SyncError> {
     Ok(LocalInput {
         tracks: db.list_synced_track_snapshots(source_id)?,
         playlists: db.list_synced_playlist_snapshots(source_id)?,
-        selections: db.list_sync_selections(source_id)?,
+        selections: db.list_sync_selection_records(source_id)?,
     })
 }
 
@@ -319,7 +374,12 @@ async fn collect_remote(
         .playlists
         .iter()
         .filter_map(|row| row.playlist.persistent_id.clone())
-        .chain(local.selections.iter().map(|(pid, _)| pid.clone()))
+        .chain(
+            local
+                .selections
+                .iter()
+                .map(|selection| selection.remote_pid.clone()),
+        )
         .collect::<HashSet<_>>();
     let mut playlists = HashMap::new();
     for playlist in client.playlists().await? {
@@ -379,20 +439,13 @@ fn field_values_equal(field: &str, left: &Value, right: &Value) -> bool {
     }
 }
 
-fn is_local_newer(local: Option<&str>, master: Option<&str>) -> bool {
-    match (local, master) {
-        (Some(local), Some(master)) => {
-            match (
-                DateTime::parse_from_rfc3339(local),
-                DateTime::parse_from_rfc3339(master),
-            ) {
-                (Ok(local), Ok(master)) => local > master,
-                _ => local > master,
-            }
-        }
-        (Some(_), None) => true,
-        _ => false,
-    }
+/// 両側の date_modified を時刻として比較できたときだけ新旧を返す。
+/// 文字列比較は時計として意味を持たないため、解釈できない組み合わせは判定不能にする。
+/// rating は `set_rating` が date_modified を進めないので、両側変更は基本的に判定不能になる。
+fn is_local_newer(local: Option<&str>, master: Option<&str>) -> Option<bool> {
+    let local = DateTime::parse_from_rfc3339(local?).ok()?;
+    let master = DateTime::parse_from_rfc3339(master?).ok()?;
+    (local != master).then_some(local > master)
 }
 
 pub(crate) fn track_json(track: &Track) -> Result<Value, SyncError> {
@@ -434,10 +487,45 @@ fn verify_playlist_membership(current: &[String], planned: &[String]) -> Result<
     }
 }
 
+/// プレイリストの名前・曲順の三者比較結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaylistChange {
+    /// push も通知も要らない。母艦だけの変更は follow 再同期が取り込む。
+    Untouched,
+    /// 手元だけが変わったので母艦へ反映する。
+    Push,
+    /// 両側が別々に変わった。母艦を黙って潰さず通知だけする。
+    Conflict,
+}
+
+/// `base` が無い旧データは基準を復元できないため、従来どおり手元を正として push する。
+fn classify_playlist_change<T>(base: Option<&T>, local: &T, master: &T) -> PlaylistChange
+where
+    T: PartialEq + ?Sized,
+{
+    if local == master {
+        return PlaylistChange::Untouched;
+    }
+    match base {
+        None => PlaylistChange::Push,
+        Some(base) if local == base => PlaylistChange::Untouched,
+        Some(base) if master == base => PlaylistChange::Push,
+        Some(_) => PlaylistChange::Conflict,
+    }
+}
+
 fn compute_plan(local: &LocalInput, remote: &RemoteInput) -> Result<WritebackPlan, SyncError> {
     let mut plan = WritebackPlan::default();
     for row in &local.tracks {
         let Some(master) = remote.tracks.get(&row.persistent_id) else {
+            // 母艦から消えた曲。ローカル編集を黙って捨てず、反映されないことを知らせる。
+            if has_local_changes(&row.base_meta, &row.local)? {
+                plan.skipped_tracks.push(SkippedTrackChange {
+                    persistent_id: row.persistent_id.clone(),
+                    track_name: row.local.name.clone(),
+                    reason: "母艦に存在しないため反映されません".to_string(),
+                });
+            }
             continue;
         };
         let base: Value = serde_json::from_str(&row.base_meta)
@@ -476,7 +564,9 @@ fn compute_plan(local: &LocalInput, remote: &RemoteInput) -> Result<WritebackPla
                     field: field.to_string(),
                     local,
                     master,
-                    local_newer,
+                    // 判定不能なら「書き戻し」の意図に沿って手元の値を既定にする。
+                    local_newer: local_newer.unwrap_or(true),
+                    newer_known: local_newer.is_some(),
                 }),
             }
         }
@@ -501,6 +591,11 @@ fn compute_plan(local: &LocalInput, remote: &RemoteInput) -> Result<WritebackPla
         .iter()
         .filter_map(|row| row.playlist.persistent_id.clone())
         .collect::<HashSet<_>>();
+    let selection_by_pid = local
+        .selections
+        .iter()
+        .map(|selection| (selection.remote_pid.as_str(), selection))
+        .collect::<HashMap<_, _>>();
     for row in &local.playlists {
         let Some(pid) = row.playlist.persistent_id.clone() else {
             continue;
@@ -513,37 +608,68 @@ fn compute_plan(local: &LocalInput, remote: &RemoteInput) -> Result<WritebackPla
                 track_persistent_ids: row.track_persistent_ids.clone(),
             }),
             Some((master, membership)) => {
-                if row.playlist.name != master.name {
-                    plan.playlist_ops.push(PlaylistOp::Rename {
+                let selection = selection_by_pid.get(pid.as_str());
+                match classify_playlist_change(
+                    selection.and_then(|selection| selection.base_name.as_deref()),
+                    row.playlist.name.as_str(),
+                    master.name.as_str(),
+                ) {
+                    PlaylistChange::Untouched => {}
+                    PlaylistChange::Push => plan.playlist_ops.push(PlaylistOp::Rename {
                         persistent_id: pid.clone(),
                         master_playlist_id: master.playlist_id,
                         from: master.name.clone(),
                         to: row.playlist.name.clone(),
-                    });
+                    }),
+                    PlaylistChange::Conflict => {
+                        plan.playlist_ops.push(PlaylistOp::SkippedConflict {
+                            persistent_id: pid.clone(),
+                            name: row.playlist.name.clone(),
+                            reason: format!(
+                                "母艦側でも名前が変更されているため反映しません（母艦: {}）",
+                                master.name
+                            ),
+                        })
+                    }
                 }
-                if row.track_persistent_ids != *membership {
-                    plan.playlist_ops.push(PlaylistOp::ReplaceTracks {
+                match classify_playlist_change(
+                    selection.and_then(|selection| selection.base_membership.as_deref()),
+                    row.track_persistent_ids.as_slice(),
+                    membership.as_slice(),
+                ) {
+                    PlaylistChange::Untouched => {}
+                    PlaylistChange::Push => plan.playlist_ops.push(PlaylistOp::ReplaceTracks {
                         persistent_id: pid,
                         master_playlist_id: master.playlist_id,
                         name: row.playlist.name.clone(),
                         track_persistent_ids: row.track_persistent_ids.clone(),
                         master_track_persistent_ids: membership.clone(),
                         overwrites_master_ordering: true,
-                    });
+                    }),
+                    PlaylistChange::Conflict => {
+                        plan.playlist_ops.push(PlaylistOp::SkippedConflict {
+                            persistent_id: pid,
+                            name: row.playlist.name.clone(),
+                            reason: format!(
+                            "母艦側でも曲目・曲順が変更されているため反映しません（母艦: {} 曲）",
+                            membership.len()
+                        ),
+                        })
+                    }
                 }
             }
             None => {}
         }
     }
-    for (pid, selected_name) in &local.selections {
-        if local_playlist_pids.contains(pid) {
+    for selection in &local.selections {
+        if local_playlist_pids.contains(&selection.remote_pid) {
             continue;
         }
-        if let Some((master, _)) = remote.playlists.get(pid) {
+        if let Some((master, _)) = remote.playlists.get(&selection.remote_pid) {
             plan.playlist_ops.push(PlaylistOp::SkippedDelete {
-                persistent_id: pid.clone(),
+                persistent_id: selection.remote_pid.clone(),
                 name: if master.name.is_empty() {
-                    selected_name.clone()
+                    selection.name.clone()
                 } else {
                     master.name.clone()
                 },
@@ -664,6 +790,22 @@ fn failure(pid: Option<String>, name: Option<String>, error: impl ToString) -> S
     }
 }
 
+/// 中途半端に作った母艦プレイリストを best-effort で消す。
+/// 消せた場合も失敗理由はそのまま返し、成功扱いにはしない。
+/// 消せなかった場合でも create API は persistentId 冪等なので、次回の Create で収束する。
+async fn rollback_created_playlist(
+    client: &MasterClient,
+    playlist_id: i64,
+    error: SyncError,
+) -> SyncError {
+    match client.writeback_delete_playlist(playlist_id).await {
+        Ok(()) => error,
+        Err(rollback) => SyncError::InvalidResponse(format!(
+            "{error}（作成した母艦プレイリストの取り消しにも失敗しました: {rollback}）"
+        )),
+    }
+}
+
 fn auth_or_collect(
     result: Result<(), SyncError>,
     failures: &mut Vec<SyncFailure>,
@@ -708,6 +850,13 @@ where
     });
 
     let mut summary = WritebackSummary::default();
+    for skipped in &plan.skipped_tracks {
+        summary.failures.push(failure(
+            Some(skipped.persistent_id.clone()),
+            skipped.track_name.clone(),
+            &skipped.reason,
+        ));
+    }
     let mut completed = 0usize;
     let mut failed_tracks = HashSet::new();
     let mut merged_baselines = remote
@@ -812,60 +961,76 @@ where
                 persistent_id,
                 name,
                 track_persistent_ids,
-            } => match client.writeback_create_playlist(name, persistent_id).await {
-                Ok(created) => match created.persistent_id.clone() {
-                    None => Err(SyncError::InvalidResponse(
-                        "created playlist omitted persistentId".to_string(),
-                    )),
-                    Some(master_pid) => match db.adopt_master_playlist_identity(
-                        *local_playlist_id,
-                        source.id,
-                        &master_pid,
-                        name,
-                    ) {
-                        Err(error) => Err(SyncError::Database(error)),
-                        Ok(()) => {
-                            let track_ids = track_persistent_ids
-                                .iter()
-                                .filter_map(|pid| {
-                                    current_master.get(pid).map(|track| track.track_id)
-                                })
-                                .collect::<Vec<_>>();
-                            if track_ids.len() != track_persistent_ids.len() {
-                                Err(SyncError::InvalidResponse(
-                                    "playlist contains a track missing on master".to_string(),
-                                ))
-                            } else {
-                                let current = client
-                                    .playlist_tracks(created.playlist_id)
-                                    .await?
-                                    .into_iter()
-                                    .filter_map(|track| track.persistent_id)
-                                    .collect::<Vec<_>>();
-                                if let Err(error) = verify_playlist_membership(&current, &[]) {
-                                    Err(error)
-                                } else {
-                                    // GET と PUT の間にはミリ秒単位の競合が残る。将来は ETag 付き conditional PUT で塞ぐ。
-                                    client
-                                        .writeback_replace_playlist(created.playlist_id, &track_ids)
-                                        .await
-                                }
+            } => {
+                // 母艦に無い曲が 1 つでもあれば作成前に諦める。空プレイリストを残さない。
+                let track_ids = track_persistent_ids
+                    .iter()
+                    .filter_map(|pid| current_master.get(pid).map(|track| track.track_id))
+                    .collect::<Vec<_>>();
+                if track_ids.len() != track_persistent_ids.len() {
+                    Err(SyncError::InvalidResponse(
+                        "母艦に無い曲が含まれています。先に「母艦へ送る」で曲を送ってください"
+                            .to_string(),
+                    ))
+                } else {
+                    match client.writeback_create_playlist(name, persistent_id).await {
+                        Err(error) => Err(error),
+                        Ok(created) => {
+                            let filled = match created.persistent_id.clone() {
+                                None => Err(SyncError::InvalidResponse(
+                                    "created playlist omitted persistentId".to_string(),
+                                )),
+                                Some(master_pid) => client
+                                    .fill_created_playlist(created.playlist_id, &track_ids)
+                                    .await
+                                    .map(|()| master_pid),
+                            };
+                            match filled {
+                                // 曲を入れ切れなかった作成は取り消し、次回も同じ Create を出せる状態へ戻す。
+                                Err(error) => Err(rollback_created_playlist(
+                                    &client,
+                                    created.playlist_id,
+                                    error,
+                                )
+                                .await),
+                                // 母艦側は成立しているので、identity 採用に失敗しても作成は取り消さない。
+                                Ok(master_pid) => db
+                                    .adopt_master_playlist_identity(
+                                        *local_playlist_id,
+                                        source.id,
+                                        &master_pid,
+                                        name,
+                                    )
+                                    .and_then(|()| {
+                                        db.update_sync_selection_baseline(
+                                            source.id,
+                                            &master_pid,
+                                            Some(name),
+                                            Some(track_persistent_ids),
+                                        )
+                                    })
+                                    .map_err(SyncError::Database),
                             }
                         }
-                    },
-                },
-                Err(error) => Err(error),
-            },
+                    }
+                }
+            }
             PlaylistOp::Rename {
+                persistent_id,
                 master_playlist_id,
                 to,
                 ..
-            } => {
-                client
-                    .writeback_rename_playlist(*master_playlist_id, to)
-                    .await
-            }
+            } => match client
+                .writeback_rename_playlist(*master_playlist_id, to)
+                .await
+            {
+                Err(error) => Err(error),
+                Ok(()) => db
+                    .update_sync_selection_baseline(source.id, persistent_id, Some(to), None)
+                    .map_err(SyncError::Database),
+            },
             PlaylistOp::ReplaceTracks {
+                persistent_id,
                 master_playlist_id,
                 track_persistent_ids,
                 master_track_persistent_ids,
@@ -877,7 +1042,8 @@ where
                     .collect::<Vec<_>>();
                 if track_ids.len() != track_persistent_ids.len() {
                     Err(SyncError::InvalidResponse(
-                        "playlist contains a track missing on master".to_string(),
+                        "母艦に無い曲が含まれています。先に「母艦へ送る」で曲を送ってください"
+                            .to_string(),
                     ))
                 } else {
                     let current = client
@@ -892,13 +1058,38 @@ where
                         Err(error)
                     } else {
                         // GET と PUT の間にはミリ秒単位の競合が残る。将来は ETag 付き conditional PUT で塞ぐ。
-                        client
+                        match client
                             .writeback_replace_playlist(*master_playlist_id, &track_ids)
                             .await
+                        {
+                            Err(error) => Err(error),
+                            Ok(()) => db
+                                .update_sync_selection_baseline(
+                                    source.id,
+                                    persistent_id,
+                                    None,
+                                    Some(track_persistent_ids),
+                                )
+                                .map_err(SyncError::Database),
+                        }
                     }
                 }
             }
             PlaylistOp::SkippedDelete { .. } => {
+                completed += 1;
+                continue;
+            }
+            // 両側変更は適用しないが、放置されないよう結果にも残す。
+            PlaylistOp::SkippedConflict {
+                persistent_id,
+                name,
+                reason,
+            } => {
+                summary.failures.push(failure(
+                    Some(persistent_id.clone()),
+                    Some(name.clone()),
+                    reason,
+                ));
                 completed += 1;
                 continue;
             }
@@ -917,7 +1108,9 @@ where
             PlaylistOp::Rename {
                 persistent_id, to, ..
             } => (Some(persistent_id.clone()), Some(to.clone())),
-            PlaylistOp::SkippedDelete { .. } => unreachable!(),
+            PlaylistOp::SkippedDelete { .. } | PlaylistOp::SkippedConflict { .. } => {
+                unreachable!()
+            }
         };
         if auth_or_collect(result, &mut summary.failures, pid, name)? {
             summary.playlist_ops += 1;
@@ -963,6 +1156,71 @@ mod tests {
         serde_json::to_value(value).unwrap()
     }
 
+    fn track_fixture(persistent_id: &str, name: &str) -> Track {
+        Track {
+            id: 1,
+            track_id: 1,
+            persistent_id: Some(persistent_id.to_string()),
+            name: Some(name.to_string()),
+            artist: Some("Artist".to_string()),
+            album_artist: None,
+            composer: None,
+            album: Some("Album".to_string()),
+            genre: Some("House".to_string()),
+            year: Some(2026),
+            rating: Some(60),
+            play_count: Some(1),
+            skip_count: Some(0),
+            total_time_ms: Some(123_000),
+            date_added: Some("2026-01-01T00:00:00Z".to_string()),
+            date_modified: Some("2026-01-02T00:00:00Z".to_string()),
+            bpm: Some(128),
+            comments: None,
+            location_raw: Some("file:///song.mp3".to_string()),
+            location_path: Some("/song.mp3".to_string()),
+            track_type: Some("File".to_string()),
+            disabled: false,
+            compilation: false,
+            disc_number: Some(1),
+            disc_count: Some(1),
+            track_number: Some(1),
+            track_count: Some(10),
+            file_exists: true,
+            last_played: None,
+        }
+    }
+
+    fn playlist_fixture(persistent_id: &str, name: &str) -> Playlist {
+        Playlist {
+            id: 1,
+            playlist_id: 1,
+            persistent_id: Some(persistent_id.to_string()),
+            parent_persistent_id: None,
+            name: name.to_string(),
+            is_folder: false,
+            is_smart: false,
+            is_user_created: true,
+            track_count: 0,
+        }
+    }
+
+    fn selection_fixture(
+        remote_pid: &str,
+        base_name: Option<&str>,
+        base_membership: Option<&[&str]>,
+    ) -> SyncSelectionRecord {
+        SyncSelectionRecord {
+            id: 1,
+            remote_pid: remote_pid.to_string(),
+            name: base_name.unwrap_or_default().to_string(),
+            policy: "follow".to_string(),
+            landing_root: None,
+            base_membership: base_membership
+                .map(|pids| pids.iter().map(|pid| pid.to_string()).collect()),
+            base_name: base_name.map(str::to_string),
+        }
+    }
+
     #[test]
     fn classifies_all_three_way_states() {
         assert_eq!(
@@ -1003,7 +1261,7 @@ mod tests {
             FieldDiff::Conflict {
                 local: value("Local"),
                 master: value("Master"),
-                local_newer: true,
+                local_newer: Some(true),
             }
         );
         assert!(matches!(
@@ -1016,10 +1274,32 @@ mod tests {
                 Some("2026-07-22T01:00:00Z"),
             ),
             FieldDiff::Conflict {
-                local_newer: false,
+                local_newer: Some(false),
                 ..
             }
         ));
+    }
+
+    /// 時計が並ぶ・欠ける・壊れている組み合わせでは新旧を断定しない。
+    #[test]
+    fn conflict_without_a_usable_clock_is_undecidable() {
+        for (local, master) in [
+            (Some("2026-07-22T00:00:00Z"), Some("2026-07-22T00:00:00Z")),
+            (Some("2026-07-22T00:00:00Z"), None),
+            (None, Some("2026-07-22T00:00:00Z")),
+            (Some("2026-07-22"), Some("2026-07-21T00:00:00Z")),
+        ] {
+            assert!(
+                matches!(
+                    classify_field("rating", value(60), value(100), value(80), local, master),
+                    FieldDiff::Conflict {
+                        local_newer: None,
+                        ..
+                    }
+                ),
+                "{local:?} vs {master:?}"
+            );
+        }
     }
 
     #[test]
@@ -1040,6 +1320,204 @@ mod tests {
         );
     }
 
+    /// rating は両側とも時計を進めないので、既定は「手元の値」で新旧は未確定にする。
+    #[test]
+    fn rating_conflict_defaults_to_local_and_reports_unknown_order() {
+        let local = crate::models::Track {
+            rating: Some(100),
+            date_modified: Some("2026-07-22T00:00:00Z".to_string()),
+            ..track_fixture("AAAABBBBCCCC0001", "Song")
+        };
+        let master = crate::models::Track {
+            rating: Some(20),
+            ..local.clone()
+        };
+        let base = serde_json::to_string(&crate::models::Track {
+            rating: Some(60),
+            ..local.clone()
+        })
+        .unwrap();
+        let plan = compute_plan(
+            &LocalInput {
+                tracks: vec![SyncedTrackSnapshot {
+                    persistent_id: "AAAABBBBCCCC0001".to_string(),
+                    base_meta: base,
+                    local,
+                }],
+                playlists: Vec::new(),
+                selections: Vec::new(),
+            },
+            &RemoteInput {
+                tracks: HashMap::from([("AAAABBBBCCCC0001".to_string(), master)]),
+                playlists: HashMap::new(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.conflicts.len(), 1);
+        assert_eq!(plan.conflicts[0].field, "rating");
+        assert!(plan.conflicts[0].local_newer);
+        assert!(!plan.conflicts[0].newer_known);
+    }
+
+    const LIST_PID: &str = "1111222233334444";
+
+    fn playlist_plan(
+        selection: Option<SyncSelectionRecord>,
+        local: (&str, &[&str]),
+        master: (&str, &[&str]),
+    ) -> WritebackPlan {
+        let strings = |pids: &[&str]| pids.iter().map(|pid| pid.to_string()).collect::<Vec<_>>();
+        let mut master_playlist = playlist_fixture(LIST_PID, master.0);
+        master_playlist.playlist_id = 9;
+        let mut local_playlist = playlist_fixture(LIST_PID, local.0);
+        local_playlist.playlist_id = 3;
+        compute_plan(
+            &LocalInput {
+                tracks: Vec::new(),
+                playlists: vec![SyncedPlaylistSnapshot {
+                    playlist: local_playlist,
+                    track_persistent_ids: strings(local.1),
+                }],
+                selections: selection.into_iter().collect(),
+            },
+            &RemoteInput {
+                tracks: HashMap::new(),
+                playlists: HashMap::from([(
+                    LIST_PID.to_string(),
+                    (master_playlist, strings(master.1)),
+                )]),
+            },
+        )
+        .unwrap()
+    }
+
+    /// 母艦だけの追加・リネームは follow 再同期の担当で、書き戻しは触らない。
+    #[test]
+    fn master_only_playlist_edits_are_left_to_resync() {
+        let plan = playlist_plan(
+            Some(selection_fixture(
+                LIST_PID,
+                Some("List"),
+                Some(&["AAAABBBBCCCC0001"]),
+            )),
+            ("List", &["AAAABBBBCCCC0001"]),
+            ("List (master)", &["AAAABBBBCCCC0001", "AAAABBBBCCCC0002"]),
+        );
+        assert!(plan.playlist_ops.is_empty());
+    }
+
+    #[test]
+    fn local_only_playlist_edits_are_pushed() {
+        let plan = playlist_plan(
+            Some(selection_fixture(
+                LIST_PID,
+                Some("List"),
+                Some(&["AAAABBBBCCCC0001"]),
+            )),
+            ("List (local)", &["AAAABBBBCCCC0002", "AAAABBBBCCCC0001"]),
+            ("List", &["AAAABBBBCCCC0001"]),
+        );
+        assert!(plan
+            .playlist_ops
+            .iter()
+            .any(|op| matches!(op, PlaylistOp::Rename { to, .. } if to == "List (local)")));
+        assert!(plan
+            .playlist_ops
+            .iter()
+            .any(|op| matches!(op, PlaylistOp::ReplaceTracks { .. })));
+    }
+
+    /// 両側が別々に変わったら、母艦を黙って置換せず通知だけ残す。
+    #[test]
+    fn playlist_changed_on_both_sides_is_reported_instead_of_overwritten() {
+        let plan = playlist_plan(
+            Some(selection_fixture(
+                LIST_PID,
+                Some("Base"),
+                Some(&["AAAABBBBCCCC0001"]),
+            )),
+            ("Local", &["AAAABBBBCCCC0001", "AAAABBBBCCCC0002"]),
+            ("Master", &["AAAABBBBCCCC0001", "AAAABBBBCCCC0003"]),
+        );
+        let skipped = plan
+            .playlist_ops
+            .iter()
+            .filter_map(|op| match op {
+                PlaylistOp::SkippedConflict { reason, .. } => Some(reason.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(skipped.len(), 2);
+        assert!(skipped.iter().any(|reason| reason.contains("Master")));
+        assert!(skipped.iter().any(|reason| reason.contains("2 曲")));
+        assert!(!plan.playlist_ops.iter().any(|op| matches!(
+            op,
+            PlaylistOp::Rename { .. } | PlaylistOp::ReplaceTracks { .. }
+        )));
+    }
+
+    /// 基準の無い旧データは従来どおり手元を正として push し、母艦側の現状を plan に含める。
+    #[test]
+    fn playlist_without_a_baseline_falls_back_to_pushing_local_state() {
+        let plan = playlist_plan(
+            None,
+            ("Local", &["AAAABBBBCCCC0001"]),
+            ("Master", &["AAAABBBBCCCC0001", "AAAABBBBCCCC0003"]),
+        );
+        assert!(plan
+            .playlist_ops
+            .iter()
+            .any(|op| matches!(op, PlaylistOp::Rename { from, .. } if from == "Master")));
+        assert!(plan.playlist_ops.iter().any(|op| matches!(
+            op,
+            PlaylistOp::ReplaceTracks {
+                master_track_persistent_ids,
+                ..
+            } if master_track_persistent_ids.len() == 2
+        )));
+    }
+
+    /// 母艦から消えた曲のローカル編集を黙って捨てない。
+    #[test]
+    fn local_changes_for_a_track_missing_on_master_are_reported() {
+        let base = serde_json::to_string(&track_fixture("AAAABBBBCCCC0001", "Song")).unwrap();
+        let snapshot = |local: Track| LocalInput {
+            tracks: vec![SyncedTrackSnapshot {
+                persistent_id: "AAAABBBBCCCC0001".to_string(),
+                base_meta: base.clone(),
+                local,
+            }],
+            playlists: Vec::new(),
+            selections: Vec::new(),
+        };
+        let empty_remote = || RemoteInput {
+            tracks: HashMap::new(),
+            playlists: HashMap::new(),
+        };
+
+        let changed = compute_plan(
+            &snapshot(Track {
+                rating: Some(100),
+                ..track_fixture("AAAABBBBCCCC0001", "Song")
+            }),
+            &empty_remote(),
+        )
+        .unwrap();
+        assert_eq!(changed.skipped_tracks.len(), 1);
+        assert_eq!(
+            changed.skipped_tracks[0].track_name.as_deref(),
+            Some("Song")
+        );
+
+        let untouched = compute_plan(
+            &snapshot(track_fixture("AAAABBBBCCCC0001", "Song")),
+            &empty_remote(),
+        )
+        .unwrap();
+        assert!(untouched.skipped_tracks.is_empty());
+    }
+
     #[test]
     fn unresolved_conflict_is_rejected() {
         let mut local_newer = WritebackPlan {
@@ -1050,6 +1528,7 @@ mod tests {
                 local: value("Local"),
                 master: value("Master"),
                 local_newer: true,
+                newer_known: true,
             }],
             ..WritebackPlan::default()
         };
@@ -1168,6 +1647,11 @@ mod tests {
                 overwrites_master_ordering: true,
             }],
             pulls: Vec::new(),
+            skipped_tracks: vec![SkippedTrackChange {
+                persistent_id: "EEEEFFFF00002222".to_string(),
+                track_name: Some("Gone".to_string()),
+                reason: "母艦に存在しないため反映されません".to_string(),
+            }],
         };
         plan.plan_id = plan_hash(&plan).unwrap();
         assert_eq!(plan.plan_id.len(), 64);
@@ -1189,6 +1673,8 @@ mod tests {
         );
         assert_eq!(json["playlistOps"][0]["overwritesMasterOrdering"], true);
         assert!(json.get("pulls").is_some());
+        assert_eq!(json["skippedTracks"][0]["persistentId"], "EEEEFFFF00002222");
+        assert_eq!(json["skippedTracks"][0]["trackName"], "Gone");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1516,15 +2002,177 @@ mod tests {
         assert_eq!(base.album.as_deref(), Some("Master Album"));
         assert_eq!(base.rating, Some(100));
         assert_eq!(base.play_count, Some(999));
+        // push できた曲順は selection の基準にも反映する（次の follow 再同期が警告しない）。
+        let provisioned_selection = slave
+            .list_sync_selection_records(source.id)
+            .unwrap()
+            .into_iter()
+            .find(|selection| selection.remote_pid == "111122223333AAAA")
+            .unwrap();
+        assert_eq!(
+            provisioned_selection.base_membership.as_deref(),
+            Some(
+                &[
+                    "AAAABBBBCCCC0002".to_string(),
+                    "AAAABBBBCCCC0001".to_string()
+                ][..]
+            )
+        );
+        assert_eq!(
+            provisioned_selection.base_name.as_deref(),
+            Some("Provisioned")
+        );
+        let created_selection = slave
+            .list_sync_selection_records(source.id)
+            .unwrap()
+            .into_iter()
+            .find(|selection| selection.name == "Slave Picks")
+            .unwrap();
+        assert_eq!(
+            created_selection.base_membership.as_deref(),
+            Some(
+                &[
+                    "AAAABBBBCCCC0001".to_string(),
+                    "AAAABBBBCCCC0002".to_string()
+                ][..]
+            )
+        );
+        slave
+            .set_sync_selection_policy(provisioned_selection.id, "follow")
+            .unwrap();
         drop(slave);
 
-        let second = plan(Database::open(slave_dir.path()).unwrap(), source, |_| {})
-            .await
-            .unwrap();
+        let second = plan(
+            Database::open(slave_dir.path()).unwrap(),
+            source.clone(),
+            |_| {},
+        )
+        .await
+        .unwrap();
         assert!(second.track_changes.is_empty());
         assert!(second.conflicts.is_empty());
         assert!(second.pulls.is_empty());
         assert!(second.playlist_ops.is_empty());
+        assert!(second.skipped_tracks.is_empty());
+
+        // 基準が進んでいるので、直後の follow 再同期は上書き・保持のどちらも警告しない。
+        let resynced = super::super::resync(
+            Database::open(slave_dir.path()).unwrap(),
+            source.clone(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(resynced.membership_overwritten.is_empty());
+        assert!(resynced.local_edits_preserved.is_empty());
+        assert_eq!(resynced.membership_replaced, 0);
+
+        // create 途中で落ちて母艦に空プレイリストだけが残っても、再実行で収束する。
+        let slave = Database::open(slave_dir.path()).unwrap();
+        let recovered = slave
+            .create_playlist("Recovered Picks", None, false)
+            .unwrap();
+        slave
+            .add_tracks_to_playlist(recovered.playlist_id, &[local_tracks[0].track_id])
+            .unwrap();
+        drop(slave);
+        let leftover = client
+            .writeback_create_playlist(
+                "Recovered Picks",
+                recovered.persistent_id.as_deref().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(client
+            .playlist_tracks(leftover.playlist_id)
+            .await
+            .unwrap()
+            .is_empty());
+        let planned = plan(
+            Database::open(slave_dir.path()).unwrap(),
+            source.clone(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        apply(
+            Database::open(slave_dir.path()).unwrap(),
+            source.clone(),
+            planned.plan_id.clone(),
+            Vec::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            client
+                .playlist_tracks(leftover.playlist_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // 母艦に無い曲を含む新規プレイリストは、母艦を一切触らずに失敗する。
+        let slave = Database::open(slave_dir.path()).unwrap();
+        slave
+            .conn
+            .execute(
+                "INSERT INTO tracks (track_id, persistent_id, name, location_path, file_exists)
+                 VALUES (900, 'AAAABBBBCCCC0009', 'Only Local', '/missing.mp3', 1)",
+                [],
+            )
+            .unwrap();
+        slave
+            .record_sync_track("AAAABBBBCCCC0009", source.id, "{}")
+            .unwrap();
+        let orphan = slave.create_playlist("Orphan Picks", None, false).unwrap();
+        slave
+            .add_tracks_to_playlist(orphan.playlist_id, &[900])
+            .unwrap();
+        drop(slave);
+        let before = client.playlists().await.unwrap().len();
+        let planned = plan(
+            Database::open(slave_dir.path()).unwrap(),
+            source.clone(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(planned
+            .playlist_ops
+            .iter()
+            .any(|op| matches!(op, PlaylistOp::Create { name, .. } if name == "Orphan Picks")));
+        // 母艦から見えない曲のローカル値は、適用されないことを plan と summary に残す。
+        assert!(planned
+            .skipped_tracks
+            .iter()
+            .any(|skipped| skipped.persistent_id == "AAAABBBBCCCC0009"));
+        let failed = apply(
+            Database::open(slave_dir.path()).unwrap(),
+            source.clone(),
+            planned.plan_id.clone(),
+            Vec::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(failed.playlist_ops, 0);
+        assert!(failed
+            .failures
+            .iter()
+            .any(|failure| failure.error.contains("母艦へ送る")));
+        assert!(failed
+            .failures
+            .iter()
+            .any(|failure| failure.error.contains("母艦に存在しないため")));
+        assert_eq!(client.playlists().await.unwrap().len(), before);
+        assert!(!client
+            .playlists()
+            .await
+            .unwrap()
+            .iter()
+            .any(|playlist| playlist.name == "Orphan Picks"));
         server.abort();
     }
 }

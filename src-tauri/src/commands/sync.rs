@@ -55,11 +55,38 @@ fn open_db(app: &AppHandle) -> Result<Database, String> {
     Database::open(&app_dir).map_err(|err| format!("Failed to open database: {err}"))
 }
 
-fn writeback_error(error: crate::sync::SyncError) -> String {
+/// 母艦とのやり取りで出るエラーを利用者向けの日本語にする。
+/// 原因の切り分けに要る技術詳細（status や母艦の応答）は括弧に残す。
+fn sync_error(error: crate::sync::SyncError) -> String {
+    use crate::sync::SyncError;
     match error {
-        crate::sync::SyncError::Authentication(status) => {
+        SyncError::InvalidUrl(detail) => {
+            format!("母艦のアドレスが正しくありません（{detail}）")
+        }
+        SyncError::Authentication(status) => {
             format!("母艦側でこのデバイスに sync 権限が必要です ({status})")
         }
+        SyncError::Unreachable(detail) => {
+            format!("母艦に接続できません。電源とネットワークを確認してください（{detail}）")
+        }
+        SyncError::Http { status, message } => {
+            let detail = message.trim();
+            if detail.is_empty() {
+                format!("母艦がエラーを返しました ({status})")
+            } else {
+                format!("母艦がエラーを返しました ({status}): {detail}")
+            }
+        }
+        SyncError::PairingExpired => {
+            "ペアリングの有効期限が切れました。母艦でコードを出し直してください".to_string()
+        }
+        SyncError::InvalidResponse(detail) => {
+            format!("母艦の応答を解釈できません（{detail}）")
+        }
+        SyncError::Database(error) => {
+            format!("手元のデータベース操作に失敗しました（{error}）")
+        }
+        SyncError::File(detail) => format!("ファイル操作に失敗しました（{detail}）"),
         error => error.to_string(),
     }
 }
@@ -87,7 +114,7 @@ impl WritebackApplyError {
         };
         Self {
             code: code.to_string(),
-            message: writeback_error(error),
+            message: sync_error(error),
         }
     }
 }
@@ -100,7 +127,7 @@ pub async fn sync_pair_start(
 ) -> Result<PairingStart, String> {
     let result = crate::sync::pair_with_master(&base_url, &device_name)
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(sync_error)?;
     runtime
         .pending_pairings
         .lock()
@@ -125,7 +152,7 @@ pub async fn sync_pair_poll(
     let db = open_db(&app)?;
     let result = crate::sync::poll_pairing(db, &base_url, &session_id)
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(sync_error)?;
     if result.is_some() {
         runtime
             .pending_pairings
@@ -167,12 +194,23 @@ pub fn sync_set_selection_policy(
         .map_err(|error| error.to_string())
 }
 
-/// selection の参照だけを外す。孤立した曲は次の eviction candidate 一覧で扱う。
+/// selection の参照を外す。孤立した曲は次の eviction candidate 一覧で扱う。
+/// `deleteLocalPlaylist` を立てるとローカルプレイリストも消し、所属曲を候補へ戻す。
+/// 省略時は従来どおりプレイリストを残す。
 #[tauri::command(rename_all = "camelCase")]
-pub fn sync_remove_selection(app: AppHandle, selection_id: i64) -> Result<bool, String> {
-    open_db(&app)?
-        .remove_sync_selection(selection_id)
-        .map_err(|error| error.to_string())
+pub fn sync_remove_selection(
+    app: AppHandle,
+    selection_id: i64,
+    delete_local_playlist: Option<bool>,
+) -> Result<bool, String> {
+    let delete_local_playlist = delete_local_playlist.unwrap_or(false);
+    let removed = open_db(&app)?
+        .remove_sync_selection(selection_id, delete_local_playlist)
+        .map_err(|error| error.to_string())?;
+    if removed && delete_local_playlist {
+        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    }
+    Ok(removed)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -186,7 +224,7 @@ pub async fn sync_list_remote_playlists(
         .ok_or_else(|| "sync source not found".to_string())?;
     crate::sync::list_remote_playlists(&source)
         .await
-        .map_err(|err| err.to_string())
+        .map_err(sync_error)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -201,7 +239,7 @@ pub async fn sync_playlist_size_estimate(
         .ok_or_else(|| "sync source not found".to_string())?;
     crate::sync::playlist_size_estimate(&source, playlist_id)
         .await
-        .map_err(|err| err.to_string())
+        .map_err(sync_error)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -272,7 +310,7 @@ pub fn sync_provision(
                 let _ = task_app.emit("library-changed", serde_json::json!({ "playlistId": null }));
             }
             Err(error) => {
-                let message = error.to_string();
+                let message = sync_error(error);
                 if let Ok(mut status) = state.provision.lock() {
                     *status = ProvisionStatus {
                         state: "failed".to_string(),
@@ -311,7 +349,7 @@ pub async fn sync_writeback_plan(app: AppHandle, source_id: i64) -> Result<Write
         let _ = event_app.emit("sync-progress", progress);
     })
     .await
-    .map_err(writeback_error)
+    .map_err(sync_error)
 }
 
 /// 確認済み plan を現在値から再計算し、一致した場合だけ適用する。
@@ -352,7 +390,7 @@ pub async fn sync_resync(app: AppHandle, source_id: i64) -> Result<ResyncSummary
         let _ = event_app.emit("sync-progress", progress);
     })
     .await
-    .map_err(writeback_error)?;
+    .map_err(sync_error)?;
     let _ = app.emit("resync-complete", summary.clone());
     if summary.mutations_committed {
         let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
@@ -433,7 +471,7 @@ pub async fn sync_push_tracks(
         let _ = event_app.emit("sync-progress", progress);
     })
     .await
-    .map_err(writeback_error)?;
+    .map_err(sync_error)?;
     let _ = app.emit("push-complete", summary.clone());
     Ok(summary)
 }
@@ -451,5 +489,43 @@ pub async fn sync_push_analyses(
         .ok_or_else(|| "sync source not found".to_string())?;
     crate::sync::push_analyses(db, source)
         .await
-        .map_err(writeback_error)
+        .map_err(sync_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sync_error;
+    use crate::sync::SyncError;
+
+    /// ペアリング〜取り寄せの導線で出るエラーは、生英語のまま UI へ出さない。
+    #[test]
+    fn master_errors_are_translated_for_users() {
+        let cases = [
+            (
+                SyncError::InvalidUrl("relative URL without a base".to_string()),
+                "母艦のアドレス",
+            ),
+            (
+                SyncError::Authentication(reqwest::StatusCode::UNAUTHORIZED),
+                "sync 権限",
+            ),
+            (
+                SyncError::Unreachable("connection refused".to_string()),
+                "母艦に接続できません",
+            ),
+            (
+                SyncError::Http {
+                    status: reqwest::StatusCode::CONFLICT,
+                    message: "persistent_id が母艦の別の曲と衝突しています".to_string(),
+                },
+                "母艦がエラーを返しました (409 Conflict)",
+            ),
+            (SyncError::PairingExpired, "ペアリングの有効期限"),
+        ];
+        for (error, expected) in cases {
+            let message = sync_error(error);
+            assert!(message.contains(expected), "{message}");
+            assert!(!message.contains("master"), "{message}");
+        }
+    }
 }
