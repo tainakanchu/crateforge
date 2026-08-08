@@ -135,6 +135,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { mode: "library", icon: "music", label: "All Tracks" },
+  { mode: "inbox", icon: "inbox", label: "Inbox" },
   { mode: "artists", icon: "mic", label: "Artists" },
   { mode: "recent", icon: "clock", label: "Recently Played" },
 ];
@@ -150,6 +151,8 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
     collapsedFolders,
     toggleFolder,
     pushToast,
+    inboxCount,
+    exitTriage,
   } = useStore();
 
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -163,21 +166,24 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
 
   const goView = useCallback(
     (mode: Exclude<ViewMode, "playlist">) => {
+      // ナビ切替時は Triage を閉じる（Inbox 再クリックでリストに戻る）
+      exitTriage();
       setViewMode(mode);
       setSelectedPlaylistId(null);
       setSearchQuery("");
     },
-    [setViewMode, setSelectedPlaylistId, setSearchQuery],
+    [setViewMode, setSelectedPlaylistId, setSearchQuery, exitTriage],
   );
 
   const handlePlaylistClick = useCallback(
     (pl: Playlist) => {
       if (pl.isFolder) return;
+      exitTriage();
       setViewMode("playlist");
       setSelectedPlaylistId(pl.playlistId);
       setSearchQuery("");
     },
-    [setViewMode, setSelectedPlaylistId, setSearchQuery],
+    [setViewMode, setSelectedPlaylistId, setSearchQuery, exitTriage],
   );
 
   // 新規作成はインライン入力で受け付ける（window.prompt を使わない）
@@ -410,6 +416,11 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
         >
           <Icon name={n.icon} size={16} />
           <span className="cb-nav-label">{n.label}</span>
+          {n.mode === "inbox" && inboxCount > 0 && (
+            <span className="cb-nav-badge" title={`${inboxCount} 曲未処理`}>
+              {inboxCount > 999 ? "999+" : inboxCount}
+            </span>
+          )}
         </div>
       ))}
 
