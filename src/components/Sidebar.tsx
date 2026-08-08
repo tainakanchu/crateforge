@@ -4,6 +4,7 @@ import * as playlistsApi from "../api/playlists";
 import { Icon } from "./Icon";
 import appIcon from "../assets/app-icon.png";
 import type { Playlist, ViewMode } from "../types";
+import { listSetHistories } from "../lib/setHistoryStore";
 
 interface SidebarProps {
   onPlaylistsChanged: () => void;
@@ -136,6 +137,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { mode: "library", icon: "music", label: "All Tracks" },
   { mode: "inbox", icon: "inbox", label: "Inbox" },
+  { mode: "history", icon: "history", label: "History" },
   { mode: "artists", icon: "mic", label: "Artists" },
   { mode: "recent", icon: "clock", label: "Recently Played" },
 ];
@@ -154,6 +156,9 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
     inboxCount,
     exitTriage,
   } = useStore();
+
+  // Set History badge (#123) — cheap localStorage read; updates when re-entering History.
+  const historyCount = listSetHistories().length;
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -419,6 +424,11 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
           {n.mode === "inbox" && inboxCount > 0 && (
             <span className="cb-nav-badge" title={`${inboxCount} 曲未処理`}>
               {inboxCount > 999 ? "999+" : inboxCount}
+            </span>
+          )}
+          {n.mode === "history" && historyCount > 0 && (
+            <span className="cb-nav-badge" title={`${historyCount} 件のセット履歴`}>
+              {historyCount > 999 ? "999+" : historyCount}
             </span>
           )}
         </div>

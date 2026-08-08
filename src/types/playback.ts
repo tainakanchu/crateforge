@@ -11,7 +11,8 @@ export type ViewMode =
   | "recent"
   | "albums"
   | "artists"
-  | "inbox";
+  | "inbox"
+  | "history";
 
 /// 中央ペインの描画モード（どのコレクションを見ているかとは独立）。
 export type DisplayMode = "list" | "albums" | "tracks";

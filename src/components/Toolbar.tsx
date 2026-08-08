@@ -42,12 +42,12 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
 const VIEW_TITLE: Record<ViewMode, string> = {
   library: "All Tracks",
   inbox: "Inbox",
+  history: "Set History",
   albums: "Albums",
   artists: "Artists",
   recent: "Recently Played",
   playlist: "Playlist",
 };
-
 export function Toolbar({
   onLibraryChanged,
   onOpenRipDialog,
