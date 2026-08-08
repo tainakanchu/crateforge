@@ -959,7 +959,13 @@ export default function App() {
           />
         )}
       </div>
-      {rightRailVisible && <RightRail onPlaylistsChanged={triggerReload} />}
+      {rightRailVisible && (
+        <RightRail
+          onPlaylistsChanged={triggerReload}
+          onOpenSync={() => setSyncProvisionOpen(true)}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+      )}
       <PlayerBar />
       <RipStatusBar onOpenLog={() => setRipOpen(true)} />
       <RipDialog open={ripOpen} onClose={() => setRipOpen(false)} onLibraryChanged={triggerReload} />

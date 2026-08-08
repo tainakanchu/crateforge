@@ -18,6 +18,7 @@ import { lintSet } from "../lib/setLint";
 import { Icon, Stars } from "./Icon";
 import { Cover, ArtworkImg } from "./Cover";
 import { SetArc } from "./SetArc";
+import { GigReadinessDialog } from "./GigReadinessDialog";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
 import type { RailTab, Track, SimilarHit, CrateSection } from "../types";
 import {
@@ -33,6 +34,9 @@ type BpmTolOpt = 0.04 | 0.08 | 0.12 | null;
 
 interface RightRailProps {
   onPlaylistsChanged: () => void;
+  /** Open Sync / Prepare dialog from App. */
+  onOpenSync?: () => void;
+  onOpenSettings?: () => void;
 }
 
 /// Up Next の 1 行。order(再生順) 上の絶対位置を併せ持つ。
@@ -91,7 +95,11 @@ function nextAnchor(cur: AnchorKind | null): AnchorKind | null {
   return ANCHOR_CYCLE[(i + 1) % ANCHOR_CYCLE.length] ?? null;
 }
 
-export function RightRail({ onPlaylistsChanged }: RightRailProps) {
+export function RightRail({
+  onPlaylistsChanged,
+  onOpenSync,
+  onOpenSettings,
+}: RightRailProps) {
   const {
     playback,
     tracks,
@@ -134,6 +142,9 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   // Save as Playlist のインライン入力用
   const [saveNameInput, setSaveNameInput] = useState<string | null>(null);
   const saveInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Gig Readiness (#122)
+  const [gigDialogOpen, setGigDialogOpen] = useState(false);
 
   // Set Workspace (#121)
   const [setToolsOpen, setSetToolsOpen] = useState(false);
@@ -816,6 +827,13 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
             onClick={() => setSetToolsOpen((v) => !v)}
           >
             set
+          </button>
+          <button
+            className="cb-clear"
+            title="Gig Readiness — ギグ前チェック (#122)"
+            onClick={() => setGigDialogOpen(true)}
+          >
+            Ready?
           </button>
           {crate.length > 0 && (
             <button
@@ -1606,6 +1624,7 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   );
 
   return (
+    <>
     <aside className="cb-rail">
       <div
         className="cb-rail-resizer"
@@ -1833,6 +1852,14 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
       {/* Similar (tabs mode) */}
       {showSimilar && !workbenchSplit && renderSimilarPanel(false)}
     </aside>
+    {gigDialogOpen && (
+      <GigReadinessDialog
+        onClose={() => setGigDialogOpen(false)}
+        onOpenSync={onOpenSync}
+        onOpenSettings={onOpenSettings}
+      />
+    )}
+    </>
   );
 }
 
