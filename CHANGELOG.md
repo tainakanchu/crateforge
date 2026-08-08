@@ -15,26 +15,26 @@ Each release is documented in both Japanese and English.
 ### 日本語
 
 #### デスクトップ
-- **フェデレーション同期（母艦＋持ち出し）を導入**: 母艦の crateforge からプレイリスト単位でライブラリのサブセットを取り寄せ、持ち出し PC 単体で完結するライブラリを作れる「サーバーから取り寄せ」を追加。ペアリング承認・サイズ見積り・進捗表示つきで、音源はオリジナルをダウンロード（中断時レジューム対応）、BPM/Key などの解析結果は再計算せずそのまま転送。(#104)
-- **母艦への書き戻し**: 持ち出し先で編集したレーティング・メタデータ・プレイリストを 3-way マージで母艦へ反映。衝突はフィールド単位でどちらの値を採るか選べる確認画面つき。デバイスごとに書き戻し許可（sync 権限）を承認時に選択可能。(#107)
-- **同期の継続運用（再同期・エビクション・容量管理）**: 同期の管理ビューを追加。プレイリストの母艦追従（follow）再同期、選択解除時の安全なファイル削除（エビクション。編集済み・他プレイリスト参照中の曲は保護）、同期セットごとの容量表示に対応。(#112)
-- **逆方向 push（母艦へ送る）**: 持ち出し先で入手した曲を音源ごと母艦へアップロードし、母艦に無い解析結果も一括供給できる「母艦へ送る」を追加。送った曲は以後通常の同期対象になる。(#113)
+- **フェデレーション同期（母艦＋持ち出し）を導入**: 母艦の crateforge からプレイリスト単位でライブラリのサブセットを取り寄せ、持ち出し PC 単体で完結するライブラリを作れる「サーバーから取り寄せ」を追加。ペアリング承認・サイズ見積り・進捗表示つきで、音源はオリジナルをダウンロード（中断時レジューム対応）、BPM/Key などの解析結果は再計算せずそのまま転送。(#104, #116)
+- **母艦への書き戻し**: 持ち出し先で編集したレーティング・メタデータ・プレイリストを 3-way マージで母艦へ反映。衝突はフィールド単位でどちらの値を採るか選べる確認画面つき。デバイスごとに書き戻し許可（sync 権限）を承認時に選択可能。(#107, #116)
+- **同期の継続運用（再同期・エビクション・容量管理）**: 同期の管理ビューを追加。プレイリストの母艦追従（follow）再同期、選択解除時の安全なファイル削除（エビクション。編集済み・他プレイリスト参照中の曲は保護）、同期セットごとの容量表示に対応。(#112, #116)
+- **逆方向 push（母艦へ送る）**: 持ち出し先で入手した曲を音源ごと母艦へアップロードし、母艦に無い解析結果も一括供給できる「母艦へ送る」を追加。送った曲は以後通常の同期対象になる。(#113, #116)
 - **XML インポートを保護付きマージへ刷新**: persistent_id を曲・プレイリストの同一性キーとして確立し、従来の全削除方式を廃止。レーティング・再生回数などアプリ管理の情報がインポートで消えなくなり、XML に無いローカル専用の曲・プレイリストにも干渉しない。(#103)
 
 #### モバイル（OTA 配信）
-- **オフライン・ピン留めプレイリスト**: プレイリストをピン留めしてまとめてダウンロードし、圏外でも再生できるように。再接続時はサーバーと差分同期（追加曲を自動ダウンロード・外れた曲は他のピンと共有していなければ削除）。ダウンロード画面にプレイリストごとの容量表示を追加。(#114)
+- **オフライン・ピン留めプレイリスト**: プレイリストをピン留めしてまとめてダウンロードし、圏外でも再生できるように。再接続時はサーバーと差分同期（追加曲を自動ダウンロード・外れた曲は他のピンと共有していなければ削除）。ダウンロード画面にプレイリストごとの容量表示を追加。(#114, #116)
 
 ### English
 
 #### Desktop
-- **Federation sync (mothership + roaming) introduced**: "Fetch from server" pulls a per-playlist subset of the mothership's library onto a roaming PC as a fully self-contained library. Includes pairing approval, size estimates, and progress UI; audio is downloaded as original files (with resume on interruption), and analysis results (BPM/key etc.) are transferred as-is without re-computation. (#104)
-- **Writeback to the mothership**: ratings, metadata, and playlist edits made on the roaming PC are merged back into the mothership via 3-way merge, with a review screen that lets you resolve conflicts field by field. Each device can be granted writeback (sync) permission at approval time. (#107)
-- **Ongoing sync operations (resync / eviction / capacity)**: a new sync management view supports follow-mode resync of playlists, safe file eviction when deselecting (edited tracks and tracks referenced by other playlists are protected), and per-selection capacity display. (#112)
-- **Reverse push ("Send to mothership")**: upload tracks acquired on the road — audio files included — to the mothership, and supply analysis results the mothership lacks. Pushed tracks become part of normal sync afterwards. (#113)
+- **Federation sync (mothership + roaming) introduced**: "Fetch from server" pulls a per-playlist subset of the mothership's library onto a roaming PC as a fully self-contained library. Includes pairing approval, size estimates, and progress UI; audio is downloaded as original files (with resume on interruption), and analysis results (BPM/key etc.) are transferred as-is without re-computation. (#104, #116)
+- **Writeback to the mothership**: ratings, metadata, and playlist edits made on the roaming PC are merged back into the mothership via 3-way merge, with a review screen that lets you resolve conflicts field by field. Each device can be granted writeback (sync) permission at approval time. (#107, #116)
+- **Ongoing sync operations (resync / eviction / capacity)**: a new sync management view supports follow-mode resync of playlists, safe file eviction when deselecting (edited tracks and tracks referenced by other playlists are protected), and per-selection capacity display. (#112, #116)
+- **Reverse push ("Send to mothership")**: upload tracks acquired on the road — audio files included — to the mothership, and supply analysis results the mothership lacks. Pushed tracks become part of normal sync afterwards. (#113, #116)
 - **XML import rebuilt as a protected merge**: persistent_id is now the identity key for tracks and playlists, replacing the wipe-and-reimport approach. App-owned data (ratings, play counts, etc.) survives imports, and local-only tracks/playlists absent from the XML are left untouched. (#103)
 
 #### Mobile (OTA)
-- **Offline pinned playlists**: pin a playlist to download it in bulk and play it without a connection. On reconnect, pinned playlists diff-sync against the server (new tracks auto-download; removed tracks are deleted unless shared with another pin). The downloads screen now shows per-playlist storage usage. (#114)
+- **Offline pinned playlists**: pin a playlist to download it in bulk and play it without a connection. On reconnect, pinned playlists diff-sync against the server (new tracks auto-download; removed tracks are deleted unless shared with another pin). The downloads screen now shows per-playlist storage usage. (#114, #116)
 
 ## [v0.10.0] - 2026-06-29
 
