@@ -5,7 +5,13 @@ export interface PlaybackState {
   durationMs: number;
 }
 
-export type ViewMode = "library" | "playlist" | "recent" | "albums" | "artists";
+export type ViewMode =
+  | "library"
+  | "playlist"
+  | "recent"
+  | "albums"
+  | "artists"
+  | "inbox";
 
 /// 中央ペインの描画モード（どのコレクションを見ているかとは独立）。
 export type DisplayMode = "list" | "albums" | "tracks";
