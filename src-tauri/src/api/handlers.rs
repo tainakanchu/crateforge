@@ -26,7 +26,9 @@ use super::error::ApiError;
 use super::ApiState;
 use crate::analyzer::similarity::{rank_similar, SimilarOpts};
 use crate::db::tracks::{AlbumInfo, ArtistInfo};
-use crate::models::{GenreTagCount, LibraryStats, Playlist, SimilarHit, Track, TrackAnalysis};
+use crate::models::{
+    GenreTagCount, LibraryStats, Playlist, SimilarHit, Tag, TagCount, Track, TrackAnalysis,
+};
 
 /// 音源本体は最大 2 GiB。multipart の framing 分は router 側で少し余裕を持たせる。
 pub(crate) const TRACK_UPLOAD_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -1181,6 +1183,21 @@ pub async fn get_genres(
     Ok(Json(db.get_all_genre_tags()?))
 }
 
+/// `GET /api/tags` — first-class Tags の頻度一覧 (Genre とは独立)。
+pub async fn get_tags(State(state): State<ApiState>) -> Result<Json<Vec<TagCount>>, ApiError> {
+    let db = state.db()?;
+    Ok(Json(db.list_all_tags()?))
+}
+
+/// `GET /api/tracks/{trackId}/tags` — 1 曲に付いている first-class Tags。
+pub async fn get_track_tags(
+    State(state): State<ApiState>,
+    Path(track_id): Path<i64>,
+) -> Result<Json<Vec<Tag>>, ApiError> {
+    let db = state.db()?;
+    Ok(Json(db.get_track_tags(track_id)?))
+}
+
 /// `GET /api/albums` — distinct なアルバム一覧 (album 名昇順)。
 pub async fn get_albums(State(state): State<ApiState>) -> Result<Json<Vec<AlbumInfo>>, ApiError> {
     Ok(Json(state.db()?.get_albums_legacy()?))
@@ -1544,6 +1561,49 @@ pub async fn remove_genre_tags(
     Ok(Json(
         json!({ "updated": updated, "fileWriteFailed": file_failed }),
     ))
+}
+
+/// `POST /api/tracks/tags/{add,remove}` のボディ。first-class Tags (ファイル書き戻しなし)。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackTagBody {
+    pub track_ids: Vec<i64>,
+    pub tag: String,
+}
+
+/// `POST /api/tracks/tags/add` — first-class Tag を複数曲に付与 (`mood:dreamy` / free は `bridge`)。
+/// Genre とは独立。DB のみ (ファイルへの書き戻しはしない)。空タグは 400。
+pub async fn add_track_tags(
+    State(state): State<ApiState>,
+    ExtractJson(body): ExtractJson<TrackTagBody>,
+) -> Result<Json<Value>, ApiError> {
+    let tag = body.tag.trim();
+    if tag.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "tag is empty"));
+    }
+    let db = state.db()?;
+    let updated = db.add_tag_to_tracks(&body.track_ids, tag)?;
+    if updated > 0 {
+        state.notify_library_changed(None);
+    }
+    Ok(Json(json!({ "updated": updated })))
+}
+
+/// `POST /api/tracks/tags/remove` — first-class Tag を複数曲から除去。
+pub async fn remove_track_tags(
+    State(state): State<ApiState>,
+    ExtractJson(body): ExtractJson<TrackTagBody>,
+) -> Result<Json<Value>, ApiError> {
+    let tag = body.tag.trim();
+    if tag.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "tag is empty"));
+    }
+    let db = state.db()?;
+    let updated = db.remove_tag_from_tracks(&body.track_ids, tag)?;
+    if updated > 0 {
+        state.notify_library_changed(None);
+    }
+    Ok(Json(json!({ "updated": updated })))
 }
 
 // ===== ストリーミング / アートワーク =====

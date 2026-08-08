@@ -21,6 +21,26 @@ export interface GenreTagCount {
   count: number;
 }
 
+/** first-class Tag (Genre とは独立)。namespace 空文字 = free tag。 */
+export interface Tag {
+  id: number;
+  namespace: string;
+  value: string;
+}
+
+/** タグ + 付与曲数。 */
+export interface TagCount {
+  id: number;
+  namespace: string;
+  value: string;
+  count: number;
+}
+
+/** 表示用: `mood:dreamy` / free は `bridge`。 */
+export function formatTagStr(namespace: string, value: string): string {
+  return namespace ? `${namespace}:${value}` : value;
+}
+
 export interface QueueState {
   trackIds: number[];
   currentIndex: number | null;

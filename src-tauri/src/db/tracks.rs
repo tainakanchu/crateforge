@@ -148,8 +148,8 @@ fn album_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String 
     }
 }
 
-/// 検索トークンが bpm:/key:/energy: フィルタなら (SQL 句, バインド値) を返す。
-/// 句は相関サブクエリで track_analysis を参照する (SELECT 句や JOIN を変えずに済む)。
+/// 検索トークンが bpm:/key:/energy:/tag: フィルタなら (SQL 句, バインド値) を返す。
+/// 句は相関サブクエリ / EXISTS で他テーブルを参照する (SELECT 句や JOIN を変えずに済む)。
 fn parse_analysis_filter(tok: &str) -> Option<(String, Vec<rusqlite::types::Value>)> {
     use rusqlite::types::Value;
     let (kind, val) = tok.split_once(':')?;
@@ -181,6 +181,41 @@ fn parse_analysis_filter(tok: &str) -> Option<(String, Vec<rusqlite::types::Valu
                     .to_string(),
                 vec![Value::Real(lo), Value::Real(hi)],
             ))
+        }
+        // tag:bridge → value 一致 (namespace 問わず)
+        // tag:mood:dreamy → namespace + value 一致 (最初の ':' 以降を再度 parse)
+        "tag" => {
+            let rest = val.trim();
+            if rest.is_empty() {
+                return None;
+            }
+            if let Some((ns, v)) = rest.split_once(':') {
+                let ns = ns.trim();
+                let v = v.trim();
+                if v.is_empty() {
+                    return None;
+                }
+                Some((
+                    "EXISTS (\
+                       SELECT 1 FROM track_tags tt \
+                       JOIN tags g ON g.id = tt.tag_id \
+                       WHERE tt.track_id = tracks.track_id \
+                         AND g.namespace = ? AND g.value = ?\
+                     )"
+                    .to_string(),
+                    vec![Value::Text(ns.to_string()), Value::Text(v.to_string())],
+                ))
+            } else {
+                Some((
+                    "EXISTS (\
+                       SELECT 1 FROM track_tags tt \
+                       JOIN tags g ON g.id = tt.tag_id \
+                       WHERE tt.track_id = tracks.track_id AND g.value = ?\
+                     )"
+                    .to_string(),
+                    vec![Value::Text(rest.to_string())],
+                ))
+            }
         }
         _ => None,
     }
@@ -719,8 +754,9 @@ impl Database {
                 .as_deref(),
         );
 
-        // 各トークンを AND 結合。bpm:/key:/energy: は track_analysis への絞り込み、
-        // それ以外はテキスト列への部分一致。バインド値は句の出現順に積む。
+        // 各トークンを AND 結合。bpm:/key:/energy: は track_analysis、
+        // tag: は track_tags/tags への絞り込み、それ以外はテキスト列への部分一致。
+        // バインド値は句の出現順に積む。
         let mut clauses: Vec<String> = Vec::new();
         let mut bind: Vec<Value> = Vec::new();
         for tok in query.split_whitespace() {
@@ -1444,6 +1480,38 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// `tag:` 検索: value のみ / namespace+value の両方。
+    #[test]
+    fn search_tracks_tag_filter() {
+        let db = Database::open_memory().unwrap();
+        for tid in [1_i64, 2, 3] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, file_exists) VALUES (?1, 't', 1)",
+                    rusqlite::params![tid],
+                )
+                .unwrap();
+        }
+        db.add_tag_to_tracks(&[1], "bridge").unwrap();
+        db.add_tag_to_tracks(&[2], "mood:dreamy").unwrap();
+        db.add_tag_to_tracks(&[3], "mood:uplifting").unwrap();
+
+        let hits = db.search_tracks("tag:bridge", 100, 0, None, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].track_id, 1);
+
+        let hits = db
+            .search_tracks("tag:mood:dreamy", 100, 0, None, None)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].track_id, 2);
+
+        // value のみは namespace を問わず一致
+        let hits = db.search_tracks("tag:dreamy", 100, 0, None, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].track_id, 2);
     }
 
     /// Rust 側 compute_search_text と SQL 側 SEARCH_TEXT_EXPR が一致すること

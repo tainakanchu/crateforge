@@ -6,8 +6,8 @@ use crate::db::Database;
 use crate::importer;
 use crate::itunes_xml::{parser, writer};
 use crate::models::{
-    AlbumRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult, LibraryStats, Track,
-    TrackEdit,
+    AlbumRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult, LibraryStats, Tag,
+    TagCount, Track, TrackEdit,
 };
 use crate::organizer;
 
@@ -271,6 +271,38 @@ pub fn remove_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Res
 pub fn get_all_genre_tags(app: AppHandle) -> Result<Vec<GenreTagCount>, String> {
     let db = get_db(&app)?;
     db.get_all_genre_tags().map_err(|e| e.to_string())
+}
+
+/// ライブラリ内の first-class Tags を頻度つきで返す。
+#[tauri::command]
+pub fn get_all_tags(app: AppHandle) -> Result<Vec<TagCount>, String> {
+    let db = get_db(&app)?;
+    db.list_all_tags().map_err(|e| e.to_string())
+}
+
+/// 1 曲に付いている first-class Tags。
+#[tauri::command]
+pub fn get_track_tags(app: AppHandle, track_id: i64) -> Result<Vec<Tag>, String> {
+    let db = get_db(&app)?;
+    db.get_track_tags(track_id).map_err(|e| e.to_string())
+}
+
+/// 複数曲に同じ first-class Tag を付与 (`mood:dreamy` / free は `bridge`)。
+#[tauri::command]
+pub fn add_track_tags(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
+    let db = get_db(&app)?;
+    db.add_tag_to_tracks(&track_ids, &tag)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 複数曲から同じ first-class Tag を除去。
+#[tauri::command]
+pub fn remove_track_tags(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
+    let db = get_db(&app)?;
+    db.remove_tag_from_tracks(&track_ids, &tag)
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]

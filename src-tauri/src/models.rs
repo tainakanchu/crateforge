@@ -149,6 +149,25 @@ pub struct GenreTagCount {
     pub count: i64,
 }
 
+/// first-class Tag (Genre とは独立)。`namespace` が空文字なら free tag。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Tag {
+    pub id: i64,
+    pub namespace: String,
+    pub value: String,
+}
+
+/// タグとその付与曲数。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagCount {
+    pub id: i64,
+    pub namespace: String,
+    pub value: String,
+    pub count: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlbumRow {
