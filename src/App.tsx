@@ -38,6 +38,7 @@ import {
   loadTriagePersist,
   mergeInboxSources,
 } from "./lib/triage";
+import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
 import type { Track } from "./types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -458,6 +459,34 @@ export default function App() {
       if (unlisten) unlisten();
     };
   }, [loadAnalyses, setAnalysisActive]);
+
+  // Set Workspace (#121): 永続化した crate trackIds を再水和。
+  useEffect(() => {
+    if (!isTauri) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const persisted = loadSetWorkspacePersist();
+        if (persisted.crateTrackIds.length === 0) return;
+        const st = useStore.getState();
+        if (st.crate.length > 0) return;
+        const resolved = await libraryApi.getTracksByIds(persisted.crateTrackIds);
+        if (cancelled) return;
+        const byId = new Map(resolved.map((t) => [t.trackId, t]));
+        const ordered = persisted.crateTrackIds
+          .map((id) => byId.get(id))
+          .filter((t): t is Track => t != null);
+        if (ordered.length > 0) {
+          useStore.getState().restoreCrateTracks(ordered);
+        }
+      } catch (err) {
+        console.error("Failed to restore set workspace crate:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 「閉じるときに更新」: 閉じる要求を捕まえ、予約があればインストーラを起動してから閉じる。
   useEffect(() => {
