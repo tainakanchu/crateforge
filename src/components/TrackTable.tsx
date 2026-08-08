@@ -5,6 +5,7 @@ import * as playbackApi from "../api/playback";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
+import * as audition from "../lib/audition";
 import { Icon, Stars } from "./Icon";
 import { Cover } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
@@ -280,6 +281,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       try {
         const ids = tracks.map((t) => t.trackId);
         const startIndex = ids.indexOf(track.trackId);
+        await audition.ensureNormalPlay();
         await playbackApi.setQueue(ids, Math.max(0, startIndex));
         await playbackApi.playTrack(track.trackId);
       } catch (err) {
@@ -558,8 +560,9 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         e.preventDefault();
         const ids = ts.map((t) => t.trackId);
         const startIndex = ids.indexOf(track.trackId);
-        playbackApi
-          .setQueue(ids, Math.max(0, startIndex))
+        audition
+          .ensureNormalPlay()
+          .then(() => playbackApi.setQueue(ids, Math.max(0, startIndex)))
           .then(() => playbackApi.playTrack(track!.trackId))
           .catch((err) => {
             console.error("Failed to play:", err);

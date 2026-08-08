@@ -27,6 +27,20 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    title: "Audition / Preview",
+    items: [
+      { keys: ["A"], label: "Audition モード切り替え" },
+      { keys: ["1"], label: "25% 位置へジャンプ (Audition 時)" },
+      { keys: ["2"], label: "50% 位置へジャンプ (Audition 時)" },
+      { keys: ["3"], label: "75% 位置へジャンプ (Audition 時)" },
+      { keys: ["Home"], label: "曲の先頭へ (Audition 時)" },
+      { keys: ["End"], label: "曲の終盤 (末尾−3秒) へ (Audition 時)" },
+      { keys: ["Alt", "←"], label: "15 秒戻る (Audition 時)" },
+      { keys: ["Alt", "→"], label: "15 秒進む (Audition 時)" },
+      { keys: ["Esc"], label: "Preview 終了して元の曲へ復帰" },
+    ],
+  },
+  {
     title: "ナビゲーション・検索",
     items: [
       { keys: ["/"], label: "検索にフォーカス" },

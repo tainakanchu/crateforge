@@ -24,6 +24,8 @@ function formatTime(ms: number): string {
 
 const WAVE_N = 64;
 
+const JUMP_MARKERS = [0.25, 0.5, 0.75] as const;
+
 export function PlayerBar() {
   const {
     playback,
@@ -39,6 +41,8 @@ export function PlayerBar() {
     setRailTab,
     showRemainingTime,
     toggleRemainingTime,
+    auditionMode,
+    previewActive,
   } = useStore();
 
   // ミュート前の音量を保持（復帰用）。
@@ -172,8 +176,17 @@ export function PlayerBar() {
     await playbackApi.setReplayGain(next);
   }, [replayGain, setReplayGain]);
 
+  const seekToRatio = useCallback(
+    (ratio: number) => {
+      if (playback.durationMs <= 0) return;
+      const r = Math.min(1, Math.max(0, ratio));
+      playbackApi.seek(Math.floor(r * playback.durationMs));
+    },
+    [playback.durationMs],
+  );
+
   return (
-    <div className="cb-player">
+    <div className={"cb-player" + (auditionMode ? " audition" : "") + (previewActive ? " preview" : "")}>
       {/* left: track info */}
       <div className="cb-pinfo">
         {currentTrack ? (
@@ -238,13 +251,26 @@ export function PlayerBar() {
             <Icon name="repeat" size={16} />
             {repeat === "one" && <span className="cb-repeat-badge">1</span>}
           </button>
+          {auditionMode && (
+            <span
+              className="cb-audition-badge"
+              title="Audition mode (A) — 1/2/3 jump · Esc exits preview"
+            >
+              AUDITION
+            </span>
+          )}
+          {previewActive && (
+            <span className="cb-preview-badge" title="Preview session (Esc to restore)">
+              PREVIEW
+            </span>
+          )}
         </div>
         <div className="cb-seek">
           <span>{formatTime(playback.positionMs)}</span>
           {/* ドラッグシーク対応: pointerDown/Move/Up + setPointerCapture でドラッグを捕捉 */}
           <div
             ref={waveRef}
-            className="cb-wave"
+            className={"cb-wave" + (auditionMode ? " audition" : "")}
             style={{ touchAction: "none", cursor: "pointer" }}
             onPointerDown={handleWavePointerDown}
             onPointerMove={handleWavePointerMove}
@@ -262,6 +288,24 @@ export function PlayerBar() {
                 />
               );
             })}
+            {auditionMode &&
+              JUMP_MARKERS.map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  className="cb-wave-mark"
+                  style={{ left: `${r * 100}%` }}
+                  title={`${Math.round(r * 100)}%`}
+                  onPointerDown={(e) => {
+                    // 波形ドラッグと競合しないようマーカー操作を独立させる
+                    e.stopPropagation();
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    seekToRatio(r);
+                  }}
+                />
+              ))}
           </div>
           {/* クリックで経過時間 ↔ 残り時間をトグル */}
           <span

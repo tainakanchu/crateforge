@@ -31,6 +31,7 @@ import * as systemApi from "./api/system";
 import * as analysisApi from "./api/analysis";
 import * as ripperApi from "./api/ripper";
 import * as fontsApi from "./api/fonts";
+import * as audition from "./lib/audition";
 import type { Track } from "./types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -625,8 +626,36 @@ export default function App() {
         return;
       }
 
+      // Preview セッション中の Esc: 元の曲・位置へ復帰 (入力フォーカス外のみ)。
+      if (e.key === "Escape") {
+        const { previewActive } = useStore.getState();
+        if (previewActive) {
+          e.preventDefault();
+          if (isTauri) audition.exitPreview({ restore: true }).catch(() => {});
+          return;
+        }
+      }
+
+      // Audition: Alt+←/→ で ±15 秒 (audition ON 時)。
+      if (
+        e.altKey &&
+        !e.shiftKey &&
+        !cmd &&
+        (e.key === "ArrowLeft" || e.key === "ArrowRight")
+      ) {
+        const { auditionMode } = useStore.getState();
+        if (auditionMode) {
+          e.preventDefault();
+          if (isTauri) {
+            const delta = e.key === "ArrowRight" ? 15_000 : -15_000;
+            audition.seekRelative(delta).catch(() => {});
+          }
+          return;
+        }
+      }
+
       // Shift+←/→ で ±5 秒シーク（位置・長さは最新の state から読む）。
-      if (e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      if (e.shiftKey && !e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         e.preventDefault();
         const { playback: pb } = useStore.getState();
         if (pb.currentTrackId === null) return;
@@ -655,10 +684,38 @@ export default function App() {
           else if (playback.currentTrackId !== null) playbackApi.resume();
         }
       } else if (e.key === "Enter") {
-        // Play the first selected track.
+        // Play the first selected track (通常再生: preview を閉じる)。
         const first = selectedTrackIds.size > 0 ? Array.from(selectedTrackIds)[0] : null;
         if (first != null && isTauri) {
-          playbackApi.playTrack(first).catch((err) => console.error(err));
+          audition
+            .ensureNormalPlay()
+            .then(() => playbackApi.playTrack(first))
+            .catch((err) => console.error(err));
+        }
+      } else if (e.key.toLowerCase() === "a" && !e.shiftKey && !e.altKey && !cmd) {
+        // Audition モード トグル
+        e.preventDefault();
+        audition.toggleAuditionMode();
+      } else if (e.key === "1" || e.key === "2" || e.key === "3") {
+        // 曲内ジャンプ 25% / 50% / 75% (Audition ON 時、修飾キーなし)
+        const { auditionMode } = useStore.getState();
+        if (auditionMode && !cmd && !e.altKey && !e.shiftKey) {
+          e.preventDefault();
+          const ratio = e.key === "1" ? 0.25 : e.key === "2" ? 0.5 : 0.75;
+          if (isTauri) audition.seekRatio(ratio).catch(() => {});
+        }
+      } else if (e.key === "Home") {
+        const { auditionMode, playback: pb } = useStore.getState();
+        if (auditionMode && pb.currentTrackId != null) {
+          e.preventDefault();
+          if (isTauri) playbackApi.seek(0).catch(() => {});
+        }
+      } else if (e.key === "End") {
+        const { auditionMode, playback: pb } = useStore.getState();
+        if (auditionMode && pb.currentTrackId != null && pb.durationMs > 0) {
+          e.preventDefault();
+          const pos = Math.max(0, pb.durationMs - 3000);
+          if (isTauri) playbackApi.seek(pos).catch(() => {});
         }
       } else if (e.key.toLowerCase() === "j") {
         if (isTauri) playbackApi.playPrev();
