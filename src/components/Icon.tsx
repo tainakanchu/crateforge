@@ -65,6 +65,9 @@ export const ICON_PATHS: Record<string, string> = {
   // Inbox / Triage (#118)
   inbox:
     '<path d="M4 6a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2z"/><path d="M4 12h4l2 3h4l2-3h4"/>',
+  // Set History (#123)
+  history:
+    '<path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>',
 };
 
 export interface IconProps {

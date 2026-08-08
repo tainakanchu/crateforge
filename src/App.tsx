@@ -23,6 +23,7 @@ import { DropImportOverlay } from "./components/DropImportOverlay";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 import { SyncProvisionDialog } from "./components/SyncProvisionDialog";
 import { TriagePanel } from "./components/TriagePanel";
+import { SetHistoryView } from "./components/SetHistoryView";
 import { useStore } from "./store/useStore";
 import { useDiscWatcher } from "./hooks/useDiscWatcher";
 import * as libraryApi from "./api/library";
@@ -149,7 +150,11 @@ export default function App() {
           .join(" ");
         let result;
 
-        if (viewMode === "inbox") {
+        if (viewMode === "history") {
+          // Set History は専用ビュー。トラックテーブルは使わない。
+          setTracks([]);
+          setHasMore(false);
+        } else if (viewMode === "inbox") {
           // dateAdded desc で直近を取り、クライアントで done/later/未評価フィルタ。
           const raw = await libraryApi.getTracks(
             INBOX_FETCH_LIMIT,
@@ -926,7 +931,9 @@ export default function App() {
             )}
           </div>
         )}
-        {viewMode === "inbox" && triageMode ? (
+        {viewMode === "history" ? (
+          <SetHistoryView />
+        ) : viewMode === "inbox" && triageMode ? (
           <TriagePanel
             tracks={tracks}
             onRemoveFromInbox={handleRemoveFromInbox}
