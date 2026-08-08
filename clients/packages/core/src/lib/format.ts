@@ -1,6 +1,12 @@
 // 表示用の純粋関数群（UI から切り離してテストしやすくする）。
 
-import type { Track, TrackMetaField } from "./types";
+import type { Tag, Track, TrackMetaField } from "./types";
+
+/** first-class Tag の表示文字列。namespace 空なら value のみ、それ以外は `ns:value`。 */
+export function formatTag(tag: Pick<Tag, "namespace" | "value">): string {
+  if (!tag.namespace) return tag.value;
+  return `${tag.namespace}:${tag.value}`;
+}
 
 /** ミリ秒を mm:ss / h:mm:ss に整形。null/負値は "0:00"。 */
 export function formatDuration(ms: number | null | undefined): string {

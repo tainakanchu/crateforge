@@ -7,7 +7,9 @@
 import { useCallback, useMemo } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, trackArtist, trackAlbumArtist, useConnection, useDownloads, useSettings } from "@crateforge/core";
+import { ApiError, type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, trackArtist, trackAlbumArtist, useConnection, useDownloads, useSettings } from "@crateforge/core";
+
+import { usePendingEdits } from "@/store/pendingEdits";
 
 /** 大規模ライブラリでも全件取得（仮想リスト前提）。500/200 上限の撤廃。 */
 export const BROWSE_LIMIT = 100000;
@@ -307,20 +309,36 @@ const RATING_AFFECTED_KEYS = [
 /**
  * 曲のレーティング設定ミューテーション。
  * - `rating` は 0..100 スケール（★ = rating/20）。ApiClient.setRating が clamp する。
+ * - オンライン: 直接 setRating。
+ * - オフライン: pendingEdits に enqueue（baseRating で再接続時の衝突検知）。
  * - 成功/失敗いずれでも rating を含む可能性のあるクエリ群を invalidate して再取得させる
  *   （楽観的な行の星表示は呼び出し側のローカル state で行う。ここはサーバ確定後の整合用）。
- * - client 未接続（オフライン）時は何もしない no-op を返す。
  */
 export function useSetRating() {
   const client = useConnection((s) => s.client);
   const qc = useQueryClient();
 
-  const mutation = useMutation<void, Error, { trackId: number; rating: number }>({
-    mutationFn: async ({ trackId, rating }) => {
-      if (!client) return;
-      await client.setRating(trackId, rating);
+  const mutation = useMutation<
+    void,
+    Error,
+    { trackId: number; rating: number; baseRating?: number | null; trackName?: string | null }
+  >({
+    mutationFn: async ({ trackId, rating, baseRating, trackName }) => {
+      if (client) {
+        await client.setRating(trackId, rating);
+        return;
+      }
+      // オフライン: キューへ。再接続時に baseRating と突き合わせて衝突検知する。
+      usePendingEdits.getState().enqueue({
+        kind: "rating",
+        trackId,
+        rating,
+        baseRating: baseRating ?? null,
+        trackName: trackName ?? null,
+      });
     },
     onSettled: async () => {
+      // オフライン時は invalidate しても client 無しで再取得できないが害はない。
       await Promise.all(
         RATING_AFFECTED_KEYS.map((key) => qc.invalidateQueries({ queryKey: key })),
       );
@@ -328,4 +346,43 @@ export function useSetRating() {
   });
 
   return mutation;
+}
+
+/**
+ * 曲に first-class Tag を付けるミューテーション。
+ * オンライン直書き / オフラインは pending キュー。ホスト未対応 (404) は握りつぶす。
+ */
+export function useAddTrackTag() {
+  const client = useConnection((s) => s.client);
+  const qc = useQueryClient();
+
+  return useMutation<
+    void,
+    Error,
+    { trackId: number; tag: string; trackName?: string | null }
+  >({
+    mutationFn: async ({ trackId, tag, trackName }) => {
+      const trimmed = tag.trim();
+      if (!trimmed) return;
+      if (client) {
+        try {
+          await client.addTrackTags([trackId], trimmed);
+        } catch (e) {
+          // 古いホスト: タグ API 無し → 黙って成功扱い（機能 degrade）。
+          if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return;
+          throw e;
+        }
+        return;
+      }
+      usePendingEdits.getState().enqueue({
+        kind: "tag-add",
+        trackId,
+        tag: trimmed,
+        trackName: trackName ?? null,
+      });
+    },
+    onSettled: async () => {
+      await qc.invalidateQueries({ queryKey: ["track-tags"] });
+    },
+  });
 }

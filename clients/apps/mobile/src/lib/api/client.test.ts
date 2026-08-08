@@ -106,4 +106,38 @@ describe("ApiClient requests", () => {
     expect(h.name).toBe("crateforge");
     expect(fetchMock.mock.calls[0][0]).toBe("http://h:1/api/health");
   });
+
+  it("setRating posts clamped rating", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}), text: async () => "" } as Response);
+    await client.setRating(7, 80);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://h:1/api/tracks/7/rating");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ rating: 80 });
+  });
+
+  it("listTags / getTrackTags / addTrackTags / removeTrackTags", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: 1, namespace: "mood", value: "chill", count: 3 }]));
+    const tags = await client.listTags();
+    expect(tags[0].namespace).toBe("mood");
+    expect(fetchMock.mock.calls[0][0]).toBe("http://h:1/api/tags");
+
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: 1, namespace: "", value: "bridge" }]));
+    const trackTags = await client.getTrackTags(9);
+    expect(trackTags[0].value).toBe("bridge");
+    expect(fetchMock.mock.calls[1][0]).toBe("http://h:1/api/tracks/9/tags");
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ updated: 2 }));
+    const add = await client.addTrackTags([1, 2], "review:later");
+    expect(add.updated).toBe(2);
+    expect(fetchMock.mock.calls[2][0]).toBe("http://h:1/api/tracks/tags/add");
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      trackIds: [1, 2],
+      tag: "review:later",
+    });
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ updated: 1 }));
+    await client.removeTrackTags([1], "review:later");
+    expect(fetchMock.mock.calls[3][0]).toBe("http://h:1/api/tracks/tags/remove");
+  });
 });
