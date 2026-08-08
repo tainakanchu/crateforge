@@ -119,6 +119,7 @@ pub fn run() {
         .manage(pairing_registry)
         .manage(valid_tokens)
         .manage(commands::sync::SyncRuntime::default())
+        .manage(commands::playback::PreviewMode::default())
         .setup(|app| {
             // クラッシュ痕跡を残すためのファイルロガー + panic フックを最初に仕込む
             // (GUI 起動で stderr が残らない。panic=abort でも abort 前にフックが走る)。
@@ -238,6 +239,8 @@ pub fn run() {
             commands::playback::set_repeat,
             commands::playback::set_volume,
             commands::playback::set_replaygain,
+            commands::playback::set_preview_mode,
+            commands::playback::get_preview_mode,
             // ripping
             commands::ripping::detect_disc,
             commands::ripping::lookup_release_by_disc_id,

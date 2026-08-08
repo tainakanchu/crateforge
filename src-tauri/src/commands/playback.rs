@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager};
@@ -7,12 +8,40 @@ use crate::commands::library::open_db;
 use crate::db::Database;
 use crate::models::{PlaybackState, Track};
 
+/// Preview / Audition モード。ON の間は playCount / lastPlayed / recent を汚さない。
+/// プロセス全体で共有するフラグ (Tauri managed state)。
+pub struct PreviewMode(pub AtomicBool);
+
+impl Default for PreviewMode {
+    fn default() -> Self {
+        Self(AtomicBool::new(false))
+    }
+}
+
+impl PreviewMode {
+    pub fn get(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn set(&self, enabled: bool) {
+        self.0.store(enabled, Ordering::Relaxed);
+    }
+}
+
+fn preview_on(app: &AppHandle) -> bool {
+    app.state::<PreviewMode>().get()
+}
+
 /// 再生実績 (`PlayReport`) を DB に反映する。
 /// - 曲の半分以上 (上限 4 分) 聴いた → 「再生」(play_count +1, last_played 更新)
 /// - 長さ不明なら 4 分以上で「再生」
 /// - 4 秒以上だが途中で離脱 → 「スキップ」(skip_count +1)
 /// - それ未満 → 誤操作とみなし無視
-fn apply_report(db: &Database, report: Option<PlayReport>) {
+/// - preview モード中は一切反映しない
+fn apply_report(db: &Database, report: Option<PlayReport>, preview: bool) {
+    if preview {
+        return;
+    }
     let Some(r) = report else {
         return;
     };
@@ -29,11 +58,26 @@ fn apply_report(db: &Database, report: Option<PlayReport>) {
 }
 
 #[tauri::command]
+pub fn set_preview_mode(
+    enabled: bool,
+    preview: tauri::State<'_, PreviewMode>,
+) -> Result<(), String> {
+    preview.set(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_preview_mode(preview: tauri::State<'_, PreviewMode>) -> Result<bool, String> {
+    Ok(preview.get())
+}
+
+#[tauri::command]
 pub fn play_track(
     app: AppHandle,
     track_id: i64,
     player: tauri::State<'_, Mutex<AudioPlayer>>,
     analyzer: tauri::State<'_, crate::analyzer::Analyzer>,
+    preview: tauri::State<'_, PreviewMode>,
 ) -> Result<(), String> {
     let db = open_db(&app)?;
     let track = db
@@ -52,13 +96,16 @@ pub fn play_track(
         .ok()
         .flatten()
         .and_then(|a| a.replaygain_db);
+    let is_preview = preview.get();
     let report = player
         .lock()
         .map_err(|e| e.to_string())?
         .play(path, track_id, duration, gain_db)?;
-    apply_report(&db, report);
+    apply_report(&db, report, is_preview);
 
-    db.add_recent_track(track_id).map_err(|e| e.to_string())?;
+    if !is_preview {
+        db.add_recent_track(track_id).map_err(|e| e.to_string())?;
+    }
     // 再生した曲 = よく使う曲なので、未解析なら裏で解析しておく。
     analyzer.submit(vec![track_id], false);
     Ok(())
@@ -80,7 +127,7 @@ pub fn resume(player: tauri::State<'_, Mutex<AudioPlayer>>) -> Result<(), String
 pub fn stop(app: AppHandle, player: tauri::State<'_, Mutex<AudioPlayer>>) -> Result<(), String> {
     let report = player.lock().map_err(|e| e.to_string())?.stop();
     if let Ok(db) = open_db(&app) {
-        apply_report(&db, report);
+        apply_report(&db, report, preview_on(&app));
     }
     Ok(())
 }
@@ -228,7 +275,7 @@ pub fn play_next(
     } else {
         let report = player.lock().map_err(|e| e.to_string())?.stop();
         if let Ok(db) = open_db(&app) {
-            apply_report(&db, report);
+            apply_report(&db, report, preview_on(&app));
         }
         Ok(None)
     }
@@ -351,7 +398,7 @@ pub fn advance_worker(app: AppHandle) {
                     Err(_) => None,
                 };
                 if let Ok(db) = open_db(&app) {
-                    apply_report(&db, report);
+                    apply_report(&db, report, preview_on(&app));
                 }
                 let _ = app.emit("playback-advanced", AdvancePayload { track_id: None });
             }
@@ -423,12 +470,15 @@ fn play_track_by_id(app: &AppHandle, track_id: i64) -> Result<(), String> {
         .ok()
         .flatten()
         .and_then(|a| a.replaygain_db);
+    let is_preview = preview_on(app);
     let player = app.state::<Mutex<AudioPlayer>>();
     let report = player
         .lock()
         .map_err(|e| e.to_string())?
         .play(path, track_id, duration, gain_db)?;
-    apply_report(&db, report);
-    db.add_recent_track(track_id).map_err(|e| e.to_string())?;
+    apply_report(&db, report, is_preview);
+    if !is_preview {
+        db.add_recent_track(track_id).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }

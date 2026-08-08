@@ -1954,6 +1954,7 @@ input {
   align-items: center;
   gap: 2px;
   cursor: pointer;
+  position: relative;
 }
 .cb-wave i {
   flex: 1;
@@ -1964,6 +1965,61 @@ input {
 }
 .cb-wave i.on {
   background: var(--ac);
+}
+/* Audition mode: taller waveform + jump markers */
+.cb-wave.audition {
+  height: 44px;
+  gap: 1px;
+}
+.cb-wave.audition i {
+  border-radius: 1px;
+  min-height: 4px;
+}
+.cb-wave-mark {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--tx-strong) 35%, transparent);
+  transform: translateX(-50%);
+  cursor: pointer;
+  z-index: 1;
+  opacity: 0.55;
+}
+.cb-wave-mark:hover {
+  opacity: 1;
+  background: var(--ac);
+  width: 3px;
+}
+.cb-audition-badge,
+.cb-preview-badge {
+  font: 700 9px/1.2 var(--mono);
+  letter-spacing: 0.06em;
+  padding: 3px 6px;
+  border-radius: 4px;
+  align-self: center;
+  user-select: none;
+  white-space: nowrap;
+}
+.cb-audition-badge {
+  color: var(--on-ac);
+  background: var(--ac);
+}
+.cb-preview-badge {
+  color: var(--tx-strong);
+  background: color-mix(in srgb, var(--ac) 22%, var(--bg3));
+  border: 1px solid color-mix(in srgb, var(--ac) 50%, transparent);
+}
+.cb-player.audition .cb-seek {
+  width: 520px;
+  max-width: 56vw;
+}
+.cb-player.preview .cb-pinfo .cj {
+  color: var(--ac);
 }
 .cb-pr {
   display: flex;
