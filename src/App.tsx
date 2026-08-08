@@ -69,6 +69,11 @@ export default function App() {
     sortOrder,
     displayMode,
     rightRailVisible,
+    rightRailWidth,
+    setRightRailVisible,
+    setRailTab,
+    setSimilarBase,
+    addToCrate,
     setAnalyses,
     setAnalysisActive,
     setRipStatus,
@@ -580,6 +585,40 @@ export default function App() {
         return;
       }
 
+      // 選曲ワークベンチ (#117): Ctrl/Cmd 系は入力中でも効かせる。
+      if (cmd && e.key === "]") {
+        e.preventDefault();
+        setRightRailVisible(true);
+        return;
+      }
+      if (cmd && !e.shiftKey && (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4")) {
+        e.preventDefault();
+        setRightRailVisible(true);
+        const tab =
+          e.key === "1" ? "now" : e.key === "2" ? "next" : e.key === "3" ? "crate" : "similar";
+        setRailTab(tab);
+        return;
+      }
+      if (cmd && e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        const first =
+          selectedTrackIds.size > 0 ? Array.from(selectedTrackIds)[0] : null;
+        if (first != null) {
+          setRightRailVisible(true);
+          setSimilarBase(first);
+        }
+        return;
+      }
+      if (cmd && e.shiftKey && e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        if (selectedTrackIds.size === 0) return;
+        const selected = tracks.filter((t) => selectedTrackIds.has(t.trackId));
+        selected.forEach((t) => addToCrate(t));
+        setRightRailVisible(true);
+        setRailTab("crate");
+        return;
+      }
+
       // Other shortcuts: skip when typing in an input.
       if (isInput) {
         if (e.key === "Escape") (target as HTMLInputElement).blur();
@@ -655,6 +694,10 @@ export default function App() {
     setSearchQuery,
     setViewMode,
     setSelectedPlaylistId,
+    setRightRailVisible,
+    setRailTab,
+    setSimilarBase,
+    addToCrate,
   ]);
 
   const isAlbumView = viewMode === "albums" || viewMode === "artists";
@@ -662,6 +705,11 @@ export default function App() {
   return (
     <div
       className={"app" + (rightRailVisible ? "" : " no-rail")}
+      style={
+        rightRailVisible
+          ? { ["--rail-w" as string]: `${rightRailWidth}px` }
+          : undefined
+      }
       onContextMenu={(e) => {
         const t = e.target as HTMLElement;
         // 入力欄ではコピー&ペースト用のメニューを残す
