@@ -301,7 +301,7 @@ export function Toolbar({
             id="search-input"
             ref={searchInputRef}
             type="text"
-            placeholder="Search… or bpm:120-128  key:8A  energy:60-100  (/ or Ctrl+F)"
+            placeholder="Search… or bpm:120-128  key:8A  energy:60-100  tag:mood:dreamy  (/ or Ctrl+F)"
             value={localSearch}
             onChange={handleSearchChange}
             onKeyDown={handleSearchKeyDown}

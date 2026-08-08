@@ -8,6 +8,8 @@ import type {
   LibraryStats,
   TrackEdit,
   GenreTagCount,
+  Tag,
+  TagCount,
   SortField,
   SortOrder,
 } from "../types";
@@ -76,6 +78,26 @@ export async function removeGenreTag(trackIds: number[], tag: string): Promise<v
 
 export async function getAllGenreTags(): Promise<GenreTagCount[]> {
   return invoke("get_all_genre_tags");
+}
+
+/// first-class Tags を頻度つきで返す。
+export async function getAllTags(): Promise<TagCount[]> {
+  return invoke("get_all_tags");
+}
+
+/// 1 曲に付いている first-class Tags。
+export async function getTrackTags(trackId: number): Promise<Tag[]> {
+  return invoke("get_track_tags", { trackId });
+}
+
+/// 複数曲に同じ first-class Tag を付与 (`mood:dreamy` / free は `bridge`)。
+export async function addTrackTags(trackIds: number[], tag: string): Promise<void> {
+  return invoke("add_track_tags", { trackIds, tag });
+}
+
+/// 複数曲から同じ first-class Tag を除去。
+export async function removeTrackTags(trackIds: number[], tag: string): Promise<void> {
+  return invoke("remove_track_tags", { trackIds, tag });
 }
 
 /// 整理先 (ライブラリルート) を取得。未設定なら null。

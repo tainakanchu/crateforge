@@ -3,6 +3,7 @@ pub mod playlists;
 pub mod schema;
 pub mod stats;
 pub mod sync;
+pub mod tags;
 pub mod tracks;
 
 use std::path::Path;
@@ -110,6 +111,28 @@ fn migrate(conn: &Connection) -> Result<()> {
     migrate_track_analysis(conn)?;
     migrate_search_text(conn)?;
     migrate_sync_tables(conn)?;
+    migrate_tags(conn)?;
+    Ok(())
+}
+
+/// first-class Tags (Genre とは独立)。namespace + value の正規化モデル。
+/// free tag (namespace なし) は空文字 `''` を使い UNIQUE(namespace, value) を成立させる。
+fn migrate_tags(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tags (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             namespace TEXT NOT NULL DEFAULT '',
+             value TEXT NOT NULL,
+             UNIQUE(namespace, value)
+         );
+         CREATE TABLE IF NOT EXISTS track_tags (
+             track_id INTEGER NOT NULL,
+             tag_id INTEGER NOT NULL,
+             PRIMARY KEY (track_id, tag_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_track_tags_tag ON track_tags(tag_id);
+         CREATE INDEX IF NOT EXISTS idx_track_tags_track ON track_tags(track_id);",
+    )?;
     Ok(())
 }
 

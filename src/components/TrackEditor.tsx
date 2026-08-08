@@ -8,6 +8,7 @@ import { GenreTagInput } from "./GenreTagInput";
 import { artGradient, leadingGlyph } from "../lib/art";
 import { useStore } from "../store/useStore";
 import type { Track, TrackEdit } from "../types";
+import { formatTagStr } from "../types";
 
 function formatDuration(ms: number | null | undefined): string {
   if (!ms || ms <= 0) return "—";
@@ -126,6 +127,12 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
   const [artVersion, setArtVersion] = useState(0);
   const [artMsg, setArtMsg] = useState("");
   const [genreSuggestions, setGenreSuggestions] = useState<string[]>([]);
+  // first-class Tags (Genre とは独立)。表示は `mood:dreamy` / free は `bridge`。
+  // 複数曲時は共通タグ (intersection) のみ初期表示し、保存時は差分を merge add/remove。
+  const [tagList, setTagList] = useState<string[]>([]);
+  const [initialTagList, setInitialTagList] = useState<string[]>([]);
+  const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
+  const [tagsMixed, setTagsMixed] = useState(false);
 
   // 補完用に既知のジャンルタグを多い順で取得。
   useEffect(() => {
@@ -134,6 +141,74 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
       .then((tags) => setGenreSuggestions(tags.map((t) => t.tag)))
       .catch(() => setGenreSuggestions([]));
   }, []);
+
+  // first-class Tags の補完候補 + 対象曲の現在タグ (共通集合)。
+  useEffect(() => {
+    let alive = true;
+    libraryApi
+      .getAllTags()
+      .then((tags) => {
+        if (!alive) return;
+        setTagSuggestions(tags.map((t) => formatTagStr(t.namespace, t.value)));
+      })
+      .catch(() => {
+        if (alive) setTagSuggestions([]);
+      });
+
+    (async () => {
+      try {
+        const perTrack = await Promise.all(
+          trackIds.map((id) =>
+            libraryApi
+              .getTrackTags(id)
+              .then((tags) =>
+                tags.map((t) => formatTagStr(t.namespace, t.value)),
+              ),
+          ),
+        );
+        if (!alive) return;
+        if (perTrack.length === 0) {
+          setTagList([]);
+          setInitialTagList([]);
+          setTagsMixed(false);
+          return;
+        }
+        // intersection (大小無視で共通、表示は最初の曲の表記を優先)
+        const lowerSets = perTrack.map(
+          (list) => new Set(list.map((t) => t.toLowerCase())),
+        );
+        const common = perTrack[0].filter((t) =>
+          lowerSets.every((s) => s.has(t.toLowerCase())),
+        );
+        const allSame =
+          perTrack.length === 1 ||
+          perTrack.every(
+            (list) =>
+              list.length === common.length &&
+              list.every((t) =>
+                common.some((c) => c.toLowerCase() === t.toLowerCase()),
+              ),
+          );
+        setTagList(common);
+        setInitialTagList(common);
+        setTagsMixed(!allSame);
+        setDirty((d) => {
+          const n = new Set(d);
+          n.delete("tags");
+          return n;
+        });
+      } catch {
+        if (!alive) return;
+        setTagList([]);
+        setInitialTagList([]);
+        setTagsMixed(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [trackIds]);
 
   // 初期フォーカス: ダイアログが開いたら最初の入力欄へ。
   useEffect(() => {
@@ -230,6 +305,14 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
         for (const tag of added) await libraryApi.addGenreTag(trackIds, tag);
         for (const tag of removed) await libraryApi.removeGenreTag(trackIds, tag);
       }
+      // first-class Tags: 初期共通集合との差分を merge add/remove (他曲固有タグは消さない)。
+      if (dirty.has("tags")) {
+        const eqi = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+        const added = tagList.filter((t) => !initialTagList.some((x) => eqi(x, t)));
+        const removed = initialTagList.filter((t) => !tagList.some((x) => eqi(x, t)));
+        for (const tag of added) await libraryApi.addTrackTags(trackIds, tag);
+        for (const tag of removed) await libraryApi.removeTrackTags(trackIds, tag);
+      }
       pushToast("success", "保存しました");
       onSaved();
       onClose();
@@ -240,7 +323,19 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
     } finally {
       setBusy(false);
     }
-  }, [busy, form, dirty, trackIds, single, initial, onSaved, onClose, pushToast]);
+  }, [
+    busy,
+    form,
+    dirty,
+    trackIds,
+    single,
+    initial,
+    tagList,
+    initialTagList,
+    onSaved,
+    onClose,
+    pushToast,
+  ]);
 
   // ref を最新の handleSave に追従させる（keydown リスナー用）。
   handleSaveRef.current = handleSave;
@@ -440,6 +535,25 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
                   : "タグを入力して Enter / 候補から選択"
               }
               onChange={(tags) => update("genre", tags.join(" "))}
+            />
+          </Field>
+          <Field label="Tags">
+            <GenreTagInput
+              value={tagList}
+              suggestions={tagSuggestions}
+              placeholder={
+                tagsMixed && !dirty.has("tags")
+                  ? "— 共通タグのみ表示 — 追加は全曲へ merge"
+                  : "mood:dreamy や bridge を入力して Enter"
+              }
+              onChange={(next) => {
+                setTagList(next);
+                setDirty((d) => {
+                  const n = new Set(d);
+                  n.add("tags");
+                  return n;
+                });
+              }}
             />
           </Field>
 
