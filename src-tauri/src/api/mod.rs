@@ -372,17 +372,24 @@ async fn auth_guard(
 
     // LAN からの書き込みは原則 /api/remote/* と GET のみ許可する。
     // federation lookup は POST だが DB を変更しない読み取り API なので例外として許可する。
-    // 例外: `POST /api/tracks/{id}/rating` と `PUT`/`DELETE /api/tracks/{id}/artwork` のみ許可する。
-    // rating はレーティングを DB に書くだけの最小権限エンドポイントで、ファイルタグや
-    // 他メタデータには触れない (モバイルから★を設定する用)。artwork は実ファイルの
-    // 埋め込みカバーを差し替える (ユーザー判断で LAN 設定を許可)。メタデータ編集
-    // (`PATCH /api/tracks/{id}`) や一括書き込みは引き続き LAN から拒否する。
+    // 例外: `POST /api/tracks/{id}/rating`・`POST /api/tracks/tags/{add,remove}` と
+    // `PUT`/`DELETE /api/tracks/{id}/artwork` を許可する。
+    // rating / first-class tags は DB のみ（ファイルタグには触れない）で、モバイルの
+    // リスニング中トリアージ用。artwork は実ファイルの埋め込みカバーを差し替える
+    // （ユーザー判断で LAN 設定を許可）。メタデータ編集（`PATCH /api/tracks/{id}`）や
+    // ジャンル一括書き込み・プレイリスト編集は引き続き remote から拒否する。
     let method = req.method().clone();
     let is_read_only_method = method == axum::http::Method::GET;
     let is_read_only_lookup = method == axum::http::Method::POST
         && matches!(path.as_str(), "/api/tracks/lookup" | "/api/analysis/lookup");
     let is_remote_path = path.starts_with("/api/remote");
     let is_rating_write = method == axum::http::Method::POST && is_rating_path(&path);
+    // first-class Tags (Genre とは独立) は DB のみなので remote からも許可する (#125)。
+    let is_tag_write = method == axum::http::Method::POST
+        && matches!(
+            path.as_str(),
+            "/api/tracks/tags/add" | "/api/tracks/tags/remove"
+        );
     // アートワーク設定 (PUT)・削除 (DELETE) も LAN から token 認証つきで許可する。
     // rating と違い実ファイル(音源)のタグを書き換えるが、ユーザー判断で LAN 設定を許可している。
     let is_artwork_write = (method == axum::http::Method::PUT
@@ -395,6 +402,7 @@ async fn auth_guard(
         && !is_read_only_lookup
         && !is_remote_path
         && !is_rating_write
+        && !is_tag_write
         && !is_artwork_write
         && !is_sync_write
     {
@@ -2137,7 +2145,7 @@ mod tests {
             pairings: crate::pairing::PairingRegistry::default(),
         });
 
-        // remote は従来どおり rating と artwork には到達できる。
+        // remote は rating・first-class tags・artwork に到達できる。
         let (status, _) = lan_req(
             app.clone(),
             Some("remote-token"),
@@ -2147,6 +2155,15 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("remote-token"),
+            "POST",
+            "/api/tracks/tags/add",
+            Some(json!({ "trackIds": [1], "tag": "review:later" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "remote から first-class tags を書ける");
         let (status, _) = lan_req(
             app.clone(),
             Some("remote-token"),

@@ -1,17 +1,21 @@
 // Settings 画面。現在の接続情報（baseUrl / token マスク）と状態を表示し、
 // 再接続・切断を行う。接続中ならサーバー/ライブラリ情報も表示する。
+// オフライン編集キュー / 衝突解決 UI (#125) もここに置く。
 
 import type { ReactNode } from "react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
-import { Pressable, ScrollView, Text, View, StyleSheet } from "react-native";
+import { Alert, Pressable, ScrollView, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 import Screen from "@/components/Screen";
 import { type ArtistGrouping, type TrackMetaField, formatDuration, useConnection, useDownloads, useSettings } from "@crateforge/core";
 import QualityPicker from "@/features/offline/QualityPicker";
 import { formatBytes } from "@/features/offline/format";
+import { formatRatingConflict } from "@/features/triage/conflict";
+import { flushPending, keepMine, keepServer } from "@/features/triage/syncPending";
+import { usePendingEdits } from "@/store/pendingEdits";
 import { BRAND, PALETTE } from "@/constants/brand";
 
 /** トークンを先頭/末尾だけ残してマスクする。 */
@@ -61,11 +65,38 @@ export default function SettingsScreen() {
     0,
   );
 
+  const pendingOps = usePendingEdits((s) => s.ops);
+  const pendingConflicts = usePendingEdits((s) => s.conflicts);
+  const flushing = usePendingEdits((s) => s.flushing);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
+
   // 永続化された設定/ダウンロード一覧を初回マウントで復元（冪等）。
   useEffect(() => {
     void useSettings.getState().hydrate();
     void useDownloads.getState().hydrate();
+    void usePendingEdits.getState().hydrate();
   }, []);
+
+  async function handleSyncEdits() {
+    if (!client) {
+      Alert.alert("未接続", "同期するにはホストへ接続してください");
+      return;
+    }
+    const result = await flushPending(client);
+    setSyncNote(
+      `適用 ${result.applied} / 衝突 ${result.conflicts} / 失敗 ${result.failed}` +
+        (result.skippedUnsupported > 0 ? ` / 未対応 ${result.skippedUnsupported}` : ""),
+    );
+  }
+
+  async function handleKeepMine(conflictId: string) {
+    if (!client) {
+      Alert.alert("未接続", "端末の値を送るには接続が必要です");
+      return;
+    }
+    const ok = await keepMine(client, conflictId);
+    if (!ok) Alert.alert("反映に失敗しました", "しばらくしてから再試行してください");
+  }
 
   const health = useQuery({
     queryKey: ["health", baseUrl],
@@ -204,6 +235,112 @@ export default function SettingsScreen() {
           </Pressable>
         </View>
 
+        {/* オフライン編集キュー / 衝突 (#125) */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>オフライン編集</Text>
+          <Row label="未同期">
+            <Text style={styles.value}>{pendingOps.length} 件</Text>
+          </Row>
+          <Row label="衝突">
+            <Text
+              style={[
+                styles.value,
+                pendingConflicts.length > 0 ? { color: PALETTE.danger } : null,
+              ]}
+            >
+              {pendingConflicts.length} 件
+            </Text>
+          </Row>
+
+          <Pressable
+            onPress={() => {
+              void handleSyncEdits();
+            }}
+            disabled={!client || flushing || pendingOps.length === 0}
+            accessibilityRole="button"
+            accessibilityLabel="編集を同期"
+            style={({ pressed }) => [
+              styles.btn,
+              styles.btnPrimary,
+              styles.syncBtn,
+              (!client || flushing || pendingOps.length === 0) && styles.btnDisabled,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Ionicons name="cloud-upload-outline" size={18} color={BRAND.accentText} />
+            <Text style={styles.btnPrimaryText}>
+              {flushing ? "同期中…" : "編集を同期"}
+            </Text>
+          </Pressable>
+          {syncNote ? <Text style={styles.syncNote}>{syncNote}</Text> : null}
+
+          {pendingOps.length > 0 ? (
+            <View style={styles.pendingList}>
+              {pendingOps.slice(0, 8).map((op) => (
+                <Text key={op.id} style={styles.pendingItem} numberOfLines={1}>
+                  {describePendingOp(op)}
+                </Text>
+              ))}
+              {pendingOps.length > 8 ? (
+                <Text style={styles.pendingItem}>…他 {pendingOps.length - 8} 件</Text>
+              ) : null}
+            </View>
+          ) : null}
+
+          {pendingConflicts.map((c) => {
+            const summary = formatRatingConflict(c.op.rating, c.serverRating);
+            const name = c.op.trackName || `track #${c.op.trackId}`;
+            return (
+              <View key={c.id} style={styles.conflictCard}>
+                <Text style={styles.conflictTitle} numberOfLines={1}>
+                  {name}
+                </Text>
+                <Text style={styles.conflictDetail}>{summary.label}</Text>
+                <View style={styles.conflictActions}>
+                  <Pressable
+                    onPress={() => {
+                      void handleKeepMine(c.id);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="端末の評価を採用"
+                    style={({ pressed }) => [
+                      styles.conflictBtn,
+                      styles.conflictBtnPrimary,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.conflictBtnPrimaryText}>端末を採用</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => keepServer(c.id)}
+                    accessibilityRole="button"
+                    accessibilityLabel="サーバの評価を採用"
+                    style={({ pressed }) => [
+                      styles.conflictBtn,
+                      styles.conflictBtnGhost,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.conflictBtnGhostText}>サーバを採用</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => usePendingEdits.getState().dismissConflict(c.id)}
+                    accessibilityRole="button"
+                    accessibilityLabel="衝突を閉じる"
+                    style={({ pressed }) => [
+                      styles.conflictBtn,
+                      styles.conflictBtnGhost,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.conflictBtnGhostText}>閉じる</Text>
+                  </Pressable>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+
         {/* アーティストの束ね方 */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>アーティストの束ね方</Text>
@@ -263,6 +400,24 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
       <View style={styles.rowValue}>{children}</View>
     </View>
   );
+}
+
+function describePendingOp(op: {
+  kind: string;
+  trackId: number;
+  trackName?: string | null;
+  rating?: number;
+  tag?: string;
+}): string {
+  const name = op.trackName || `#${op.trackId}`;
+  if (op.kind === "rating") {
+    const stars = Math.round((op.rating ?? 0) / 20);
+    return `★${stars} ← ${name}`;
+  }
+  if (op.kind === "tag-add") return `+${op.tag} ← ${name}`;
+  if (op.kind === "tag-remove") return `-${op.tag} ← ${name}`;
+  if (op.kind === "review-later") return `あとで ← ${name}`;
+  return `${op.kind} ← ${name}`;
 }
 
 const styles = StyleSheet.create({
@@ -415,5 +570,67 @@ const styles = StyleSheet.create({
   },
   chipTextActive: {
     color: BRAND.accentText,
+  },
+  syncBtn: {
+    marginTop: 12,
+  },
+  syncNote: {
+    color: PALETTE.textDim,
+    fontSize: 12,
+    marginTop: 8,
+  },
+  pendingList: {
+    marginTop: 12,
+    gap: 4,
+  },
+  pendingItem: {
+    color: PALETTE.textDim,
+    fontSize: 13,
+  },
+  conflictCard: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: PALETTE.surfaceAlt,
+    borderWidth: 1,
+    borderColor: PALETTE.danger,
+    gap: 6,
+  },
+  conflictTitle: {
+    color: PALETTE.text,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  conflictDetail: {
+    color: PALETTE.textDim,
+    fontSize: 13,
+  },
+  conflictActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 4,
+  },
+  conflictBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  conflictBtnPrimary: {
+    backgroundColor: PALETTE.accent,
+  },
+  conflictBtnPrimaryText: {
+    color: BRAND.accentText,
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  conflictBtnGhost: {
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+  },
+  conflictBtnGhostText: {
+    color: PALETTE.text,
+    fontWeight: "600",
+    fontSize: 13,
   },
 });

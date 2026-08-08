@@ -17,13 +17,15 @@ import type { LayoutChangeEvent, GestureResponderEvent } from "react-native";
 import { useRouter } from "expo-router";
 
 import { BRAND, PALETTE } from "@/constants/brand";
-import { type SimilarHit, type Track, formatDuration, ratingToStars, trackTitle, trackArtist, trackAlbumArtist, useConnection, usePlayer, useSettings } from "@crateforge/core";
+import { ApiError, type SimilarHit, type Track, formatDuration, ratingToStars, trackTitle, trackArtist, trackAlbumArtist, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
 import IconButton from "@/components/IconButton";
 import TrackRow from "@/components/TrackRow";
 import RatingStars from "@/components/RatingStars";
 import { useSetRating } from "@/features/browse/hooks";
+import { COMMON_TRIAGE_TAGS, REVIEW_LATER_TAG } from "@/features/triage/commonTags";
+import { usePendingEdits } from "@/store/pendingEdits";
 
 // 再生速度の選択肢
 const RATE_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] as const;
@@ -329,8 +331,9 @@ function NowPlaying({
       )}
 
       {/* レーティング（★×5・タップで設定）。current が変わるたびに id をキーにして再マウントし、
-          別の曲の楽観的状態が引き継がれないようにする。 */}
+          別の曲の楽観的状態が引き継がれないようにする。オフラインでもキューへ積む。 */}
       <RatingControl key={current.id} track={current} />
+      <TriageQuickActions key={`triage-${current.id}`} track={current} />
 
       <SeekBar progress={progress} durationMs={durationMs} onSeek={seek} />
       <View style={styles.timeRow}>
@@ -496,22 +499,25 @@ function NowPlaying({
  * 現在曲のレーティング（★×5）をタップで設定するコントロール。
  * - 表示は楽観的ローカル state。タップ即時に星を更新し、サーバ呼び出しが失敗したら元に戻す。
  * - 同じ星を再タップすると 0（未設定）にクリア（RatingStars 側のロジック）。
- * - オフライン（client null）時は操作不可（淡色表示）。
- * - 成功/失敗後に rating を含むクエリ群を invalidate（useSetRating 内）。
+ * - オフライン時も操作可（pendingEdits に enqueue。useSetRating が振り分け）。
+ * - 成功/失敗後に rating を含むクエリ群を invalidate（useSetRating 内・オンライン時）。
  */
 function RatingControl({ track }: { track: Track }) {
-  const client = useConnection((s) => s.client);
   const setRating = useSetRating();
   // サーバ確定値（track.rating 由来）の星数。track が変わると key 再マウントで初期化される。
   const serverStars = ratingToStars(track.rating);
   const [stars, setStars] = useState(serverStars);
 
   const handleChange = (next: number) => {
-    if (!client) return;
     const prev = stars;
     setStars(next); // 楽観的更新
     setRating.mutate(
-      { trackId: track.id, rating: next * 20 },
+      {
+        trackId: track.id,
+        rating: next * 20,
+        baseRating: track.rating ?? null,
+        trackName: track.name,
+      },
       {
         onError: () => setStars(prev), // 失敗したら元に戻す
       },
@@ -520,12 +526,107 @@ function RatingControl({ track }: { track: Track }) {
 
   return (
     <View style={styles.ratingRow}>
-      <RatingStars
-        value={stars}
-        onChange={handleChange}
-        disabled={!client}
-        size={26}
-      />
+      <RatingStars value={stars} onChange={handleChange} size={26} />
+    </View>
+  );
+}
+
+/**
+ * Now Playing から 1–2 タップで使えるトリアージ操作。
+ * 「あとで聴く」と定番タグ。オフライン時は pending キューへ。
+ */
+function TriageQuickActions({ track }: { track: Track }) {
+  const client = useConnection((s) => s.client);
+  const [busy, setBusy] = useState(false);
+  const [showTagPicker, setShowTagPicker] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const flash = (msg: string) => {
+    setNote(msg);
+    setTimeout(() => setNote(null), 2000);
+  };
+
+  const applyTag = async (tag: string) => {
+    if (busy) return;
+    setBusy(true);
+    setShowTagPicker(false);
+    try {
+      if (client) {
+        try {
+          await client.addTrackTags([track.id], tag);
+          flash(tag === REVIEW_LATER_TAG ? "あとで聴くに追加" : `タグ: ${tag}`);
+        } catch (e) {
+          if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
+            flash("ホストがタグ未対応");
+          } else {
+            flash("失敗しました");
+          }
+        }
+      } else {
+        if (tag === REVIEW_LATER_TAG) {
+          usePendingEdits.getState().enqueue({
+            kind: "review-later",
+            trackId: track.id,
+            trackName: track.name,
+          });
+        } else {
+          usePendingEdits.getState().enqueue({
+            kind: "tag-add",
+            trackId: track.id,
+            tag,
+            trackName: track.name,
+          });
+        }
+        flash("オフライン: 再接続時に同期");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <View style={styles.triageRow}>
+      <TouchableOpacity
+        onPress={() => void applyTag(REVIEW_LATER_TAG)}
+        disabled={busy}
+        accessibilityRole="button"
+        accessibilityLabel="あとで聴く"
+        style={styles.triageBtn}
+      >
+        <Text style={styles.triageBtnText}>あとで聴く</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        onPress={() => setShowTagPicker(true)}
+        disabled={busy}
+        accessibilityRole="button"
+        accessibilityLabel="タグを付ける"
+        style={styles.triageBtn}
+      >
+        <Text style={styles.triageBtnText}>タグ…</Text>
+      </TouchableOpacity>
+      {note ? <Text style={styles.triageNote}>{note}</Text> : null}
+
+      <Modal
+        visible={showTagPicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowTagPicker(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setShowTagPicker(false)}>
+          <View style={styles.pickerSheet}>
+            <Text style={styles.pickerTitle}>タグを付ける</Text>
+            {COMMON_TRIAGE_TAGS.map(({ tag, label }) => (
+              <TouchableOpacity
+                key={tag}
+                onPress={() => void applyTag(tag)}
+                style={styles.pickerRow}
+              >
+                <Text style={styles.pickerRowText}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -733,6 +834,34 @@ const styles = StyleSheet.create({
   ratingRow: {
     alignItems: "center",
     marginTop: 14,
+  },
+  triageRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 10,
+  },
+  triageBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+    backgroundColor: PALETTE.surfaceAlt,
+  },
+  triageBtnText: {
+    color: PALETTE.text,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  triageNote: {
+    width: "100%",
+    textAlign: "center",
+    color: PALETTE.textDim,
+    fontSize: 12,
+    marginTop: 4,
   },
 
   seekHit: {

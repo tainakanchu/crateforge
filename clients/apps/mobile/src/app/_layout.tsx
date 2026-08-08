@@ -17,6 +17,8 @@ import { useConnection, usePlayer, useDownloads, useSettings, createAudioEngine,
 import MiniPlayer from "@/components/MiniPlayer";
 import PlaybackErrorToast from "@/components/PlaybackErrorToast";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import { usePendingEdits } from "@/store/pendingEdits";
+import { flushPending } from "@/features/triage/syncPending";
 
 // ライブラリは頻繁に変わらないので staleTime を長めに取り、タブ/モード切替のたびの
 // 再取得を抑える。全曲取得（曲/アーティストモード）は重いので特に効く。
@@ -58,6 +60,7 @@ export default function RootLayout() {
       await Promise.all([
         useDownloads.getState().hydrate(),
         useSettings.getState().hydrate(),
+        usePendingEdits.getState().hydrate(),
       ]);
       await useConnection.getState().hydrate();
     })();
@@ -89,6 +92,7 @@ export default function RootLayout() {
           <StatusBar style="light" />
           <Gate />
           <PinnedPlaylistSync />
+          <PendingEditsSync />
           {/* 描画エラーを捕捉したら再生を止める保険（主因の遷移クラッシュは別途修正済み）。 */}
           <ErrorBoundary>
             <Stack
@@ -123,6 +127,19 @@ function PinnedPlaylistSync() {
     void useDownloads.getState().syncPinnedPlaylists((playlistId) =>
       client.playlistTracks(playlistId, { limit: 100000 }),
     );
+  }, [status, client]);
+
+  return null;
+}
+
+/** 接続確立時にオフライン中の評価/タグ編集をホストへ書き戻す (#125)。 */
+function PendingEditsSync() {
+  const status = useConnection((s) => s.status);
+  const client = useConnection((s) => s.client);
+
+  useEffect(() => {
+    if (status !== "connected" || !client) return;
+    void flushPending(client);
   }, [status, client]);
 
   return null;

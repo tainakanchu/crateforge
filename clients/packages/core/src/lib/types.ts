@@ -61,6 +61,21 @@ export interface GenreTagCount {
   count: number;
 }
 
+/** first-class Tag（Genre とは独立。`namespace:value` / free は value のみ）。 */
+export interface Tag {
+  id: number;
+  namespace: string;
+  value: string;
+}
+
+/** first-class Tag の頻度一覧（`GET /api/tags`）。 */
+export interface TagCount {
+  id: number;
+  namespace: string;
+  value: string;
+  count: number;
+}
+
 /** `GET /api/albums` の 1 件（distinct アルバム）。sampleTrackId はアートワーク取得用の代表トラック。 */
 export interface Album {
   album: string;
