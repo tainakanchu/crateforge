@@ -185,7 +185,10 @@ interface AppState extends PersistedSettings {
   reorderCrate: (from: number, to: number) => void;
   setCrateOrder: (ids: number[]) => void;
   clearCrate: () => void;
-  /** 永続 ID 列から crate を復元（空のときのみ App から呼ぶ想定）。 */
+  /**
+   * 永続 ID 列から crate を復元する。
+   * 既に曲がある場合は永続順を優先し、再水和中に足された曲は末尾へマージする。
+   */
   restoreCrateTracks: (tracks: Track[]) => void;
 
   // Set Workspace
@@ -274,14 +277,49 @@ const initialSetWorkspace = (() => {
   }
 })();
 
+// 再水和完了前は localStorage へ書かない（空 crate で trackIds を消さないため）。
+let setWorkspaceHydrationDone = false;
+// API 失敗などで restore できなかった場合に、空 crate でも以前の ids を保持する。
+let preservedCrateTrackIds: number[] | null = null;
+
+/**
+ * Set Workspace 再水和の完了を宣言する。
+ * `preservePersistedTrackIds` 時は現在の localStorage crateTrackIds を退避し、
+ * crate が空のままでも以降の persist で上書き消去しない。
+ * 完了後に現在 state を一度 flush する（ゲート中に prune された anchors 等を LS へ反映）。
+ */
+export function markSetWorkspaceHydrationDone(options?: {
+  preservePersistedTrackIds?: boolean;
+}): void {
+  if (options?.preservePersistedTrackIds) {
+    try {
+      preservedCrateTrackIds = loadSetWorkspacePersist().crateTrackIds;
+    } catch {
+      // load 失敗時は既存の preserved を触らない
+    }
+  }
+  setWorkspaceHydrationDone = true;
+  // 呼び出し時点ではモジュール初期化済み（useStore 定義後）であること。
+  persistSetWorkspaceSlice(useStore.getState());
+}
+
 function persistSetWorkspaceSlice(state: {
   crate: Track[];
   setMeta: SetMeta;
   crateAnchors: CrateAnchors;
   crateSections: CrateSection[];
 }): void {
+  let crateTrackIds: number[];
+  if (state.crate.length > 0) {
+    crateTrackIds = state.crate.map((t) => t.trackId);
+    preservedCrateTrackIds = null;
+  } else if (preservedCrateTrackIds != null) {
+    crateTrackIds = preservedCrateTrackIds;
+  } else {
+    crateTrackIds = [];
+  }
   saveSetWorkspacePersist({
-    crateTrackIds: state.crate.map((t) => t.trackId),
+    crateTrackIds,
     setMeta: state.setMeta,
     anchors: state.crateAnchors,
     sections: state.crateSections,
@@ -443,14 +481,39 @@ export const useStore = create<AppState>()(
           }
           return { crate: next };
         }),
-      clearCrate: () =>
-        set({ crate: [], crateAnchors: {}, crateSections: [] }),
+      // ステージング set を空にする。旧 set の title/notes が空 crate に残らないよう setMeta も初期化する。
+      clearCrate: () => {
+        preservedCrateTrackIds = null;
+        set({
+          crate: [],
+          crateAnchors: {},
+          crateSections: [],
+          setMeta: { ...DEFAULT_SET_META },
+        });
+      },
       restoreCrateTracks: (tracks) =>
         set((state) => {
-          // 既に crate がある場合は上書きしない（セッション優先）
-          if (state.crate.length > 0) return {};
           if (tracks.length === 0) return {};
-          return { crate: tracks };
+          const restoredIds = new Set(tracks.map((t) => t.trackId));
+          // 永続化された順を優先。再水和中にユーザーが足した曲は末尾に残す。
+          const extras = state.crate.filter((t) => !restoredIds.has(t.trackId));
+          const merged =
+            state.crate.length === 0 ? tracks : [...tracks, ...extras];
+          const ids = new Set(merged.map((t) => t.trackId));
+          // 部分 restore 時に欠落 track の orphan anchors/sections を落とす
+          const nextAnchors: CrateAnchors = {};
+          for (const [k, v] of Object.entries(state.crateAnchors)) {
+            const id = Number(k);
+            if (ids.has(id)) nextAnchors[id] = v;
+          }
+          const nextSections = state.crateSections.filter((s) =>
+            ids.has(s.startTrackId),
+          );
+          return {
+            crate: merged,
+            crateAnchors: nextAnchors,
+            crateSections: nextSections,
+          };
         }),
 
       // Set Workspace
@@ -742,6 +805,8 @@ export const useStore = create<AppState>()(
 
 // Set Workspace を localStorage へ同期（crate trackIds + meta/anchors/sections）。
 useStore.subscribe((state, prev) => {
+  // 再水和完了前は書かない（空 crate のまま persist して trackIds を消すレースを防ぐ）
+  if (!setWorkspaceHydrationDone) return;
   if (
     state.crate === prev.crate &&
     state.setMeta === prev.setMeta &&

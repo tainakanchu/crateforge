@@ -601,10 +601,10 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   // Save as Playlist ボタン → インライン入力を表示
   const handleSaveAsPlaylistOpen = useCallback(() => {
     if (crate.length === 0) return;
-    setSaveNameInput("");
+    setSaveNameInput(setMeta.title.trim() || "");
     // 次のフレームで input にフォーカス
     setTimeout(() => saveInputRef.current?.focus(), 0);
-  }, [crate]);
+  }, [crate, setMeta.title]);
 
   // インライン入力で Enter 確定 or 明示的呼び出し
   const handleSaveAsPlaylistCommit = useCallback(async (name: string) => {

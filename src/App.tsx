@@ -23,7 +23,7 @@ import { DropImportOverlay } from "./components/DropImportOverlay";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 import { SyncProvisionDialog } from "./components/SyncProvisionDialog";
 import { TriagePanel } from "./components/TriagePanel";
-import { useStore } from "./store/useStore";
+import { useStore, markSetWorkspaceHydrationDone } from "./store/useStore";
 import { useDiscWatcher } from "./hooks/useDiscWatcher";
 import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
@@ -461,15 +461,19 @@ export default function App() {
   }, [loadAnalyses, setAnalysisActive]);
 
   // Set Workspace (#121): 永続化した crate trackIds を再水和。
+  // 再水和完了まで store subscribe は localStorage に書かない（レースで trackIds 消失を防ぐ）。
   useEffect(() => {
-    if (!isTauri) return;
+    if (!isTauri) {
+      markSetWorkspaceHydrationDone();
+      return;
+    }
     let cancelled = false;
     (async () => {
+      let preserve = false;
       try {
         const persisted = loadSetWorkspacePersist();
         if (persisted.crateTrackIds.length === 0) return;
-        const st = useStore.getState();
-        if (st.crate.length > 0) return;
+        // crate が既にあっても fetch → merge restore する（再水和中の add レース対策）
         const resolved = await libraryApi.getTracksByIds(persisted.crateTrackIds);
         if (cancelled) return;
         const byId = new Map(resolved.map((t) => [t.trackId, t]));
@@ -481,6 +485,13 @@ export default function App() {
         }
       } catch (err) {
         console.error("Failed to restore set workspace crate:", err);
+        preserve = true;
+      } finally {
+        if (!cancelled) {
+          markSetWorkspaceHydrationDone(
+            preserve ? { preservePersistedTrackIds: true } : undefined,
+          );
+        }
       }
     })();
     return () => {

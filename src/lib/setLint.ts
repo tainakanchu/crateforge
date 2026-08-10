@@ -30,7 +30,7 @@ export function lintSet(
   crate: Track[],
   analysis: Map<number, TrackAnalysis> | ReadonlyMap<number, TrackAnalysis>,
   meta: SetMeta,
-  _anchors: CrateAnchors,
+  anchors: CrateAnchors,
 ): LintItem[] {
   const items: LintItem[] = [];
   if (crate.length === 0) return items;
@@ -173,6 +173,47 @@ export function lintSet(
         key: "duration-under",
         severity: "info",
         message: `目標尺不足: ${actualMin.toFixed(1)} / ${target} 分 (${((1 - ratio) * 100).toFixed(0)}% 短い)`,
+      });
+    }
+  }
+
+  // Anchor 矛盾（crate 内に存在する track のみ対象）
+  const indexById = new Map(crate.map((t, i) => [t.trackId, i]));
+  const openings: number[] = [];
+  const closings: number[] = [];
+  for (const [k, kind] of Object.entries(anchors)) {
+    const id = Number(k);
+    if (!Number.isFinite(id) || !indexById.has(id)) continue;
+    if (kind === "opening") openings.push(id);
+    else if (kind === "closing") closings.push(id);
+  }
+  if (openings.length > 1) {
+    items.push({
+      key: "anchor-multi-opening",
+      severity: "warn",
+      message: `Opening が複数あります (${openings.length})`,
+      trackIds: openings,
+    });
+  }
+  if (closings.length > 1) {
+    items.push({
+      key: "anchor-multi-closing",
+      severity: "warn",
+      message: `Closing が複数あります (${closings.length})`,
+      trackIds: closings,
+    });
+  }
+  if (openings.length > 0 && closings.length > 0) {
+    const minOpen = Math.min(...openings.map((id) => indexById.get(id)!));
+    const hasClosingBefore = closings.some(
+      (id) => indexById.get(id)! < minOpen,
+    );
+    if (hasClosingBefore) {
+      items.push({
+        key: "anchor-closing-before-opening",
+        severity: "warn",
+        message: "Closing が Opening より前にあります",
+        trackIds: [...closings, ...openings],
       });
     }
   }
