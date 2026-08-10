@@ -9,6 +9,7 @@ import {
   buildGigSnapshot,
   defaultSnapshotName,
   deleteGigSnapshot,
+  GIG_PLAYLIST_TRACK_LIMIT,
   loadGigSnapshots,
   saveGigSnapshot,
 } from "../lib/gigSnapshot";
@@ -110,7 +111,7 @@ export function GigReadinessDialog({
   const [viewSnapshot, setViewSnapshot] = useState<GigSnapshot | null>(null);
   const [savingName, setSavingName] = useState<string | null>(null);
 
-  // Load playlist tracks when source = playlist
+  // Load playlist tracks when source = playlist (smart vs normal, App.tsx と同様)
   useEffect(() => {
     if (source !== "playlist" || selectedPlaylistId == null) {
       setPlaylistTracks([]);
@@ -118,10 +119,21 @@ export function GigReadinessDialog({
     }
     let cancelled = false;
     setLoadingPl(true);
-    playlistsApi
-      .getPlaylistTracks(selectedPlaylistId, 1_000_000)
+    const limit = GIG_PLAYLIST_TRACK_LIMIT;
+    const isSmart = selectedPlaylist?.isSmart === true;
+    const load = isSmart
+      ? playlistsApi.getSmartPlaylistTracks(selectedPlaylistId, limit)
+      : playlistsApi.getPlaylistTracks(selectedPlaylistId, limit);
+    load
       .then((list) => {
-        if (!cancelled) setPlaylistTracks(list);
+        if (cancelled) return;
+        setPlaylistTracks(list);
+        if (list.length >= limit) {
+          pushToast(
+            "info",
+            `先頭 ${limit.toLocaleString()} 曲のみチェックしています（上限）`,
+          );
+        }
       })
       .catch((err) => {
         console.error("Failed to load playlist for gig readiness:", err);
@@ -136,7 +148,21 @@ export function GigReadinessDialog({
     return () => {
       cancelled = true;
     };
-  }, [source, selectedPlaylistId, pushToast]);
+  }, [source, selectedPlaylistId, selectedPlaylist?.isSmart, pushToast]);
+
+  // Esc: 保存名入力中はプロンプトのみキャンセル、それ以外はダイアログを閉じる
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (savingName != null) {
+        setSavingName(null);
+        return;
+      }
+      onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, savingName]);
 
   const activeTracks: Track[] =
     source === "crate" ? crate : playlistTracks;
@@ -281,9 +307,13 @@ export function GigReadinessDialog({
       analysisByTrack,
       setMeta: source === "crate" ? setMeta : null,
     });
-    const next = saveGigSnapshot(snap);
-    setSnapshots(next);
+    const result = saveGigSnapshot(snap);
     setSavingName(null);
+    setSnapshots(result.list);
+    if (!result.ok) {
+      pushToast("error", result.error);
+      return;
+    }
     pushToast("success", `Snapshot「${snap.name}」を保存しました`);
     setTab("snapshots");
     setViewSnapshot(snap);
@@ -301,8 +331,12 @@ export function GigReadinessDialog({
   const handleDeleteSnapshot = useCallback(
     (id: string) => {
       if (!window.confirm("この Snapshot を削除しますか？")) return;
-      const next = deleteGigSnapshot(id);
-      setSnapshots(next);
+      const result = deleteGigSnapshot(id);
+      setSnapshots(result.list);
+      if (!result.ok) {
+        pushToast("error", result.error);
+        return;
+      }
       if (viewSnapshot?.id === id) setViewSnapshot(null);
       pushToast("info", "Snapshot を削除しました");
     },
@@ -620,7 +654,10 @@ export function GigReadinessDialog({
                   onChange={(e) => setSavingName(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") commitSave();
-                    if (e.key === "Escape") setSavingName(null);
+                    if (e.key === "Escape") {
+                      e.stopPropagation();
+                      setSavingName(null);
+                    }
                   }}
                   autoFocus
                   aria-label="Snapshot name"
