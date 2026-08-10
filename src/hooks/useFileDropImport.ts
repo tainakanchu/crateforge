@@ -49,10 +49,14 @@ export function useFileDropImport(onImported: () => void): boolean {
           // ライブラリへ取り込み
           try {
             const result = await libraryApi.importFiles(paths);
-            const msg =
+            const base =
               `${result.addedTracks} ファイルを取り込みました` +
               (result.skipped > 0 ? `（${result.skipped} 件スキップ）` : "");
-            pushToast("success", msg);
+            const msg =
+              result.addedTracks > 0
+                ? `${base} — Inbox に追加されました。サイドバーの Inbox から整理できます`
+                : base;
+            pushToast("success", msg, result.addedTracks > 0 ? 5200 : 3200);
             onImported();
           } catch (err) {
             pushToast("error", `取り込みエラー: ${err}`);

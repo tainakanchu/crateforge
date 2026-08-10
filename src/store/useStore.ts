@@ -131,6 +131,12 @@ interface AppState extends PersistedSettings {
   previewActive: boolean;
   previewReturn: { trackId: number | null; positionMs: number } | null;
 
+  // Inbox / Triage (#118) — セッション状態。done/later は localStorage (crateforge-triage)。
+  triageMode: boolean;
+  triageIndex: number;
+  /** サイドバーバッジ用。Inbox ロード / 処理後に更新。 */
+  inboxCount: number;
+
   // グローバルトースト — セッション内のみ、永続化しない。
   toasts: Toast[];
   // アートワーク差し替え時のキャッシュバスト用エポック（揮発・非永続）
@@ -213,6 +219,13 @@ interface AppState extends PersistedSettings {
   /** セッション状態だけクリア (バックエンド flag / 再生復帰は lib/audition.ts 側)。 */
   exitPreviewSession: () => void;
 
+  // Inbox / Triage
+  setTriageMode: (on: boolean) => void;
+  setTriageIndex: (i: number) => void;
+  setInboxCount: (n: number) => void;
+  enterTriage: (startIndex?: number) => void;
+  exitTriage: () => void;
+
   // Toasts
   pushToast: (kind: ToastKind, message: string, durationMs?: number) => number;
   dismissToast: (id: number) => void;
@@ -251,6 +264,9 @@ export const useStore = create<AppState>()(
       pendingUpdate: null,
       previewActive: false,
       previewReturn: null,
+      triageMode: false,
+      triageIndex: 0,
+      inboxCount: 0,
       toasts: [],
       artworkEpoch: 0,
 
@@ -460,6 +476,13 @@ export const useStore = create<AppState>()(
         set({ previewActive: true, previewReturn }),
       exitPreviewSession: () =>
         set({ previewActive: false, previewReturn: null }),
+
+      setTriageMode: (triageMode) => set({ triageMode }),
+      setTriageIndex: (triageIndex) => set({ triageIndex }),
+      setInboxCount: (inboxCount) => set({ inboxCount }),
+      enterTriage: (startIndex = 0) =>
+        set({ triageMode: true, triageIndex: Math.max(0, startIndex) }),
+      exitTriage: () => set({ triageMode: false, triageIndex: 0 }),
 
       pushToast: (kind, message, durationMs = 3200) => {
         const id = ++toastSeq;

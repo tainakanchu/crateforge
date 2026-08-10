@@ -71,6 +71,20 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    title: "Inbox / Triage",
+    items: [
+      { keys: ["T"], label: "Inbox で Triage を開始" },
+      { keys: ["Space"], label: "プレビュー再生 / 一時停止 (Triage 中)" },
+      { keys: ["J", "↓"], label: "次の曲 (Triage 中)" },
+      { keys: ["K", "↑"], label: "前の曲 (Triage 中)" },
+      { keys: ["1", "…", "5"], label: "レーティング (Triage 中)" },
+      { keys: ["C"], label: "Crate に追加 (Triage 中)" },
+      { keys: ["D", "Enter"], label: "処理済みにして次へ (Triage 中)" },
+      { keys: ["S"], label: "あとで（スキップ） (Triage 中)" },
+      { keys: ["Esc"], label: "Triage 終了 → Inbox リスト" },
+    ],
+  },
+  {
     title: "ヘルプ",
     items: [{ keys: ["?"], label: "このショートカット一覧" }],
   },

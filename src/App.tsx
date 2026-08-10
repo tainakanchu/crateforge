@@ -22,6 +22,7 @@ import { RipStatusBar } from "./components/RipStatusBar";
 import { DropImportOverlay } from "./components/DropImportOverlay";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 import { SyncProvisionDialog } from "./components/SyncProvisionDialog";
+import { TriagePanel } from "./components/TriagePanel";
 import { useStore } from "./store/useStore";
 import { useDiscWatcher } from "./hooks/useDiscWatcher";
 import * as libraryApi from "./api/library";
@@ -32,6 +33,11 @@ import * as analysisApi from "./api/analysis";
 import * as ripperApi from "./api/ripper";
 import * as fontsApi from "./api/fonts";
 import * as audition from "./lib/audition";
+import {
+  INBOX_FETCH_LIMIT,
+  loadTriagePersist,
+  mergeInboxSources,
+} from "./lib/triage";
 import type { Track } from "./types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -80,6 +86,12 @@ export default function App() {
     setRipStatus,
     appendRipLog,
     pushToast,
+    triageMode,
+    enterTriage,
+    exitTriage,
+    setTriageIndex,
+    setInboxCount,
+    inboxCount,
   } = useStore();
 
   const ripStatus = useStore((s) => s.ripStatus);
@@ -128,6 +140,14 @@ export default function App() {
         return;
       }
 
+      // Triage 中の reload でフォーカス曲を失わないよう、fetch 前に trackId を捕捉
+      const stBefore = useStore.getState();
+      const focusedTrackId =
+        stBefore.viewMode === "inbox" && stBefore.triageMode
+          ? (stBefore.tracks[stBefore.triageIndex]?.trackId ?? null)
+          : null;
+      const prevTriageIndex = stBefore.triageIndex;
+
       setIsLoading(true);
       try {
         const offset = reset ? 0 : tracks.length;
@@ -137,7 +157,40 @@ export default function App() {
           .join(" ");
         let result;
 
-        if (viewMode === "recent") {
+        if (viewMode === "inbox") {
+          // 直近 INBOX_FETCH_LIMIT 件 + laterIds 欠損分を getTracksByIds で合流。
+          const persist = loadTriagePersist();
+          const raw = await libraryApi.getTracks(
+            INBOX_FETCH_LIMIT,
+            0,
+            "dateAdded",
+            "desc",
+          );
+          const present = new Set(raw.map((t) => t.trackId));
+          const missingLater = persist.laterIds.filter((id) => !present.has(id));
+          const laterExtra =
+            missingLater.length > 0
+              ? await libraryApi.getTracksByIds(missingLater)
+              : [];
+          result = mergeInboxSources(raw, laterExtra, persist);
+          setTracks(result);
+          setHasMore(false);
+          setInboxCount(result.length);
+          // triage 中ならフォーカス曲の index を復元
+          const stAfter = useStore.getState();
+          if (stAfter.triageMode && focusedTrackId != null) {
+            const idx = result.findIndex((t) => t.trackId === focusedTrackId);
+            if (idx >= 0) {
+              setTriageIndex(idx);
+            } else {
+              setTriageIndex(
+                result.length === 0
+                  ? 0
+                  : Math.min(prevTriageIndex, result.length - 1),
+              );
+            }
+          }
+        } else if (viewMode === "recent") {
           result = await playbackApi.getRecentTracks(200);
           setTracks(result);
           setHasMore(false);
@@ -194,13 +247,59 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [viewMode, selectedPlaylistId, playlists, searchQuery, filterTags, sortField, sortOrder, tracks.length, setTracks, appendTracks, setHasMore, setIsLoading],
+    [
+      viewMode,
+      selectedPlaylistId,
+      playlists,
+      searchQuery,
+      filterTags,
+      sortField,
+      sortOrder,
+      tracks.length,
+      setTracks,
+      appendTracks,
+      setHasMore,
+      setIsLoading,
+      setInboxCount,
+      setTriageIndex,
+    ],
   );
+
+  // サイドバーバッジ用: 起動時とライブラリ変更後に Inbox 件数を軽量更新。
+  const refreshInboxCount = useCallback(async () => {
+    if (!isTauri) {
+      setInboxCount(0);
+      return;
+    }
+    try {
+      const persist = loadTriagePersist();
+      const raw = await libraryApi.getTracks(
+        INBOX_FETCH_LIMIT,
+        0,
+        "dateAdded",
+        "desc",
+      );
+      const present = new Set(raw.map((t) => t.trackId));
+      const missingLater = persist.laterIds.filter((id) => !present.has(id));
+      const laterExtra =
+        missingLater.length > 0
+          ? await libraryApi.getTracksByIds(missingLater)
+          : [];
+      const inbox = mergeInboxSources(raw, laterExtra, persist);
+      setInboxCount(inbox.length);
+    } catch (err) {
+      console.error("Failed to refresh inbox count:", err);
+    }
+  }, [setInboxCount]);
 
   useEffect(() => {
     loadTracks(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, selectedPlaylistId, searchQuery, filterTags, sortField, sortOrder, reloadCount]);
+
+  useEffect(() => {
+    void refreshInboxCount();
+  }, [reloadCount, refreshInboxCount]);
 
   // Albums 表示モード用ローダ。ライブラリ全体 (検索なし) のときだけサーバ集約を使う。
   // スコープ外 (プレイリスト/検索/最近) は AlbumsView が tracks をクライアント束ねする。
@@ -584,6 +683,7 @@ export default function App() {
       }
       if (cmd && e.key.toLowerCase() === "l") {
         e.preventDefault();
+        exitTriage();
         setViewMode("library");
         setSelectedPlaylistId(null);
         setSearchQuery("");
@@ -648,6 +748,24 @@ export default function App() {
       // Other shortcuts: skip when typing in an input.
       if (isInput) {
         if (e.key === "Escape") (target as HTMLInputElement).blur();
+        return;
+      }
+
+      // Triage 中は専用ショートカットが capture で処理する。ここでは触らない。
+      if (useStore.getState().triageMode) return;
+
+      // Inbox リストで T → Triage 開始
+      if (
+        e.key.toLowerCase() === "t" &&
+        !cmd &&
+        !e.altKey &&
+        !e.shiftKey &&
+        useStore.getState().viewMode === "inbox"
+      ) {
+        e.preventDefault();
+        if (useStore.getState().tracks.length > 0) {
+          enterTriage(0);
+        }
         return;
       }
 
@@ -780,6 +898,8 @@ export default function App() {
     setRailTab,
     setSimilarBase,
     addTracksToCrate,
+    enterTriage,
+    exitTriage,
   ]);
 
   const isAlbumView = viewMode === "albums" || viewMode === "artists";
@@ -797,6 +917,15 @@ export default function App() {
       el.style.removeProperty("--rail-w");
     }
   }, [rightRailVisible, rightRailWidth]);
+
+  const handleRemoveFromInbox = useCallback(
+    (_trackId: number) => {
+      // TriagePanel が先に setTracks 済み。現在の tracks 件数をバッジへ反映。
+      const n = useStore.getState().tracks.length;
+      setInboxCount(Math.max(0, n));
+    },
+    [setInboxCount],
+  );
 
   return (
     <div
@@ -822,7 +951,32 @@ export default function App() {
           onOpenSyncProvision={() => setSyncProvisionOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
         />
-        {isAlbumView ? (
+        {viewMode === "inbox" && !triageMode && (
+          <div className="inbox-banner">
+            <span className="inbox-banner-text">
+              Inbox · {inboxCount.toLocaleString()} 曲
+              （直近追加 {INBOX_FETCH_LIMIT.toLocaleString()} 件 + later）
+            </span>
+            <button
+              type="button"
+              className="toolbar-btn primary"
+              disabled={tracks.length === 0}
+              onClick={() => enterTriage(0)}
+              title="Triage を開始 (T)"
+            >
+              Triage 開始
+            </button>
+            {tracks.length === 0 && (
+              <span className="inbox-banner-empty">クリア済み 🎉</span>
+            )}
+          </div>
+        )}
+        {viewMode === "inbox" && triageMode ? (
+          <TriagePanel
+            tracks={tracks}
+            onRemoveFromInbox={handleRemoveFromInbox}
+          />
+        ) : isAlbumView ? (
           <AlbumView
             mode={viewMode === "albums" ? "album" : "artist"}
             onTracksChanged={triggerReload}

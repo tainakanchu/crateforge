@@ -41,6 +41,7 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
 
 const VIEW_TITLE: Record<ViewMode, string> = {
   library: "All Tracks",
+  inbox: "Inbox",
   albums: "Albums",
   artists: "Artists",
   recent: "Recently Played",
@@ -207,6 +208,15 @@ export function Toolbar({
       setStatus(
         `Imported ${r.addedTracks} file(s)` + (r.skipped > 0 ? `, skipped ${r.skipped}` : ""),
       );
+      if (r.addedTracks > 0) {
+        useStore
+          .getState()
+          .pushToast(
+            "success",
+            `${r.addedTracks} 曲を取り込みました — Inbox に追加されました。サイドバーの Inbox から整理できます`,
+            5200,
+          );
+      }
       onLibraryChanged();
       refreshStats();
     } catch (err) {

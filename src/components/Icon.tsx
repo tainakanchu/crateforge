@@ -62,6 +62,9 @@ export const ICON_PATHS: Record<string, string> = {
   sparkle: '<path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/>',
   checkCircle: '<circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-5"/>',
   xCircle: '<circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/>',
+  // Inbox / Triage (#118)
+  inbox:
+    '<path d="M4 6a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2z"/><path d="M4 12h4l2 3h4l2-3h4"/>',
 };
 
 export interface IconProps {
