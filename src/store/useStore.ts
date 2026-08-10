@@ -151,6 +151,8 @@ interface AppState extends PersistedSettings {
   // Crate
   setRailTab: (tab: RailTab) => void;
   addToCrate: (track: Track) => void;
+  /** 複数曲を 1 回の更新で Crate に追加する (重複は Set で O(N) 除去)。 */
+  addTracksToCrate: (tracks: Track[]) => void;
   removeFromCrate: (trackId: number) => void;
   reorderCrate: (from: number, to: number) => void;
   setCrateOrder: (ids: number[]) => void;
@@ -304,6 +306,19 @@ export const useStore = create<AppState>()(
             ? {}
             : { crate: [...state.crate, track], railTab: "crate" },
         ),
+      addTracksToCrate: (tracks) =>
+        set((state) => {
+          if (tracks.length === 0) return {};
+          const seen = new Set(state.crate.map((t) => t.trackId));
+          const added: Track[] = [];
+          for (const track of tracks) {
+            if (seen.has(track.trackId)) continue;
+            seen.add(track.trackId);
+            added.push(track);
+          }
+          if (added.length === 0) return {};
+          return { crate: [...state.crate, ...added], railTab: "crate" as const };
+        }),
       removeFromCrate: (trackId) =>
         set((state) => ({
           crate: state.crate.filter((t) => t.trackId !== trackId),

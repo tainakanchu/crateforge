@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useCallback, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { TrackTable } from "./components/TrackTable";
@@ -73,7 +73,7 @@ export default function App() {
     setRightRailVisible,
     setRailTab,
     setSimilarBase,
-    addToCrate,
+    addTracksToCrate,
     setAnalyses,
     setAnalysisActive,
     setRipStatus,
@@ -612,8 +612,14 @@ export default function App() {
       if (cmd && e.shiftKey && e.key.toLowerCase() === "c") {
         e.preventDefault();
         if (selectedTrackIds.size === 0) return;
-        const selected = tracks.filter((t) => selectedTrackIds.has(t.trackId));
-        selected.forEach((t) => addToCrate(t));
+        // 選択 id から Map 引きで解決 (tracks 全走査の filter を避ける)
+        const byId = new Map(tracks.map((t) => [t.trackId, t]));
+        const selected: typeof tracks = [];
+        for (const id of selectedTrackIds) {
+          const t = byId.get(id);
+          if (t) selected.push(t);
+        }
+        addTracksToCrate(selected);
         setRightRailVisible(true);
         setRailTab("crate");
         return;
@@ -697,19 +703,29 @@ export default function App() {
     setRightRailVisible,
     setRailTab,
     setSimilarBase,
-    addToCrate,
+    addTracksToCrate,
   ]);
 
   const isAlbumView = viewMode === "albums" || viewMode === "artists";
 
+  // 右ペイン幅の CSS 変数は React style ではなく effect で同期する。
+  // リサイズ中は RightRail が DOM を直接更新し、store は pointerup まで触らないため、
+  // ここは rightRailWidth が変わったときだけ上書きする (他の store 更新では触らない)。
+  const appRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = appRef.current;
+    if (!el) return;
+    if (rightRailVisible) {
+      el.style.setProperty("--rail-w", `${rightRailWidth}px`);
+    } else {
+      el.style.removeProperty("--rail-w");
+    }
+  }, [rightRailVisible, rightRailWidth]);
+
   return (
     <div
+      ref={appRef}
       className={"app" + (rightRailVisible ? "" : " no-rail")}
-      style={
-        rightRailVisible
-          ? { ["--rail-w" as string]: `${rightRailWidth}px` }
-          : undefined
-      }
       onContextMenu={(e) => {
         const t = e.target as HTMLElement;
         // 入力欄ではコピー&ペースト用のメニューを残す

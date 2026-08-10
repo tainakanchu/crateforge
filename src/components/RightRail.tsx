@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useStore,
   RIGHT_RAIL_WIDTH_DEFAULT,
+  RIGHT_RAIL_WIDTH_MIN,
+  RIGHT_RAIL_WIDTH_MAX,
 } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import * as playlistsApi from "../api/playlists";
@@ -24,6 +26,18 @@ interface QueueItem {
 
 const SIMILAR_DRAG_MIME = "application/x-crateforge-track-id";
 
+function clampRailWidth(w: number): number {
+  return Math.min(
+    RIGHT_RAIL_WIDTH_MAX,
+    Math.max(RIGHT_RAIL_WIDTH_MIN, Math.round(w)),
+  );
+}
+
+function applyRailWidthCss(width: number) {
+  const app = document.querySelector(".app") as HTMLElement | null;
+  if (app) app.style.setProperty("--rail-w", `${width}px`);
+}
+
 function ratingToStars(rating: number | null): number {
   if (!rating) return 0;
   return Math.round(rating / 20);
@@ -45,6 +59,7 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
     railTab,
     setRailTab,
     addToCrate,
+    addTracksToCrate,
     removeFromCrate,
     reorderCrate,
     setCrateOrder,
@@ -90,9 +105,12 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   const draggingQueue = useRef(false);
 
   // リサイズハンドル
+  // ドラッグ中は store / localStorage を触らず ref + CSS 変数だけ更新し、
+  // pointerup で setRightRailWidth を 1 回呼んで確定する (毎 move の全体 re-render 回避)。
   const resizing = useRef(false);
   const resizeStartX = useRef(0);
   const resizeStartW = useRef(RIGHT_RAIL_WIDTH_DEFAULT);
+  const resizeCurrentW = useRef(RIGHT_RAIL_WIDTH_DEFAULT);
 
   // Similar タブ: 基準は similarBaseTrackId、無ければ再生中の曲。
   const [similar, setSimilar] = useState<SimilarHit[]>([]);
@@ -216,33 +234,40 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
       resizing.current = true;
       resizeStartX.current = e.clientX;
       resizeStartW.current = rightRailWidth;
+      resizeCurrentW.current = rightRailWidth;
       (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     },
     [rightRailWidth],
   );
 
-  const onResizePointerMove = useCallback(
+  const onResizePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!resizing.current) return;
+    // 左端ハンドル: マウスを左へ動かすと幅が増える
+    const next = clampRailWidth(
+      resizeStartW.current + (resizeStartX.current - e.clientX),
+    );
+    resizeCurrentW.current = next;
+    applyRailWidthCss(next);
+  }, []);
+
+  const onResizePointerUp = useCallback(
     (e: React.PointerEvent) => {
       if (!resizing.current) return;
-      // 左端ハンドル: マウスを左へ動かすと幅が増える
-      const next = resizeStartW.current + (resizeStartX.current - e.clientX);
-      setRightRailWidth(next);
+      resizing.current = false;
+      // ドラッグ確定時のみ store / localStorage に書き込む
+      setRightRailWidth(resizeCurrentW.current);
+      try {
+        (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+      } catch {
+        /* ignore */
+      }
     },
     [setRightRailWidth],
   );
 
-  const onResizePointerUp = useCallback((e: React.PointerEvent) => {
-    if (!resizing.current) return;
-    resizing.current = false;
-    try {
-      (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   const onResizeDoubleClick = useCallback(() => {
     setRightRailWidth(RIGHT_RAIL_WIDTH_DEFAULT);
+    applyRailWidthCss(RIGHT_RAIL_WIDTH_DEFAULT);
   }, [setRightRailWidth]);
 
   const isSimilarExternalDrag = (dt: DataTransfer) =>
@@ -918,7 +943,7 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
           <div className={"cb-cratefoot" + (compact ? " cb-cratefoot-compact" : "")}>
             <button
               className="cb-big"
-              onClick={() => similar.forEach((h) => addToCrate(h.track))}
+              onClick={() => addTracksToCrate(similar.map((h) => h.track))}
               disabled={allInCrate}
               style={compact ? { height: 32, fontSize: 12 } : undefined}
             >
