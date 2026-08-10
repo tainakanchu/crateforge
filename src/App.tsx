@@ -420,6 +420,25 @@ export default function App() {
     };
   }, [setPlayback]);
 
+  // プレビュー曲が終端に達したとき: ワーカーが auto-advance せず停止し preview-ended を発火する。
+  // Esc と同じく元の曲・位置へ復帰する。
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await playbackApi.onPreviewEnded(() => {
+        const { previewActive } = useStore.getState();
+        // バックエンドが先に PreviewMode を落としても、フロントの復帰先は残っている。
+        if (previewActive || useStore.getState().previewReturn != null) {
+          audition.exitPreview({ restore: true }).catch(() => {});
+        }
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   const scheduleAutoExport = useCallback(() => {
     clearTimeout(autoExportTimerRef.current);
     autoExportTimerRef.current = setTimeout(() => {

@@ -2033,10 +2033,14 @@ pub async fn stream_track(
 // ===== リモートコントロール =====
 
 /// 再生実績 (PlayReport) を DB に反映するヘルパ。
+/// `PlayReport.preview` が true の曲 (preview 開始時だった曲) は統計を汚さない。
 fn apply_play_report(db: &crate::db::Database, report: Option<crate::audio::PlayReport>) {
     let Some(r) = report else {
         return;
     };
+    if r.preview {
+        return;
+    }
     let played_threshold = if r.duration_ms > 0 {
         (r.duration_ms / 2).min(240_000)
     } else {
@@ -2074,7 +2078,8 @@ fn play_by_id_for_remote(
     let report = player
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .play(path, track_id, duration, gain_db)
+        // リモート API 経由は常に通常再生 (preview ではない)。
+        .play(path, track_id, duration, gain_db, false)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     apply_play_report(&db, report);
     let _ = db.add_recent_track(track_id);
@@ -2179,7 +2184,8 @@ pub async fn remote_play(
     let report = player
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .play(path, body.track_id, duration, gain_db)
+        // リモート API 経由は常に通常再生 (preview ではない)。
+        .play(path, body.track_id, duration, gain_db, false)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     apply_play_report(&db, report);
     db.add_recent_track(body.track_id)
