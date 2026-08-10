@@ -26,7 +26,7 @@
       --text-muted: #555c66;
       --danger: #e57373;
       --success: #81c784;
-      --bar-h: 76px;
+      --bar-h: 112px;
       --side-w: 220px;
       --tab-h: 52px;
     }
@@ -197,6 +197,15 @@
     }
     .track-row:hover { background: var(--bg2); }
     .track-row.active { background: var(--bg3); }
+    .track-row.focused {
+      outline: 1px solid var(--accent);
+      outline-offset: -1px;
+      background: rgba(108, 161, 181, 0.12);
+    }
+    .track-row.active.focused {
+      background: var(--bg3);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
     .track-row.unavailable { opacity: 0.4; cursor: not-allowed; }
 
     .track-idx {
@@ -385,14 +394,13 @@
     }
     #repeat-btn { position: relative; }
 
-    /* リモコン専用バー (PC 再生時のみ表示する音量・shuffle・repeat) */
+    /* 音量 / shuffle / repeat（ローカル・リモコン共通） */
     #remote-controls {
-      display: none;
+      display: flex;
       align-items: center;
       gap: 10px;
-      margin-top: 6px;
+      margin-top: 4px;
     }
-    #remote-controls.show { display: flex; }
     #vol-wrap { display: flex; align-items: center; gap: 6px; flex: 1; max-width: 200px; }
     #vol-slider {
       flex: 1;
@@ -593,6 +601,80 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+    /* ── Shortcut help overlay ── */
+    #shortcut-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 210;
+      background: rgba(0,0,0,0.7);
+      overflow-y: auto;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 40px 16px;
+    }
+    #shortcut-modal.open { display: flex; }
+    #shortcut-modal-panel {
+      width: 100%;
+      max-width: 480px;
+      background: var(--bg2);
+      border-radius: 12px;
+      border: 1px solid var(--bg4);
+      overflow: hidden;
+      margin: auto;
+    }
+    #shortcut-modal-header {
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--bg4);
+    }
+    #shortcut-modal-header h2 {
+      font-size: 15px;
+      font-weight: 600;
+    }
+    #shortcut-modal-body {
+      padding: 12px 16px 18px;
+      max-height: min(70vh, 520px);
+      overflow-y: auto;
+    }
+    .shortcut-group { margin-bottom: 14px; }
+    .shortcut-group h3 {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+    .shortcut-group ul { list-style: none; }
+    .shortcut-group li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 5px 0;
+      font-size: 13px;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .shortcut-group li:last-child { border-bottom: none; }
+    .shortcut-keys { display: flex; flex-wrap: wrap; gap: 4px; flex-shrink: 0; }
+    .shortcut-keys kbd {
+      display: inline-block;
+      min-width: 1.6em;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: var(--bg3);
+      border: 1px solid var(--bg4);
+      font-size: 12px;
+      font-family: inherit;
+      color: var(--text);
+      text-align: center;
+      line-height: 1.4;
+    }
+    .shortcut-label { color: var(--text-dim); text-align: right; }
   </style>
 </head>
 <body>
@@ -711,7 +793,7 @@
       </svg>
     </button>
   </div>
-  <!-- PC 再生 (リモコン) 時のみ表示する 音量 / shuffle / repeat -->
+  <!-- 音量 / shuffle / repeat（ローカル・リモコン共通） -->
   <div id="remote-controls">
     <button class="ctrl-btn" id="shuffle-btn" aria-label="シャッフル" title="シャッフル">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
@@ -754,6 +836,46 @@
       </button>
     </div>
     <ul id="similar-list" style="list-style:none;"></ul>
+  </div>
+</div>
+
+<!-- Shortcut help overlay -->
+<div id="shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-modal-title">
+  <div id="shortcut-modal-panel">
+    <div id="shortcut-modal-header">
+      <h2 id="shortcut-modal-title">キーボードショートカット</h2>
+      <button id="shortcut-close" class="ctrl-btn" aria-label="閉じる" title="閉じる (Esc)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+    <div id="shortcut-modal-body">
+      <section class="shortcut-group">
+        <h3>再生</h3>
+        <ul>
+          <li><span class="shortcut-keys"><kbd>Space</kbd></span><span class="shortcut-label">再生 / 一時停止</span></li>
+          <li><span class="shortcut-keys"><kbd>Enter</kbd></span><span class="shortcut-label">フォーカス中の曲を再生</span></li>
+          <li><span class="shortcut-keys"><kbd>J</kbd></span><span class="shortcut-label">前の曲</span></li>
+          <li><span class="shortcut-keys"><kbd>K</kbd></span><span class="shortcut-label">次の曲</span></li>
+          <li><span class="shortcut-keys"><kbd>Shift</kbd><kbd>←</kbd></span><span class="shortcut-label">5 秒戻る</span></li>
+          <li><span class="shortcut-keys"><kbd>Shift</kbd><kbd>→</kbd></span><span class="shortcut-label">5 秒進む</span></li>
+          <li><span class="shortcut-keys"><kbd>S</kbd></span><span class="shortcut-label">シャッフル切り替え</span></li>
+          <li><span class="shortcut-keys"><kbd>R</kbd></span><span class="shortcut-label">リピート切り替え</span></li>
+          <li><span class="shortcut-keys"><kbd>Ctrl</kbd><kbd>↑</kbd></span><span class="shortcut-label">音量を上げる</span></li>
+          <li><span class="shortcut-keys"><kbd>Ctrl</kbd><kbd>↓</kbd></span><span class="shortcut-label">音量を下げる</span></li>
+        </ul>
+      </section>
+      <section class="shortcut-group">
+        <h3>ナビゲーション・検索</h3>
+        <ul>
+          <li><span class="shortcut-keys"><kbd>/</kbd></span><span class="shortcut-label">検索にフォーカス</span></li>
+          <li><span class="shortcut-keys"><kbd>Ctrl</kbd><kbd>F</kbd></span><span class="shortcut-label">検索にフォーカス</span></li>
+          <li><span class="shortcut-keys"><kbd>Ctrl</kbd><kbd>L</kbd></span><span class="shortcut-label">検索クリア / ライブラリへ</span></li>
+          <li><span class="shortcut-keys"><kbd>Esc</kbd></span><span class="shortcut-label">閉じる / 検索クリア</span></li>
+          <li><span class="shortcut-keys"><kbd>↑</kbd><kbd>↓</kbd></span><span class="shortcut-label">リスト選択を上下に移動</span></li>
+          <li><span class="shortcut-keys"><kbd>?</kbd></span><span class="shortcut-label">このショートカット一覧</span></li>
+        </ul>
+      </section>
+    </div>
   </div>
 </div>
 
@@ -821,6 +943,16 @@
   let activePlaylistId = null; // null = all tracks
   let remoteShuffle = false;
   let remoteRepeat = "off"; // "off" | "all" | "one"
+  let localShuffle = localStorage.getItem("cf_shuffle") === "1";
+  let localRepeat = (function () {
+    const r = localStorage.getItem("cf_repeat");
+    return (r === "all" || r === "one" || r === "off") ? r : "off";
+  })();
+  let playOrder = [];     // indices into tracks (shuffle order)
+  let playOrderPos = -1;  // position within playOrder
+  let focusedIdx = -1;    // keyboard list focus (visual, not auto-play)
+  let lastKnownDurationMs = 0;
+  let lastLibraryTitle = "すべての曲";
 
   /* ── DOM refs ── */
   const audio        = document.getElementById("audio");
@@ -845,78 +977,188 @@
   const sidebarToggle  = document.getElementById("sidebar-toggle");
   const sidebar        = document.getElementById("sidebar");
   const sidebarOverlay = document.getElementById("sidebar-overlay");
-  const remoteControls = document.getElementById("remote-controls");
   const shuffleBtn     = document.getElementById("shuffle-btn");
   const repeatBtn      = document.getElementById("repeat-btn");
   const repeatBadge    = document.getElementById("repeat-badge");
   const volSlider      = document.getElementById("vol-slider");
+  const shortcutModal  = document.getElementById("shortcut-modal");
+  const similarModalEl = document.getElementById("similar-modal");
+  const queuePanelEl    = document.getElementById("queue-panel");
+
+  // Restore local volume
+  (function initLocalVolume() {
+    const saved = parseFloat(localStorage.getItem("cf_vol"));
+    const vol = (!isNaN(saved) && saved >= 0 && saved <= 1) ? saved : 1;
+    audio.volume = vol;
+    volSlider.value = String(Math.round(vol * 100));
+  })();
 
   /* ── Mode toggle ── */
   modeToggle.addEventListener("click", function () {
     remoteMode = !remoteMode;
     modeLabel.textContent = remoteMode ? "PC で再生" : "この端末";
     modeToggle.classList.toggle("remote", remoteMode);
-    // 音量/shuffle/repeat は PC 再生 (リモコン) 時のみ表示する。
-    remoteControls.classList.toggle("show", remoteMode);
+    // 音量/shuffle/repeat は両モードで常時表示。UI を現モード状態に合わせる。
+    updateShuffleUI();
+    updateRepeatUI();
     if (remoteMode) {
       audio.pause();
       startRemotePoller();
     } else {
       stopRemotePoller();
+      // ローカル音量をスライダーに戻す
+      volSlider.value = String(Math.round((audio.volume || 0) * 100));
     }
   });
 
-  /* ── Remote: shuffle / repeat / volume ── */
+  /* ── Shuffle / repeat / volume (local + remote) ── */
+  function isShuffleOn() {
+    return remoteMode ? remoteShuffle : localShuffle;
+  }
+
+  function getRepeatMode() {
+    return remoteMode ? remoteRepeat : localRepeat;
+  }
+
   function updateShuffleUI() {
-    shuffleBtn.classList.toggle("toggle-on", remoteShuffle);
+    shuffleBtn.classList.toggle("toggle-on", isShuffleOn());
   }
 
   function updateRepeatUI() {
-    repeatBtn.classList.toggle("toggle-on", remoteRepeat !== "off");
-    repeatBadge.style.display = remoteRepeat === "one" ? "block" : "none";
+    const mode = getRepeatMode();
+    repeatBtn.classList.toggle("toggle-on", mode !== "off");
+    repeatBadge.style.display = mode === "one" ? "block" : "none";
   }
 
-  shuffleBtn.addEventListener("click", async function () {
-    if (!remoteMode) return;
-    remoteShuffle = !remoteShuffle;
-    updateShuffleUI();
-    try {
-      await apiFetch("/api/remote/shuffle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ on: remoteShuffle })
-      });
-    } catch (e) { /* toast handled */ }
-  });
+  function persistLocalPlaybackPrefs() {
+    localStorage.setItem("cf_shuffle", localShuffle ? "1" : "0");
+    localStorage.setItem("cf_repeat", localRepeat);
+  }
 
-  repeatBtn.addEventListener("click", async function () {
-    if (!remoteMode) return;
-    // off → all → one → off の順で巡回。
-    remoteRepeat = remoteRepeat === "off" ? "all" : (remoteRepeat === "all" ? "one" : "off");
-    updateRepeatUI();
-    try {
-      await apiFetch("/api/remote/repeat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: remoteRepeat })
-      });
-    } catch (e) { /* toast handled */ }
-  });
+  function rebuildPlayOrder(keepCurrentAtFront) {
+    const n = tracks.length;
+    playOrder = [];
+    for (let i = 0; i < n; i++) playOrder.push(i);
+    if (localShuffle && n > 1) {
+      // Fisher–Yates
+      for (let i = n - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = playOrder[i];
+        playOrder[i] = playOrder[j];
+        playOrder[j] = tmp;
+      }
+      if (keepCurrentAtFront && currentQueueIdx >= 0) {
+        const pos = playOrder.indexOf(currentQueueIdx);
+        if (pos > 0) {
+          playOrder.splice(pos, 1);
+          playOrder.unshift(currentQueueIdx);
+        }
+        playOrderPos = 0;
+      } else {
+        playOrderPos = currentQueueIdx >= 0 ? playOrder.indexOf(currentQueueIdx) : -1;
+      }
+    } else {
+      playOrderPos = currentQueueIdx;
+    }
+  }
+
+  function syncPlayOrderPosToCurrent() {
+    if (currentQueueIdx < 0) {
+      playOrderPos = -1;
+      return;
+    }
+    if (!playOrder.length || playOrder.length !== tracks.length) {
+      rebuildPlayOrder(false);
+      return;
+    }
+    const pos = playOrder.indexOf(currentQueueIdx);
+    playOrderPos = pos >= 0 ? pos : currentQueueIdx;
+  }
+
+  async function toggleShuffle() {
+    if (remoteMode) {
+      remoteShuffle = !remoteShuffle;
+      updateShuffleUI();
+      try {
+        await apiFetch("/api/remote/shuffle", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ on: remoteShuffle })
+        });
+      } catch (e) { /* toast handled */ }
+    } else {
+      localShuffle = !localShuffle;
+      persistLocalPlaybackPrefs();
+      rebuildPlayOrder(true);
+      updateShuffleUI();
+    }
+  }
+
+  async function cycleRepeat() {
+    if (remoteMode) {
+      remoteRepeat = remoteRepeat === "off" ? "all" : (remoteRepeat === "all" ? "one" : "off");
+      updateRepeatUI();
+      try {
+        await apiFetch("/api/remote/repeat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: remoteRepeat })
+        });
+      } catch (e) { /* toast handled */ }
+    } else {
+      localRepeat = localRepeat === "off" ? "all" : (localRepeat === "all" ? "one" : "off");
+      persistLocalPlaybackPrefs();
+      updateRepeatUI();
+    }
+  }
+
+  function setVolume(vol) {
+    vol = Math.max(0, Math.min(1, vol));
+    volSlider.value = String(Math.round(vol * 100));
+    if (remoteMode) {
+      clearTimeout(volTimer);
+      volTimer = setTimeout(function () {
+        apiFetch("/api/remote/volume", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ volume: vol })
+        }).catch(function () {});
+      }, 120);
+    } else {
+      audio.volume = vol;
+      localStorage.setItem("cf_vol", String(vol));
+    }
+  }
+
+  function adjustVolume(delta) {
+    const cur = (parseInt(volSlider.value, 10) || 0) / 100;
+    setVolume(cur + delta);
+  }
+
+  shuffleBtn.addEventListener("click", function () { toggleShuffle(); });
+  repeatBtn.addEventListener("click", function () { cycleRepeat(); });
 
   // 連続ドラッグ中の連投を抑えるための簡易デバウンス。
   let volTimer = null;
   volSlider.addEventListener("input", function () {
-    if (!remoteMode) return;
     const vol = (parseInt(volSlider.value, 10) || 0) / 100;
-    clearTimeout(volTimer);
-    volTimer = setTimeout(function () {
-      apiFetch("/api/remote/volume", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ volume: vol })
-      }).catch(function () {});
-    }, 120);
+    if (remoteMode) {
+      clearTimeout(volTimer);
+      volTimer = setTimeout(function () {
+        apiFetch("/api/remote/volume", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ volume: vol })
+        }).catch(function () {});
+      }, 120);
+    } else {
+      audio.volume = vol;
+      localStorage.setItem("cf_vol", String(vol));
+    }
   });
+
+  updateShuffleUI();
+  updateRepeatUI();
 
   /* ── Mobile sidebar ── */
   sidebarToggle.addEventListener("click", function () {
@@ -1024,6 +1266,7 @@
       item.classList.remove("active");
     });
     el.classList.add("active");
+    lastLibraryTitle = name;
     trackListTitle.textContent = name;
     searchBox.value = "";
     closeSidebarMobile();
@@ -1071,7 +1314,8 @@
     if (yt && yt.value) url += "&yearTo=" + yt.value;
     if (rm && rm.value) url += "&ratingMin=" + rm.value;
 
-    trackListTitle.textContent = "ジャンル: " + tag;
+    lastLibraryTitle = "ジャンル: " + tag;
+    trackListTitle.textContent = lastLibraryTitle;
     activePlaylistId = null;
     switchTab("tracks");
     loadTracksWithUrl(url);
@@ -1084,6 +1328,7 @@
       if (!res.ok) { showToast("曲の読み込みに失敗しました", "error"); return; }
       tracks = await res.json();
       currentQueue = tracks.map(function (t) { return t.trackId; });
+      rebuildPlayOrder(true);
       renderTracks(tracks);
     } catch (e) {
       if (!String(e).startsWith("Error: auth:")) showToast("曲の読み込みに失敗しました", "error");
@@ -1101,7 +1346,8 @@
       if (yf && yf.value) url += "&yearFrom=" + yf.value;
       if (yt && yt.value) url += "&yearTo=" + yt.value;
       if (rm && rm.value) url += "&ratingMin=" + rm.value;
-      trackListTitle.textContent = "フィルタ結果";
+      lastLibraryTitle = "フィルタ結果";
+      trackListTitle.textContent = lastLibraryTitle;
       switchTab("tracks");
       loadTracksWithUrl(url);
     });
@@ -1120,6 +1366,7 @@
       if (!res.ok) { showToast("曲の読み込みに失敗しました", "error"); return; }
       tracks = await res.json();
       currentQueue = tracks.map(function (t) { return t.trackId; });
+      rebuildPlayOrder(true);
       renderTracks(tracks);
     } catch (e) {
       if (!String(e).startsWith("Error: auth:")) {
@@ -1136,6 +1383,7 @@
       tracks = await res.json();
       currentQueue = tracks.map(function (t) { return t.trackId; });
       trackListTitle.textContent = "検索: " + q;
+      rebuildPlayOrder(true);
       renderTracks(tracks);
     } catch (e) {
       if (!String(e).startsWith("Error: auth:")) {
@@ -1154,16 +1402,26 @@
     if (!list || list.length === 0) {
       emptyMsg.style.display = "";
       trackCount.textContent = "";
+      focusedIdx = -1;
       return;
     }
     emptyMsg.style.display = "none";
     trackCount.textContent = list.length + " 曲";
+
+    // Prefer keeping focus on currently playing track, else first row
+    if (currentTrackId != null) {
+      const playingIdx = list.findIndex(function (t) { return t.trackId === currentTrackId; });
+      focusedIdx = playingIdx >= 0 ? playingIdx : 0;
+    } else if (focusedIdx < 0 || focusedIdx >= list.length) {
+      focusedIdx = 0;
+    }
 
     const frag = document.createDocumentFragment();
     list.forEach(function (t, i) {
       const li = document.createElement("li");
       li.className = "track-row" + (t.fileExists === false ? " unavailable" : "");
       li.dataset.trackId = t.trackId;
+      li.dataset.idx = String(i);
       li.innerHTML =
         '<span class="track-idx">' + (i + 1) + '</span>' +
         '<span class="playing-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)">' +
@@ -1180,7 +1438,12 @@
 
       if (t.fileExists !== false) {
         li.addEventListener("click", function () {
+          setFocusedIdx(i, false);
           playTrackAt(i, t);
+        });
+      } else {
+        li.addEventListener("click", function () {
+          setFocusedIdx(i, false);
         });
       }
 
@@ -1197,6 +1460,43 @@
     });
     trackList.appendChild(frag);
     updateActiveRow();
+    updateFocusedRow(false);
+  }
+
+  function setFocusedIdx(idx, scroll) {
+    if (!tracks.length) {
+      focusedIdx = -1;
+      updateFocusedRow(false);
+      return;
+    }
+    focusedIdx = Math.max(0, Math.min(tracks.length - 1, idx));
+    updateFocusedRow(scroll !== false);
+  }
+
+  function updateFocusedRow(scroll) {
+    const rows = trackList.querySelectorAll(".track-row");
+    rows.forEach(function (row, i) {
+      row.classList.toggle("focused", i === focusedIdx);
+    });
+    if (scroll && focusedIdx >= 0 && rows[focusedIdx]) {
+      rows[focusedIdx].scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }
+
+  function moveFocus(delta) {
+    if (!tracks.length) return;
+    if (focusedIdx < 0) {
+      setFocusedIdx(0, true);
+      return;
+    }
+    setFocusedIdx(focusedIdx + delta, true);
+  }
+
+  function playFocused() {
+    if (focusedIdx < 0 || focusedIdx >= tracks.length) return;
+    const t = tracks[focusedIdx];
+    if (!t || t.fileExists === false) return;
+    playTrackAt(focusedIdx, t);
   }
 
   /* ── Play ── */
@@ -1205,8 +1505,13 @@
     if (!t) return;
     currentQueueIdx = idx;
     currentTrackId = t.trackId;
+    focusedIdx = idx;
+    if (t.totalTimeMs) lastKnownDurationMs = t.totalTimeMs;
+    syncPlayOrderPosToCurrent();
     updateNowPlaying(t);
     updateActiveRow();
+    updateFocusedRow(true);
+    updateMediaSession(t);
 
     if (remoteMode) {
       try {
@@ -1261,26 +1566,50 @@
     ppIconPlay.style.display  = playing ? "none"  : "";
     ppIconPause.style.display = playing ? ""      : "none";
     updateActiveRow();
+    if (navigator.mediaSession) {
+      try {
+        navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+      } catch (e) { /* ignore */ }
+    }
   }
 
-  /* ── Player bar controls ── */
-  playPauseBtn.addEventListener("click", async function () {
+  async function togglePlayPause() {
     if (remoteMode) {
-      try {
-        const action = isPlaying ? "pause" : "resume";
-        await apiFetch("/api/remote/" + action, { method: "POST" });
-        setPlayingUI(!isPlaying);
-      } catch (e) { /* toast handled */ }
+      if (isPlaying) {
+        try {
+          await apiFetch("/api/remote/pause", { method: "POST" });
+          setPlayingUI(false);
+        } catch (e) { /* toast handled */ }
+        return;
+      }
+      if (currentTrackId != null) {
+        try {
+          await apiFetch("/api/remote/resume", { method: "POST" });
+          setPlayingUI(true);
+        } catch (e) { /* toast handled */ }
+        return;
+      }
+      // Nothing loaded on PC — start focused / first playable track
+      if (tracks.length) {
+        if (focusedIdx >= 0) playFocused();
+        else playTrackAt(0);
+      }
     } else {
+      if (!audio.src && tracks.length) {
+        // Nothing loaded yet — play focused or first track
+        if (focusedIdx >= 0) playFocused();
+        else playTrackAt(0);
+        return;
+      }
       if (audio.paused) {
         audio.play().catch(function (e) { showToast("再生できません: " + e.message, "error"); });
       } else {
         audio.pause();
       }
     }
-  });
+  }
 
-  prevBtn.addEventListener("click", async function () {
+  async function playPrev() {
     if (remoteMode) {
       try {
         const res = await apiFetch("/api/remote/prev", { method: "POST" });
@@ -1289,13 +1618,25 @@
           if (data && data.trackId != null) syncRemoteTrack(data.trackId);
         }
       } catch (e) { /* handled */ }
-    } else {
-      const prev = currentQueueIdx - 1;
-      if (prev >= 0) playTrackAt(prev);
+      return;
     }
-  });
+    // Local: if >3s into track, restart; else previous in play order
+    if (audio.currentTime > 3 && currentQueueIdx >= 0) {
+      audio.currentTime = 0;
+      return;
+    }
+    if (!playOrder.length) rebuildPlayOrder(false);
+    syncPlayOrderPosToCurrent();
+    if (playOrderPos > 0) {
+      playOrderPos -= 1;
+      playTrackAt(playOrder[playOrderPos]);
+    } else if (localRepeat === "all" && playOrder.length > 0) {
+      playOrderPos = playOrder.length - 1;
+      playTrackAt(playOrder[playOrderPos]);
+    }
+  }
 
-  nextBtn.addEventListener("click", async function () {
+  async function playNext() {
     if (remoteMode) {
       try {
         const res = await apiFetch("/api/remote/next", { method: "POST" });
@@ -1304,21 +1645,50 @@
           if (data && data.trackId != null) syncRemoteTrack(data.trackId);
         }
       } catch (e) { /* handled */ }
-    } else {
-      const next = currentQueueIdx + 1;
-      if (next < tracks.length) playTrackAt(next);
+      return;
     }
-  });
+    advanceLocal(false);
+  }
 
-  /* Seek slider */
-  seekSlider.addEventListener("mousedown",  function () { isSeeking = true; });
-  seekSlider.addEventListener("touchstart", function () { isSeeking = true; }, { passive: true });
+  /** Local advance after user next or track end. forceStopAtEnd: for off mode end-of-list. */
+  function advanceLocal(fromEnded) {
+    if (!playOrder.length || playOrder.length !== tracks.length) rebuildPlayOrder(false);
+    syncPlayOrderPosToCurrent();
 
-  seekSlider.addEventListener("change", async function () {
-    const val = parseInt(seekSlider.value, 10);
+    if (fromEnded && localRepeat === "one" && currentQueueIdx >= 0) {
+      audio.currentTime = 0;
+      audio.play().catch(function () {});
+      setPlayingUI(true);
+      return;
+    }
+
+    const nextPos = playOrderPos + 1;
+    if (nextPos < playOrder.length) {
+      playOrderPos = nextPos;
+      playTrackAt(playOrder[playOrderPos]);
+      return;
+    }
+
+    // End of order
+    if (localRepeat === "all" && playOrder.length > 0) {
+      if (localShuffle) rebuildPlayOrder(false);
+      playOrderPos = 0;
+      playTrackAt(playOrder[0]);
+      return;
+    }
+
+    // off: stop
+    if (fromEnded) {
+      setPlayingUI(false);
+      timeCur.textContent = "0:00";
+      seekSlider.value = 0;
+    }
+  }
+
+  async function seekToRatio(ratio) {
+    ratio = Math.max(0, Math.min(1, ratio));
     if (remoteMode) {
-      const tot = parseInt(seekSlider.max, 10) || 1000;
-      const pos = Math.round((val / 1000) * tot);
+      const pos = Math.round(ratio * (lastKnownDurationMs || 0));
       try {
         await apiFetch("/api/remote/seek", {
           method: "POST",
@@ -1326,11 +1696,64 @@
           body: JSON.stringify({ positionMs: pos })
         });
       } catch (e) { /* handled */ }
+      timeCur.textContent = fmtTime(pos);
     } else {
-      if (audio.duration) {
-        audio.currentTime = (val / 1000) * audio.duration;
+      const dur = audio.duration || (lastKnownDurationMs / 1000) || 0;
+      if (dur > 0) {
+        audio.currentTime = ratio * dur;
+        timeCur.textContent = fmtTime(audio.currentTime * 1000);
       }
     }
+    seekSlider.value = String(Math.round(ratio * 1000));
+  }
+
+  async function seekBy(deltaMs) {
+    if (remoteMode) {
+      // Approximate from slider position + lastKnownDurationMs
+      const ratio = (parseInt(seekSlider.value, 10) || 0) / 1000;
+      const cur = ratio * (lastKnownDurationMs || 0);
+      const next = Math.max(0, Math.min(lastKnownDurationMs || 0, cur + deltaMs));
+      const nextRatio = lastKnownDurationMs > 0 ? next / lastKnownDurationMs : 0;
+      await seekToRatio(nextRatio);
+    } else {
+      const dur = audio.duration || 0;
+      if (!dur) return;
+      const next = Math.max(0, Math.min(dur, audio.currentTime + deltaMs / 1000));
+      audio.currentTime = next;
+      timeCur.textContent = fmtTime(next * 1000);
+      seekSlider.value = String(Math.round((next / dur) * 1000));
+    }
+  }
+
+  /* ── Player bar controls ── */
+  playPauseBtn.addEventListener("click", function () { togglePlayPause(); });
+  prevBtn.addEventListener("click", function () { playPrev(); });
+  nextBtn.addEventListener("click", function () { playNext(); });
+
+  /* Seek slider — max stays 0–1000 as ratio; positionMs uses real duration */
+  function endSeeking() { isSeeking = false; }
+  seekSlider.addEventListener("mousedown",  function () { isSeeking = true; });
+  seekSlider.addEventListener("touchstart", function () { isSeeking = true; }, { passive: true });
+  seekSlider.addEventListener("mouseup", endSeeking);
+  seekSlider.addEventListener("touchend", endSeeking);
+  window.addEventListener("mouseup", function () { if (isSeeking) isSeeking = false; });
+  window.addEventListener("touchend", function () { if (isSeeking) isSeeking = false; });
+
+  seekSlider.addEventListener("input", function () {
+    // Preview time while dragging
+    const val = parseInt(seekSlider.value, 10) || 0;
+    const ratio = val / 1000;
+    if (remoteMode) {
+      timeCur.textContent = fmtTime(Math.round(ratio * (lastKnownDurationMs || 0)));
+    } else {
+      const dur = audio.duration || (lastKnownDurationMs / 1000) || 0;
+      timeCur.textContent = fmtTime(ratio * dur * 1000);
+    }
+  });
+
+  seekSlider.addEventListener("change", async function () {
+    const val = parseInt(seekSlider.value, 10) || 0;
+    await seekToRatio(val / 1000);
     isSeeking = false;
   });
 
@@ -1339,9 +1762,17 @@
     if (remoteMode || isSeeking) return;
     const cur = audio.currentTime;
     const dur = audio.duration || 0;
+    if (dur > 0) lastKnownDurationMs = Math.round(dur * 1000);
     timeCur.textContent = fmtTime(cur * 1000);
     timeTot.textContent = fmtTime(dur * 1000);
     if (dur > 0) seekSlider.value = Math.round((cur / dur) * 1000);
+  });
+
+  audio.addEventListener("loadedmetadata", function () {
+    if (!remoteMode && audio.duration) {
+      lastKnownDurationMs = Math.round(audio.duration * 1000);
+      timeTot.textContent = fmtTime(lastKnownDurationMs);
+    }
   });
 
   audio.addEventListener("play",  function () { if (!remoteMode) setPlayingUI(true); });
@@ -1349,14 +1780,7 @@
 
   audio.addEventListener("ended", function () {
     if (remoteMode) return;
-    setPlayingUI(false);
-    const next = currentQueueIdx + 1;
-    if (next < tracks.length) {
-      playTrackAt(next);
-    } else {
-      timeCur.textContent = "0:00";
-      seekSlider.value = 0;
-    }
+    advanceLocal(true);
   });
 
   audio.addEventListener("error", function () {
@@ -1394,6 +1818,7 @@
 
     const dur = state.durationMs || 0;
     const pos = state.positionMs || 0;
+    if (dur > 0) lastKnownDurationMs = dur;
     timeCur.textContent = fmtTime(pos);
     timeTot.textContent = fmtTime(dur);
     if (!isSeeking) {
@@ -1421,8 +1846,12 @@
     if (t) {
       updateNowPlaying(t);
       currentQueueIdx = tracks.indexOf(t);
+      focusedIdx = currentQueueIdx;
+      if (t.totalTimeMs) lastKnownDurationMs = t.totalTimeMs;
+      updateMediaSession(t);
     }
     updateActiveRow();
+    updateFocusedRow(true);
   }
 
   /* ── Search (debounce) ── */
@@ -1431,11 +1860,265 @@
     const q = searchBox.value.trim();
     clearTimeout(searchTimer);
     if (q === "") {
+      if (trackListTitle.textContent.indexOf("検索:") === 0) {
+        trackListTitle.textContent = lastLibraryTitle;
+      }
       loadTracksForPlaylist(activePlaylistId);
       return;
     }
     searchTimer = setTimeout(function () { searchTracks(q); }, 400);
   });
+
+  function focusSearch() {
+    searchBox.focus();
+    try { searchBox.select(); } catch (e) { /* ignore */ }
+  }
+
+  function clearSearchAndReload(force) {
+    clearTimeout(searchTimer);
+    const hadText = searchBox.value.length > 0;
+    const wasSearch = trackListTitle.textContent.indexOf("検索:") === 0;
+    searchBox.value = "";
+    if (force || hadText || wasSearch) {
+      trackListTitle.textContent = lastLibraryTitle;
+      loadTracksForPlaylist(activePlaylistId);
+    }
+  }
+
+  function isTypingTarget(el) {
+    if (!el || el === document.body) return false;
+    const tag = (el.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+
+  function isShortcutModalOpen() {
+    return shortcutModal && shortcutModal.classList.contains("open");
+  }
+
+  function isSimilarModalOpen() {
+    // open when display is "" (shown) or any value other than "none"
+    return similarModalEl && similarModalEl.style.display !== "none";
+  }
+
+  function isQueueOpen() {
+    return queuePanelEl && queuePanelEl.classList.contains("open");
+  }
+
+  function openShortcutHelp() {
+    if (!shortcutModal) return;
+    shortcutModal.classList.add("open");
+  }
+
+  function closeShortcutHelp() {
+    if (!shortcutModal) return;
+    shortcutModal.classList.remove("open");
+  }
+
+  function toggleShortcutHelp() {
+    if (isShortcutModalOpen()) closeShortcutHelp();
+    else openShortcutHelp();
+  }
+
+  /* ── Keyboard shortcuts ── */
+  document.addEventListener("keydown", function (e) {
+    // Ignore pure modifier keys
+    if (e.key === "Control" || e.key === "Shift" || e.key === "Alt" || e.key === "Meta") return;
+
+    const typing = isTypingTarget(e.target);
+    const mod = e.ctrlKey || e.metaKey;
+    const key = e.key;
+    const lower = key.length === 1 ? key.toLowerCase() : key;
+
+    // Always-available: Esc, Ctrl/Cmd+F, Ctrl/Cmd+L
+    if (key === "Escape") {
+      e.preventDefault();
+      if (isShortcutModalOpen()) {
+        closeShortcutHelp();
+        return;
+      }
+      if (isSimilarModalOpen()) {
+        similarModalEl.style.display = "none";
+        return;
+      }
+      if (isQueueOpen()) {
+        queuePanelEl.classList.remove("open");
+        return;
+      }
+      if (document.activeElement === searchBox) {
+        searchBox.blur();
+        if (searchBox.value) clearSearchAndReload();
+        return;
+      }
+      if (searchBox.value) {
+        clearSearchAndReload();
+        return;
+      }
+      return;
+    }
+
+    if (mod && lower === "f") {
+      e.preventDefault();
+      focusSearch();
+      return;
+    }
+
+    if (mod && lower === "l") {
+      e.preventDefault();
+      searchBox.blur();
+      clearSearchAndReload(true);
+      return;
+    }
+
+    // While typing in inputs, do not hijack other keys (Space types spaces, etc.)
+    if (typing) return;
+
+    // Help overlay open: only Esc (handled) and ? to close
+    if (isShortcutModalOpen()) {
+      if (key === "?" || (e.shiftKey && key === "/")) {
+        e.preventDefault();
+        closeShortcutHelp();
+      }
+      return;
+    }
+
+    // Similar modal open: only Esc closes it (handled above); swallow other shortcuts
+    if (isSimilarModalOpen()) return;
+
+    if (key === " " || key === "Spacebar") {
+      e.preventDefault();
+      togglePlayPause();
+      return;
+    }
+
+    if (key === "Enter") {
+      e.preventDefault();
+      playFocused();
+      return;
+    }
+
+    if (lower === "j") {
+      e.preventDefault();
+      playPrev();
+      return;
+    }
+
+    if (lower === "k") {
+      e.preventDefault();
+      playNext();
+      return;
+    }
+
+    if (lower === "s" && !mod) {
+      e.preventDefault();
+      toggleShuffle();
+      return;
+    }
+
+    if (lower === "r" && !mod) {
+      e.preventDefault();
+      cycleRepeat();
+      return;
+    }
+
+    if (key === "/" && !mod) {
+      e.preventDefault();
+      focusSearch();
+      return;
+    }
+
+    if (key === "?" || (e.shiftKey && key === "/")) {
+      e.preventDefault();
+      toggleShortcutHelp();
+      return;
+    }
+
+    if (key === "ArrowLeft" && e.shiftKey) {
+      e.preventDefault();
+      seekBy(-5000);
+      return;
+    }
+
+    if (key === "ArrowRight" && e.shiftKey) {
+      e.preventDefault();
+      seekBy(5000);
+      return;
+    }
+
+    if (key === "ArrowUp" && mod) {
+      e.preventDefault();
+      adjustVolume(0.05);
+      return;
+    }
+
+    if (key === "ArrowDown" && mod) {
+      e.preventDefault();
+      adjustVolume(-0.05);
+      return;
+    }
+
+    if (key === "ArrowUp" && !mod && !e.shiftKey) {
+      e.preventDefault();
+      moveFocus(-1);
+      return;
+    }
+
+    if (key === "ArrowDown" && !mod && !e.shiftKey) {
+      e.preventDefault();
+      moveFocus(1);
+      return;
+    }
+  });
+
+  // Shortcut help modal events
+  if (shortcutModal) {
+    document.getElementById("shortcut-close").addEventListener("click", closeShortcutHelp);
+    shortcutModal.addEventListener("click", function (e) {
+      if (e.target === shortcutModal) closeShortcutHelp();
+    });
+  }
+
+  /* ── Media Session API ── */
+  function updateMediaSession(t) {
+    if (!("mediaSession" in navigator) || !t) return;
+    try {
+      const artworkUrl = location.origin + api("/api/tracks/" + t.trackId + "/artwork");
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: t.name || "(不明)",
+        artist: t.artist || "",
+        album: t.album || "",
+        artwork: [
+          { src: artworkUrl, sizes: "512x512", type: "image/jpeg" }
+        ]
+      });
+    } catch (e) { /* ignore */ }
+  }
+
+  function setupMediaSessionHandlers() {
+    if (!("mediaSession" in navigator)) return;
+    try {
+      navigator.mediaSession.setActionHandler("play", function () { togglePlayPause(); });
+      navigator.mediaSession.setActionHandler("pause", function () { togglePlayPause(); });
+      navigator.mediaSession.setActionHandler("previoustrack", function () { playPrev(); });
+      navigator.mediaSession.setActionHandler("nexttrack", function () { playNext(); });
+      try {
+        navigator.mediaSession.setActionHandler("seekbackward", function (details) {
+          seekBy(-((details && details.seekOffset) || 5) * 1000);
+        });
+        navigator.mediaSession.setActionHandler("seekforward", function (details) {
+          seekBy(((details && details.seekOffset) || 5) * 1000);
+        });
+      } catch (e) { /* optional actions */ }
+      try {
+        navigator.mediaSession.setActionHandler("seekto", function (details) {
+          if (!details || details.seekTime == null) return;
+          const durSec = (lastKnownDurationMs || 0) / 1000;
+          if (durSec > 0) seekToRatio(details.seekTime / durSec);
+        });
+      } catch (e) { /* optional */ }
+    } catch (e) { /* ignore */ }
+  }
 
   /* ── Up Next queue panel ── */
   const queuePanel    = document.getElementById("queue-panel");
@@ -1530,11 +2213,26 @@
       const t = resolvedMap[id];
       const li = document.createElement("li");
       li.className = "queue-row" + (i === 0 ? " current" : "");
+      li.style.cursor = "pointer";
       li.innerHTML =
         '<span style="color:var(--text-muted);width:20px;flex-shrink:0">' + (i === 0 ? "▶" : (i + 1)) + '</span>' +
         '<div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t ? (t.name || "(不明)") : id) + '</div>' +
         '<div style="font-size:11px;color:var(--text-muted)">' + esc(t ? (t.artist || "") : "") + '</div></div>' +
         '<span style="font-size:11px;color:var(--text-muted)">' + (t ? fmtTime(t.totalTimeMs) : "") + '</span>';
+      li.addEventListener("click", function () {
+        const trackId = id;
+        apiFetch("/api/remote/play", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trackId: trackId })
+        }).then(function (res) {
+          if (res.ok || res.status === 204) {
+            syncRemoteTrack(trackId);
+            setPlayingUI(true);
+          }
+        }).catch(function () {});
+        if (queuePanelEl) queuePanelEl.classList.remove("open");
+      });
       queueList.appendChild(li);
     });
   }
@@ -1607,6 +2305,8 @@
   }
 
   /* ── Init ── */
+  seekSlider.max = "1000";
+  setupMediaSessionHandlers();
   loadPlaylists();
   loadTracksForPlaylist(null);
   loadGenres();
