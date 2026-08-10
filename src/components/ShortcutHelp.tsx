@@ -68,6 +68,10 @@ const GROUPS: Group[] = [
       { keys: ["Ctrl", "4"], label: "Similar タブ" },
       { keys: ["Ctrl", "Shift", "S"], label: "選択曲を Similar の基準に" },
       { keys: ["Ctrl", "Shift", "C"], label: "選択曲を Crate に追加" },
+      {
+        keys: ["UI"],
+        label: "Crate: Anchor / § Section / set (Arc·Lint) / smooth",
+      },
     ],
   },
   {

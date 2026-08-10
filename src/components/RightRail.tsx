@@ -11,10 +11,24 @@ import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
 import * as audition from "../lib/audition";
 import { buildSimilarReasons } from "../lib/similarReasons";
+import {
+  buildConstrainedSmoothOrder,
+  hasAnyAnchor,
+  hasSectionSplits,
+} from "../lib/setSmooth";
+import { lintSet } from "../lib/setLint";
 import { Icon, Stars } from "./Icon";
 import { Cover, ArtworkImg } from "./Cover";
+import { SetArc } from "./SetArc";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
-import type { RailTab, Track, SimilarHit } from "../types";
+import type { RailTab, Track, SimilarHit, CrateSection } from "../types";
+import {
+  ANCHOR_CYCLE,
+  ANCHOR_SHORT,
+  ANCHOR_LABELS,
+  SECTION_TEMPLATES,
+  type AnchorKind,
+} from "../types";
 
 /** BPM 許容（サーバー opts）。null = off。 */
 type BpmTolOpt = 0.04 | 0.08 | 0.12 | null;
@@ -56,6 +70,41 @@ function fmtTotal(tracks: Track[]): string {
   return `${min}:${sec.toString().padStart(2, "0")}`;
 }
 
+function crateTotalMin(tracks: Track[]): number {
+  const ms = tracks.reduce((s, t) => s + (t.totalTimeMs ?? 0), 0);
+  return ms / 60_000;
+}
+
+/** crate 順に沿って各行のセクション情報を付与する。 */
+function buildRowSections(
+  crate: Track[],
+  sections: CrateSection[],
+): Array<{ section: CrateSection | null; isStart: boolean; colorIdx: number }> {
+  const starts = new Map(sections.map((s) => [s.startTrackId, s]));
+  const order: CrateSection[] = [];
+  for (const t of crate) {
+    const s = starts.get(t.trackId);
+    if (s) order.push(s);
+  }
+  const colorById = new Map(order.map((s, i) => [s.id, i % 5]));
+  let cur: CrateSection | null = null;
+  return crate.map((t) => {
+    const s = starts.get(t.trackId) ?? null;
+    if (s) cur = s;
+    return {
+      section: cur,
+      isStart: s != null,
+      colorIdx: cur ? (colorById.get(cur.id) ?? 0) : -1,
+    };
+  });
+}
+
+function nextAnchor(cur: AnchorKind | null): AnchorKind | null {
+  const idx = ANCHOR_CYCLE.indexOf(cur);
+  const i = idx < 0 ? 0 : idx;
+  return ANCHOR_CYCLE[(i + 1) % ANCHOR_CYCLE.length] ?? null;
+}
+
 export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   const {
     playback,
@@ -80,6 +129,13 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
     railSplit,
     setRailSplit,
     selectedTrackIds,
+    setMeta,
+    setSetMeta,
+    crateAnchors,
+    setTrackAnchor,
+    crateSections,
+    addSection,
+    removeSection,
   } = useStore();
 
   const [queueTracks, setQueueTracks] = useState<QueueItem[]>([]);
@@ -93,6 +149,15 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   // Save as Playlist のインライン入力用
   const [saveNameInput, setSaveNameInput] = useState<string | null>(null);
   const saveInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Set Workspace (#121)
+  const [setToolsOpen, setSetToolsOpen] = useState(false);
+  const [dismissedLints, setDismissedLints] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [sectionMenuTrackId, setSectionMenuTrackId] = useState<number | null>(
+    null,
+  );
 
   // Up Next のドラッグ並び替え用。Crate と違いバックエンドが正なので、
   // ドラッグ中はローカルの並びだけ動かし、drop 確定時に moveQueueItem を 1 回だけ呼ぶ。
@@ -536,10 +601,10 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   // Save as Playlist ボタン → インライン入力を表示
   const handleSaveAsPlaylistOpen = useCallback(() => {
     if (crate.length === 0) return;
-    setSaveNameInput("");
+    setSaveNameInput(setMeta.title.trim() || "");
     // 次のフレームで input にフォーカス
     setTimeout(() => saveInputRef.current?.focus(), 0);
-  }, [crate]);
+  }, [crate, setMeta.title]);
 
   // インライン入力で Enter 確定 or 明示的呼び出し
   const handleSaveAsPlaylistCommit = useCallback(async (name: string) => {
@@ -568,20 +633,79 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   }, [crate]);
 
   // 貪欲最近傍で crate を滑らかな並びへ (解析済みの曲が対象)。
+  // Anchor / Section がある場合は範囲ごとに constrained smooth。
   const handleSmoothOrder = useCallback(async () => {
     if (crate.length < 3) return;
     const total = crate.length;
+    const idsIn = crate.map((t) => t.trackId);
+    const constrained =
+      hasAnyAnchor(crateAnchors, idsIn) ||
+      hasSectionSplits(crateSections, idsIn);
     try {
-      const ids = await analysisApi.buildSmoothOrder(crate.map((t) => t.trackId));
+      const ids = constrained
+        ? await buildConstrainedSmoothOrder(
+            idsIn,
+            crateAnchors,
+            crateSections,
+            (sub) => analysisApi.buildSmoothOrder(sub),
+          )
+        : await analysisApi.buildSmoothOrder(idsIn);
       setCrateOrder(ids);
-      // 並び替えられた曲数（解析済みのもの）をフィードバック
       const arranged = ids.filter((id) => analysisByTrack.has(id)).length;
-      pushToast("success", `${arranged}/${total} 曲をスムーズに並び替えました`);
+      if (constrained) {
+        pushToast(
+          "success",
+          `Anchor を保持して並び替え (${arranged}/${total})`,
+        );
+      } else {
+        pushToast("success", `${arranged}/${total} 曲をスムーズに並び替えました`);
+      }
     } catch (err) {
       console.error("Failed to build smooth order:", err);
       pushToast("error", `スムーズ並び替えに失敗しました: ${err}`);
     }
-  }, [crate, setCrateOrder, analysisByTrack, pushToast]);
+  }, [
+    crate,
+    crateAnchors,
+    crateSections,
+    setCrateOrder,
+    analysisByTrack,
+    pushToast,
+  ]);
+
+  const rowSections = useMemo(
+    () => buildRowSections(crate, crateSections),
+    [crate, crateSections],
+  );
+
+  const lintItems = useMemo(() => {
+    if (!setToolsOpen || crate.length === 0) return [];
+    return lintSet(crate, analysisByTrack, setMeta, crateAnchors).filter(
+      (item) => !dismissedLints.has(item.key),
+    );
+  }, [
+    setToolsOpen,
+    crate,
+    analysisByTrack,
+    setMeta,
+    crateAnchors,
+    dismissedLints,
+  ]);
+
+  const playingCrateIndex = useMemo(() => {
+    if (playback.currentTrackId == null) return null;
+    const i = crate.findIndex((t) => t.trackId === playback.currentTrackId);
+    return i >= 0 ? i : null;
+  }, [crate, playback.currentTrackId]);
+
+  const actualMin = useMemo(() => crateTotalMin(crate), [crate]);
+  const targetMin = setMeta.targetDurationMin;
+  const durationDeltaLabel = useMemo(() => {
+    if (targetMin == null || targetMin <= 0 || crate.length === 0) return null;
+    const d = actualMin - targetMin;
+    const sign = d > 0 ? "+" : d < 0 ? "−" : "±";
+    return `${sign}${Math.abs(d).toFixed(1)}分`;
+  }, [actualMin, targetMin, crate.length]);
 
   // Crate の曲をダブルクリック: Crate 全体をキューにして、その曲から再生。
   const playFromCrate = useCallback(
@@ -842,41 +966,154 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   const renderCratePanel = (compact: boolean) => (
     <>
       <div className="cb-cratehd">
-        <b>Staging Crate</b>
-        <span className="cb-cmeta">
-          <b>{crate.length}</b> tracks
-          {crate.length > 0 && (
-            <>
-              {" · "}
-              <b>{fmtTotal(crate)}</b>
-            </>
-          )}
+        <div className="cb-cratehd-main">
+          <input
+            className="cb-set-title"
+            type="text"
+            value={setMeta.title}
+            placeholder="Set title / セット名"
+            title="セット名"
+            onChange={(e) => setSetMeta({ title: e.target.value })}
+          />
+          <span className="cb-cmeta">
+            <b>{crate.length}</b> tracks
+            {crate.length > 0 && (
+              <>
+                {" · "}
+                <b>{fmtTotal(crate)}</b>
+              </>
+            )}
+          </span>
+        </div>
+        <div className="cb-cratehd-actions">
           {crate.length >= 3 && (
             <button
               className="cb-clear"
               onClick={handleSmoothOrder}
-              title="解析済みの曲を貪欲最近傍で滑らかな並びに"
+              title={
+                hasAnyAnchor(crateAnchors, crate.map((t) => t.trackId)) ||
+                hasSectionSplits(crateSections, crate.map((t) => t.trackId))
+                  ? "Anchor / Section を保持して滑らかに並び替え"
+                  : "解析済みの曲を貪欲最近傍で滑らかな並びに"
+              }
             >
-              {" "}
               smooth
             </button>
           )}
+          <button
+            className={"cb-clear" + (setToolsOpen ? " on" : "")}
+            title="Set tools: Arc / Lint"
+            onClick={() => setSetToolsOpen((v) => !v)}
+          >
+            set
+          </button>
           {crate.length > 0 && (
             <button
               className="cb-clear"
               title="Clear crate"
               onClick={() => {
-                if (window.confirm(`クレート ${crate.length} 曲をすべて外しますか？`)) {
+                if (
+                  window.confirm(`クレート ${crate.length} 曲をすべて外しますか？`)
+                ) {
                   clearCrate();
                 }
               }}
             >
-              {" "}
               clear
             </button>
           )}
-        </span>
+        </div>
       </div>
+      <div className="cb-set-meta-row">
+        <label className="cb-set-target" title="目標尺（分）">
+          <span>目標</span>
+          <input
+            type="number"
+            min={0}
+            step={1}
+            placeholder="分"
+            value={setMeta.targetDurationMin ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "") {
+                setSetMeta({ targetDurationMin: null });
+                return;
+              }
+              const n = Number(v);
+              setSetMeta({
+                targetDurationMin: Number.isFinite(n) && n >= 0 ? n : null,
+              });
+            }}
+          />
+          <span>分</span>
+        </label>
+        {crate.length > 0 && (
+          <span
+            className={
+              "cb-set-duration-cmp" +
+              (targetMin != null &&
+              targetMin > 0 &&
+              (actualMin / targetMin > 1.1 || actualMin / targetMin < 0.9)
+                ? " warn"
+                : "")
+            }
+            title="実際の合計尺"
+          >
+            実尺 {actualMin.toFixed(1)}分
+            {durationDeltaLabel != null && ` (${durationDeltaLabel})`}
+          </span>
+        )}
+      </div>
+      {setToolsOpen && crate.length > 0 && (
+        <div className="cb-set-tools">
+          <SetArc
+            crate={crate}
+            analysisByTrack={analysisByTrack}
+            highlightIndex={playingCrateIndex}
+            height={compact ? 48 : 64}
+          />
+          {lintItems.length > 0 ? (
+            <ul className="cb-set-lint">
+              {lintItems.slice(0, compact ? 4 : 12).map((item) => (
+                <li
+                  key={item.key}
+                  className={"cb-set-lint-item sev-" + item.severity}
+                >
+                  <Icon
+                    name={item.severity === "warn" ? "warning" : "info"}
+                    size={12}
+                  />
+                  <span className="cb-set-lint-msg">{item.message}</span>
+                  <button
+                    type="button"
+                    className="cb-cx"
+                    title="この警告を隠す"
+                    onClick={() =>
+                      setDismissedLints((prev) => new Set(prev).add(item.key))
+                    }
+                  >
+                    <Icon name="x" size={11} />
+                  </button>
+                </li>
+              ))}
+              {lintItems.length > (compact ? 4 : 12) && (
+                <li className="cb-set-lint-more">
+                  +{lintItems.length - (compact ? 4 : 12)} 件
+                </li>
+              )}
+            </ul>
+          ) : (
+            <div className="cb-set-lint-empty">Lint: 問題なし</div>
+          )}
+          <textarea
+            className="cb-set-notes"
+            rows={compact ? 1 : 2}
+            placeholder="セットメモ…"
+            value={setMeta.notes}
+            onChange={(e) => setSetMeta({ notes: e.target.value })}
+          />
+        </div>
+      )}
       <div
         className={
           "cb-cratelist" +
@@ -886,6 +1123,7 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
         onDragOver={onCrateListDragOver}
         onDragLeave={onCrateListDragLeave}
         onDrop={onCrateListDrop}
+        onClick={() => setSectionMenuTrackId(null)}
       >
         {crate.length === 0 ? (
           <div className="cb-rail-empty">
@@ -894,13 +1132,22 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
         ) : (
           crate.map((t, i) => {
             const a = analysisByTrack.get(t.trackId);
+            const rowSec = rowSections[i];
+            const anchor = crateAnchors[t.trackId] ?? null;
+            const sectionAt = crateSections.find(
+              (s) => s.startTrackId === t.trackId,
+            );
             return (
               <div
                 key={t.id}
                 className={
                   "cb-cnode" +
                   (overIdx === i ? " dragover" : "") +
-                  (playback.currentTrackId === t.trackId ? " playing" : "")
+                  (playback.currentTrackId === t.trackId ? " playing" : "") +
+                  (rowSec?.colorIdx >= 0
+                    ? ` cb-cnode-sec cb-cnode-sec-${rowSec.colorIdx}`
+                    : "") +
+                  (rowSec?.isStart ? " cb-cnode-sec-start" : "")
                 }
                 draggable
                 onDragStart={(e) => onDragStart(i, e)}
@@ -911,6 +1158,93 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
                 <span className="cb-cgrip">
                   <Icon name="dragHandle" size={15} />
                 </span>
+                <div className="cb-cnode-set-btns">
+                  <button
+                    type="button"
+                    className={
+                      "cb-anchor-btn" +
+                      (anchor ? ` on anchor-${anchor}` : "")
+                    }
+                    title={
+                      anchor
+                        ? `Anchor: ${ANCHOR_LABELS[anchor]} (クリックで切替)`
+                        : "Anchor を設定 (none→lock→opening→peak→closing)"
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setTrackAnchor(t.trackId, nextAnchor(anchor));
+                    }}
+                  >
+                    {anchor ? ANCHOR_SHORT[anchor] : "·"}
+                  </button>
+                  <div className="cb-sec-wrap">
+                    <button
+                      type="button"
+                      className={"cb-sec-btn" + (sectionAt ? " on" : "")}
+                      title={
+                        sectionAt
+                          ? `Section: ${sectionAt.name} (メニューで変更/解除)`
+                          : "セクション開始 (§)"
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSectionMenuTrackId((cur) =>
+                          cur === t.trackId ? null : t.trackId,
+                        );
+                      }}
+                    >
+                      §
+                    </button>
+                    {sectionMenuTrackId === t.trackId && (
+                      <div
+                        className="cb-sec-menu"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {SECTION_TEMPLATES.map((name) => (
+                          <button
+                            key={name}
+                            type="button"
+                            className="cb-sec-menu-item"
+                            onClick={() => {
+                              addSection(t.trackId, name);
+                              setSectionMenuTrackId(null);
+                            }}
+                          >
+                            {name}
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="cb-sec-menu-item"
+                          onClick={() => {
+                            const name = window.prompt(
+                              "セクション名",
+                              sectionAt?.name || "Section",
+                            );
+                            if (name != null && name.trim()) {
+                              addSection(t.trackId, name.trim());
+                            }
+                            setSectionMenuTrackId(null);
+                          }}
+                        >
+                          カスタム…
+                        </button>
+                        {sectionAt && (
+                          <button
+                            type="button"
+                            className="cb-sec-menu-item danger"
+                            onClick={() => {
+                              removeSection(sectionAt.id);
+                              setSectionMenuTrackId(null);
+                            }}
+                          >
+                            セクション解除
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <Cover
                   seed={t.album}
                   glyph={t.name}
@@ -919,7 +1253,20 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
                   radius={8}
                 />
                 <div className="cb-cmetawrap">
-                  <div className="cj">{t.name || "(unknown)"}</div>
+                  {rowSec?.isStart && rowSec.section && (
+                    <div className="cb-sec-label">{rowSec.section.name}</div>
+                  )}
+                  <div className="cj">
+                    {anchor && (
+                      <span
+                        className={`cb-anchor-badge anchor-${anchor}`}
+                        title={ANCHOR_LABELS[anchor]}
+                      >
+                        {ANCHOR_SHORT[anchor]}
+                      </span>
+                    )}
+                    {t.name || "(unknown)"}
+                  </div>
                   <div className="la">
                     {t.bpm != null && (
                       <b style={{ color: bpmColor(t.bpm) }}>{t.bpm}</b>

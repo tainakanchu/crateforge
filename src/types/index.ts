@@ -8,3 +8,4 @@ export * from "./edit";
 export * from "./analysis";
 export * from "./convert";
 export * from "./smart";
+export * from "./setWorkspace";
