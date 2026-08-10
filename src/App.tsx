@@ -34,9 +34,9 @@ import * as ripperApi from "./api/ripper";
 import * as fontsApi from "./api/fonts";
 import * as audition from "./lib/audition";
 import {
-  filterInboxTracks,
   INBOX_FETCH_LIMIT,
   loadTriagePersist,
+  mergeInboxSources,
 } from "./lib/triage";
 import type { Track } from "./types";
 
@@ -89,6 +89,7 @@ export default function App() {
     triageMode,
     enterTriage,
     exitTriage,
+    setTriageIndex,
     setInboxCount,
     inboxCount,
   } = useStore();
@@ -139,6 +140,14 @@ export default function App() {
         return;
       }
 
+      // Triage 中の reload でフォーカス曲を失わないよう、fetch 前に trackId を捕捉
+      const stBefore = useStore.getState();
+      const focusedTrackId =
+        stBefore.viewMode === "inbox" && stBefore.triageMode
+          ? (stBefore.tracks[stBefore.triageIndex]?.trackId ?? null)
+          : null;
+      const prevTriageIndex = stBefore.triageIndex;
+
       setIsLoading(true);
       try {
         const offset = reset ? 0 : tracks.length;
@@ -149,17 +158,38 @@ export default function App() {
         let result;
 
         if (viewMode === "inbox") {
-          // dateAdded desc で直近を取り、クライアントで done/later/未評価フィルタ。
+          // 直近 INBOX_FETCH_LIMIT 件 + laterIds 欠損分を getTracksByIds で合流。
+          const persist = loadTriagePersist();
           const raw = await libraryApi.getTracks(
             INBOX_FETCH_LIMIT,
             0,
             "dateAdded",
             "desc",
           );
-          result = filterInboxTracks(raw, loadTriagePersist());
+          const present = new Set(raw.map((t) => t.trackId));
+          const missingLater = persist.laterIds.filter((id) => !present.has(id));
+          const laterExtra =
+            missingLater.length > 0
+              ? await libraryApi.getTracksByIds(missingLater)
+              : [];
+          result = mergeInboxSources(raw, laterExtra, persist);
           setTracks(result);
           setHasMore(false);
           setInboxCount(result.length);
+          // triage 中ならフォーカス曲の index を復元
+          const stAfter = useStore.getState();
+          if (stAfter.triageMode && focusedTrackId != null) {
+            const idx = result.findIndex((t) => t.trackId === focusedTrackId);
+            if (idx >= 0) {
+              setTriageIndex(idx);
+            } else {
+              setTriageIndex(
+                result.length === 0
+                  ? 0
+                  : Math.min(prevTriageIndex, result.length - 1),
+              );
+            }
+          }
         } else if (viewMode === "recent") {
           result = await playbackApi.getRecentTracks(200);
           setTracks(result);
@@ -231,6 +261,7 @@ export default function App() {
       setHasMore,
       setIsLoading,
       setInboxCount,
+      setTriageIndex,
     ],
   );
 
@@ -241,13 +272,20 @@ export default function App() {
       return;
     }
     try {
+      const persist = loadTriagePersist();
       const raw = await libraryApi.getTracks(
         INBOX_FETCH_LIMIT,
         0,
         "dateAdded",
         "desc",
       );
-      const inbox = filterInboxTracks(raw, loadTriagePersist());
+      const present = new Set(raw.map((t) => t.trackId));
+      const missingLater = persist.laterIds.filter((id) => !present.has(id));
+      const laterExtra =
+        missingLater.length > 0
+          ? await libraryApi.getTracksByIds(missingLater)
+          : [];
+      const inbox = mergeInboxSources(raw, laterExtra, persist);
       setInboxCount(inbox.length);
     } catch (err) {
       console.error("Failed to refresh inbox count:", err);
@@ -916,7 +954,8 @@ export default function App() {
         {viewMode === "inbox" && !triageMode && (
           <div className="inbox-banner">
             <span className="inbox-banner-text">
-              Inbox · {inboxCount.toLocaleString()} 曲未処理
+              Inbox · {inboxCount.toLocaleString()} 曲
+              （直近追加 {INBOX_FETCH_LIMIT.toLocaleString()} 件 + later）
             </span>
             <button
               type="button"

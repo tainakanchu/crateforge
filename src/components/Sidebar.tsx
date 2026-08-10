@@ -417,7 +417,10 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
           <Icon name={n.icon} size={16} />
           <span className="cb-nav-label">{n.label}</span>
           {n.mode === "inbox" && inboxCount > 0 && (
-            <span className="cb-nav-badge" title={`${inboxCount} 曲未処理`}>
+            <span
+              className="cb-nav-badge"
+              title={`Inbox ${inboxCount} 曲（直近追加枠 + later）`}
+            >
               {inboxCount > 999 ? "999+" : inboxCount}
             </span>
           )}

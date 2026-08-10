@@ -1,4 +1,9 @@
 // Inbox / Triage (#118) — done/later は localStorage で永続化（DB 変更なし）。
+//
+// Inbox のソース:
+// - 未評価 / 直近追加の候補は dateAdded desc の直近 INBOX_FETCH_LIMIT 件のウィンドウ内のみ
+//   （ライブラリ全件は読まない。大規模ライブラリ向け）
+// - laterIds は getTracksByIds で常にマージ（ウィンドウ外の later も消えない）
 
 import type { Track } from "../types";
 
@@ -7,7 +12,7 @@ export const TRIAGE_STORAGE_KEY = "crateforge-triage";
 export const TRIAGE_MAX_IDS = 5000;
 /** Inbox に載せる「最近追加」の日数 */
 export const INBOX_DAYS = 14;
-/** Inbox 候補取得時の API limit */
+/** Inbox 候補取得時の API limit（未評価・直近追加はこのウィンドウ内のみ） */
 export const INBOX_FETCH_LIMIT = 500;
 
 export type TriagePersist = {
@@ -92,9 +97,12 @@ export function isRecentlyAdded(
 }
 
 /**
- * Inbox 候補:
+ * Inbox 候補（渡されたトラック集合に対して）:
  * - not done
  * - (dateAdded within 14 days OR in later set OR rating null/0)
+ *
+ * 未評価・直近追加は呼び出し側が渡す recent ウィンドウ（INBOX_FETCH_LIMIT）内のみ。
+ * later は mergeInboxSources で laterIds 由来トラックを常に合流させる。
  */
 export function isInboxCandidate(
   track: Track,
@@ -118,4 +126,37 @@ export function filterInboxTracks(
   const done = new Set(persist.doneIds);
   const later = new Set(persist.laterIds);
   return tracks.filter((t) => isInboxCandidate(t, done, later, nowMs));
+}
+
+/**
+ * recent ウィンドウ + later 用トラックを trackId でマージし、Inbox フィルタを適用。
+ * recent を優先（同一 trackId は recent 側）。結果は dateAdded desc で安定ソート。
+ */
+export function mergeInboxSources(
+  recentWindow: Track[],
+  laterTracks: Track[],
+  persist: TriagePersist = loadTriagePersist(),
+  nowMs = Date.now(),
+): Track[] {
+  const byId = new Map<number, Track>();
+  for (const t of recentWindow) {
+    byId.set(t.trackId, t);
+  }
+  for (const t of laterTracks) {
+    if (!byId.has(t.trackId)) {
+      byId.set(t.trackId, t);
+    }
+  }
+  const merged = Array.from(byId.values());
+  merged.sort((a, b) => {
+    const ta = a.dateAdded ? Date.parse(a.dateAdded) : NaN;
+    const tb = b.dateAdded ? Date.parse(b.dateAdded) : NaN;
+    const aOk = !Number.isNaN(ta);
+    const bOk = !Number.isNaN(tb);
+    if (aOk && bOk) return tb - ta;
+    if (aOk) return -1;
+    if (bOk) return 1;
+    return b.trackId - a.trackId;
+  });
+  return filterInboxTracks(merged, persist, nowMs);
 }
