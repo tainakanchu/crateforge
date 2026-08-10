@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager};
@@ -7,15 +8,44 @@ use crate::commands::library::open_db;
 use crate::db::Database;
 use crate::models::{PlaybackState, Track};
 
+/// Preview / Audition モード。ON の間は playCount / lastPlayed / recent を汚さない。
+/// プロセス全体で共有するフラグ (Tauri managed state)。
+pub struct PreviewMode(pub AtomicBool);
+
+impl Default for PreviewMode {
+    fn default() -> Self {
+        Self(AtomicBool::new(false))
+    }
+}
+
+impl PreviewMode {
+    pub fn get(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn set(&self, enabled: bool) {
+        self.0.store(enabled, Ordering::Relaxed);
+    }
+}
+
+fn preview_on(app: &AppHandle) -> bool {
+    app.state::<PreviewMode>().get()
+}
+
 /// 再生実績 (`PlayReport`) を DB に反映する。
 /// - 曲の半分以上 (上限 4 分) 聴いた → 「再生」(play_count +1, last_played 更新)
 /// - 長さ不明なら 4 分以上で「再生」
 /// - 4 秒以上だが途中で離脱 → 「スキップ」(skip_count +1)
 /// - それ未満 → 誤操作とみなし無視
+/// - 再生開始時に preview だった曲 (`PlayReport.preview`) は一切反映しない
+///   (フロントの「現在の preview フラグ」ではなくレポートに載った値で判断する)
 fn apply_report(db: &Database, report: Option<PlayReport>) {
     let Some(r) = report else {
         return;
     };
+    if r.preview {
+        return;
+    }
     let played_threshold = if r.duration_ms > 0 {
         (r.duration_ms / 2).min(240_000)
     } else {
@@ -29,11 +59,26 @@ fn apply_report(db: &Database, report: Option<PlayReport>) {
 }
 
 #[tauri::command]
+pub fn set_preview_mode(
+    enabled: bool,
+    preview: tauri::State<'_, PreviewMode>,
+) -> Result<(), String> {
+    preview.set(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_preview_mode(preview: tauri::State<'_, PreviewMode>) -> Result<bool, String> {
+    Ok(preview.get())
+}
+
+#[tauri::command]
 pub fn play_track(
     app: AppHandle,
     track_id: i64,
     player: tauri::State<'_, Mutex<AudioPlayer>>,
     analyzer: tauri::State<'_, crate::analyzer::Analyzer>,
+    preview: tauri::State<'_, PreviewMode>,
 ) -> Result<(), String> {
     let db = open_db(&app)?;
     let track = db
@@ -52,13 +97,18 @@ pub fn play_track(
         .ok()
         .flatten()
         .and_then(|a| a.replaygain_db);
+    // 再生開始時の preview を曲と一緒に AudioPlayer へ渡す。
+    // 差し替えで返る report は「前の曲」の開始時フラグを持つので、現在フラグでは判断しない。
+    let is_preview = preview.get();
     let report = player
         .lock()
         .map_err(|e| e.to_string())?
-        .play(path, track_id, duration, gain_db)?;
+        .play(path, track_id, duration, gain_db, is_preview)?;
     apply_report(&db, report);
 
-    db.add_recent_track(track_id).map_err(|e| e.to_string())?;
+    if !is_preview {
+        db.add_recent_track(track_id).map_err(|e| e.to_string())?;
+    }
     // 再生した曲 = よく使う曲なので、未解析なら裏で解析しておく。
     analyzer.submit(vec![track_id], false);
     Ok(())
@@ -312,6 +362,9 @@ pub fn set_replaygain(
 /// 進行・停止のいずれの場合も Tauri イベント `playback-advanced`
 /// (payload: `{ "trackId": number | null }`) を emit する。
 ///
+/// Preview 中に曲が終端に達した場合はキューを進めず停止し、`preview-ended` を emit する。
+/// プレビューは単曲試聴なので auto-advance せず、フロントが Esc と同じく元位置へ復帰する。
+///
 /// デッドロック回避のため、ロックは「終了判定 → 次曲解決」の短いブロック内で完結させ、
 /// 解放してから `play_track_by_id` (内部で再ロック) を呼ぶ。
 pub fn advance_worker(app: AppHandle) {
@@ -323,7 +376,7 @@ pub fn advance_worker(app: AppHandle) {
         // --- ロックを取り、終了判定と次曲解決をこのブロックで完結させる ---
         // (DB アクセス・再生はロック外で行うため、ここで結論だけ取り出す)
         let player = app.state::<Mutex<AudioPlayer>>();
-        let next_id = {
+        let decision = {
             let mut guard = match player.lock() {
                 Ok(g) => g,
                 // ロックが poison しているなら他スレッドが panic 済み。次ループへ。
@@ -332,19 +385,38 @@ pub fn advance_worker(app: AppHandle) {
             if !guard.is_finished() {
                 continue;
             }
-            // 自動終了による遷移なので auto=true。
-            guard.advance_next(true)
+            // Preview 中はキューを進めず停止のみ。order_pos は触らない。
+            if preview_on(&app) {
+                let report = guard.stop();
+                AdvanceDecision::PreviewEnded { report }
+            } else {
+                // 自動終了による遷移なので auto=true。
+                match guard.advance_next(true) {
+                    Some(tid) => AdvanceDecision::PlayNext { _tid: tid },
+                    None => AdvanceDecision::QueueEnded,
+                }
+            }
             // guard はここで drop され、ロックを解放する。
         };
 
-        match next_id {
-            Some(_) => {
+        match decision {
+            AdvanceDecision::PreviewEnded { report } => {
+                // バックエンド preview を落とし、統計は report.preview で判断。
+                app.state::<PreviewMode>().set(false);
+                if let Ok(db) = open_db(&app) {
+                    apply_report(&db, report);
+                }
+                // フロントが exitPreview({ restore: true }) して元位置へ戻す。
+                let _ = app.emit("preview-ended", ());
+                let _ = app.emit("playback-advanced", AdvancePayload { track_id: None });
+            }
+            AdvanceDecision::PlayNext { .. } => {
                 // 次曲を再生。ファイル欠損などで失敗したらさらに次へ進む
                 // (無限ループ防止に、試行回数はキュー長を上限とする)。
                 let played = play_with_skip_on_error(&app);
                 let _ = app.emit("playback-advanced", AdvancePayload { track_id: played });
             }
-            None => {
+            AdvanceDecision::QueueEnded => {
                 // キュー末尾 + repeat off: 停止しつつ最後の曲を再生実績へ反映。
                 let report = match player.lock() {
                     Ok(mut g) => g.stop(),
@@ -357,6 +429,16 @@ pub fn advance_worker(app: AppHandle) {
             }
         }
     }
+}
+
+/// `advance_worker` が 1 ループで取る行動。
+enum AdvanceDecision {
+    /// プレビュー曲が終端 → 停止のみ (キューは動かさない)。
+    PreviewEnded { report: Option<PlayReport> },
+    /// 通常の自動送り (advance_next 済み)。
+    PlayNext { _tid: i64 },
+    /// キュー末尾 + repeat off。
+    QueueEnded,
 }
 
 /// `playback-advanced` イベントの payload。`trackId` は再生開始した曲、
@@ -423,12 +505,104 @@ fn play_track_by_id(app: &AppHandle, track_id: i64) -> Result<(), String> {
         .ok()
         .flatten()
         .and_then(|a| a.replaygain_db);
+    let is_preview = preview_on(app);
     let player = app.state::<Mutex<AudioPlayer>>();
     let report = player
         .lock()
         .map_err(|e| e.to_string())?
-        .play(path, track_id, duration, gain_db)?;
+        .play(path, track_id, duration, gain_db, is_preview)?;
     apply_report(&db, report);
-    db.add_recent_track(track_id).map_err(|e| e.to_string())?;
+    if !is_preview {
+        db.add_recent_track(track_id).map_err(|e| e.to_string())?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::PlayReport;
+    use rusqlite::params;
+
+    fn insert_track(db: &Database, track_id: i64) {
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, file_exists, play_count, skip_count)
+                 VALUES (?1, 't', 1, 0, 0)",
+                params![track_id],
+            )
+            .unwrap();
+    }
+
+    fn counts(db: &Database, track_id: i64) -> (i64, i64) {
+        db.conn
+            .query_row(
+                "SELECT COALESCE(play_count, 0), COALESCE(skip_count, 0)
+                 FROM tracks WHERE track_id = ?1",
+                params![track_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    }
+
+    /// preview=true の PlayReport は play_count / skip_count を一切動かさない。
+    #[test]
+    fn apply_report_skips_stats_when_preview() {
+        let db = Database::open_memory().unwrap();
+        insert_track(&db, 1);
+        apply_report(
+            &db,
+            Some(PlayReport {
+                track_id: 1,
+                played_ms: 120_000,
+                duration_ms: 180_000,
+                preview: true,
+            }),
+        );
+        assert_eq!(counts(&db, 1), (0, 0));
+
+        // スキップ閾値を超えていても preview なら無視。
+        apply_report(
+            &db,
+            Some(PlayReport {
+                track_id: 1,
+                played_ms: 5_000,
+                duration_ms: 180_000,
+                preview: true,
+            }),
+        );
+        assert_eq!(counts(&db, 1), (0, 0));
+    }
+
+    /// preview=false なら従来どおり再生 / スキップを計上する。
+    #[test]
+    fn apply_report_updates_stats_when_not_preview() {
+        let db = Database::open_memory().unwrap();
+        insert_track(&db, 10);
+        insert_track(&db, 20);
+
+        // 半分以上聴いた → mark_played
+        apply_report(
+            &db,
+            Some(PlayReport {
+                track_id: 10,
+                played_ms: 120_000,
+                duration_ms: 180_000,
+                preview: false,
+            }),
+        );
+        assert_eq!(counts(&db, 10), (1, 0));
+
+        // 4 秒以上・半分未満 → mark_skipped
+        apply_report(
+            &db,
+            Some(PlayReport {
+                track_id: 20,
+                played_ms: 5_000,
+                duration_ms: 180_000,
+                preview: false,
+            }),
+        );
+        assert_eq!(counts(&db, 20), (0, 1));
+    }
 }

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
+import * as audition from "../lib/audition";
 import { Icon } from "./Icon";
 import { Cover } from "./Cover";
 import type { Track } from "../types";
@@ -84,6 +85,7 @@ export function AlbumView({ mode }: AlbumViewProps) {
 
   const playAll = useCallback(async (g: GroupedItem) => {
     const ids = g.tracks.map((t) => t.trackId);
+    await audition.ensureNormalPlay();
     await playbackApi.setQueue(ids, 0);
     if (ids.length > 0) await playbackApi.playTrack(ids[0]);
   }, []);
@@ -91,6 +93,7 @@ export function AlbumView({ mode }: AlbumViewProps) {
   const playOne = useCallback(async (g: GroupedItem, track: Track) => {
     const ids = g.tracks.map((t) => t.trackId);
     const startIndex = ids.indexOf(track.trackId);
+    await audition.ensureNormalPlay();
     await playbackApi.setQueue(ids, Math.max(0, startIndex));
     await playbackApi.playTrack(track.trackId);
   }, []);

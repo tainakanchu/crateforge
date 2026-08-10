@@ -26,6 +26,9 @@ pub struct PlayReport {
     pub played_ms: u64,
     /// その曲の長さ (ms、不明なら 0)。
     pub duration_ms: u64,
+    /// この曲が再生開始された時点で preview だったか。
+    /// フロントの現在フラグではなく、停止時はこの値で統計更新を判断する。
+    pub preview: bool,
 }
 
 pub struct AudioPlayer {
@@ -43,6 +46,9 @@ pub struct AudioPlayer {
     replaygain_enabled: bool,
     /// いま再生中の曲の ReplayGain ゲイン (dB)。None なら未知。
     current_gain_db: Option<f64>,
+    /// いま再生中の曲が再生開始時に preview だったか。
+    /// 停止/差し替え時の `PlayReport.preview` に載せ、フロントのフラグ操作順に依存しない。
+    current_preview: bool,
 
     // ===== キューの不変条件 (queue / order / order_pos は常にこれを満たす) =====
     // - `order` は `0..queue.len()` の順列 (各 queue インデックスがちょうど 1 回ずつ現れる)。
@@ -89,6 +95,7 @@ impl AudioPlayer {
             volume: 1.0,
             replaygain_enabled: false,
             current_gain_db: None,
+            current_preview: false,
 
             queue: Vec::new(),
             order: Vec::new(),
@@ -101,12 +108,16 @@ impl AudioPlayer {
 
     /// 新しい曲を再生する。差し替え前に再生していた曲があれば、その実績を
     /// `PlayReport` として返す (コマンド層が play/skip カウントに反映する)。
+    ///
+    /// `preview` はこの曲の再生開始時の preview 状態。停止時に `PlayReport.preview`
+    /// として返すので、フロントがフラグをいつ切り替えても正しい曲に紐づく。
     pub fn play(
         &mut self,
         file_path: &str,
         track_id: i64,
         duration_ms: u64,
         gain_db: Option<f64>,
+        preview: bool,
     ) -> Result<Option<PlayReport>, String> {
         let report = self.stop_internal();
 
@@ -186,6 +197,7 @@ impl AudioPlayer {
         self.play_started_at = Some(Instant::now());
         self.accumulated_position_ms = 0;
         self.finished_for_advance = false;
+        self.current_preview = preview;
 
         Ok(report)
     }
@@ -229,6 +241,7 @@ impl AudioPlayer {
                 track_id: tid,
                 played_ms: played,
                 duration_ms: self.duration_ms,
+                preview: self.current_preview,
             }
         });
         if let Some(sink) = self.sink.take() {
@@ -239,6 +252,7 @@ impl AudioPlayer {
         self.play_started_at = None;
         self.accumulated_position_ms = 0;
         self.finished_for_advance = false;
+        self.current_preview = false;
         report
     }
 

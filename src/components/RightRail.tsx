@@ -9,6 +9,7 @@ import * as playbackApi from "../api/playback";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
+import * as audition from "../lib/audition";
 import { Icon, Stars } from "./Icon";
 import { Cover, ArtworkImg } from "./Cover";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
@@ -374,6 +375,7 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
   const handlePlayCrate = useCallback(async () => {
     if (crate.length === 0) return;
     const ids = crate.map((t) => t.trackId);
+    await audition.ensureNormalPlay();
     await playbackApi.setQueue(ids, 0);
     await playbackApi.playTrack(ids[0]);
   }, [crate]);
@@ -400,15 +402,27 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
       if (!track.fileExists) return;
       const ids = crate.map((t) => t.trackId);
       const startIndex = ids.indexOf(track.trackId);
+      await audition.ensureNormalPlay();
       await playbackApi.setQueue(ids, Math.max(0, startIndex));
       await playbackApi.playTrack(track.trackId);
     },
     [crate],
   );
 
+  // 単曲プレビュー (playCount / recent を汚さない)。
+  const previewTrack = useCallback(async (track: Track) => {
+    if (!track.fileExists) return;
+    try {
+      await audition.startPreview(track);
+    } catch (err) {
+      console.error("Preview failed:", err);
+    }
+  }, []);
+
   // Up Next の曲をダブルクリック: 再生順(order)を保ったまま、その位置へ頭出し。
   const playFromQueue = useCallback(async (orderIndex: number, track: Track) => {
     if (!track.fileExists) return;
+    await audition.ensureNormalPlay();
     await playbackApi.playQueueAt(orderIndex);
   }, []);
 
@@ -480,10 +494,15 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
     await loadQueue();
   }, [loadQueue]);
 
-  // Similar の曲をダブルクリック: その曲だけを単発再生する (crate には影響しない)。
+  // Similar の曲をダブルクリック: プレビュー再生 (stats を汚さない)。
+  // 通常再生が必要な場合は Enter やリスト側の再生を使う。
   const playSingle = useCallback(async (track: Track) => {
     if (!track.fileExists) return;
-    await playbackApi.playTrack(track.trackId);
+    try {
+      await audition.startPreview(track);
+    } catch (err) {
+      console.error("Preview failed:", err);
+    }
   }, []);
 
   const setBaseFromSelection = useCallback(() => {
@@ -632,6 +651,16 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
                   </div>
                 </div>
                 <div className="cb-crow-actions">
+                  <button
+                    className="cb-cx cb-cact"
+                    title="Preview / 試聴 (playCount を増やさない)"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      previewTrack(t);
+                    }}
+                  >
+                    <Icon name="waveform" size={13} />
+                  </button>
                   <button
                     className="cb-cx cb-cact"
                     title="Find Similar / 似た曲"
@@ -895,7 +924,7 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
                 onDragStart={(e) => onSimilarDragStart(e, t.trackId)}
                 onDragEnd={onSimilarDragEnd}
                 onDoubleClick={() => playSingle(t)}
-                title="ドラッグでクレートへ / ダブルクリックで再生"
+                title="ドラッグでクレートへ / ダブルクリックでプレビュー"
               >
                 <Cover
                   seed={t.album}
@@ -919,17 +948,29 @@ export function RightRail({ onPlaylistsChanged }: RightRailProps) {
                     <span>{t.artist || ""}</span>
                   </div>
                 </div>
-                <button
-                  className="cb-cx"
-                  title={inCrate ? "In crate" : "Add to crate"}
-                  disabled={inCrate}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    addToCrate(t);
-                  }}
-                >
-                  <Icon name={inCrate ? "check" : "plus"} size={14} />
-                </button>
+                <div className="cb-crow-actions">
+                  <button
+                    className="cb-cx cb-cact"
+                    title="Preview / 試聴 (playCount を増やさない)"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      previewTrack(t);
+                    }}
+                  >
+                    <Icon name="waveform" size={13} />
+                  </button>
+                  <button
+                    className="cb-cx"
+                    title={inCrate ? "In crate" : "Add to crate"}
+                    disabled={inCrate}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      addToCrate(t);
+                    }}
+                  >
+                    <Icon name={inCrate ? "check" : "plus"} size={14} />
+                  </button>
+                </div>
               </div>
             );
           })

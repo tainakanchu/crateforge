@@ -97,6 +97,21 @@ export async function setReplayGain(enabled: boolean): Promise<void> {
   return invoke("set_replaygain", { enabled });
 }
 
+/// Preview / Audition モード: ON の間は playCount / lastPlayed / recent を更新しない。
+export async function setPreviewMode(enabled: boolean): Promise<void> {
+  return invoke("set_preview_mode", { enabled });
+}
+
+export async function getPreviewMode(): Promise<boolean> {
+  return invoke("get_preview_mode");
+}
+
+/// Preview モードを ON にして単曲再生する (キューは置き換えない)。
+export async function previewTrack(trackId: number): Promise<void> {
+  await setPreviewMode(true);
+  await playTrack(trackId);
+}
+
 /// Rust 側ワーカーが曲を自動送り(または停止)したときに発火する。
 /// payload の trackId は再生開始した曲、停止した場合は null。
 export async function onPlaybackAdvanced(
@@ -105,4 +120,10 @@ export async function onPlaybackAdvanced(
   return listen<{ trackId: number | null }>("playback-advanced", (e) =>
     cb(e.payload.trackId),
   );
+}
+
+/// プレビュー曲が終端に達したとき (auto-advance せず停止したとき) に発火する。
+/// フロントは Esc と同じく exitPreview({ restore: true }) する。
+export async function onPreviewEnded(cb: () => void): Promise<UnlistenFn> {
+  return listen("preview-ended", () => cb());
 }

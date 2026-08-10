@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
+import * as audition from "../lib/audition";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
@@ -102,6 +103,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     if (ids.length === 0) return;
     const start = Math.max(0, ids.indexOf(t.trackId));
     try {
+      await audition.ensureNormalPlay();
       await playbackApi.setQueue(ids, start);
       await playbackApi.playTrack(t.trackId);
     } catch (err) {
