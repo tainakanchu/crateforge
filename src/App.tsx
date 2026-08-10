@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useCallback, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { TrackTable } from "./components/TrackTable";
@@ -69,6 +69,11 @@ export default function App() {
     sortOrder,
     displayMode,
     rightRailVisible,
+    rightRailWidth,
+    setRightRailVisible,
+    setRailTab,
+    setSimilarBase,
+    addTracksToCrate,
     setAnalyses,
     setAnalysisActive,
     setRipStatus,
@@ -580,6 +585,46 @@ export default function App() {
         return;
       }
 
+      // 選曲ワークベンチ (#117): Ctrl/Cmd 系は入力中でも効かせる。
+      if (cmd && e.key === "]") {
+        e.preventDefault();
+        setRightRailVisible(true);
+        return;
+      }
+      if (cmd && !e.shiftKey && (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4")) {
+        e.preventDefault();
+        setRightRailVisible(true);
+        const tab =
+          e.key === "1" ? "now" : e.key === "2" ? "next" : e.key === "3" ? "crate" : "similar";
+        setRailTab(tab);
+        return;
+      }
+      if (cmd && e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        const first =
+          selectedTrackIds.size > 0 ? Array.from(selectedTrackIds)[0] : null;
+        if (first != null) {
+          setRightRailVisible(true);
+          setSimilarBase(first);
+        }
+        return;
+      }
+      if (cmd && e.shiftKey && e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        if (selectedTrackIds.size === 0) return;
+        // 選択 id から Map 引きで解決 (tracks 全走査の filter を避ける)
+        const byId = new Map(tracks.map((t) => [t.trackId, t]));
+        const selected: typeof tracks = [];
+        for (const id of selectedTrackIds) {
+          const t = byId.get(id);
+          if (t) selected.push(t);
+        }
+        addTracksToCrate(selected);
+        setRightRailVisible(true);
+        setRailTab("crate");
+        return;
+      }
+
       // Other shortcuts: skip when typing in an input.
       if (isInput) {
         if (e.key === "Escape") (target as HTMLInputElement).blur();
@@ -655,12 +700,31 @@ export default function App() {
     setSearchQuery,
     setViewMode,
     setSelectedPlaylistId,
+    setRightRailVisible,
+    setRailTab,
+    setSimilarBase,
+    addTracksToCrate,
   ]);
 
   const isAlbumView = viewMode === "albums" || viewMode === "artists";
 
+  // 右ペイン幅の CSS 変数は React style ではなく effect で同期する。
+  // リサイズ中は RightRail が DOM を直接更新し、store は pointerup まで触らないため、
+  // ここは rightRailWidth が変わったときだけ上書きする (他の store 更新では触らない)。
+  const appRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = appRef.current;
+    if (!el) return;
+    if (rightRailVisible) {
+      el.style.setProperty("--rail-w", `${rightRailWidth}px`);
+    } else {
+      el.style.removeProperty("--rail-w");
+    }
+  }, [rightRailVisible, rightRailWidth]);
+
   return (
     <div
+      ref={appRef}
       className={"app" + (rightRailVisible ? "" : " no-rail")}
       onContextMenu={(e) => {
         const t = e.target as HTMLElement;

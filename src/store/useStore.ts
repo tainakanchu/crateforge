@@ -49,6 +49,10 @@ interface PersistedSettings {
   nameColWidth: number | null;
   // 右ペイン(RightRail)を表示するか。false でテーブルを全幅に広げる。
   rightRailVisible: boolean;
+  // 右ペイン幅 (px)。リサイズ可能・永続化。既定 348、範囲 280–560。
+  rightRailWidth: number;
+  // Crate と Similar を上下分割表示するか（選曲ワークベンチ）。
+  railSplit: boolean;
   // プレーヤーの時間表示を「残り時間(−)」にするか。false なら経過時間。
   showRemainingTime: boolean;
   rowH: number;
@@ -76,6 +80,16 @@ interface PersistedSettings {
 
 // 「前回入れたプレイリスト」ショートカットで保持する件数
 const MAX_RECENT_PLAYLISTS = 3;
+
+// 右ペイン幅の既定・範囲（選曲ワークベンチ #117）
+export const RIGHT_RAIL_WIDTH_DEFAULT = 348;
+export const RIGHT_RAIL_WIDTH_MIN = 280;
+export const RIGHT_RAIL_WIDTH_MAX = 560;
+
+function clampRightRailWidth(w: number): number {
+  if (!Number.isFinite(w)) return RIGHT_RAIL_WIDTH_DEFAULT;
+  return Math.min(RIGHT_RAIL_WIDTH_MAX, Math.max(RIGHT_RAIL_WIDTH_MIN, Math.round(w)));
+}
 
 interface AppState extends PersistedSettings {
   // View
@@ -137,6 +151,8 @@ interface AppState extends PersistedSettings {
   // Crate
   setRailTab: (tab: RailTab) => void;
   addToCrate: (track: Track) => void;
+  /** 複数曲を 1 回の更新で Crate に追加する (重複は Set で O(N) 除去)。 */
+  addTracksToCrate: (tracks: Track[]) => void;
   removeFromCrate: (trackId: number) => void;
   reorderCrate: (from: number, to: number) => void;
   setCrateOrder: (ids: number[]) => void;
@@ -151,6 +167,8 @@ interface AppState extends PersistedSettings {
   setNameColWidth: (width: number | null) => void;
   setRightRailVisible: (visible: boolean) => void;
   toggleRightRail: () => void;
+  setRightRailWidth: (width: number) => void;
+  setRailSplit: (split: boolean) => void;
   setShowRemainingTime: (show: boolean) => void;
   toggleRemainingTime: () => void;
   setRowH: (h: number) => void;
@@ -225,6 +243,8 @@ export const useStore = create<AppState>()(
       fieldWidths: {},
       nameColWidth: null,
       rightRailVisible: true,
+      rightRailWidth: RIGHT_RAIL_WIDTH_DEFAULT,
+      railSplit: false,
       showRemainingTime: false,
       rowH: 40,
       coverSize: 20,
@@ -286,6 +306,19 @@ export const useStore = create<AppState>()(
             ? {}
             : { crate: [...state.crate, track], railTab: "crate" },
         ),
+      addTracksToCrate: (tracks) =>
+        set((state) => {
+          if (tracks.length === 0) return {};
+          const seen = new Set(state.crate.map((t) => t.trackId));
+          const added: Track[] = [];
+          for (const track of tracks) {
+            if (seen.has(track.trackId)) continue;
+            seen.add(track.trackId);
+            added.push(track);
+          }
+          if (added.length === 0) return {};
+          return { crate: [...state.crate, ...added], railTab: "crate" as const };
+        }),
       removeFromCrate: (trackId) =>
         set((state) => ({
           crate: state.crate.filter((t) => t.trackId !== trackId),
@@ -346,6 +379,9 @@ export const useStore = create<AppState>()(
       setRightRailVisible: (rightRailVisible) => set({ rightRailVisible }),
       toggleRightRail: () =>
         set((state) => ({ rightRailVisible: !state.rightRailVisible })),
+      setRightRailWidth: (width) =>
+        set({ rightRailWidth: clampRightRailWidth(width) }),
+      setRailSplit: (railSplit) => set({ railSplit }),
       setShowRemainingTime: (showRemainingTime) => set({ showRemainingTime }),
       toggleRemainingTime: () =>
         set((state) => ({ showRemainingTime: !state.showRemainingTime })),
@@ -395,7 +431,11 @@ export const useStore = create<AppState>()(
         }),
       clearRipStatus: () => set({ ripStatus: null }),
       setSimilarBase: (trackId) =>
-        set({ similarBaseTrackId: trackId, railTab: "similar" }),
+        set(
+          trackId != null
+            ? { similarBaseTrackId: trackId, railTab: "similar" }
+            : { similarBaseTrackId: null },
+        ),
       setPendingUpdate: (pendingUpdate) => set({ pendingUpdate }),
 
       pushToast: (kind, message, durationMs = 3200) => {
@@ -412,13 +452,15 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 11,
+      version: 12,
       partialize: (state) =>
         ({
           fields: state.fields,
           fieldWidths: state.fieldWidths,
           nameColWidth: state.nameColWidth,
           rightRailVisible: state.rightRailVisible,
+          rightRailWidth: state.rightRailWidth,
+          railSplit: state.railSplit,
           showRemainingTime: state.showRemainingTime,
           rowH: state.rowH,
           coverSize: state.coverSize,
@@ -507,6 +549,16 @@ export const useStore = create<AppState>()(
         if (version < 11 && persisted && typeof persisted === "object") {
           const p = persisted as Record<string, unknown>;
           if (p.lastSyncDestRoot === undefined) p.lastSyncDestRoot = null;
+        }
+        // v12: 選曲ワークベンチ — 右ペイン幅と Crate/Similar 分割表示。
+        if (version < 12 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (typeof p.rightRailWidth !== "number") {
+            p.rightRailWidth = RIGHT_RAIL_WIDTH_DEFAULT;
+          } else {
+            p.rightRailWidth = clampRightRailWidth(p.rightRailWidth as number);
+          }
+          if (typeof p.railSplit !== "boolean") p.railSplit = false;
         }
         return persisted as PersistedSettings;
       },

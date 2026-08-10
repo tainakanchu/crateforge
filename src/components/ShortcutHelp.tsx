@@ -45,6 +45,18 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    title: "選曲ワークベンチ",
+    items: [
+      { keys: ["Ctrl", "]"], label: "右ペインを表示" },
+      { keys: ["Ctrl", "1"], label: "Now Playing タブ" },
+      { keys: ["Ctrl", "2"], label: "Up Next タブ" },
+      { keys: ["Ctrl", "3"], label: "Crate タブ" },
+      { keys: ["Ctrl", "4"], label: "Similar タブ" },
+      { keys: ["Ctrl", "Shift", "S"], label: "選択曲を Similar の基準に" },
+      { keys: ["Ctrl", "Shift", "C"], label: "選択曲を Crate に追加" },
+    ],
+  },
+  {
     title: "ヘルプ",
     items: [{ keys: ["?"], label: "このショートカット一覧" }],
   },
