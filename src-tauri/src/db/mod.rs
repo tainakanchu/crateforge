@@ -232,19 +232,33 @@ fn persistent_id_exists(conn: &Connection, table: &str, persistent_id: &str) -> 
     )
 }
 
+/// `generate_unique_persistent_id` の最大試行回数。衝突が続く場合の無限ループを防ぐ。
+const MAX_PERSISTENT_ID_ATTEMPTS: usize = 10_000;
+
 /// 対象テーブル内で未使用の persistent_id 候補を返す。
 /// UNIQUE index 作成前のマイグレーションでも衝突を回避できるよう、明示的に存在確認する。
+/// 試行が `MAX_PERSISTENT_ID_ATTEMPTS` を超えた場合は記述的なエラーを返す。
 pub(crate) fn generate_unique_persistent_id(
     conn: &Connection,
     table: &str,
     seed: u64,
 ) -> Result<String> {
-    loop {
+    for _ in 0..MAX_PERSISTENT_ID_ATTEMPTS {
         let persistent_id = generate_persistent_id(seed);
         if !persistent_id_exists(conn, table, &persistent_id)? {
             return Ok(persistent_id);
         }
     }
+    // 戻り値型は rusqlite::Result のまま、衝突枯渇を明示するメッセージ付きで返す。
+    Err(rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error {
+            code: rusqlite::ErrorCode::Unknown,
+            extended_code: 0,
+        },
+        Some(format!(
+            "failed to generate unique persistent_id for table '{table}' after {MAX_PERSISTENT_ID_ATTEMPTS} attempts"
+        )),
+    ))
 }
 
 /// XML 由来 ID は空文字を欠損扱いにし、同一インポート内で既出なら新規生成する。
@@ -271,26 +285,74 @@ pub(crate) fn should_retry_constraint(err: &rusqlite::Error, attempt: usize) -> 
 }
 
 /// NULL・空文字・重複 ID (rowid が後の行) を再採番した後、UNIQUE index を作成する。
+///
+/// 起動時メインスレッドで走るため、インデックス未整備での相関 EXISTS (O(N^2)) は避ける。
+/// 完了済み (両 UNIQUE インデックス存在) なら即 return し、未完了時のみ補助インデックスを
+/// 張ってから検出・再採番し、最後に補助インデックスを落とす。全体は単一トランザクション。
 fn migrate_persistent_ids(conn: &Connection) -> Result<()> {
+    // (a) マイグレーション完了済みなら以降をスキップ (2 回目以降の起動を高速化)。
+    let both_unique_indexes_exist: bool = conn.query_row(
+        "SELECT
+            EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'index' AND name = 'idx_tracks_persistent_id_unique'
+            )
+            AND EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'index' AND name = 'idx_playlists_persistent_id_unique'
+            )",
+        [],
+        |r| r.get(0),
+    )?;
+    if both_unique_indexes_exist {
+        return Ok(());
+    }
+
+    let mut table_stats: Vec<(&str, i64, usize)> = Vec::with_capacity(2);
+    crate::logging::write_line("info", "migrate_persistent_ids: start");
+
     let tx = conn.unchecked_transaction()?;
 
     for table in ["tracks", "playlists"] {
+        // (b) 検出・存在確認を index seek にするため、再採番前に非 UNIQUE 補助インデックスを張る。
+        tx.execute(
+            &format!(
+                "CREATE INDEX IF NOT EXISTS idx_{table}_persistent_id_migration
+                 ON {table}(persistent_id)"
+            ),
+            [],
+        )?;
+
+        let table_rows: i64 =
+            tx.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
+
+        // (c) NULL/空の検出 + GROUP BY ... HAVING COUNT(*) > 1 による重複検出。
+        // 重複グループは rowid 最小の 1 行を残し、2 行目以降 (rowid > keep_rowid) を対象にする。
+        // 相関 EXISTS を避け、インデックス未整備でも O(N log N) 相当に抑える。
         let rowids = {
             let mut stmt = tx.prepare(&format!(
-                "SELECT current.rowid
-                 FROM {table} AS current
-                 WHERE current.persistent_id IS NULL
-                    OR current.persistent_id = ''
-                    OR EXISTS (
-                        SELECT 1 FROM {table} AS earlier
-                        WHERE earlier.persistent_id = current.persistent_id
-                          AND earlier.rowid < current.rowid
-                    )
-                 ORDER BY current.rowid"
+                "SELECT rowid FROM {table}
+                 WHERE persistent_id IS NULL OR persistent_id = ''
+                 UNION
+                 SELECT t.rowid
+                 FROM {table} AS t
+                 INNER JOIN (
+                     SELECT persistent_id, MIN(rowid) AS keep_rowid
+                     FROM {table}
+                     WHERE persistent_id IS NOT NULL AND persistent_id != ''
+                     GROUP BY persistent_id
+                     HAVING COUNT(*) > 1
+                 ) AS d
+                   ON t.persistent_id = d.persistent_id
+                  AND t.rowid > d.keep_rowid
+                 ORDER BY 1"
             ))?;
             let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
             rows.collect::<Result<Vec<_>>>()?
         };
+
+        let renumbered = rowids.len();
+        table_stats.push((table, table_rows, renumbered));
 
         for rowid in rowids {
             let mut attempt = 0;
@@ -311,13 +373,28 @@ fn migrate_persistent_ids(conn: &Connection) -> Result<()> {
         }
     }
 
+    // (e) 再採番後に UNIQUE インデックスを張り、意味論を維持したまま単一トランザクションで確定する。
     tx.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_persistent_id_unique
              ON tracks(persistent_id);
          CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_persistent_id_unique
              ON playlists(persistent_id);",
     )?;
-    tx.commit()
+
+    // (d) UNIQUE が同じカラムをカバーするため、補助インデックスは冗長 → 削除する。
+    tx.execute_batch(
+        "DROP INDEX IF EXISTS idx_tracks_persistent_id_migration;
+         DROP INDEX IF EXISTS idx_playlists_persistent_id_migration;",
+    )?;
+    tx.commit()?;
+
+    let summary = table_stats
+        .iter()
+        .map(|(table, rows, renumbered)| format!("{table}: rows={rows}, renumbered={renumbered}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    crate::logging::write_line("info", &format!("migrate_persistent_ids: done ({summary})"));
+    Ok(())
 }
 
 /// 検索高速化用の正規化済みカラム `search_text` を追加し、未計算行を一括バックフィルする。
@@ -577,6 +654,280 @@ mod tests {
             })
             .collect();
         assert_eq!(before, after);
+    }
+
+    /// NULL / 空文字の persistent_id が再採番され、16 桁 hex の非空 ID になること。
+    #[test]
+    fn migrate_persistent_ids_renumbers_null_and_empty() {
+        let conn = legacy_connection();
+        conn.execute_batch(
+            "INSERT INTO tracks (track_id, persistent_id) VALUES
+                (1, NULL), (2, ''), (3, 'ABCDEF0123456789');
+             INSERT INTO playlists (playlist_id, persistent_id, name) VALUES
+                (10, NULL, 'missing'),
+                (11, '', 'empty'),
+                (12, 'FEDCBA9876543210', 'retained');",
+        )
+        .unwrap();
+
+        migrate_persistent_ids(&conn).unwrap();
+
+        let track_ids: Vec<Option<String>> = {
+            let mut stmt = conn
+                .prepare("SELECT persistent_id FROM tracks ORDER BY track_id")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(track_ids.len(), 3);
+        assert_eq!(track_ids[2].as_deref(), Some("ABCDEF0123456789"));
+        for id in &track_ids[..2] {
+            let id = id.as_ref().expect("null/empty must be renumbered");
+            assert_eq!(id.len(), 16);
+            assert!(id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b)));
+            assert_ne!(id, "ABCDEF0123456789");
+        }
+        assert_ne!(track_ids[0], track_ids[1]);
+
+        let playlist_ids: Vec<Option<String>> = {
+            let mut stmt = conn
+                .prepare("SELECT persistent_id FROM playlists ORDER BY playlist_id")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(playlist_ids.len(), 3);
+        assert_eq!(playlist_ids[2].as_deref(), Some("FEDCBA9876543210"));
+        for id in &playlist_ids[..2] {
+            let id = id.as_ref().expect("null/empty must be renumbered");
+            assert_eq!(id.len(), 16);
+            assert_ne!(id.as_str(), "FEDCBA9876543210");
+        }
+        assert_non_empty_unique_ids(&conn, "tracks", 3);
+        assert_non_empty_unique_ids(&conn, "playlists", 3);
+    }
+
+    /// 重複 persistent_id は rowid 最小行を温存し、2 行目以降だけ再採番する。
+    #[test]
+    fn migrate_persistent_ids_keeps_min_rowid_on_duplicates() {
+        let conn = legacy_connection();
+        conn.execute_batch(
+            "INSERT INTO tracks (track_id, persistent_id) VALUES
+                (1, 'AAAABBBBCCCC0001'),
+                (2, 'AAAABBBBCCCC0001'),
+                (3, 'AAAABBBBCCCC0001'),
+                (4, 'DDDDEEEEFFFF0002');
+             INSERT INTO playlists (playlist_id, persistent_id, name) VALUES
+                (10, '1111222233330001', 'first'),
+                (11, '1111222233330001', 'second'),
+                (12, '4444555566660002', 'unique');",
+        )
+        .unwrap();
+
+        // 挿入順 = rowid 順を前提に、最小 rowid の track_id / playlist_id を確認する。
+        let keep_track_rowid: i64 = conn
+            .query_row("SELECT rowid FROM tracks WHERE track_id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let later_track_rowids: Vec<i64> = {
+            let mut stmt = conn
+                .prepare("SELECT rowid FROM tracks WHERE track_id IN (2, 3) ORDER BY track_id")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_>>()
+                .unwrap()
+        };
+        assert!(later_track_rowids.iter().all(|r| *r > keep_track_rowid));
+
+        migrate_persistent_ids(&conn).unwrap();
+
+        let kept: String = conn
+            .query_row(
+                "SELECT persistent_id FROM tracks WHERE track_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, "AAAABBBBCCCC0001");
+
+        let renumbered: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT persistent_id FROM tracks WHERE track_id IN (2, 3) ORDER BY track_id",
+                )
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(renumbered.len(), 2);
+        for id in &renumbered {
+            assert_ne!(id, "AAAABBBBCCCC0001");
+            assert_eq!(id.len(), 16);
+        }
+        assert_ne!(renumbered[0], renumbered[1]);
+
+        let unique: String = conn
+            .query_row(
+                "SELECT persistent_id FROM tracks WHERE track_id = 4",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unique, "DDDDEEEEFFFF0002");
+
+        let pl_kept: String = conn
+            .query_row(
+                "SELECT persistent_id FROM playlists WHERE playlist_id = 10",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pl_kept, "1111222233330001");
+        let pl_renumbered: String = conn
+            .query_row(
+                "SELECT persistent_id FROM playlists WHERE playlist_id = 11",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(pl_renumbered, "1111222233330001");
+
+        assert_non_empty_unique_ids(&conn, "tracks", 4);
+        assert_non_empty_unique_ids(&conn, "playlists", 3);
+    }
+
+    /// 完了後の再呼び出しは冪等 (早期 return) で、既存値・UNIQUE インデックスを変えない。
+    #[test]
+    fn migrate_persistent_ids_is_idempotent_with_early_return() {
+        let conn = legacy_connection();
+        conn.execute_batch(
+            "INSERT INTO tracks (track_id, persistent_id) VALUES
+                (1, NULL), (2, 'AAAABBBBCCCCDDDD'), (3, 'AAAABBBBCCCCDDDD');
+             INSERT INTO playlists (playlist_id, persistent_id, name) VALUES
+                (10, '', 'empty'),
+                (11, '1111222233334444', 'a'),
+                (12, '1111222233334444', 'b');",
+        )
+        .unwrap();
+
+        migrate_persistent_ids(&conn).unwrap();
+
+        let before: Vec<(i64, String, String)> = {
+            let mut out = Vec::new();
+            for table in ["tracks", "playlists"] {
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT rowid, persistent_id FROM {table} ORDER BY rowid"
+                    ))
+                    .unwrap();
+                for row in stmt
+                    .query_map([], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .unwrap()
+                {
+                    let (rowid, pid) = row.unwrap();
+                    out.push((rowid, table.to_string(), pid));
+                }
+            }
+            out
+        };
+        assert!(before.iter().all(|(_, _, pid)| !pid.is_empty()));
+
+        // 早期 return パス: 両 UNIQUE インデックスが既にあるので再実行しても値が変わらない。
+        migrate_persistent_ids(&conn).unwrap();
+        let after: Vec<(i64, String, String)> = {
+            let mut out = Vec::new();
+            for table in ["tracks", "playlists"] {
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT rowid, persistent_id FROM {table} ORDER BY rowid"
+                    ))
+                    .unwrap();
+                for row in stmt
+                    .query_map([], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .unwrap()
+                {
+                    let (rowid, pid) = row.unwrap();
+                    out.push((rowid, table.to_string(), pid));
+                }
+            }
+            out
+        };
+        assert_eq!(before, after);
+
+        let unique_indexes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name IN (
+                       'idx_tracks_persistent_id_unique',
+                       'idx_playlists_persistent_id_unique'
+                   )",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unique_indexes, 2);
+    }
+
+    /// 補助インデックス (idx_*_persistent_id_migration) はマイグレーション後に残らない。
+    #[test]
+    fn migrate_persistent_ids_drops_helper_indexes() {
+        let conn = legacy_connection();
+        conn.execute_batch(
+            "INSERT INTO tracks (track_id, persistent_id) VALUES
+                (1, NULL), (2, 'AAAABBBBCCCC0001'), (3, 'AAAABBBBCCCC0001');
+             INSERT INTO playlists (playlist_id, persistent_id, name) VALUES
+                (10, '', 'x');",
+        )
+        .unwrap();
+
+        migrate_persistent_ids(&conn).unwrap();
+
+        let helper_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name IN (
+                       'idx_tracks_persistent_id_migration',
+                       'idx_playlists_persistent_id_migration'
+                   )",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            helper_left, 0,
+            "helper migration indexes must be dropped after UNIQUE indexes are created"
+        );
+
+        // UNIQUE は残っていること。
+        let unique_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name IN (
+                       'idx_tracks_persistent_id_unique',
+                       'idx_playlists_persistent_id_unique'
+                   )",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unique_left, 2);
     }
 
     #[test]
