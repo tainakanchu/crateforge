@@ -1774,6 +1774,160 @@ input {
   cursor: not-allowed;
 }
 
+/* Similar digging: history nav / filters / reason chips */
+.cb-sim-dig-nav {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+}
+.cb-sim-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.cb-sim-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 0;
+  width: 100%;
+  font-size: 10px;
+  color: var(--mut);
+  line-height: 1.4;
+  min-width: 0;
+}
+.cb-sim-bc-item {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 40%;
+}
+.cb-sim-bc-sep {
+  margin: 0 4px;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+.cb-sim-bc-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: var(--tx2, var(--tx));
+  font-size: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+}
+.cb-sim-bc-link:hover {
+  color: var(--ac);
+  text-decoration-color: var(--ac);
+}
+.cb-sim-bc-current {
+  font-weight: 650;
+  color: var(--tx-strong, var(--tx));
+  max-width: 45%;
+}
+.cb-sim-count-raw {
+  opacity: 0.55;
+  font-weight: 500;
+}
+.cb-sim-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 8px;
+  padding: 6px 13px 8px;
+  border-bottom: 1px solid var(--bd);
+  flex-shrink: 0;
+}
+.cb-sim-filters .cb-tab {
+  padding: 2px 8px;
+  font-size: 10.5px;
+}
+.cb-sim-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--tx2, var(--tx));
+}
+.cb-sim-select {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 4px;
+  border-radius: 6px;
+  border: 1px solid var(--bd-strong, var(--bd));
+  background: var(--bg2);
+  color: var(--tx);
+  cursor: pointer;
+}
+.cb-sim-select:focus {
+  outline: none;
+  border-color: var(--ac);
+}
+.cb-sim-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--tx2, var(--tx));
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.cb-sim-check input {
+  margin: 0;
+  accent-color: var(--ac);
+  cursor: pointer;
+}
+.cb-sim-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 3px;
+  min-width: 0;
+}
+.cb-sim-reason {
+  display: inline-block;
+  font-size: 9.5px;
+  font-weight: 650;
+  line-height: 1.2;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--bd);
+  background: var(--bg3, var(--bg2));
+  color: var(--mut);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-sim-reason-key {
+  color: var(--ac);
+  border-color: color-mix(in srgb, var(--ac) 35%, var(--bd));
+}
+.cb-sim-reason-bpm {
+  color: var(--tx2, var(--tx));
+}
+.cb-sim-reason-energy {
+  color: var(--tx2, var(--tx));
+}
+.cb-sim-reason-harmonic {
+  color: var(--ac);
+  background: var(--ac-13, rgba(45, 212, 191, 0.1));
+  border-color: color-mix(in srgb, var(--ac) 40%, var(--bd));
+}
+.cb-sim-reason-distance {
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Split workbench: Similar 上 + Crate 下 */
 .cb-rail-split {
   flex: 1;
