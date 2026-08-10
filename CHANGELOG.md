@@ -15,12 +15,12 @@ Each release is documented in both Japanese and English.
 ### 日本語
 
 #### デスクトップ
-- **起動直後にアプリが無応答になる不具合を修正**: v0.11.0 で導入した persistent_id マイグレーションが、インデックスを張る前に全曲を総当たりで突き合わせていたため、起動時のメインスレッドがライブラリの規模に応じて長時間ブロックされていた (36,612 曲の実ライブラリで 5 分 51 秒)。待ちきれず終了するとマイグレーションが確定しないため、次回起動でも同じ待ちが最初から再発する状態だった。検出処理を集約クエリに置き換え、補助インデックスを先に作るようにして、同じライブラリで 0.22 秒に短縮。マイグレーション完了後の起動は、インデックスの有無を確認するだけでスキップする。あわせて persistent_id 生成の再試行に上限を設け、マイグレーションの開始・完了を crateforge.log に記録するようにした。
+- **起動直後にアプリが無応答になる不具合を修正**: v0.11.0 で導入した persistent_id マイグレーションが、インデックスを張る前に全曲を総当たりで突き合わせていたため、起動時のメインスレッドがライブラリの規模に応じて長時間ブロックされていた (36,612 曲の実ライブラリで 5 分 51 秒)。待ちきれず終了するとマイグレーションが確定しないため、次回起動でも同じ待ちが最初から再発する状態だった。検出処理を集約クエリに置き換え、補助インデックスを先に作るようにして、同じライブラリで 0.22 秒に短縮。マイグレーション完了後の起動は、インデックスの有無を確認するだけでスキップする。あわせて persistent_id 生成の再試行に上限を設け、マイグレーションの開始・完了を crateforge.log に記録するようにした。 (#143)
 
 ### English
 
 #### Desktop
-- **Fixed the app hanging right after startup**: The persistent_id migration introduced in v0.11.0 cross-checked every track before creating any index, blocking the startup main thread for minutes on larger libraries (5m51s on a real 36,612-track library). Quitting before it finished left the migration uncommitted, so the next launch started the same wait all over again. Detection is now an aggregate query with a helper index created up front, cutting the same library to 0.22s, and startups after the migration completes skip it entirely by checking for the indexes. Also added a retry cap to persistent_id generation, and migration start/finish is now recorded in crateforge.log.
+- **Fixed the app hanging right after startup**: The persistent_id migration introduced in v0.11.0 cross-checked every track before creating any index, blocking the startup main thread for minutes on larger libraries (5m51s on a real 36,612-track library). Quitting before it finished left the migration uncommitted, so the next launch started the same wait all over again. Detection is now an aggregate query with a helper index created up front, cutting the same library to 0.22s, and startups after the migration completes skip it entirely by checking for the indexes. Also added a retry cap to persistent_id generation, and migration start/finish is now recorded in crateforge.log. (#143)
 
 ## [v0.11.0] - 2026-08-08
 
