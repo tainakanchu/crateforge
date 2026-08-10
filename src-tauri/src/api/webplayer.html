@@ -869,7 +869,7 @@
         <ul>
           <li><span class="shortcut-keys"><kbd>/</kbd></span><span class="shortcut-label">検索にフォーカス</span></li>
           <li><span class="shortcut-keys"><kbd>Ctrl</kbd><kbd>F</kbd></span><span class="shortcut-label">検索にフォーカス</span></li>
-          <li><span class="shortcut-keys"><kbd>Ctrl</kbd><kbd>L</kbd></span><span class="shortcut-label">検索クリア / ライブラリへ</span></li>
+          <li><span class="shortcut-keys"><kbd>Ctrl</kbd><kbd>L</kbd></span><span class="shortcut-label">ライブラリへ戻る（検索クリア）</span></li>
           <li><span class="shortcut-keys"><kbd>Esc</kbd></span><span class="shortcut-label">閉じる / 検索クリア</span></li>
           <li><span class="shortcut-keys"><kbd>↑</kbd><kbd>↓</kbd></span><span class="shortcut-label">リスト選択を上下に移動</span></li>
           <li><span class="shortcut-keys"><kbd>?</kbd></span><span class="shortcut-label">このショートカット一覧</span></li>
@@ -1609,6 +1609,44 @@
     }
   }
 
+  /** Media Session play: resume / start only (never pause). */
+  async function mediaPlay() {
+    if (remoteMode) {
+      if (currentTrackId != null) {
+        if (!isPlaying) {
+          try {
+            await apiFetch("/api/remote/resume", { method: "POST" });
+            setPlayingUI(true);
+          } catch (e) { /* toast handled */ }
+        }
+      } else if (tracks.length) {
+        if (focusedIdx >= 0) playFocused();
+        else playTrackAt(0);
+      }
+    } else {
+      if (!audio.src && tracks.length) {
+        if (focusedIdx >= 0) playFocused();
+        else playTrackAt(0);
+      } else if (audio.paused) {
+        audio.play().catch(function (e) { showToast("再生できません: " + e.message, "error"); });
+      }
+    }
+  }
+
+  /** Media Session pause: pause only (never play). */
+  async function mediaPause() {
+    if (remoteMode) {
+      if (isPlaying) {
+        try {
+          await apiFetch("/api/remote/pause", { method: "POST" });
+          setPlayingUI(false);
+        } catch (e) { /* toast handled */ }
+      }
+    } else {
+      if (!audio.paused) audio.pause();
+    }
+  }
+
   async function playPrev() {
     if (remoteMode) {
       try {
@@ -1671,7 +1709,17 @@
 
     // End of order
     if (localRepeat === "all" && playOrder.length > 0) {
-      if (localShuffle) rebuildPlayOrder(false);
+      if (localShuffle) {
+        const finishedIdx = currentQueueIdx;
+        rebuildPlayOrder(false);
+        // Avoid replaying the just-finished track first when n > 1
+        if (playOrder.length > 1 && playOrder[0] === finishedIdx) {
+          const j = 1 + Math.floor(Math.random() * (playOrder.length - 1));
+          const tmp = playOrder[0];
+          playOrder[0] = playOrder[j];
+          playOrder[j] = tmp;
+        }
+      }
       playOrderPos = 0;
       playTrackAt(playOrder[0]);
       return;
@@ -1967,7 +2015,17 @@
     if (mod && lower === "l") {
       e.preventDefault();
       searchBox.blur();
-      clearSearchAndReload(true);
+      // ライブラリへ戻る（検索クリア）: always jump to all-tracks library
+      clearTimeout(searchTimer);
+      searchBox.value = "";
+      activePlaylistId = null;
+      lastLibraryTitle = "すべての曲";
+      trackListTitle.textContent = lastLibraryTitle;
+      document.querySelectorAll(".playlist-item").forEach(function (item) {
+        item.classList.toggle("active", item.dataset.id === "");
+      });
+      loadTracksForPlaylist(null);
+      if (typeof switchTab === "function") switchTab("tracks");
       return;
     }
 
@@ -2098,8 +2156,8 @@
   function setupMediaSessionHandlers() {
     if (!("mediaSession" in navigator)) return;
     try {
-      navigator.mediaSession.setActionHandler("play", function () { togglePlayPause(); });
-      navigator.mediaSession.setActionHandler("pause", function () { togglePlayPause(); });
+      navigator.mediaSession.setActionHandler("play", function () { mediaPlay(); });
+      navigator.mediaSession.setActionHandler("pause", function () { mediaPause(); });
       navigator.mediaSession.setActionHandler("previoustrack", function () { playPrev(); });
       navigator.mediaSession.setActionHandler("nexttrack", function () { playNext(); });
       try {
@@ -2152,13 +2210,20 @@
 
   function renderLocalQueue() {
     queueList.innerHTML = "";
-    const start = currentQueueIdx;
-    const slice = tracks.slice(start >= 0 ? start : 0);
-    if (slice.length === 0) {
+    // Show remaining play order (respects shuffle), not linear tracks slice
+    if (!playOrder.length || playOrder.length !== tracks.length) {
+      rebuildPlayOrder(false);
+    }
+    syncPlayOrderPosToCurrent();
+    const startPos = playOrderPos >= 0 ? playOrderPos : 0;
+    const remaining = playOrder.slice(startPos);
+    if (remaining.length === 0 || tracks.length === 0) {
       queueList.innerHTML = '<li class="queue-row" style="color:var(--text-muted)">キューは空です</li>';
       return;
     }
-    slice.forEach(function (t, i) {
+    remaining.forEach(function (trackIndex, i) {
+      const t = tracks[trackIndex];
+      if (!t) return;
       const li = document.createElement("li");
       li.className = "queue-row" + (i === 0 ? " current" : "");
       li.innerHTML =
@@ -2166,9 +2231,8 @@
         '<div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.name || "(不明)") + '</div>' +
         '<div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.artist || "") + '</div></div>' +
         '<span style="font-size:11px;color:var(--text-muted)">' + fmtTime(t.totalTimeMs) + '</span>';
-      const absIdx = (start >= 0 ? start : 0) + i;
       li.addEventListener("click", function () {
-        playTrackAt(absIdx, t);
+        playTrackAt(trackIndex);
         queuePanel.classList.remove("open");
       });
       queueList.appendChild(li);
@@ -2219,18 +2283,26 @@
         '<div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t ? (t.name || "(不明)") : id) + '</div>' +
         '<div style="font-size:11px;color:var(--text-muted)">' + esc(t ? (t.artist || "") : "") + '</div></div>' +
         '<span style="font-size:11px;color:var(--text-muted)">' + (t ? fmtTime(t.totalTimeMs) : "") + '</span>';
-      li.addEventListener("click", function () {
-        const trackId = id;
-        apiFetch("/api/remote/play", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ trackId: trackId })
-        }).then(function (res) {
+      li.addEventListener("click", async function () {
+        const absIdx = ci + i;
+        const trackId = trackIds[absIdx];
+        try {
+          // set-queue first so order_pos advances correctly on next
+          await apiFetch("/api/remote/set-queue", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trackIds: trackIds, startIndex: absIdx })
+          });
+          const res = await apiFetch("/api/remote/play", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trackId: trackId })
+          });
           if (res.ok || res.status === 204) {
             syncRemoteTrack(trackId);
             setPlayingUI(true);
           }
-        }).catch(function () {});
+        } catch (e) { /* toast handled by apiFetch / ignore */ }
         if (queuePanelEl) queuePanelEl.classList.remove("open");
       });
       queueList.appendChild(li);
