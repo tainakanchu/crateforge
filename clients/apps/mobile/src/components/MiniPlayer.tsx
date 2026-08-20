@@ -17,8 +17,9 @@ import IconButton from "@/components/IconButton";
 const TAB_BAR_HEIGHT = 49;
 
 // ミニプレイヤーを隠すルート（最上位セグメントで判定）。
-// /player（モーダル全画面プレイヤー）と /connect（オンボーディング）では出さない。
-const HIDDEN_ROOTS = new Set(["player", "connect"]);
+// /player（モーダル全画面プレイヤー）と /connect（オンボーディング）に加え、
+// /dj（DJ モード。メイン再生は停止しておりデッキ操作面を専有させる）では出さない。
+const HIDDEN_ROOTS = new Set(["player", "connect", "dj"]);
 
 export default function MiniPlayer() {
   const insets = useSafeAreaInsets();

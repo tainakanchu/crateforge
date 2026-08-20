@@ -1,4 +1,4 @@
-// タブナビ。Library / Playlists / Remote / Settings の 4 タブ。
+// タブナビ。Library / Playlists / DJ / Remote / Settings の 5 タブ。
 // ミニプレイヤー/再生エラー通知はルートレイアウト(_layout.tsx)へ移したのでここには置かない。
 
 import { Tabs } from "expo-router";
@@ -34,6 +34,16 @@ export default function TabsLayout() {
           title: "Playlists",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="list" size={size} color={color} />
+          ),
+        }}
+      />
+      {/* ファイル名は dj-home（フルスクリーンの /dj スタックルートと URL 衝突させないため）。 */}
+      <Tabs.Screen
+        name="dj-home"
+        options={{
+          title: "DJ",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="disc" size={size} color={color} />
           ),
         }}
       />

@@ -1,0 +1,12 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+  <!--
+    android.media.midi (USB MIDI) needs no runtime permission — the system MIDI service
+    brokers device access. Declare the MIDI feature as optional so the app stays
+    installable on devices without MIDI support (the module degrades to "unavailable").
+  -->
+  <uses-feature
+      android:name="android.software.midi"
+      android:required="false" />
+
+</manifest>

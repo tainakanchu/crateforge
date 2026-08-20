@@ -100,6 +100,8 @@ export default function RootLayout() {
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="connect" />
               <Stack.Screen name="player" options={{ presentation: "modal" }} />
+              {/* DJ モード。フェーダー操作とスワイプ dismiss が干渉しないよう通常 push。 */}
+              <Stack.Screen name="dj" />
             </Stack>
             {/* ミニプレイヤーは全画面で常時表示（出し分けは MiniPlayer 内でルート判定）。
                 Stack の兄弟に置くことでスタック/タブどちらの画面にも重ねられる。 */}
