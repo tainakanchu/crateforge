@@ -225,6 +225,40 @@ pub fn clear_queue(player: tauri::State<'_, Mutex<AudioPlayer>>) -> Result<(), S
     Ok(())
 }
 
+/// ライブラリから消えた曲を再生系から落とす (キューから除去 / 再生中なら停止)。
+/// 再生状態が変わったので `playback-advanced` を emit し、フロントの
+/// プレイヤーバーと Up Next を即座に追従させる。
+///
+/// 停止時の `PlayReport` は捨てる: 対応する tracks 行はもう無く、
+/// play_count / skip_count を書きに行っても行が無いため意味がない。
+pub(crate) fn drop_tracks_from_playback(
+    app: &AppHandle,
+    player: &Mutex<AudioPlayer>,
+    track_ids: &std::collections::HashSet<i64>,
+) {
+    use tauri::Emitter;
+
+    let stopped = match player.lock() {
+        Ok(mut p) => {
+            let hit_current = p.remove_tracks(track_ids);
+            if hit_current {
+                let _ = p.stop();
+            }
+            hit_current
+        }
+        Err(_) => false,
+    };
+    let track_id = if stopped {
+        None
+    } else {
+        player
+            .lock()
+            .ok()
+            .and_then(|p| p.get_state().current_track_id)
+    };
+    let _ = app.emit("playback-advanced", AdvancePayload { track_id });
+}
+
 #[tauri::command]
 pub fn get_queue(
     player: tauri::State<'_, Mutex<AudioPlayer>>,
@@ -445,8 +479,8 @@ enum AdvanceDecision {
 /// 停止した場合は null。
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct AdvancePayload {
-    track_id: Option<i64>,
+pub(crate) struct AdvancePayload {
+    pub(crate) track_id: Option<i64>,
 }
 
 /// 直前に `advance_next` 済みの曲から順に再生を試み、失敗 (ファイル欠損など) したら

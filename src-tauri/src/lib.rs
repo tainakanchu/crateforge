@@ -200,6 +200,8 @@ pub fn run() {
             commands::library::set_search_fold_level,
             commands::library::get_albums,
             commands::library::get_album_tracks,
+            commands::library::delete_tracks,
+            commands::library::reveal_in_file_manager,
             // artwork
             commands::artwork::set_artwork_from_data,
             commands::artwork::set_artwork_from_file,

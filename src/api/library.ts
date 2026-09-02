@@ -143,3 +143,18 @@ export async function getAlbums(
 export async function getAlbumTracks(albumKey: string): Promise<Track[]> {
   return invoke("get_album_tracks", { albumKey });
 }
+
+/// 指定トラックをライブラリから削除する。実際に消えた曲数を返す。
+/// `deleteFiles` が true のときは実ファイルも削除するが、ゴミ箱へは送れないため
+/// ライブラリルート配下のファイルに限られる (ルート外が混ざると何も消さずに失敗する)。
+export async function deleteTracks(
+  trackIds: number[],
+  deleteFiles: boolean,
+): Promise<number> {
+  return invoke("delete_tracks", { trackIds, deleteFiles });
+}
+
+/// OS のファイルマネージャ (Finder / エクスプローラ) でファイルを表示する。
+export async function revealInFileManager(path: string): Promise<void> {
+  return invoke("reveal_in_file_manager", { path });
+}

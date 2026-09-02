@@ -1,6 +1,10 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager};
+
+use crate::audio::AudioPlayer;
 
 use crate::db::Database;
 use crate::importer;
@@ -295,6 +299,132 @@ pub fn get_albums(
 pub fn get_album_tracks(app: AppHandle, album_key: String) -> Result<Vec<Track>, String> {
     let db = get_db(&app)?;
     db.get_album_tracks(&album_key).map_err(|e| e.to_string())
+}
+
+/// 削除対象の実ファイルが「整理ルート配下」にあることを検証し、正規化パスを返す。
+///
+/// `trash` クレートを依存に持たないため OS のゴミ箱へは送れず、削除は復元不能になる。
+/// そのためアプリが管理するライブラリルート配下に限って実削除を許可し、
+/// それ以外 (外部参照のファイル) は消さずにエラーで返す。
+/// symlink でルート外を指すファイルも弾けるよう、両者 canonicalize してから比較する。
+fn ensure_inside_root(root: &Path, file: &Path) -> Result<PathBuf, String> {
+    let canonical = std::fs::canonicalize(file)
+        .map_err(|e| format!("{} のパスを解決できませんでした: {}", file.display(), e))?;
+    if !canonical.starts_with(root) {
+        return Err(format!(
+            "{} はライブラリルート ({}) の外にあるため、安全のためファイルを削除しません。\
+             「ファイルも削除する」のチェックを外せば、ライブラリ (DB) からの削除だけを行えます。",
+            file.display(),
+            root.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+/// 指定トラックをライブラリから削除する。実際に消えた曲数を返す。
+///
+/// - DB からはトラック行と依存行 (プレイリスト所属 / 再生履歴 / 解析結果 / 同期メタ) を消す。
+/// - `delete_files` が true のときだけ実ファイルも削除する。ゴミ箱へ送れない
+///   (`trash` クレート非依存) ため、ライブラリルート配下のファイルに限定し、
+///   1 件でもルート外があれば **何も消さずに** エラーを返す。
+/// - 削除した曲が再生中 / キューに積まれていれば、再生を止めキューから外す。
+#[tauri::command]
+pub fn delete_tracks(
+    app: AppHandle,
+    track_ids: Vec<i64>,
+    delete_files: bool,
+    player: tauri::State<'_, Mutex<AudioPlayer>>,
+) -> Result<usize, String> {
+    if track_ids.is_empty() {
+        return Ok(0);
+    }
+    let db = get_db(&app)?;
+
+    // 1. ファイル削除は「全件検証 → まとめて実行」にして、途中失敗で
+    //    DB とファイルがちぐはぐになるのを防ぐ。
+    let mut files: Vec<PathBuf> = Vec::new();
+    if delete_files {
+        let root = db.organize_root().ok_or_else(|| {
+            "ファイルを削除するにはライブラリルート (整理先) の設定が必要です。\
+             設定でルートを指定するか、ライブラリ (DB) からの削除だけを行ってください。"
+                .to_string()
+        })?;
+        let root = std::fs::canonicalize(&root)
+            .map_err(|e| format!("ライブラリルート ({}) を解決できませんでした: {}", root, e))?;
+        for track in db
+            .get_tracks_by_ids(&track_ids)
+            .map_err(|e| e.to_string())?
+        {
+            let Some(loc) = track.location_path.filter(|p| !p.is_empty()) else {
+                continue;
+            };
+            let path = Path::new(&loc);
+            // 既に存在しないファイルは検証せずスキップ (DB の掃除だけ行う)。
+            if !path.exists() {
+                continue;
+            }
+            files.push(ensure_inside_root(&root, path)?);
+        }
+    }
+
+    // 2. DB から削除 (1 トランザクション)。
+    let deleted = db.delete_tracks(&track_ids).map_err(|e| e.to_string())?;
+
+    // 3. 検証済みファイルを削除する。個別の失敗 (権限など) は警告に留め、
+    //    DB 側の削除は確定させる (再試行しても DB に行は残っていない)。
+    for path in files {
+        if let Err(e) = std::fs::remove_file(&path) {
+            eprintln!("remove_file failed for {}: {}", path.display(), e);
+            crate::logging::write_line(
+                "warn",
+                &format!("failed to delete file {}: {}", path.display(), e),
+            );
+        }
+    }
+
+    // 4. 再生中 / キューに残っている曲を落とす。
+    let removed: HashSet<i64> = track_ids.into_iter().collect();
+    crate::commands::playback::drop_tracks_from_playback(&app, &player, &removed);
+
+    Ok(deleted)
+}
+
+/// OS のファイルマネージャでファイルを表示する (Finder / エクスプローラで表示)。
+///
+/// `tauri-plugin-shell` の Rust 側 API (`shell().command()`) を使う。こちらは
+/// フロントの `shell:allow-execute` スコープを通らない (ACL は IPC 経由の呼び出しにのみ効く)
+/// ため capabilities の追加は不要で、実行するプログラムと引数はこの関数が固定する。
+#[tauri::command]
+pub fn reveal_in_file_manager(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+
+    let target = Path::new(&path);
+    if !target.exists() {
+        return Err(format!("ファイルが見つかりません: {}", path));
+    }
+    let shell = app.shell();
+
+    #[cfg(target_os = "macos")]
+    let cmd = shell.command("open").args(["-R", path.as_str()]);
+
+    // explorer は `/select,<path>` を 1 引数として受け取る。
+    #[cfg(target_os = "windows")]
+    let cmd = shell.command("explorer").arg(format!("/select,{}", path));
+
+    // Linux にはファイルを選択状態で開く共通の方法が無いので、親ディレクトリを開く。
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let cmd = {
+        let dir = target
+            .parent()
+            .ok_or_else(|| format!("親ディレクトリを特定できません: {}", path))?;
+        shell
+            .command("xdg-open")
+            .arg(dir.to_string_lossy().to_string())
+    };
+
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("ファイルマネージャを起動できませんでした: {}", e))
 }
 
 pub(crate) fn open_db(app: &AppHandle) -> Result<Database, String> {
