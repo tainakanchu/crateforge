@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   useStore,
   RIGHT_RAIL_WIDTH_DEFAULT,
-  RIGHT_RAIL_WIDTH_MIN,
-  RIGHT_RAIL_WIDTH_MAX,
+  clampRailWidthToViewport,
 } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import * as playlistsApi from "../api/playlists";
@@ -48,13 +47,6 @@ interface QueueItem {
 }
 
 const SIMILAR_DRAG_MIME = "application/x-crateforge-track-id";
-
-function clampRailWidth(w: number): number {
-  return Math.min(
-    RIGHT_RAIL_WIDTH_MAX,
-    Math.max(RIGHT_RAIL_WIDTH_MIN, Math.round(w)),
-  );
-}
 
 function applyRailWidthCss(width: number) {
   const app = document.querySelector(".app") as HTMLElement | null;
@@ -507,7 +499,8 @@ export function RightRail({
   const onResizePointerMove = useCallback((e: React.PointerEvent) => {
     if (!resizing.current) return;
     // 左端ハンドル: マウスを左へ動かすと幅が増える
-    const next = clampRailWidth(
+    // ウィンドウ幅も考慮してクランプする（センターペインが潰れないよう #146）。
+    const next = clampRailWidthToViewport(
       resizeStartW.current + (resizeStartX.current - e.clientX),
     );
     resizeCurrentW.current = next;
@@ -530,8 +523,9 @@ export function RightRail({
   );
 
   const onResizeDoubleClick = useCallback(() => {
-    setRightRailWidth(RIGHT_RAIL_WIDTH_DEFAULT);
-    applyRailWidthCss(RIGHT_RAIL_WIDTH_DEFAULT);
+    const clamped = clampRailWidthToViewport(RIGHT_RAIL_WIDTH_DEFAULT);
+    setRightRailWidth(clamped);
+    applyRailWidthCss(clamped);
   }, [setRightRailWidth]);
 
   const isSimilarExternalDrag = (dt: DataTransfer) =>
