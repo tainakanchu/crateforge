@@ -4,6 +4,7 @@ import {
   RIGHT_RAIL_WIDTH_DEFAULT,
   clampRailWidthToViewport,
 } from "../store/useStore";
+import type { BpmTolOpt } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
@@ -16,6 +17,7 @@ import {
   hasSectionSplits,
 } from "../lib/setSmooth";
 import { lintSet } from "../lib/setLint";
+import { TRACK_IDS_MIME, parseTrackIds } from "../lib/trackDrag";
 import { Icon, Stars } from "./Icon";
 import { Cover, ArtworkImg } from "./Cover";
 import { SetArc } from "./SetArc";
@@ -30,8 +32,6 @@ import {
   type AnchorKind,
 } from "../types";
 
-/** BPM 許容（サーバー opts）。null = off。 */
-type BpmTolOpt = 0.04 | 0.08 | 0.12 | null;
 
 interface RightRailProps {
   onPlaylistsChanged: () => void;
@@ -46,7 +46,8 @@ interface QueueItem {
   orderIndex: number;
 }
 
-const SIMILAR_DRAG_MIME = "application/x-crateforge-track-id";
+/// Similar → Crate / 一覧 → Crate のドラッグで使う MIME (値はカンマ区切りの trackId 列)。
+const SIMILAR_DRAG_MIME = TRACK_IDS_MIME;
 
 function applyRailWidthCss(width: number) {
   const app = document.querySelector(".app") as HTMLElement | null;
@@ -128,6 +129,8 @@ export function RightRail({
     setRightRailWidth,
     railSplit,
     setRailSplit,
+    similarFilters,
+    setSimilarFilters,
     selectedTrackIds,
     setMeta,
     setSetMeta,
@@ -187,12 +190,15 @@ export function RightRail({
 
   // Similar タブ: 基準は similarBaseTrackId、無ければ再生中の曲。
   const [similar, setSimilar] = useState<SimilarHit[]>([]);
-  const [harmonic, setHarmonic] = useState(true);
-  const [bpmTol, setBpmTol] = useState<BpmTolOpt>(0.08);
-  const [energyClose, setEnergyClose] = useState(false);
-  const [excludeInCrate, setExcludeInCrate] = useState(true);
-  const [excludeSameArtist, setExcludeSameArtist] = useState(false);
-  const [ratingMinOn, setRatingMinOn] = useState(false);
+  // Dig フィルタは store の永続化設定 (#151)。セッションをまたいで保持される。
+  const {
+    harmonic,
+    bpmTol,
+    energyClose,
+    excludeInCrate,
+    excludeSameArtist,
+    ratingMinOn,
+  } = similarFilters;
   const [simLoading, setSimLoading] = useState(false);
   // Digging history（セッション内）。意図的に base を変えたときだけ push。
   const [similarBackStack, setSimilarBackStack] = useState<number[]>([]);
@@ -239,9 +245,10 @@ export function RightRail({
     : null;
   const showRichMeta = rightRailWidth >= 420;
 
-  // 分割表示: Crate/Similar タブ時に railSplit が ON なら両方を同時表示
-  const workbenchSplit =
-    railSplit && (railTab === "crate" || railTab === "similar");
+  // 分割表示: Crate/Similar タブ時に railSplit が ON なら両方を同時表示。
+  // splitAvailable = いま Split が効くタブか（Split ボタンの活性表示に使う #151）。
+  const splitAvailable = railTab === "crate" || railTab === "similar";
+  const workbenchSplit = railSplit && splitAvailable;
   const showCrate = railTab === "crate" || workbenchSplit;
   const showSimilar = railTab === "similar" || workbenchSplit;
   const showNow = railTab === "now" && !workbenchSplit;
@@ -575,6 +582,7 @@ export function RightRail({
   const onCrateListDrop = useCallback(
     async (e: React.DragEvent) => {
       setCrateExternalOver(false);
+      // 一覧からの複数選択ドロップもあるので、カンマ区切りの ID 列として読む。
       const raw =
         e.dataTransfer.getData(SIMILAR_DRAG_MIME) ||
         (similarDragTrackId.current != null
@@ -583,24 +591,33 @@ export function RightRail({
       similarDragTrackId.current = null;
       if (!raw) return;
       e.preventDefault();
-      const trackId = Number(raw);
-      if (!Number.isFinite(trackId)) return;
-      if (crate.some((c) => c.trackId === trackId)) return;
-      // まず similar ヒットや tracks から解決、無ければ API
-      const fromSim = similar.find((h) => h.track.trackId === trackId)?.track;
-      const fromTracks = tracks.find((t) => t.trackId === trackId);
-      let track = fromSim ?? fromTracks ?? null;
-      if (!track) {
+      const inCrate = new Set(crate.map((c) => c.trackId));
+      const trackIds = parseTrackIds(raw).filter((id) => !inCrate.has(id));
+      if (trackIds.length === 0) return;
+      // まず similar ヒットや tracks から解決、足りない分だけ API で引く。
+      const resolvedById = new Map<number, Track>();
+      for (const id of trackIds) {
+        const hit =
+          similar.find((h) => h.track.trackId === id)?.track ??
+          tracks.find((t) => t.trackId === id);
+        if (hit) resolvedById.set(id, hit);
+      }
+      const missing = trackIds.filter((id) => !resolvedById.has(id));
+      if (missing.length > 0) {
         try {
-          const resolved = await libraryApi.getTracksByIds([trackId]);
-          track = resolved[0] ?? null;
+          for (const t of await libraryApi.getTracksByIds(missing)) {
+            resolvedById.set(t.trackId, t);
+          }
         } catch {
-          track = null;
+          /* 解決できなかった曲は黙って諦める */
         }
       }
-      if (track) addToCrate(track);
+      const found = trackIds
+        .map((id) => resolvedById.get(id))
+        .filter((t): t is Track => !!t);
+      if (found.length > 0) addTracksToCrate(found);
     },
-    [crate, similar, tracks, addToCrate],
+    [crate, similar, tracks, addTracksToCrate],
   );
 
   // Save as Playlist ボタン → インライン入力を表示
@@ -1139,7 +1156,7 @@ export function RightRail({
       >
         {crate.length === 0 ? (
           <div className="cb-rail-empty">
-            曲リストやカバーの「＋」でクレートに追加。Similar からドラッグでも追加できます。
+            曲リストやカバーの「＋」でクレートに追加。一覧や Similar からドラッグでも追加できます。
           </div>
         ) : (
           crate.map((t, i) => {
@@ -1595,7 +1612,7 @@ export function RightRail({
       <div className="cb-sim-filters">
         <button
           className={"cb-tab" + (harmonic ? " on" : "")}
-          onClick={() => setHarmonic((v) => !v)}
+          onClick={() => setSimilarFilters({ harmonic: !harmonic })}
           title="Camelot 互換キーのみに絞る（BPM フィルタとは独立）"
         >
           Harmonic
@@ -1610,8 +1627,9 @@ export function RightRail({
             value={bpmTol == null ? "off" : String(bpmTol)}
             onChange={(e) => {
               const v = e.target.value;
-              if (v === "off") setBpmTol(null);
-              else setBpmTol(Number(v) as BpmTolOpt);
+              setSimilarFilters({
+                bpmTol: v === "off" ? null : (Number(v) as BpmTolOpt),
+              });
             }}
           >
             <option value="0.04">4%</option>
@@ -1622,7 +1640,7 @@ export function RightRail({
         </label>
         <button
           className={"cb-tab" + (energyClose ? " on" : "")}
-          onClick={() => setEnergyClose((v) => !v)}
+          onClick={() => setSimilarFilters({ energyClose: !energyClose })}
           title="Energy 差 ≤ 0.15 のみ"
         >
           Energy close
@@ -1631,7 +1649,7 @@ export function RightRail({
           <input
             type="checkbox"
             checked={excludeInCrate}
-            onChange={(e) => setExcludeInCrate(e.target.checked)}
+            onChange={(e) => setSimilarFilters({ excludeInCrate: e.target.checked })}
           />
           除外: Crate
         </label>
@@ -1639,7 +1657,7 @@ export function RightRail({
           <input
             type="checkbox"
             checked={excludeSameArtist}
-            onChange={(e) => setExcludeSameArtist(e.target.checked)}
+            onChange={(e) => setSimilarFilters({ excludeSameArtist: e.target.checked })}
           />
           除外: 同一Artist
         </label>
@@ -1647,7 +1665,7 @@ export function RightRail({
           <input
             type="checkbox"
             checked={ratingMinOn}
-            onChange={(e) => setRatingMinOn(e.target.checked)}
+            onChange={(e) => setSimilarFilters({ ratingMinOn: e.target.checked })}
           />
           ★★★+
         </label>
@@ -1881,8 +1899,17 @@ export function RightRail({
               ((railTab === "crate" || workbenchSplit) ? " on" : "")
             }
             onClick={() => switchRailTab("crate")}
+            title={
+              crate.length > 0
+                ? `Crate — ${crate.length} 曲`
+                : "Crate"
+            }
           >
             Crate
+            {/* 自動でタブを切り替える代わりに件数で知らせる (#151) */}
+            {crate.length > 0 && (
+              <span className="cb-tab-count">{crate.length}</span>
+            )}
           </button>
           <button
             className={
@@ -1890,14 +1917,32 @@ export function RightRail({
               ((railTab === "similar" || workbenchSplit) ? " on" : "")
             }
             onClick={() => switchRailTab("similar")}
+            title={
+              similarBaseTrackId != null
+                ? "Similar — 基準曲が設定されています"
+                : "Similar"
+            }
           >
             Similar
+            {/* 基準曲がピンされていることをドットで知らせる (#151) */}
+            {similarBaseTrackId != null && (
+              <span className="cb-tab-dot" aria-hidden />
+            )}
           </button>
         </div>
         <button
-          className={"cb-tab cb-split-toggle" + (railSplit ? " on" : "")}
+          className={
+            "cb-tab cb-split-toggle" +
+            (workbenchSplit ? " on" : "") +
+            (splitAvailable ? "" : " cb-split-na")
+          }
           onClick={toggleSplit}
-          title="Crate と Similar を上下分割表示"
+          disabled={!splitAvailable}
+          title={
+            splitAvailable
+              ? "Crate と Similar を上下分割表示"
+              : "分割表示は Crate / Similar タブでのみ有効"
+          }
         >
           Split
         </button>

@@ -14,6 +14,7 @@ interface ToolbarProps {
   onOpenRulesPanel: () => void;
   onOpenSyncProvision: () => void;
   onOpenSettings: () => void;
+  onOpenHelp: () => void;
 }
 
 function formatDuration(ms: number): string {
@@ -22,6 +23,12 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor((totalSec % 3600) / 60);
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
+
+/// プレイリストの手動順 (DB の sort_index 順)。プレイリスト表示のときだけ選べる。
+const PLAYLIST_ORDER_OPTION: { field: SortField; label: string } = {
+  field: "playlistOrder",
+  label: "Playlist Order",
+};
 
 const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "name", label: "Track" },
@@ -38,6 +45,9 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "dateAdded", label: "Date Added" },
   { field: "lastPlayed", label: "Last Played" },
 ];
+
+// 完了 status をサブバーから自動で消すまでの時間 (#152)。
+const STATUS_CLEAR_MS = 8000;
 
 // ツールバー(行)の実効幅がこれを下回ったら、右側のアクション群を ⋯ メニューに畳む。
 const COMPACT_WIDTH = 1200;
@@ -80,6 +90,7 @@ export function Toolbar({
   onOpenRulesPanel,
   onOpenSyncProvision,
   onOpenSettings,
+  onOpenHelp,
 }: ToolbarProps) {
   const {
     viewMode,
@@ -94,6 +105,8 @@ export function Toolbar({
     sortField,
     sortOrder,
     toggleSort,
+    setSortField,
+    setSortOrder,
     fields,
     selectedPlaylistId,
     playlists,
@@ -111,7 +124,39 @@ export function Toolbar({
   const [exporting, setExporting] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
-  const [status, setStatus] = useState("");
+  const [status, setStatusRaw] = useState("");
+  const statusTimerRef = useRef<number | null>(null);
+
+  /**
+   * サブバーの status を出す (#152)。
+   * 完了メッセージは出しっぱなしにせず STATUS_CLEAR_MS 後に自動で消す。
+   * 進行中 ("…" で終わる / "…中") とエラーは、次の status が来るまで残す。
+   */
+  const setStatus = useCallback((text: string) => {
+    if (statusTimerRef.current !== null) {
+      window.clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = null;
+    }
+    setStatusRaw(text);
+    if (!text) return;
+    const inProgress = text.endsWith("…") || text.includes("…中");
+    const isError = /error|失敗/i.test(text);
+    if (inProgress || isError) return;
+    statusTimerRef.current = window.setTimeout(() => {
+      statusTimerRef.current = null;
+      setStatusRaw("");
+    }, STATUS_CLEAR_MS);
+  }, []);
+
+  // アンマウント時にタイマーを片付ける。
+  useEffect(
+    () => () => {
+      if (statusTimerRef.current !== null) {
+        window.clearTimeout(statusTimerRef.current);
+      }
+    },
+    [],
+  );
   const [stats, setStats] = useState<LibraryStats | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
@@ -379,8 +424,22 @@ export function Toolbar({
   const albumSortOptions = ALBUM_SORT_FIELDS.map(
     (f) => SORT_OPTIONS.find((o) => o.field === f)!,
   );
-  const sortOptions = displayMode === "albums" ? albumSortOptions : SORT_OPTIONS;
+  // 手動順は「通常プレイリストを List 表示していて、検索していない」ときだけ。
+  const manualSortAvailable =
+    displayMode === "list" &&
+    !isSearching &&
+    !!activePlaylist &&
+    !activePlaylist.isSmart &&
+    !activePlaylist.isFolder;
+  const sortOptions =
+    displayMode === "albums"
+      ? albumSortOptions
+      : manualSortAvailable
+        ? [PLAYLIST_ORDER_OPTION, ...SORT_OPTIONS]
+        : SORT_OPTIONS;
   const curSort = sortOptions.find((s) => s.field === sortField);
+  // 手動順に昇順/降順は無い（常に保存された並び）。
+  const manualSortActive = sortField === "playlistOrder";
 
   // 幅が足りないときに ⋯ メニューへ畳むアクション群（挙動は畳んでも同じ）。
   const overflowActions: ToolAction[] = [
@@ -533,7 +592,8 @@ export function Toolbar({
               title="Sort"
             >
               {/* ソートフィールド名＋現在の昇順/降順を常時表示 */}
-              Sort: {curSort?.label ?? "—"} {sortOrder === "asc" ? "↑" : "↓"}
+              Sort: {curSort?.label ?? "—"}{" "}
+              {manualSortActive ? "" : sortOrder === "asc" ? "↑" : "↓"}
               <Icon name="chevronD" size={12} />
             </button>
             {sortOpen && (
@@ -546,10 +606,18 @@ export function Toolbar({
                       <div
                         key={s.field}
                         className={"cb-sortitem" + (on ? " on" : "")}
-                        onClick={() => toggleSort(s.field)}
+                        onClick={() => {
+                          // 手動順は方向を持たないので、トグルせず昇順で固定する。
+                          if (s.field === "playlistOrder") {
+                            setSortField("playlistOrder");
+                            setSortOrder("asc");
+                          } else {
+                            toggleSort(s.field);
+                          }
+                        }}
                       >
                         {s.label}
-                        {on && (
+                        {on && s.field !== "playlistOrder" && (
                           <span className="dir">
                             <Icon name="chevronD" size={12} style={{ transform: sortOrder === "asc" ? "rotate(180deg)" : undefined }} />
                           </span>
@@ -660,6 +728,14 @@ export function Toolbar({
               }
             >
               <Icon name="eye" size={16} />
+            </button>
+            <button
+              className="cb-btn cb-btn-iconly cb-btn-q"
+              onClick={onOpenHelp}
+              title="キーボードショートカット一覧 (?)"
+              aria-label="キーボードショートカット一覧"
+            >
+              ?
             </button>
             <button
               className="cb-btn cb-btn-iconly"
