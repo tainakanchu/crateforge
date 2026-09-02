@@ -141,6 +141,19 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
     // Compilation は編集された場合は新値、なければ旧値を引き継ぐ。
     let compilation = edits.compilation.unwrap_or(before.compilation);
 
+    // BPM / Key もファイルタグへ書く (#164)。
+    // BPM はトラック自身の値 (ユーザーが編集した可能性がある) を優先し、
+    // 未設定なら解析結果へフォールバックする。Key は解析結果の key_name のみ。
+    let analysis = db.get_analysis(track_id).ok().flatten();
+    let bpm = resolve_int(&edits.bpm, before.bpm)
+        .filter(|n| *n > 0)
+        .map(|n| n as f64)
+        .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
+    let key = analysis
+        .as_ref()
+        .and_then(|a| a.key_name.as_deref())
+        .and_then(organizer::key_name_to_initial_key);
+
     // 5. 実ファイルのタグを書き戻す (他アプリでも編集内容が見えるように)。
     //    #163: これは整理先フォルダの設定とは無関係に常に行う。
     //    HTTP API (PATCH /api/tracks/:id) と同じ organizer 側の関数を使う。
@@ -158,6 +171,8 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
         disc_number,
         disc_count,
         compilation: Some(compilation),
+        bpm,
+        key,
     };
     organizer::write_tags_to_location(loc.as_deref(), &w);
 

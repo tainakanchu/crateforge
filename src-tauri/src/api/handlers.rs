@@ -2414,6 +2414,20 @@ fn apply_track_edit(
         Some(t) => t,
         None => return Ok(None),
     };
+    // BPM / Key もファイルタグへ書く (#164)。BPM はトラック自身の値を優先し、
+    // 未設定なら解析結果へフォールバックする。Key は解析結果の key_name から
+    // DJ ソフトが読む音楽表記 ("Am" 等) に変換して InitialKey へ書く。
+    let analysis = db.get_analysis(track_id).ok().flatten();
+    let bpm = track
+        .bpm
+        .filter(|n| *n > 0)
+        .map(|n| n as f64)
+        .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
+    let key = analysis
+        .as_ref()
+        .and_then(|a| a.key_name.as_deref())
+        .and_then(crate::organizer::key_name_to_initial_key);
+
     // 現在の DB 値を実ファイルのタグへ書き戻す (GUI の update_track と同様、他アプリにも反映)。
     let file_failed = {
         let w = crate::organizer::TagWrite {
@@ -2430,6 +2444,8 @@ fn apply_track_edit(
             disc_number: track.disc_number,
             disc_count: track.disc_count,
             compilation: Some(track.compilation),
+            bpm,
+            key,
         };
         writeback(track.location_path.as_deref(), &w)
     };
