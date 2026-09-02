@@ -139,6 +139,9 @@ export function RightRail({
     crateSections,
     addSection,
     removeSection,
+    // Set Workspace (#121) の Set tools (Arc / Lint) 開閉。次回起動でも保持する (#160)。
+    setToolsOpen,
+    setSetToolsOpen,
   } = useStore();
 
   const [queueTracks, setQueueTracks] = useState<QueueItem[]>([]);
@@ -156,8 +159,6 @@ export function RightRail({
   // Gig Readiness (#122)
   const [gigDialogOpen, setGigDialogOpen] = useState(false);
 
-  // Set Workspace (#121)
-  const [setToolsOpen, setSetToolsOpen] = useState(false);
   const [dismissedLints, setDismissedLints] = useState<Set<string>>(
     () => new Set(),
   );
@@ -1025,7 +1026,7 @@ export function RightRail({
           <button
             className={"cb-clear" + (setToolsOpen ? " on" : "")}
             title="Set tools: Arc / Lint"
-            onClick={() => setSetToolsOpen((v) => !v)}
+            onClick={() => setSetToolsOpen(!setToolsOpen)}
           >
             set
           </button>

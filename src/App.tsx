@@ -169,10 +169,21 @@ export default function App() {
     try {
       const pls = await playlistsApi.getPlaylists();
       setPlaylists(pls);
+      // 永続化された選択プレイリスト (#160) が、読み込んだ一覧に無ければ
+      // （削除された／別ライブラリの ID など）Library 表示へフォールバックする。
+      const st = useStore.getState();
+      if (
+        st.viewMode === "playlist" &&
+        st.selectedPlaylistId !== null &&
+        !pls.some((p) => p.playlistId === st.selectedPlaylistId)
+      ) {
+        setViewMode("library");
+        setSelectedPlaylistId(null);
+      }
     } catch (err) {
       console.error("Failed to load playlists:", err);
     }
-  }, [setPlaylists]);
+  }, [setPlaylists, setViewMode, setSelectedPlaylistId]);
 
   const loadTracks = useCallback(
     async (reset = true) => {
