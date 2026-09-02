@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod backup;
 pub mod playlists;
 pub mod schema;
 pub mod stats;
