@@ -16,6 +16,7 @@ import {
   hasSectionSplits,
 } from "../lib/setSmooth";
 import { lintSet } from "../lib/setLint";
+import { TRACK_IDS_MIME, parseTrackIds } from "../lib/trackDrag";
 import { Icon, Stars } from "./Icon";
 import { Cover, ArtworkImg } from "./Cover";
 import { SetArc } from "./SetArc";
@@ -46,7 +47,8 @@ interface QueueItem {
   orderIndex: number;
 }
 
-const SIMILAR_DRAG_MIME = "application/x-crateforge-track-id";
+/// Similar → Crate / 一覧 → Crate のドラッグで使う MIME (値はカンマ区切りの trackId 列)。
+const SIMILAR_DRAG_MIME = TRACK_IDS_MIME;
 
 function applyRailWidthCss(width: number) {
   const app = document.querySelector(".app") as HTMLElement | null;
@@ -575,6 +577,7 @@ export function RightRail({
   const onCrateListDrop = useCallback(
     async (e: React.DragEvent) => {
       setCrateExternalOver(false);
+      // 一覧からの複数選択ドロップもあるので、カンマ区切りの ID 列として読む。
       const raw =
         e.dataTransfer.getData(SIMILAR_DRAG_MIME) ||
         (similarDragTrackId.current != null
@@ -583,24 +586,33 @@ export function RightRail({
       similarDragTrackId.current = null;
       if (!raw) return;
       e.preventDefault();
-      const trackId = Number(raw);
-      if (!Number.isFinite(trackId)) return;
-      if (crate.some((c) => c.trackId === trackId)) return;
-      // まず similar ヒットや tracks から解決、無ければ API
-      const fromSim = similar.find((h) => h.track.trackId === trackId)?.track;
-      const fromTracks = tracks.find((t) => t.trackId === trackId);
-      let track = fromSim ?? fromTracks ?? null;
-      if (!track) {
+      const inCrate = new Set(crate.map((c) => c.trackId));
+      const trackIds = parseTrackIds(raw).filter((id) => !inCrate.has(id));
+      if (trackIds.length === 0) return;
+      // まず similar ヒットや tracks から解決、足りない分だけ API で引く。
+      const resolvedById = new Map<number, Track>();
+      for (const id of trackIds) {
+        const hit =
+          similar.find((h) => h.track.trackId === id)?.track ??
+          tracks.find((t) => t.trackId === id);
+        if (hit) resolvedById.set(id, hit);
+      }
+      const missing = trackIds.filter((id) => !resolvedById.has(id));
+      if (missing.length > 0) {
         try {
-          const resolved = await libraryApi.getTracksByIds([trackId]);
-          track = resolved[0] ?? null;
+          for (const t of await libraryApi.getTracksByIds(missing)) {
+            resolvedById.set(t.trackId, t);
+          }
         } catch {
-          track = null;
+          /* 解決できなかった曲は黙って諦める */
         }
       }
-      if (track) addToCrate(track);
+      const found = trackIds
+        .map((id) => resolvedById.get(id))
+        .filter((t): t is Track => !!t);
+      if (found.length > 0) addTracksToCrate(found);
     },
-    [crate, similar, tracks, addToCrate],
+    [crate, similar, tracks, addTracksToCrate],
   );
 
   // Save as Playlist ボタン → インライン入力を表示
@@ -1139,7 +1151,7 @@ export function RightRail({
       >
         {crate.length === 0 ? (
           <div className="cb-rail-empty">
-            曲リストやカバーの「＋」でクレートに追加。Similar からドラッグでも追加できます。
+            曲リストやカバーの「＋」でクレートに追加。一覧や Similar からドラッグでも追加できます。
           </div>
         ) : (
           crate.map((t, i) => {

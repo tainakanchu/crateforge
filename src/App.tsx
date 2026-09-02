@@ -39,7 +39,7 @@ import {
   mergeInboxSources,
 } from "./lib/triage";
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
-import type { Track } from "./types";
+import type { SortField, SortOrder, Track } from "./types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -152,6 +152,12 @@ export default function App() {
       setIsLoading(true);
       try {
         const offset = reset ? 0 : tracks.length;
+        // "playlistOrder" は DB の playlist_tracks.sort_index 順を指す疑似ソート。
+        // バックエンドへは sortField を渡さない (= 既定の並び) ことで表現する。
+        const manualOrder = sortField === "playlistOrder";
+        // 手動順を解釈できない経路 (ライブラリ/検索/スマート) 用のフォールバック。
+        const effectiveSort: SortField = manualOrder ? "name" : sortField;
+        const effectiveOrder: SortOrder = manualOrder ? "asc" : sortOrder;
         // フリーテキスト検索 + ジャンル等の絞り込みチップを空白区切りで AND 結合。
         const combinedQuery = [searchQuery.trim(), ...filterTags]
           .filter(Boolean)
@@ -205,8 +211,8 @@ export default function App() {
             combinedQuery,
             PAGE_SIZE,
             offset,
-            sortField,
-            sortOrder,
+            effectiveSort,
+            effectiveOrder,
           );
           if (reset) setTracks(result);
           else appendTracks(result);
@@ -218,15 +224,16 @@ export default function App() {
                 selectedPlaylistId,
                 PAGE_SIZE,
                 offset,
-                sortField,
-                sortOrder,
+                effectiveSort,
+                effectiveOrder,
               )
             : await playlistsApi.getPlaylistTracks(
                 selectedPlaylistId,
                 PAGE_SIZE,
                 offset,
-                sortField,
-                sortOrder,
+                // 手動順のときは sortField 未指定 → DB は pt.sort_index ASC を使う。
+                manualOrder ? undefined : effectiveSort,
+                manualOrder ? undefined : effectiveOrder,
               );
           if (reset) setTracks(result);
           else appendTracks(result);
@@ -235,8 +242,8 @@ export default function App() {
           result = await libraryApi.getTracks(
             PAGE_SIZE,
             offset,
-            sortField,
-            sortOrder,
+            effectiveSort,
+            effectiveOrder,
           );
           if (reset) setTracks(result);
           else appendTracks(result);
@@ -317,7 +324,9 @@ export default function App() {
       setIsLoading(true);
       try {
         const offset = reset ? 0 : albums.length;
-        const result = await libraryApi.getAlbums(sortField, sortOrder, PAGE_SIZE, offset);
+        // Albums は手動順を持たないので、念のため通常ソートへ倒す。
+        const albumSort: SortField = sortField === "playlistOrder" ? "albumArtist" : sortField;
+        const result = await libraryApi.getAlbums(albumSort, sortOrder, PAGE_SIZE, offset);
         if (reset) setAlbums(result);
         else appendAlbums(result);
         setAlbumsHasMore(result.length === PAGE_SIZE);

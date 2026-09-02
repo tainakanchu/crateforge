@@ -132,6 +132,11 @@ interface AppState extends PersistedSettings {
   // View
   viewMode: ViewMode;
   selectedPlaylistId: number | null;
+  /**
+   * 手動順 (sortField: "playlistOrder") へ自動で切り替える直前のソート。
+   * プレイリストを離れたら元へ戻すために覚えておく（永続化しない）。
+   */
+  sortBeforeManual: { field: SortField; order: SortOrder } | null;
   searchQuery: string;
   // ジャンル等の絞り込みチップ（フリーテキスト検索と AND 結合、セッション内のみ）
   filterTags: string[];
@@ -190,6 +195,8 @@ interface AppState extends PersistedSettings {
   removeFilterTag: (tag: string) => void;
   clearFilterTags: () => void;
   setTracks: (tracks: Track[]) => void;
+  /** 選択を保ったまま表示中の tracks を差し替える（プレイリストの手動並べ替え用）。 */
+  setTracksKeepSelection: (tracks: Track[]) => void;
   appendTracks: (tracks: Track[]) => void;
   setAlbums: (albums: AlbumRow[]) => void;
   appendAlbums: (albums: AlbumRow[]) => void;
@@ -352,11 +359,26 @@ function persistSetWorkspaceSlice(state: {
   });
 }
 
+/**
+ * 手動順 (playlistOrder) を解除して直前のソートへ戻す差分を返す。
+ * 記録が無ければ既定の name / asc へ。
+ */
+function restoreSort(state: {
+  sortBeforeManual: { field: SortField; order: SortOrder } | null;
+}): { sortField: SortField; sortOrder: SortOrder; sortBeforeManual: null } {
+  return {
+    sortField: state.sortBeforeManual?.field ?? "name",
+    sortOrder: state.sortBeforeManual?.order ?? "asc",
+    sortBeforeManual: null,
+  };
+}
+
 export const useStore = create<AppState>()(
   persist(
     (set) => ({
       viewMode: "library",
       selectedPlaylistId: null,
+      sortBeforeManual: null,
       searchQuery: "",
       filterTags: [],
       tracks: [],
@@ -416,8 +438,40 @@ export const useStore = create<AppState>()(
       lastSyncDestRoot: null,
       auditionMode: false,
 
-      setViewMode: (mode) => set({ viewMode: mode }),
-      setSelectedPlaylistId: (id) => set({ selectedPlaylistId: id }),
+      // プレイリストを離れるときは手動順 (playlistOrder) を解除し、
+      // 直前のソートへ戻す（手動順はプレイリスト専用の並びなので他ビューでは無意味）。
+      setViewMode: (mode) =>
+        set((state) =>
+          mode !== "playlist" && state.sortField === "playlistOrder"
+            ? { viewMode: mode, ...restoreSort(state) }
+            : { viewMode: mode },
+        ),
+      // 通常プレイリストを開いたら手動順 (DB の sort_index 順) で表示する。
+      // スマート/フォルダ/未選択、あるいは List 以外の表示モードでは通常ソートへ戻す。
+      setSelectedPlaylistId: (id) =>
+        set((state) => {
+          const pl =
+            id != null
+              ? state.playlists.find((p) => p.playlistId === id)
+              : undefined;
+          const manual =
+            !!pl && !pl.isSmart && !pl.isFolder && state.displayMode === "list";
+          if (manual) {
+            if (state.sortField === "playlistOrder") {
+              return { selectedPlaylistId: id };
+            }
+            return {
+              selectedPlaylistId: id,
+              sortBeforeManual: { field: state.sortField, order: state.sortOrder },
+              sortField: "playlistOrder" as SortField,
+              sortOrder: "asc" as SortOrder,
+            };
+          }
+          if (state.sortField === "playlistOrder") {
+            return { selectedPlaylistId: id, ...restoreSort(state) };
+          }
+          return { selectedPlaylistId: id };
+        }),
       setSearchQuery: (query) => set({ searchQuery: query }),
       addFilterTag: (tag) =>
         set((state) =>
@@ -429,6 +483,7 @@ export const useStore = create<AppState>()(
         set((state) => ({ filterTags: state.filterTags.filter((t) => t !== tag) })),
       clearFilterTags: () => set({ filterTags: [] }),
       setTracks: (tracks) => set({ tracks, selectedTrackIds: new Set() }),
+      setTracksKeepSelection: (tracks) => set({ tracks }),
       appendTracks: (tracks) =>
         set((state) => ({ tracks: [...state.tracks, ...tracks] })),
       setAlbums: (albums) => set({ albums }),
@@ -600,6 +655,10 @@ export const useStore = create<AppState>()(
           if (mode === "albums" && !ALBUM_SORT_FIELDS.includes(state.sortField)) {
             return { displayMode: mode, sortField: "albumArtist", sortOrder: "asc" };
           }
+          // 手動順は List ビュー専用（並べ替え UI が一覧行にしかない）。
+          if (mode !== "list" && state.sortField === "playlistOrder") {
+            return { displayMode: mode, ...restoreSort(state) };
+          }
           return { displayMode: mode };
         }),
       setFields: (fields) => set({ fields }),
@@ -722,8 +781,16 @@ export const useStore = create<AppState>()(
           rowH: state.rowH,
           coverSize: state.coverSize,
           displayMode: state.displayMode,
-          sortField: state.sortField,
-          sortOrder: state.sortOrder,
+          // 手動順は「そのプレイリストを開いている間」だけの並び。起動時は
+          // ライブラリ表示なので、永続化する値は通常ソートへ倒しておく。
+          sortField:
+            state.sortField === "playlistOrder"
+              ? (state.sortBeforeManual?.field ?? "name")
+              : state.sortField,
+          sortOrder:
+            state.sortField === "playlistOrder"
+              ? (state.sortBeforeManual?.order ?? "asc")
+              : state.sortOrder,
           volume: state.volume,
           shuffle: state.shuffle,
           repeat: state.repeat,
