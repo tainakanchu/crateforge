@@ -6,8 +6,8 @@ use crate::db::Database;
 use crate::importer;
 use crate::itunes_xml::{parser, writer};
 use crate::models::{
-    AlbumRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult, LibraryStats, Track,
-    TrackEdit,
+    AlbumRow, ArtistRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult, LibraryStats,
+    Track, TrackEdit,
 };
 use crate::organizer;
 
@@ -295,6 +295,33 @@ pub fn get_albums(
 pub fn get_album_tracks(app: AppHandle, album_key: String) -> Result<Vec<Track>, String> {
     let db = get_db(&app)?;
     db.get_album_tracks(&album_key).map_err(|e| e.to_string())
+}
+
+/// Artists ビュー用のサーバ集約。sort_field は name / trackCount / albumCount のみ有効で、
+/// それ以外は name に倒す (db 側 artist_order_by)。
+#[tauri::command]
+pub fn get_artists(
+    app: AppHandle,
+    sort_field: Option<String>,
+    sort_order: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<ArtistRow>, String> {
+    let db = get_db(&app)?;
+    db.get_artists(
+        sort_field.as_deref(),
+        sort_order.as_deref(),
+        limit.unwrap_or(500),
+        offset.unwrap_or(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// 指定アーティストのアルバム一覧 (Artists ビューの展開表示用)。
+#[tauri::command]
+pub fn get_artist_albums(app: AppHandle, name: String) -> Result<Vec<AlbumRow>, String> {
+    let db = get_db(&app)?;
+    db.get_artist_albums(&name).map_err(|e| e.to_string())
 }
 
 pub(crate) fn open_db(app: &AppHandle) -> Result<Database, String> {

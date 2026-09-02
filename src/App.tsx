@@ -4,7 +4,7 @@ import { Sidebar } from "./components/Sidebar";
 import { TrackTable } from "./components/TrackTable";
 import { AlbumsView } from "./components/AlbumsView";
 import { TracksView } from "./components/TracksView";
-import { AlbumView } from "./components/AlbumView";
+import { ArtistsView } from "./components/ArtistsView";
 import { PlayerBar } from "./components/PlayerBar";
 import { RightRail } from "./components/RightRail";
 import { Toolbar } from "./components/Toolbar";
@@ -234,11 +234,6 @@ export default function App() {
           }
         } else if (viewMode === "recent") {
           result = await playbackApi.getRecentTracks(200);
-          setTracks(result);
-          setHasMore(false);
-        } else if (viewMode === "artists") {
-          // Artists ビューはアーティスト単位に束ねるため全曲を一度に読む。
-          result = await libraryApi.getTracks(50000, 0);
           setTracks(result);
           setHasMore(false);
         } else if (combinedQuery) {
@@ -1083,7 +1078,7 @@ export default function App() {
             onRemoveFromInbox={handleRemoveFromInbox}
           />
         ) : isArtistView ? (
-          <AlbumView mode="artist" onTracksChanged={triggerReload} />
+          <ArtistsView reloadKey={reloadCount} />
         ) : displayMode === "albums" ? (
           <AlbumsView
             onLoadMore={handleLoadMore}

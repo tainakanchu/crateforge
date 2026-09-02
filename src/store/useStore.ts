@@ -20,7 +20,12 @@ import type {
   CrateSection,
   AnchorKind,
 } from "../types";
-import { DEFAULT_FIELDS, ALBUM_SORT_FIELDS, DEFAULT_SET_META } from "../types";
+import {
+  DEFAULT_FIELDS,
+  ALBUM_SORT_FIELDS,
+  ARTIST_SORT_FIELDS,
+  DEFAULT_SET_META,
+} from "../types";
 import {
   loadSetWorkspacePersist,
   saveSetWorkspacePersist,
@@ -110,6 +115,11 @@ interface PersistedSettings {
 }
 
 // 「前回入れたプレイリスト」ショートカットで保持する件数
+/// Artists ビューでしか意味を持たないソートフィールド (他ビューでは name に倒す)。
+const ARTIST_ONLY_SORT_FIELDS: SortField[] = ARTIST_SORT_FIELDS.filter(
+  (f) => f !== "name",
+);
+
 const MAX_RECENT_PLAYLISTS = 3;
 
 // 右ペイン幅の既定・範囲（選曲ワークベンチ #117）
@@ -450,7 +460,18 @@ export const useStore = create<AppState>()(
       similarFilters: DEFAULT_SIMILAR_FILTERS,
       auditionMode: false,
 
-      setViewMode: (mode) => set({ viewMode: mode }),
+      // Artists ビューはアーティスト粒度のソート語彙 (name/trackCount/albumCount) のみ。
+      // 出入りのたびに sortField を正規化し、どちらのビューでも「効かないソート」が
+      // 残らないようにする (setDisplayMode の Albums 正規化と同じ考え方)。
+      setViewMode: (mode) =>
+        set((state) => {
+          const enteringArtists = mode === "artists";
+          const valid = enteringArtists
+            ? ARTIST_SORT_FIELDS.includes(state.sortField)
+            : !ARTIST_ONLY_SORT_FIELDS.includes(state.sortField);
+          if (valid) return { viewMode: mode };
+          return { viewMode: mode, sortField: "name", sortOrder: "asc" };
+        }),
       setSelectedPlaylistId: (id) => set({ selectedPlaylistId: id }),
       setSearchQuery: (query) => set({ searchQuery: query }),
       addFilterTag: (tag) =>
@@ -751,7 +772,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 15,
+      version: 16,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -876,6 +897,16 @@ export const useStore = create<AppState>()(
             ...DEFAULT_SIMILAR_FILTERS,
             ...(typeof f === "object" && f !== null ? f : {}),
           };
+        }
+        // v16: Artists ビュー専用のソート (trackCount/albumCount) を追加 (#155)。
+        // viewMode は永続化しないので、Artists ビューで終了した設定のまま起動すると
+        // List ビューで効かないソートになる。旧データは name 昇順へ戻す。
+        if (version < 16 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (ARTIST_ONLY_SORT_FIELDS.includes(p.sortField as SortField)) {
+            p.sortField = "name";
+            p.sortOrder = "asc";
+          }
         }
         return persisted as PersistedSettings;
       },
