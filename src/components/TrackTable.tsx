@@ -9,8 +9,14 @@ import * as audition from "../lib/audition";
 import { Icon, Stars } from "./Icon";
 import { Cover } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
+import { DeleteTracksDialog } from "./DeleteTracksDialog";
 import { GenreTagInput } from "./GenreTagInput";
 import { bpmColor } from "../lib/art";
+import {
+  anchorsForDrop,
+  moveIdsWithin,
+  setTrackIdsData,
+} from "../lib/trackDrag";
 import { FIELD_DEFS } from "../types";
 import type { Track, FieldKey, Playlist } from "../types";
 
@@ -26,6 +32,11 @@ function ratingToStars(rating: number | null): number {
   if (!rating) return 0;
   return Math.round(rating / 20);
 }
+
+/// 並べ替えコミット時に「プレイリストの全曲順」を取り直すときの上限。
+/// reorder_playlist_tracks は渡した ID 列で playlist_tracks を全置換するため、
+/// 画面に読み込み済みのページだけを送ると未ロード分が消えてしまう。
+const FULL_FETCH_LIMIT = 1_000_000;
 
 interface TrackTableProps {
   onLoadMore: () => void;
@@ -59,6 +70,8 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     playlists,
     viewMode,
     selectedPlaylistId,
+    searchQuery,
+    filterTags,
     addFilterTag,
     fields,
     fieldWidths,
@@ -213,8 +226,172 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     }
     setDropIndicator(null);
   };
+  // === 行のドラッグ (プレイリスト内の並べ替え / 外部へのドロップ) ===
+  // 手動順 (playlistOrder) で通常プレイリストを開いていて、検索で絞っていない
+  // ときだけ行の並べ替えを許可する。それ以外は「ドラッグして他所へ渡す」のみ。
+  const activePlaylist =
+    viewMode === "playlist" && selectedPlaylistId !== null
+      ? playlists.find((p) => p.playlistId === selectedPlaylistId)
+      : undefined;
+  const manualReorder =
+    !!activePlaylist &&
+    !activePlaylist.isSmart &&
+    !activePlaylist.isFolder &&
+    sortField === "playlistOrder" &&
+    !searchQuery.trim() &&
+    filterTags.length === 0;
+
+  // ドラッグ中の状態は ref で持ち、再描画は「挿入線の位置が変わったとき」だけに絞る。
+  const dragIdsRef = useRef<number[] | null>(null);
+  const dropIndexRef = useRef<number | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const [draggingIds, setDraggingIds] = useState<Set<number> | null>(null);
+  // 並べ替えの書き込みを直列化する (連続操作で全曲取得と書き込みが交錯しないように)。
+  const reorderChainRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingWritesRef = useRef(0);
+  // 並べ替え後の再読み込みで選択が消えないよう、復元する ID を覚えておく。
+  const pendingSelectionRef = useRef<number[] | null>(null);
+
+  useEffect(() => {
+    const pending = pendingSelectionRef.current;
+    if (!pending) return;
+    pendingSelectionRef.current = null;
+    const present = new Set(tracks.map((t) => t.trackId));
+    const restored = new Set(pending.filter((id) => present.has(id)));
+    if (restored.size > 0) setSelectedTrackIds(restored);
+  }, [tracks, setSelectedTrackIds]);
+
+  const clearRowDrag = useCallback(() => {
+    dragIdsRef.current = null;
+    dropIndexRef.current = null;
+    setDropIndex(null);
+    setDraggingIds(null);
+  }, []);
+
+  /**
+   * 表示中の一覧の挿入位置 dropIndex へ movingIds を移動する。
+   *
+   * 1. 画面の並びを先に更新して体感を軽くする (楽観更新)
+   * 2. DB の全曲順を取り直し、同じアンカーで並べ替えて reorder_playlist_tracks
+   * 3. 書き込みが片付いたら再読み込みして正とすり合わせる
+   */
+  const commitReorder = useCallback(
+    (movingIds: number[], dropAt: number, scrollToBlock = false) => {
+      const st = useStore.getState();
+      const playlistId = st.selectedPlaylistId;
+      if (playlistId === null || movingIds.length === 0) return;
+
+      const visibleIds = st.tracks.map((t) => t.trackId);
+      const { before, after } = anchorsForDrop(visibleIds, movingIds, dropAt);
+      const nextVisible = moveIdsWithin(visibleIds, movingIds, before, after);
+      if (nextVisible.every((id, i) => id === visibleIds[i])) return;
+
+      const byId = new Map(st.tracks.map((t) => [t.trackId, t]));
+      st.setTracksKeepSelection(
+        nextVisible.map((id) => byId.get(id)).filter((t): t is Track => !!t),
+      );
+      if (scrollToBlock) {
+        const idx = nextVisible.indexOf(movingIds[0]);
+        if (idx >= 0) virtualizerRef.current.scrollToIndex(idx, { align: "auto" });
+      }
+
+      pendingWritesRef.current += 1;
+      const settle = () => {
+        pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
+        // 追い越し操作が残っているうちは再読み込みしない (途中経過で画面が跳ねる)。
+        if (pendingWritesRef.current > 0) return;
+        pendingSelectionRef.current = movingIds;
+        onTracksChanged();
+      };
+      reorderChainRef.current = reorderChainRef.current
+        .then(async () => {
+          // 未ロード分を消さないよう、必ず全曲順を取り直してから全置換する。
+          const all = await playlistsApi.getPlaylistTracks(
+            playlistId,
+            FULL_FETCH_LIMIT,
+          );
+          const nextFull = moveIdsWithin(
+            all.map((t) => t.trackId),
+            movingIds,
+            before,
+            after,
+          );
+          await playlistsApi.reorderPlaylistTracks(playlistId, nextFull);
+        })
+        .then(settle)
+        .catch((err) => {
+          useStore
+            .getState()
+            .pushToast("error", `並べ替えに失敗しました: ${err}`);
+          settle();
+        });
+    },
+    [onTracksChanged],
+  );
+
+  // 空 deps の keydown effect から最新の値を参照するための ref。
+  const manualReorderRef = useRef(manualReorder);
+  manualReorderRef.current = manualReorder;
+  const commitReorderRef = useRef(commitReorder);
+  commitReorderRef.current = commitReorder;
+
+  const handleRowDragStart = useCallback(
+    (e: React.DragEvent, track: Track) => {
+      // 未選択の行を掴んだらその行だけを対象にする (選択もそこへ移す)。
+      let ids: number[];
+      if (selectedTrackIds.has(track.trackId)) {
+        ids = tracks
+          .filter((t) => selectedTrackIds.has(t.trackId))
+          .map((t) => t.trackId);
+      } else {
+        ids = [track.trackId];
+        anchorIdRef.current = track.trackId;
+        focusIdRef.current = track.trackId;
+        setSelectedTrackIds(new Set(ids));
+      }
+      dragIdsRef.current = ids;
+      setTrackIdsData(e.dataTransfer, ids);
+      // サイドバー/Crate へは追加 (copy)、プレイリスト内では並べ替え (move)。
+      e.dataTransfer.effectAllowed = "copyMove";
+      setDraggingIds(new Set(ids));
+    },
+    [tracks, selectedTrackIds, setSelectedTrackIds],
+  );
+
+  const handleRowDragOver = useCallback(
+    (e: React.DragEvent, index: number) => {
+      // 自前の行ドラッグのみ受ける (ファイル取り込み等は DropImportOverlay に任せる)。
+      if (!manualReorder || !dragIdsRef.current) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const r = e.currentTarget.getBoundingClientRect();
+      const at = e.clientY < r.top + r.height / 2 ? index : index + 1;
+      if (dropIndexRef.current !== at) {
+        dropIndexRef.current = at;
+        setDropIndex(at);
+      }
+    },
+    [manualReorder],
+  );
+
+  const handleRowDrop = useCallback(
+    (e: React.DragEvent) => {
+      if (!manualReorder) return;
+      const ids = dragIdsRef.current;
+      const at = dropIndexRef.current;
+      clearRowDrag();
+      if (!ids || at === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      commitReorder(ids, at);
+    },
+    [manualReorder, clearRowDrag, commitReorder],
+  );
+
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [showAddTagDialog, setShowAddTagDialog] = useState(false);
+  // 削除確認モーダルの対象曲（null で非表示）。window.confirm は使わない。
+  const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
   const [newTag, setNewTag] = useState("");
   // 一覧からのジャンル直接編集（ポップオーバー）。
   const [genreEdit, setGenreEdit] = useState<GenreEditState | null>(null);
@@ -492,6 +669,24 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     setContextMenu(null);
   }, [ctxIds, onConvert]);
 
+  // 選択（or 右クリック対象）の曲を削除確認モーダルへ渡す。
+  const handleDelete = useCallback(() => {
+    const ids = new Set(ctxIds());
+    const sel = tracks.filter((t) => ids.has(t.trackId));
+    if (sel.length > 0) setDeleteTargets(sel);
+    setContextMenu(null);
+  }, [ctxIds, tracks]);
+
+  // 右クリックした 1 曲を Finder / エクスプローラで表示する。
+  const handleReveal = useCallback(async (path: string) => {
+    try {
+      await libraryApi.revealInFileManager(path);
+    } catch (err) {
+      pushToast("error", `ファイルマネージャで表示できませんでした: ${err}`);
+    }
+    setContextMenu(null);
+  }, [pushToast]);
+
   const closeMenu = useCallback(() => setContextMenu(null), []);
 
   // アプリケーションキー / Shift+F10 でコンテキストメニューを開く（D）
@@ -574,6 +769,36 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
       if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
       if (cmd) return; // Cmd/Ctrl+Arrow は別操作に譲る。
+
+      // Alt+↑/↓: プレイリストの手動順のとき、選択行を 1 つ上/下へ動かす
+      // (ドラッグ並べ替えのキーボード版)。手動順でなければ通常の選択移動に落とす。
+      if (e.altKey && manualReorderRef.current) {
+        const sel = st.selectedTrackIds;
+        if (sel.size === 0) return;
+        const idxs: number[] = [];
+        ts.forEach((t, i) => {
+          if (sel.has(t.trackId)) idxs.push(i);
+        });
+        if (idxs.length === 0) return;
+        const movingIds = idxs.map((i) => ts[i].trackId);
+        const movingSet = new Set(movingIds);
+        let dropAt: number;
+        if (e.key === "ArrowUp") {
+          // 選択ブロックの直前にある非選択行の位置へ差し込む。
+          let i = idxs[0] - 1;
+          while (i >= 0 && movingSet.has(ts[i].trackId)) i--;
+          if (i < 0) return; // すでに先頭
+          dropAt = i;
+        } else {
+          let i = idxs[idxs.length - 1] + 1;
+          while (i < ts.length && movingSet.has(ts[i].trackId)) i++;
+          if (i >= ts.length) return; // すでに末尾
+          dropAt = i + 1;
+        }
+        e.preventDefault();
+        commitReorderRef.current(movingIds, dropAt, true);
+        return;
+      }
       e.preventDefault();
 
       const dir = e.key === "ArrowDown" ? 1 : -1;
@@ -839,6 +1064,13 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           const isCurrent = playback.currentTrackId === t.trackId;
           const isSelected = selectedTrackIds.has(t.trackId);
           const isIn = inCrate.has(t.trackId);
+          const isDragging = draggingIds?.has(t.trackId) ?? false;
+          // 挿入線: dropIndex の行の手前へ。末尾へのドロップだけ最終行の下に出す。
+          const dropBefore = manualReorder && dropIndex === virtualRow.index;
+          const dropAfter =
+            manualReorder &&
+            dropIndex === tracks.length &&
+            virtualRow.index === tracks.length - 1;
           return (
             <div
               key={t.id}
@@ -848,7 +1080,10 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 (isCurrent ? " play" : "") +
                 (isSelected ? " selected" : "") +
                 (isIn ? " incrate" : "") +
-                (!t.fileExists ? " missing" : "")
+                (!t.fileExists ? " missing" : "") +
+                (isDragging ? " dragging" : "") +
+                (dropBefore ? " dropbefore" : "") +
+                (dropAfter ? " dropafter" : "")
               }
               style={{
                 position: "absolute",
@@ -858,6 +1093,16 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 height: `${virtualRow.size}px`,
                 transform: `translateY(${virtualRow.start}px)`,
               }}
+              title={
+                manualReorder
+                  ? "ドラッグで並べ替え (Alt+↑↓ でも移動) / サイドバーのプレイリストへドロップで追加"
+                  : undefined
+              }
+              draggable
+              onDragStart={(e) => handleRowDragStart(e, t)}
+              onDragEnd={clearRowDrag}
+              onDragOver={(e) => handleRowDragOver(e, virtualRow.index)}
+              onDrop={handleRowDrop}
               onClick={(e) => handleRowClick(e, t)}
               onDoubleClick={() => handleDoubleClick(t)}
               onContextMenu={(e) => handleContextMenu(e, t)}
@@ -973,6 +1218,11 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           playlists={playlists}
           recentPlaylists={recentPlaylists}
           showRemoveFromPlaylist={viewMode === "playlist"}
+          revealPath={
+            // 「表示」は単曲のみ。複数選択・ファイル欠損時は無効表示にする。
+            ctxIds().length === 1 && ctxTrack.fileExists ? ctxTrack.locationPath : null
+          }
+          deleteCount={ctxIds().length}
           onClose={closeMenu}
           onPlay={() => handleDoubleClick(ctxTrack)}
           onSetRating={handleSetRatingForSelection}
@@ -984,6 +1234,8 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onConvert={handleConvert}
           onGetInfo={handleGetInfo}
           onRemoveFromPlaylist={() => handleRemoveFromPlaylist(ctxTrack)}
+          onReveal={() => void handleReveal(ctxTrack.locationPath ?? "")}
+          onDelete={handleDelete}
           onAddToPlaylist={handleAddToPlaylist}
           onAddTag={() => setShowAddTagDialog(true)}
           onRemoveTag={handleRemoveGenreTag}
@@ -1029,6 +1281,18 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
             </div>
           </div>
         </div>
+      )}
+
+      {/* ライブラリからの削除（確認モーダル） */}
+      {deleteTargets && (
+        <DeleteTracksDialog
+          tracks={deleteTargets}
+          onClose={() => setDeleteTargets(null)}
+          onDeleted={() => {
+            setSelectedTrackIds(new Set());
+            onTracksChanged();
+          }}
+        />
       )}
 
       {/* 一覧からのジャンル編集ポップオーバー（外側クリックで保存） */}

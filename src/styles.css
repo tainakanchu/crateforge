@@ -239,6 +239,12 @@ input {
 .cb-prow.on svg {
   color: var(--ac);
 }
+/* 一覧からのトラック D&D 受け入れ中のハイライト (Crate の .cb-cratelist-drop に合わせる)。 */
+.cb-prow.dragover {
+  background: var(--ac-13, rgba(45, 212, 191, 0.08));
+  outline: 1px dashed var(--ac);
+  outline-offset: -2px;
+}
 .cb-prow.fold {
   color: #cfd3d7;
   font-weight: 550;
@@ -675,6 +681,28 @@ input {
 }
 .cb-row.missing .cb-nm .t {
   color: var(--tx2);
+}
+/* プレイリスト手動順のドラッグ並べ替え。列ヘッダ (.cb-h-drag) と同じ見た目に揃える。 */
+.cb-row.dragging {
+  opacity: 0.5;
+}
+.cb-row.dropbefore::before,
+.cb-row.dropafter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--ac);
+  border-radius: 1px;
+  z-index: 4;
+  pointer-events: none;
+}
+.cb-row.dropbefore::before {
+  top: 0;
+}
+.cb-row.dropafter::after {
+  bottom: 0;
 }
 
 /* Embedded artwork overlay (fills its rounded, clipped parent). */
@@ -1258,6 +1286,26 @@ input {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
+}
+
+/* ライブラリ復元の確認モーダル (#167)。settings-modal より小さい固定幅。 */
+.restore-confirm-modal {
+  width: 460px;
+}
+.restore-confirm-modal .modal-body p {
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 10px;
+}
+.restore-confirm-modal .settings-path {
+  max-width: none;
+  white-space: normal;
+  word-break: break-all;
+  background: var(--bg3);
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: block;
 }
 
 /* toggle switch */
@@ -2932,6 +2980,35 @@ input {
 }
 .context-menu-item:hover svg {
   color: var(--ac);
+}
+/* 破壊的な項目（ライブラリから削除）。hover / キーボードフォーカスも赤系に寄せる。 */
+.context-menu-item.danger {
+  color: #ef9d9d;
+}
+.context-menu-item.danger svg {
+  color: #ef9d9d;
+}
+.context-menu-item.danger:hover,
+.context-menu-item.danger.active {
+  background: rgba(221, 104, 104, 0.16);
+  color: #ffc0c0;
+}
+.context-menu-item.danger:hover svg,
+.context-menu-item.danger.active svg {
+  color: #ffc0c0;
+}
+/* 実行できない項目（ファイル欠損時の「表示」など）。存在は見せるが操作させない。 */
+.context-menu-item.disabled {
+  color: var(--mut);
+  cursor: default;
+  opacity: 0.55;
+}
+.context-menu-item.disabled:hover {
+  background: transparent;
+  color: var(--mut);
+}
+.context-menu-item.disabled:hover svg {
+  color: var(--mut);
 }
 .context-menu-divider {
   height: 1px;

@@ -32,6 +32,9 @@ export interface QueueState {
 export type RepeatMode = "off" | "all" | "one";
 
 export type SortField =
+  // プレイリスト固有の「手動順」。DB の playlist_tracks.sort_index 順を指す
+  // 疑似フィールドで、ローダは sortField を渡さない (= DB 既定の並び) ことで表現する。
+  | "playlistOrder"
   | "name"
   | "artist"
   | "albumArtist"

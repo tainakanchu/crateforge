@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -440,6 +441,55 @@ impl AudioPlayer {
         true
     }
 
+    /// 指定 track_id の曲をキューから全て取り除く (ライブラリからの削除に追従する用)。
+    /// 現在再生中の曲が削除対象に含まれていたら `true` を返す
+    /// (呼び出し側で `stop()` して再生を止める)。
+    ///
+    /// `remove_at` と違い現在位置も除去対象にできるため、queue / order を作り直す。
+    /// - `order` は残った queue 要素へ張り替えるので `0..queue.len()` の順列のまま。
+    /// - `order_pos` は「元の位置より前に残った要素数」= 元の曲が残っていればその新位置、
+    ///   消えていれば直後に残る曲の位置になる。末尾が消えた場合は末尾へクランプする。
+    pub fn remove_tracks(&mut self, track_ids: &HashSet<i64>) -> bool {
+        let current_removed = self
+            .current_track_id
+            .is_some_and(|tid| track_ids.contains(&tid));
+        if track_ids.is_empty() || !self.queue.iter().any(|tid| track_ids.contains(tid)) {
+            return current_removed;
+        }
+
+        // 旧 queue インデックス → 新 queue インデックス (削除対象は None)。
+        let mut remap: Vec<Option<usize>> = Vec::with_capacity(self.queue.len());
+        let mut new_queue: Vec<i64> = Vec::with_capacity(self.queue.len());
+        for &tid in &self.queue {
+            if track_ids.contains(&tid) {
+                remap.push(None);
+            } else {
+                remap.push(Some(new_queue.len()));
+                new_queue.push(tid);
+            }
+        }
+
+        let old_pos = self.order_pos.unwrap_or(0);
+        let mut new_order: Vec<usize> = Vec::with_capacity(new_queue.len());
+        let mut new_pos = 0usize;
+        for (order_index, &qi) in self.order.iter().enumerate() {
+            let Some(new_qi) = remap[qi] else { continue };
+            if order_index < old_pos {
+                new_pos += 1;
+            }
+            new_order.push(new_qi);
+        }
+
+        self.queue = new_queue;
+        self.order = new_order;
+        self.order_pos = if self.order.is_empty() {
+            None
+        } else {
+            Some(new_pos.min(self.order.len() - 1))
+        };
+        current_removed
+    }
+
     /// `order` 上の `from` の要素を `to` へ移動する (Up Next の並び替え用)。
     /// 移動できたら true。`from`・`to` とも現在位置 (`order_pos`) より後ろの位置のみ許可し、
     /// それ以外 (現在位置以前・範囲外) は false を返す。
@@ -834,6 +884,65 @@ mod tests {
         assert!(p.remove_at(target));
         assert_order_is_permutation(&p);
         assert_eq!(p.queue.len(), 4);
+    }
+
+    #[test]
+    fn remove_tracks_drops_all_matching_and_keeps_current() {
+        let mut p = make_player(vec![10, 20, 30, 40], 2);
+        // 現在は order_pos=2 (曲 30)。10 と 40 を削除しても現在曲は 30 のまま。
+        assert!(!p.remove_tracks(&HashSet::from([10, 40])));
+        assert_order_is_permutation(&p);
+        assert_eq!(p.ordered_track_ids(), vec![20, 30]);
+        assert_eq!(p.current_track_id_from_order(), Some(30));
+    }
+
+    #[test]
+    fn remove_tracks_current_moves_to_next_survivor() {
+        let mut p = make_player(vec![10, 20, 30, 40], 1);
+        p.current_track_id = Some(20);
+        // 再生中の 20 を削除 → 直後に残る 30 を指し、呼び出し側へ true を返す。
+        assert!(p.remove_tracks(&HashSet::from([20])));
+        assert_order_is_permutation(&p);
+        assert_eq!(p.ordered_track_ids(), vec![10, 30, 40]);
+        assert_eq!(p.current_track_id_from_order(), Some(30));
+    }
+
+    #[test]
+    fn remove_tracks_at_tail_clamps_position() {
+        let mut p = make_player(vec![10, 20, 30], 2);
+        // 末尾 (再生中) を削除 → 末尾へクランプされ、範囲外にならない。
+        assert!(!p.remove_tracks(&HashSet::from([30])));
+        assert_order_is_permutation(&p);
+        assert_eq!(p.order_pos, Some(1));
+        assert_eq!(p.current_track_id_from_order(), Some(20));
+    }
+
+    #[test]
+    fn remove_tracks_all_clears_queue() {
+        let mut p = make_player(vec![10, 20], 0);
+        assert!(!p.remove_tracks(&HashSet::from([10, 20])));
+        assert_order_is_permutation(&p);
+        assert!(p.ordered_track_ids().is_empty());
+        assert_eq!(p.order_pos, None);
+    }
+
+    #[test]
+    fn remove_tracks_keeps_permutation_when_shuffled() {
+        let mut p = make_player(vec![1, 2, 3, 4, 5, 6], 0);
+        p.set_shuffle(true);
+        assert!(!p.remove_tracks(&HashSet::from([2, 4, 6])));
+        assert_order_is_permutation(&p);
+        let mut left = p.ordered_track_ids();
+        left.sort_unstable();
+        assert_eq!(left, vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn remove_tracks_reports_current_outside_queue() {
+        let mut p = AudioPlayer::new();
+        // キューに積まずに単曲再生している状態 (current_track_id だけ立っている)。
+        p.current_track_id = Some(77);
+        assert!(p.remove_tracks(&HashSet::from([77])));
     }
 
     #[test]

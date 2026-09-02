@@ -56,6 +56,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // ウィンドウのサイズ・位置・最大化状態を次回起動時に復元する。
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         // 埋め込みジャケットを `artwork://localhost/<percent-encoded path>` で配信。
         // <img> から遅延ロードされ、WebView がレスポンスをキャッシュする。
         .register_asynchronous_uri_scheme_protocol("artwork", |_ctx, request, responder| {
@@ -184,6 +186,7 @@ pub fn run() {
             commands::library::import_library,
             commands::library::export_library,
             commands::library::import_files,
+            commands::library::import_folders,
             commands::library::get_tracks,
             commands::library::get_tracks_by_ids,
             commands::library::search_tracks,
@@ -202,6 +205,13 @@ pub fn run() {
             commands::library::get_album_tracks,
             commands::library::get_artists,
             commands::library::get_artist_albums,
+            // バックアップ / 復元 / 整合性チェック / VACUUM (#167)
+            commands::backup::backup_library,
+            commands::backup::restore_library,
+            commands::backup::check_library_integrity,
+            commands::backup::vacuum_library,
+            commands::library::delete_tracks,
+            commands::library::reveal_in_file_manager,
             // artwork
             commands::artwork::set_artwork_from_data,
             commands::artwork::set_artwork_from_file,

@@ -39,7 +39,7 @@ import {
   mergeInboxSources,
 } from "./lib/triage";
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
-import type { PlaybackState, RepeatMode, Track } from "./types";
+import type { PlaybackState, RepeatMode, SortField, SortOrder, Track } from "./types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -86,6 +86,7 @@ export default function App() {
     selectedPlaylistId,
     playlists,
     searchQuery,
+    searchScope,
     filterTags,
     setTracks,
     appendTracks,
@@ -169,10 +170,21 @@ export default function App() {
     try {
       const pls = await playlistsApi.getPlaylists();
       setPlaylists(pls);
+      // 永続化された選択プレイリスト (#160) が、読み込んだ一覧に無ければ
+      // （削除された／別ライブラリの ID など）Library 表示へフォールバックする。
+      const st = useStore.getState();
+      if (
+        st.viewMode === "playlist" &&
+        st.selectedPlaylistId !== null &&
+        !pls.some((p) => p.playlistId === st.selectedPlaylistId)
+      ) {
+        setViewMode("library");
+        setSelectedPlaylistId(null);
+      }
     } catch (err) {
       console.error("Failed to load playlists:", err);
     }
-  }, [setPlaylists]);
+  }, [setPlaylists, setViewMode, setSelectedPlaylistId]);
 
   const loadTracks = useCallback(
     async (reset = true) => {
@@ -193,6 +205,12 @@ export default function App() {
       setIsLoading(true);
       try {
         const offset = reset ? 0 : tracks.length;
+        // "playlistOrder" は DB の playlist_tracks.sort_index 順を指す疑似ソート。
+        // バックエンドへは sortField を渡さない (= 既定の並び) ことで表現する。
+        const manualOrder = sortField === "playlistOrder";
+        // 手動順を解釈できない経路 (ライブラリ/検索/スマート) 用のフォールバック。
+        const effectiveSort: SortField = manualOrder ? "name" : sortField;
+        const effectiveOrder: SortOrder = manualOrder ? "asc" : sortOrder;
         // フリーテキスト検索 + ジャンル等の絞り込みチップを空白区切りで AND 結合。
         const combinedQuery = [searchQuery.trim(), ...filterTags]
           .filter(Boolean)
@@ -236,34 +254,45 @@ export default function App() {
           result = await playbackApi.getRecentTracks(200);
           setTracks(result);
           setHasMore(false);
-        } else if (combinedQuery) {
-          result = await libraryApi.searchTracks(
-            combinedQuery,
-            PAGE_SIZE,
-            offset,
-            sortField,
-            sortOrder,
-          );
-          if (reset) setTracks(result);
-          else appendTracks(result);
-          setHasMore(result.length === PAGE_SIZE);
-        } else if (viewMode === "playlist" && selectedPlaylistId !== null) {
+        } else if (
+          viewMode === "playlist" &&
+          selectedPlaylistId !== null &&
+          (!combinedQuery || searchScope === "playlist")
+        ) {
+          // プレイリスト表示中はスコープ既定が「このプレイリスト」なので、検索語があっても
+          // ライブラリ全体へ飛ばさず、同じ DSL でプレイリストの中だけを絞り込む。
+          // スコープが「ライブラリ全体」のときだけ下の検索分岐へ落とす。
           const pl = playlists.find((p) => p.playlistId === selectedPlaylistId);
+          const inPlaylistQuery = combinedQuery || undefined;
           result = pl?.isSmart
             ? await playlistsApi.getSmartPlaylistTracks(
                 selectedPlaylistId,
                 PAGE_SIZE,
                 offset,
-                sortField,
-                sortOrder,
+                effectiveSort,
+                effectiveOrder,
+                inPlaylistQuery,
               )
             : await playlistsApi.getPlaylistTracks(
                 selectedPlaylistId,
                 PAGE_SIZE,
                 offset,
-                sortField,
-                sortOrder,
+                // 手動順のときは sortField 未指定 → DB は pt.sort_index ASC を使う。
+                manualOrder ? undefined : effectiveSort,
+                manualOrder ? undefined : effectiveOrder,
+                inPlaylistQuery,
               );
+          if (reset) setTracks(result);
+          else appendTracks(result);
+          setHasMore(result.length === PAGE_SIZE);
+        } else if (combinedQuery) {
+          result = await libraryApi.searchTracks(
+            combinedQuery,
+            PAGE_SIZE,
+            offset,
+            effectiveSort,
+            effectiveOrder,
+          );
           if (reset) setTracks(result);
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
@@ -271,8 +300,8 @@ export default function App() {
           result = await libraryApi.getTracks(
             PAGE_SIZE,
             offset,
-            sortField,
-            sortOrder,
+            effectiveSort,
+            effectiveOrder,
           );
           if (reset) setTracks(result);
           else appendTracks(result);
@@ -289,6 +318,7 @@ export default function App() {
       selectedPlaylistId,
       playlists,
       searchQuery,
+      searchScope,
       filterTags,
       sortField,
       sortOrder,
@@ -332,7 +362,7 @@ export default function App() {
   useEffect(() => {
     loadTracks(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, selectedPlaylistId, searchQuery, filterTags, sortField, sortOrder, reloadCount]);
+  }, [viewMode, selectedPlaylistId, searchQuery, searchScope, filterTags, sortField, sortOrder, reloadCount]);
 
   useEffect(() => {
     void refreshInboxCount();
@@ -353,7 +383,9 @@ export default function App() {
       setIsLoading(true);
       try {
         const offset = reset ? 0 : albums.length;
-        const result = await libraryApi.getAlbums(sortField, sortOrder, PAGE_SIZE, offset);
+        // Albums は手動順を持たないので、念のため通常ソートへ倒す。
+        const albumSort: SortField = sortField === "playlistOrder" ? "albumArtist" : sortField;
+        const result = await libraryApi.getAlbums(albumSort, sortOrder, PAGE_SIZE, offset);
         if (reset) setAlbums(result);
         else appendAlbums(result);
         setAlbumsHasMore(result.length === PAGE_SIZE);
@@ -639,6 +671,17 @@ export default function App() {
     libraryDirtyRef.current = false; // optimistic クリア
     try {
       await libraryApi.exportLibrary(autoExportPath);
+      // XML の自動エクスポートに成功したタイミングで、あわせて library.db 自体も
+      // バックアップする（解析結果・スキップ数・スマプレ条件・同期状態は XML に
+      // 出ないため #167）。30分未満の直近バックアップがあればバックエンド側で
+      // スキップされるので、失敗してもエクスポート自体は成功扱いのまま続行する。
+      if (useStore.getState().autoBackupEnabled) {
+        try {
+          await libraryApi.backupLibrary();
+        } catch (e) {
+          console.error("auto-backup failed:", e);
+        }
+      }
     } catch (e) {
       libraryDirtyRef.current = true;
       console.error("auto-export failed:", e);
