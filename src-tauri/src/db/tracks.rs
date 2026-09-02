@@ -1295,6 +1295,20 @@ impl Database {
             .collect();
         Ok(common_dir_prefix(&paths))
     }
+
+    /// ライブラリに登録済みの `location_path` を全て集めた集合を返す。
+    /// フォルダ取り込みで「既にライブラリにあるファイル」を弾くために使う。
+    pub fn existing_location_paths(&self) -> Result<HashSet<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT location_path FROM tracks
+             WHERE location_path IS NOT NULL AND location_path != ''",
+        )?;
+        let paths = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(paths)
+    }
 }
 
 /// パス群の最長共通文字プレフィックスを取り、最後のパス区切り(`/` か `\`)で切って
