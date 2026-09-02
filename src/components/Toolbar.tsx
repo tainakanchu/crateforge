@@ -98,10 +98,11 @@ export function Toolbar({
     setDisplayMode,
     searchQuery,
     setSearchQuery,
+    searchScope,
+    setSearchScope,
     filterTags,
     removeFilterTag,
     clearFilterTags,
-    setViewMode,
     sortField,
     sortOrder,
     toggleSort,
@@ -277,11 +278,12 @@ export function Toolbar({
       clearTimeout(searchTimer.current);
       if (value.length === 1) return;
       searchTimer.current = setTimeout(() => {
+        // 表示中のビューは変えない。プレイリスト表示中は検索スコープ
+        // （このプレイリスト / ライブラリ全体）が対象を決める。
         setSearchQuery(value);
-        if (value) setViewMode("library");
       }, 300);
     },
-    [setSearchQuery, setViewMode],
+    [setSearchQuery],
   );
 
   const handleSearchKeyDown = useCallback(
@@ -582,7 +584,10 @@ export function Toolbar({
               id="search-input"
               ref={searchInputRef}
               type="text"
-              placeholder="Search… or bpm:120-128  key:8A  energy:60-100  (/ or Ctrl+F)"
+              placeholder={
+                'Search… artist:"daft punk"  genre:house  year:2015-2020  rating:4-5  ' +
+                "bpm:120-128  key:compat:8A  analyzed:no  (/ or Ctrl+F)"
+              }
               value={localSearch}
               onChange={handleSearchChange}
               onKeyDown={handleSearchKeyDown}
@@ -613,6 +618,28 @@ export function Toolbar({
               </button>
             )}
           </div>
+
+          {/* プレイリスト表示中だけ出す検索スコープ切り替え。既定はこのプレイリスト内。 */}
+          {viewMode === "playlist" && (
+            <div className="cb-seg2" role="group" aria-label="検索範囲">
+              <button
+                className={"cb-segb2" + (searchScope === "playlist" ? " on" : "")}
+                onClick={() => setSearchScope("playlist")}
+                title="このプレイリストの中だけを検索"
+                aria-pressed={searchScope === "playlist"}
+              >
+                このプレイリスト
+              </button>
+              <button
+                className={"cb-segb2" + (searchScope === "library" ? " on" : "")}
+                onClick={() => setSearchScope("library")}
+                title="ライブラリ全体を検索"
+                aria-pressed={searchScope === "library"}
+              >
+                ライブラリ全体
+              </button>
+            </div>
+          )}
 
           <div className="cb-seg">
             <button

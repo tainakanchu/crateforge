@@ -51,10 +51,12 @@ pub fn get_smart_playlist_tracks(
     offset: Option<i64>,
     sort_field: Option<String>,
     sort_order: Option<String>,
+    query: Option<String>,
 ) -> Result<Vec<Track>, String> {
     let db = open_db(&app)?;
-    db.get_smart_playlist_tracks(
+    db.get_smart_playlist_tracks_filtered(
         playlist_id,
+        query.as_deref(),
         limit.unwrap_or(500),
         offset.unwrap_or(0),
         sort_field.as_deref(),
@@ -71,10 +73,12 @@ pub fn get_playlist_tracks(
     offset: Option<i64>,
     sort_field: Option<String>,
     sort_order: Option<String>,
+    query: Option<String>,
 ) -> Result<Vec<Track>, String> {
     let db = open_db(&app)?;
-    db.get_playlist_tracks(
+    db.get_playlist_tracks_filtered(
         playlist_id,
+        query.as_deref(),
         limit.unwrap_or(500),
         offset.unwrap_or(0),
         sort_field.as_deref(),

@@ -150,18 +150,159 @@ fn album_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String 
     format!("{head}, album_key ASC")
 }
 
-/// 検索トークンが bpm:/key:/energy: フィルタなら (SQL 句, バインド値) を返す。
-/// 句は相関サブクエリで track_analysis を参照する (SELECT 句や JOIN を変えずに済む)。
-fn parse_analysis_filter(tok: &str) -> Option<(String, Vec<rusqlite::types::Value>)> {
+/// フィールド検索で使える「テキスト列」の別名 → 実カラム名。
+/// ここに無いキーは通常のフリーテキストとして扱う。列名はこの表の右辺 (固定文字列) しか
+/// SQL に埋めないため、インジェクションの余地は無い。
+const TEXT_FIELDS: [(&str, &str); 6] = [
+    ("artist", "artist"),
+    ("album", "album"),
+    ("albumartist", "album_artist"),
+    ("album_artist", "album_artist"),
+    ("genre", "genre"),
+    ("comment", "comments"),
+];
+
+/// `search_text` 相当の式を、任意のテーブル別名付きで組み立てる。
+/// `prefix` は "" (別名なし) か "t." のような別名 + ドット。
+/// prefix が空のときは定数 `SEARCH_TEXT_EXPR` と完全に一致する (テストで保証)。
+fn search_text_expr(prefix: &str) -> String {
+    SEARCH_COLS
+        .iter()
+        .map(|c| format!("COALESCE(fold({prefix}{c},2),'')"))
+        .collect::<Vec<_>>()
+        .join("||char(10)||")
+}
+
+/// 検索クエリをトークンに分解する。空白区切りだが、二重引用符で囲まれた範囲は
+/// 空白を含めて 1 トークンにまとめる (`artist:"daft punk"` → `artist:daft punk`)。
+/// 引用符自体はトークンに残さない。閉じ引用符が無い場合は行末までを 1 トークンとみなす。
+fn tokenize_query(query: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote = false;
+    for ch in query.chars() {
+        match ch {
+            '"' => in_quote = !in_quote,
+            c if c.is_whitespace() && !in_quote => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// テキスト列 1 本に対する部分一致句。フリーテキスト検索と同じ fold レベルで畳むので、
+/// `artist:サクラ` と `artist:さくら` が同じ結果になる (Standard 時)。
+/// `col` は `TEXT_FIELDS` の右辺 (固定文字列) のみ。値は必ずバインドする。
+fn text_like_clause(
+    prefix: &str,
+    col: &str,
+    value: &str,
+    level: crate::text_fold::FoldLevel,
+) -> (String, rusqlite::types::Value) {
+    use rusqlite::types::Value;
+    match level {
+        crate::text_fold::FoldLevel::Off => (
+            format!("({prefix}{col} LIKE ?)"),
+            Value::Text(format!("%{value}%")),
+        ),
+        _ => {
+            let n = level.as_i64();
+            (
+                format!("(fold({prefix}{col}, {n}) LIKE ?)"),
+                Value::Text(format!("%{}%", crate::text_fold::fold(value, level))),
+            )
+        }
+    }
+}
+
+/// "2015-2020" → (2015,2020)、"2018" → (2018,2018)。整数の単一値/範囲。
+fn parse_int_range(s: &str) -> Option<(i64, i64)> {
+    let s = s.trim();
+    if let Some((a, b)) = s.split_once('-') {
+        let lo: i64 = a.trim().parse().ok()?;
+        let hi: i64 = b.trim().parse().ok()?;
+        Some((lo.min(hi), lo.max(hi)))
+    } else {
+        let v: i64 = s.parse().ok()?;
+        Some((v, v))
+    }
+}
+
+/// 星 (0..=5) を rating 列 (0..=100) の範囲に写す。
+/// 星 n は「n 〜 n.5 星」= `n*20 ..= n*20+19` に対応させ、5 は 100 で頭打ちにする。
+/// rating が NULL の曲は 0 星扱い (COALESCE) なので `rating:0` で未評価を拾える。
+fn parse_star_range(s: &str) -> Option<(i64, i64)> {
+    let (lo, hi) = parse_int_range(s)?;
+    if !(0..=5).contains(&lo) || !(0..=5).contains(&hi) {
+        return None;
+    }
+    Some((lo * 20, (hi * 20 + 19).min(100)))
+}
+
+/// `yes`/`no` 系の真偽値を解釈する。
+fn parse_bool(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "yes" | "y" | "true" | "1" | "on" => Some(true),
+        "no" | "n" | "false" | "0" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Camelot キー `base` (例 "8A") とハーモニックに互換なキーを、Camelot ホイール
+/// 24 キーから列挙する。判定は analyzer::similarity::camelot_compatible をそのまま
+/// 使う (同番号 = 同キー/平行調、隣接番号 ±1 で同種、環状)。
+/// `base` が Camelot として解釈できなければ None。
+fn compatible_camelot_keys(base: &str) -> Option<Vec<String>> {
+    use crate::analyzer::similarity::{camelot_compatible, parse_camelot};
+    let base = base.trim().to_uppercase();
+    parse_camelot(&base)?;
+    let keys: Vec<String> = (1..=12u8)
+        .flat_map(|n| ["A", "B"].map(move |m| format!("{n}{m}")))
+        .filter(|k| camelot_compatible(&base, k))
+        .collect();
+    if keys.is_empty() {
+        None
+    } else {
+        Some(keys)
+    }
+}
+
+/// 検索トークンがフィールド指定 (`bpm:` `key:` `energy:` `artist:` `album:` `albumartist:`
+/// `genre:` `year:` `rating:` `comment:` `analyzed:`) なら (SQL 句, バインド値) を返す。\n/// `key:` は `key:compat:8A` の形でハーモニック互換キー一括指定もできる。
+/// 解釈できないキー/値なら None を返し、呼び出し側でフリーテキストとして扱う。
+/// `prefix` は tracks テーブルの別名 + ドット ("tracks." / "t.")。
+/// SQL に埋め込むのは固定文字列だけで、ユーザー入力は必ずバインドする。
+fn parse_field_filter(
+    tok: &str,
+    level: crate::text_fold::FoldLevel,
+    prefix: &str,
+) -> Option<(String, Vec<rusqlite::types::Value>)> {
     use rusqlite::types::Value;
     let (kind, val) = tok.split_once(':')?;
-    match kind {
+    let kind = kind.to_ascii_lowercase();
+    if let Some((_, col)) = TEXT_FIELDS.iter().find(|(k, _)| *k == kind) {
+        let v = val.trim();
+        if v.is_empty() {
+            return None;
+        }
+        let (clause, bind) = text_like_clause(prefix, col, v, level);
+        return Some((clause, vec![bind]));
+    }
+    match kind.as_str() {
         "bpm" => {
             let (lo, hi) = parse_range(val, 2.0)?;
             Some((
-                "(COALESCE((SELECT bpm FROM track_analysis WHERE track_id = tracks.track_id), \
-                 tracks.bpm) BETWEEN ? AND ?)"
-                    .to_string(),
+                format!(
+                    "(COALESCE((SELECT bpm FROM track_analysis WHERE track_id = {prefix}track_id), \
+                     {prefix}bpm) BETWEEN ? AND ?)"
+                ),
                 vec![Value::Real(lo), Value::Real(hi)],
             ))
         }
@@ -170,22 +311,129 @@ fn parse_analysis_filter(tok: &str) -> Option<(String, Vec<rusqlite::types::Valu
             if k.is_empty() {
                 return None;
             }
+            // `key:compat:8A` — 8A とハーモニックに繋がるキー全部 (同キー / 平行調 /
+            // ホイール ±1) を IN (...) で並べる。
+            if let Some(base) = k.strip_prefix("COMPAT:") {
+                let keys = compatible_camelot_keys(base)?;
+                let holes = vec!["?"; keys.len()].join(",");
+                return Some((
+                    format!(
+                        "{prefix}track_id IN (SELECT track_id FROM track_analysis \
+                         WHERE UPPER(key_camelot) IN ({holes}))"
+                    ),
+                    keys.into_iter().map(Value::Text).collect(),
+                ));
+            }
             Some((
-                "tracks.track_id IN (SELECT track_id FROM track_analysis WHERE UPPER(key_camelot) = ?)"
-                    .to_string(),
+                format!(
+                    "{prefix}track_id IN (SELECT track_id FROM track_analysis WHERE UPPER(key_camelot) = ?)"
+                ),
                 vec![Value::Text(k)],
             ))
         }
         "energy" => {
             let (lo, hi) = parse_energy_range(val)?;
             Some((
-                "tracks.track_id IN (SELECT track_id FROM track_analysis WHERE energy BETWEEN ? AND ?)"
-                    .to_string(),
+                format!(
+                    "{prefix}track_id IN (SELECT track_id FROM track_analysis WHERE energy BETWEEN ? AND ?)"
+                ),
                 vec![Value::Real(lo), Value::Real(hi)],
+            ))
+        }
+        "year" => {
+            let (lo, hi) = parse_int_range(val)?;
+            Some((
+                format!("({prefix}year BETWEEN ? AND ?)"),
+                vec![Value::Integer(lo), Value::Integer(hi)],
+            ))
+        }
+        "rating" => {
+            let (lo, hi) = parse_star_range(val)?;
+            Some((
+                format!("(COALESCE({prefix}rating, 0) BETWEEN ? AND ?)"),
+                vec![Value::Integer(lo), Value::Integer(hi)],
+            ))
+        }
+        "analyzed" => {
+            let yes = parse_bool(val)?;
+            let op = if yes { "EXISTS" } else { "NOT EXISTS" };
+            Some((
+                format!(
+                    "{op} (SELECT 1 FROM track_analysis a WHERE a.track_id = {prefix}track_id)"
+                ),
+                Vec::new(),
             ))
         }
         _ => None,
     }
+}
+
+/// 検索クエリを WHERE 句の断片 (AND 結合前) とバインド値に変換する。
+/// フィールド指定トークンはそれぞれの絞り込みに、それ以外はフリーテキストの
+/// 部分一致になる。ライブラリ検索とプレイリスト内検索で同じ構文を共有するため、
+/// テーブル別名 `prefix` を引数で受ける。
+pub(super) fn build_search_clauses(
+    query: &str,
+    level: crate::text_fold::FoldLevel,
+    prefix: &str,
+) -> (Vec<String>, Vec<rusqlite::types::Value>) {
+    use rusqlite::types::Value;
+    let mut clauses: Vec<String> = Vec::new();
+    let mut bind: Vec<Value> = Vec::new();
+    for tok in tokenize_query(query) {
+        if let Some((clause, mut binds)) = parse_field_filter(&tok, level, prefix) {
+            clauses.push(clause);
+            bind.append(&mut binds);
+            continue;
+        }
+        match level {
+            // 高速パス (既定): 事前計算済みの `search_text` (Standard で fold 済みの
+            // 6 列連結) 1 列だけを LIKE で見る。クエリ時の fold() UDF 呼び出しと
+            // 6 列 OR が消え、数万曲でも 1 列スキャンで済む。トークンも Standard で畳む。
+            // search_text が NULL の行 (バックフィル前 / 直 SQL 挿入など) のみ、安全網として
+            // その場で search_text 相当の式を評価する。通常は COALESCE が短絡し fold は走らない。
+            crate::text_fold::FoldLevel::Standard => {
+                let pat = format!(
+                    "%{}%",
+                    crate::text_fold::fold(&tok, crate::text_fold::FoldLevel::Standard)
+                );
+                bind.push(Value::Text(pat));
+                clauses.push(format!(
+                    "(COALESCE({prefix}search_text, {expr}) LIKE ?)",
+                    expr = search_text_expr(prefix)
+                ));
+            }
+            // Off: 従来どおり `col LIKE ?` に生トークンの `%..%` をバインド。
+            crate::text_fold::FoldLevel::Off => {
+                let pat = format!("%{}%", tok);
+                let group = SEARCH_COLS
+                    .iter()
+                    .map(|c| {
+                        bind.push(Value::Text(pat.clone()));
+                        format!("{prefix}{c} LIKE ?")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                clauses.push(format!("({})", group));
+            }
+            // Light: search_text は Standard 固定なので使えない。列側を `fold(col, 1)` で
+            // 畳み、パターンも Rust 側で Light に畳んでからバインドする従来パス。
+            crate::text_fold::FoldLevel::Light => {
+                let pat = format!("%{}%", crate::text_fold::fold(&tok, level));
+                let n = level.as_i64();
+                let group = SEARCH_COLS
+                    .iter()
+                    .map(|c| {
+                        bind.push(Value::Text(pat.clone()));
+                        format!("fold({prefix}{c}, {n}) LIKE ?")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                clauses.push(format!("({})", group));
+            }
+        }
+    }
+    (clauses, bind)
 }
 
 /// "120-128" → (120,128)、"128" → (128-pad, 128+pad)。
@@ -699,8 +947,10 @@ impl Database {
     }
 
     /// 空白区切りの各トークンを AND で結合した検索。
-    /// 各トークンは name/artist/album/album_artist/genre/comments の
-    /// いずれかに部分一致 (OR)、トークン同士は AND。
+    /// フィールド指定 (`artist:` `album:` `albumartist:` `genre:` `year:` `rating:`
+    /// `comment:` `analyzed:` `bpm:` `key:` `energy:`) はその条件に、それ以外は
+    /// name/artist/album/album_artist/genre/comments のいずれかへの部分一致 (OR) になり、
+    /// トークン同士は AND。値は `artist:"daft punk"` のように引用符で囲める。
     pub fn search_tracks(
         &self,
         query: &str,
@@ -713,7 +963,7 @@ impl Database {
 
         let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NOCASE ASC");
 
-        // 検索の字体ゆれ吸収レベル。Off のときは下の分岐で従来と完全に同じ SQL/バインドを使う。
+        // 検索の字体ゆれ吸収レベル。Off のときは従来と完全に同じ SQL/バインドになる。
         let level = crate::text_fold::FoldLevel::from_state(
             self.get_state("search_fold_level")
                 .ok()
@@ -721,63 +971,10 @@ impl Database {
                 .as_deref(),
         );
 
-        // 各トークンを AND 結合。bpm:/key:/energy: は track_analysis への絞り込み、
-        // それ以外はテキスト列への部分一致。バインド値は句の出現順に積む。
-        let mut clauses: Vec<String> = Vec::new();
-        let mut bind: Vec<Value> = Vec::new();
-        for tok in query.split_whitespace() {
-            if let Some((clause, mut binds)) = parse_analysis_filter(tok) {
-                clauses.push(clause);
-                bind.append(&mut binds);
-                continue;
-            }
-            match level {
-                // 高速パス (既定): 事前計算済みの `search_text` (Standard で fold 済みの
-                // 6 列連結) 1 列だけを LIKE で見る。クエリ時の fold() UDF 呼び出しと
-                // 6 列 OR が消え、数万曲でも 1 列スキャンで済む。トークンも Standard で畳む。
-                // search_text が NULL の行 (バックフィル前 / 直 SQL 挿入など) のみ、安全網として
-                // その場で SEARCH_TEXT_EXPR を評価する。通常は COALESCE が短絡し fold は走らない。
-                crate::text_fold::FoldLevel::Standard => {
-                    let pat = format!(
-                        "%{}%",
-                        crate::text_fold::fold(tok, crate::text_fold::FoldLevel::Standard)
-                    );
-                    bind.push(Value::Text(pat));
-                    clauses.push(format!(
-                        "(COALESCE(search_text, {expr}) LIKE ?)",
-                        expr = SEARCH_TEXT_EXPR
-                    ));
-                }
-                // Off: 従来どおり `col LIKE ?` に生トークンの `%..%` をバインド。
-                crate::text_fold::FoldLevel::Off => {
-                    let pat = format!("%{}%", tok);
-                    let group = SEARCH_COLS
-                        .iter()
-                        .map(|c| {
-                            bind.push(Value::Text(pat.clone()));
-                            format!("{} LIKE ?", c)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" OR ");
-                    clauses.push(format!("({})", group));
-                }
-                // Light: search_text は Standard 固定なので使えない。列側を `fold(col, 1)` で
-                // 畳み、パターンも Rust 側で Light に畳んでからバインドする従来パス。
-                crate::text_fold::FoldLevel::Light => {
-                    let pat = format!("%{}%", crate::text_fold::fold(tok, level));
-                    let n = level.as_i64();
-                    let group = SEARCH_COLS
-                        .iter()
-                        .map(|c| {
-                            bind.push(Value::Text(pat.clone()));
-                            format!("fold({}, {}) LIKE ?", c, n)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" OR ");
-                    clauses.push(format!("({})", group));
-                }
-            }
-        }
+        // 各トークンを AND 結合。句とバインド値の組み立ては build_search_clauses に集約し、
+        // プレイリスト内検索と同じ構文を共有する (ここは FROM tracks なので prefix は "tracks.")。
+        let (clauses, mut bind): (Vec<String>, Vec<Value>) =
+            build_search_clauses(query, level, "tracks.");
         let where_sql = if clauses.is_empty() {
             "1=1".to_string()
         } else {
@@ -799,6 +996,30 @@ impl Database {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), row_to_track)?;
+        rows.collect()
+    }
+
+    /// 検索クエリ (search_tracks と同じ DSL) にマッチする track_id の集合を返す。
+    /// LIMIT/ORDER BY を伴わないので、Rust 側で候補を組み立ててから絞り込む用途
+    /// (スマートプレイリスト内検索など) に使える。
+    pub fn search_track_ids(&self, query: &str) -> Result<HashSet<i64>> {
+        let level = crate::text_fold::FoldLevel::from_state(
+            self.get_state("search_fold_level")
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        let (clauses, bind) = build_search_clauses(query, level, "tracks.");
+        let where_sql = if clauses.is_empty() {
+            "1=1".to_string()
+        } else {
+            clauses.join(" AND ")
+        };
+        let sql = format!("SELECT track_id FROM tracks WHERE {where_sql}");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), |r| {
+            r.get::<_, i64>(0)
+        })?;
         rows.collect()
     }
 
@@ -1698,6 +1919,176 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rust_val, sql_val);
+    }
+
+    /// フィールド検索のテスト用ライブラリ。artist/album/genre/year/rating/comments を
+    /// 一通り持たせ、track 1 のみ解析済み (track_analysis 行あり) にする。
+    fn fielded_db() -> Database {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks
+                   (track_id, name, artist, album, album_artist, genre, year, rating, comments, file_exists)
+                 VALUES
+                   (1,'One More Time','Daft Punk','Discovery','Daft Punk','House',2001,100,'club classic',1),
+                   (2,'Around the World','Daft Punk','Homework','Daft Punk','House',1997,80,'early single',1),
+                   (3,'Windowlicker','Aphex Twin','Windowlicker','Aphex Twin','IDM',1999,NULL,'weird',1),
+                   (4,'さくら','ＡＢＣ','Spring','ABC Band','J-Pop',2015,40,'メモ',1);
+                 INSERT INTO track_analysis (persistent_id, track_id, version, bpm, key_camelot, energy)
+                 VALUES ('P1', 1, 1, 123.0, '8A', 0.8);",
+            )
+            .unwrap();
+        db
+    }
+
+    fn ids(db: &Database, q: &str) -> Vec<i64> {
+        let mut v: Vec<i64> = db
+            .search_tracks(q, 100, 0, None, None)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.track_id)
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// テキスト系フィールド (artist/album/albumartist/genre/comment) の部分一致。
+    /// 引用符付きの値と、フリーテキストとの AND 結合も確認する。
+    #[test]
+    fn fielded_text_operators() {
+        let db = fielded_db();
+        assert_eq!(ids(&db, "artist:\"daft punk\""), vec![1, 2]);
+        assert_eq!(ids(&db, "artist:daft"), vec![1, 2]);
+        assert_eq!(ids(&db, "album:homework"), vec![2]);
+        assert_eq!(ids(&db, "albumartist:aphex"), vec![3]);
+        assert_eq!(ids(&db, "album_artist:aphex"), vec![3]);
+        assert_eq!(ids(&db, "genre:idm"), vec![3]);
+        assert_eq!(ids(&db, "comment:classic"), vec![1]);
+        // フィールド指定同士 / フリーテキストとの AND。
+        assert_eq!(ids(&db, "artist:\"daft punk\" album:discovery"), vec![1]);
+        assert_eq!(ids(&db, "artist:daft world"), vec![2]);
+        // 値が空のトークンはフィールド指定として扱わない (フリーテキスト扱いで 0 件)。
+        assert!(ids(&db, "artist:").is_empty());
+    }
+
+    /// テキスト系フィールドもフリーテキストと同じ fold レベルで比較されること
+    /// (既定 Standard: 全角/半角・ひらがな/カタカナのゆれを吸収)。
+    #[test]
+    fn fielded_text_operators_fold_variants() {
+        let db = fielded_db();
+        assert_eq!(ids(&db, "artist:abc"), vec![4]); // 半角 abc → 全角 ＡＢＣ
+        assert_eq!(ids(&db, "name:サクラ"), Vec::<i64>::new()); // name: は未対応 → フリーテキスト
+        assert_eq!(ids(&db, "genre:j-pop"), vec![4]);
+    }
+
+    /// year: は単一値と範囲 (2015-2020) の両方を受ける。
+    #[test]
+    fn fielded_year_operator() {
+        let db = fielded_db();
+        assert_eq!(ids(&db, "year:1997"), vec![2]);
+        assert_eq!(ids(&db, "year:1997-2001"), vec![1, 2, 3]);
+        assert_eq!(ids(&db, "year:2010-2020"), vec![4]);
+        // 範囲の左右が逆でも同じ結果。
+        assert_eq!(ids(&db, "year:2001-1997"), vec![1, 2, 3]);
+    }
+
+    /// rating: は星 (0..5) で受け、0..100 の rating 列に写す。未評価は 0 星。
+    #[test]
+    fn fielded_rating_operator() {
+        let db = fielded_db();
+        assert_eq!(ids(&db, "rating:5"), vec![1]);
+        assert_eq!(ids(&db, "rating:4"), vec![2]);
+        assert_eq!(ids(&db, "rating:4-5"), vec![1, 2]);
+        assert_eq!(ids(&db, "rating:2"), vec![4]);
+        assert_eq!(ids(&db, "rating:0"), vec![3]); // 未評価 (NULL)
+        // 範囲外の星はフィールド指定として扱わない → フリーテキスト扱いで 0 件。
+        assert!(ids(&db, "rating:9").is_empty());
+    }
+
+    /// analyzed: yes/no で track_analysis 行の有無を絞り込む。
+    #[test]
+    fn fielded_analyzed_operator() {
+        let db = fielded_db();
+        assert_eq!(ids(&db, "analyzed:yes"), vec![1]);
+        assert_eq!(ids(&db, "analyzed:no"), vec![2, 3, 4]);
+        assert_eq!(ids(&db, "analyzed:true"), vec![1]);
+        assert_eq!(ids(&db, "analyzed:0"), vec![2, 3, 4]);
+        // 既存の bpm:/key:/energy: が引き続き効くこと。
+        assert_eq!(ids(&db, "bpm:120-128"), vec![1]);
+        assert_eq!(ids(&db, "key:8a"), vec![1]);
+        assert_eq!(ids(&db, "energy:75-85"), vec![1]);
+    }
+
+    /// key:compat:<camelot> がハーモニック互換キー (同キー / 平行調 / ホイール ±1) を
+    /// まとめて拾うこと。互換判定は analyzer::similarity::camelot_compatible と同じ。
+    #[test]
+    fn key_compat_operator() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks (track_id, name, file_exists) VALUES
+                   (1,'same 8A',1), (2,'relative 8B',1), (3,'down 7A',1),
+                   (4,'up 9A',1), (5,'far 2A',1), (6,'other mode 9B',1),
+                   (7,'wrap 12A',1), (8,'unanalyzed',1);
+                 INSERT INTO track_analysis (persistent_id, track_id, version, key_camelot) VALUES
+                   ('P1',1,1,'8A'), ('P2',2,1,'8B'), ('P3',3,1,'7A'), ('P4',4,1,'9A'),
+                   ('P5',5,1,'2A'), ('P6',6,1,'9B'), ('P7',7,1,'12A');",
+            )
+            .unwrap();
+        // 8A: 8A / 8B (平行調) / 7A / 9A (±1 同種)。9B は同種でも隣接でもないので除外。
+        assert_eq!(ids(&db, "key:compat:8A"), vec![1, 2, 3, 4]);
+        // 小文字でも同じ。
+        assert_eq!(ids(&db, "key:compat:8a"), vec![1, 2, 3, 4]);
+        // ホイールの折り返し: 1A の隣は 12A と 2A。
+        assert_eq!(ids(&db, "key:compat:1A"), vec![5, 7]);
+        // 単一キー指定 (従来) は互換キーへ広がらない。
+        assert_eq!(ids(&db, "key:8A"), vec![1]);
+        // 解釈できない Camelot はフィールド指定にならずフリーテキスト扱い → 0 件。
+        assert!(ids(&db, "key:compat:99Z").is_empty());
+    }
+
+    /// 互換キー集合そのものの単体確認 (SQL を介さない)。
+    #[test]
+    fn compatible_camelot_keys_set() {
+        use super::compatible_camelot_keys;
+        let mut k = compatible_camelot_keys("8A").unwrap();
+        k.sort();
+        assert_eq!(k, vec!["7A", "8A", "8B", "9A"]);
+        let mut k = compatible_camelot_keys("12b").unwrap();
+        k.sort();
+        assert_eq!(k, vec!["11B", "12A", "12B", "1B"]);
+        assert!(compatible_camelot_keys("13A").is_none());
+        assert!(compatible_camelot_keys("").is_none());
+    }
+
+    /// フィールド値は必ずバインドされ、SQL に埋め込まれないこと (インジェクション防止)。
+    #[test]
+    fn fielded_values_are_parameterized() {
+        let db = fielded_db();
+        assert!(ids(&db, "artist:\"'; DROP TABLE tracks; --\"").is_empty());
+        assert!(ids(&db, "genre:\"' OR 1=1 --\"").is_empty());
+        // tracks テーブルが健在で、通常の検索も動くこと。
+        assert_eq!(ids(&db, "artist:aphex"), vec![3]);
+    }
+
+    /// 引用符を含むクエリのトークン分割。
+    #[test]
+    fn tokenize_query_handles_quotes() {
+        use super::tokenize_query;
+        assert_eq!(
+            tokenize_query("artist:\"daft punk\" house"),
+            vec!["artist:daft punk", "house"]
+        );
+        assert_eq!(tokenize_query("  a   b  "), vec!["a", "b"]);
+        // 閉じ引用符が無い場合は行末までを 1 トークンにする。
+        assert_eq!(tokenize_query("artist:\"daft punk"), vec!["artist:daft punk"]);
+    }
+
+    /// prefix 無しの search_text_expr が定数 SEARCH_TEXT_EXPR と完全一致すること
+    /// (ズレるとバックフィルと検索フォールバックで別の値になる)。
+    #[test]
+    fn search_text_expr_matches_const() {
+        assert_eq!(super::search_text_expr(""), super::SEARCH_TEXT_EXPR);
     }
 
     /// get_albums は album ごとに distinct 集約し、track_count と最小 track_id を返す。

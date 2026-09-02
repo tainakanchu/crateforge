@@ -6,6 +6,7 @@ import type {
   Playlist,
   PlaybackState,
   ViewMode,
+  SearchScope,
   DisplayMode,
   CoverSize,
   RailTab,
@@ -160,6 +161,9 @@ interface AppState extends PersistedSettings {
    */
   sortBeforeManual: { field: SortField; order: SortOrder } | null;
   searchQuery: string;
+  // 検索スコープ。プレイリスト表示中のみ意味を持ち、"playlist" ならそのプレイリストの
+  // 中だけを、"library" ならライブラリ全体を検索する（セッション内のみ）。
+  searchScope: SearchScope;
   // ジャンル等の絞り込みチップ（フリーテキスト検索と AND 結合、セッション内のみ）
   filterTags: string[];
 
@@ -217,6 +221,7 @@ interface AppState extends PersistedSettings {
   setViewMode: (mode: ViewMode) => void;
   setSelectedPlaylistId: (id: number | null) => void;
   setSearchQuery: (query: string) => void;
+  setSearchScope: (scope: SearchScope) => void;
   addFilterTag: (tag: string) => void;
   removeFilterTag: (tag: string) => void;
   clearFilterTags: () => void;
@@ -413,6 +418,7 @@ export const useStore = create<AppState>()(
       selectedPlaylistId: null,
       sortBeforeManual: null,
       searchQuery: "",
+      searchScope: "playlist",
       filterTags: [],
       tracks: [],
       playlists: [],
@@ -511,6 +517,7 @@ export const useStore = create<AppState>()(
           return { selectedPlaylistId: id };
         }),
       setSearchQuery: (query) => set({ searchQuery: query }),
+      setSearchScope: (scope) => set({ searchScope: scope }),
       addFilterTag: (tag) =>
         set((state) =>
           state.filterTags.includes(tag)
