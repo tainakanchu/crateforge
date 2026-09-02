@@ -37,6 +37,26 @@ export interface Toast {
   durationMs: number;
 }
 
+// Similar (dig) タブの絞り込み条件。セッションをまたいで保持する (#151)。
+/** BPM 許容（サーバー opts）。null = off。 */
+export type BpmTolOpt = 0.04 | 0.08 | 0.12 | null;
+export interface SimilarFilters {
+  harmonic: boolean;
+  bpmTol: BpmTolOpt;
+  energyClose: boolean;
+  excludeInCrate: boolean;
+  excludeSameArtist: boolean;
+  ratingMinOn: boolean;
+}
+export const DEFAULT_SIMILAR_FILTERS: SimilarFilters = {
+  harmonic: true,
+  bpmTol: 0.08,
+  energyClose: false,
+  excludeInCrate: true,
+  excludeSameArtist: false,
+  ratingMinOn: false,
+};
+
 // CD リッピング進捗 — セッション専用・永続化しない
 export type RipPhase = "ripping" | "done" | "error";
 export interface RipStatus {
@@ -85,8 +105,8 @@ interface PersistedSettings {
   ripOutputDir: string | null;
   // サーバーから取り寄せる際に最後に選んだ保存先。
   lastSyncDestRoot: string | null;
-  // Audition モード (波形強調・ジャンプキー)。設定として永続化可。
-  auditionMode: boolean;
+  // Similar タブの絞り込み条件 (#151)。
+  similarFilters: SimilarFilters;
 }
 
 // 「前回入れたプレイリスト」ショートカットで保持する件数
@@ -169,6 +189,10 @@ interface AppState extends PersistedSettings {
   similarBaseTrackId: number | null;
   // 「閉じるときに更新」が予約されていれば、そのインストーラ URL とバージョン。
   pendingUpdate: { url: string; version: string } | null;
+
+  // Audition モード (波形強調・ジャンプキー) — セッション状態。
+  // 起動ごとに OFF から始める（永続化すると解除口が分からず閉じ込められる #150）。
+  auditionMode: boolean;
 
   // Audition Preview セッション — 永続化しない。
   // previewActive: 単曲プレビュー中 (Esc で復帰可能)
@@ -271,7 +295,13 @@ interface AppState extends PersistedSettings {
   setRipStatus: (s: RipStatus | null) => void;
   appendRipLog: (line: string) => void;
   clearRipStatus: () => void;
-  setSimilarBase: (trackId: number | null) => void;
+  /**
+   * Similar の基準曲を設定する。
+   * focus: true のときだけ右ペインを Similar タブへ切り替える
+   * (コンテキストメニューの「Find similar」など明示的な操作のみ)。
+   */
+  setSimilarBase: (trackId: number | null, opts?: { focus?: boolean }) => void;
+  setSimilarFilters: (patch: Partial<SimilarFilters>) => void;
   setPendingUpdate: (v: { url: string; version: string } | null) => void;
 
   // Audition / Preview
@@ -393,6 +423,9 @@ export const useStore = create<AppState>()(
         currentTrackId: null,
         positionMs: 0,
         durationMs: 0,
+        shuffle: false,
+        repeat: "off",
+        volume: 1.0,
       },
       crate: [],
       railTab: "crate",
@@ -436,6 +469,7 @@ export const useStore = create<AppState>()(
       ripFormat: "alac",
       ripOutputDir: null,
       lastSyncDestRoot: null,
+      similarFilters: DEFAULT_SIMILAR_FILTERS,
       auditionMode: false,
 
       // プレイリストを離れるときは手動順 (playlistOrder) を解除し、
@@ -508,11 +542,13 @@ export const useStore = create<AppState>()(
 
       // Crate
       setRailTab: (tab) => set({ railTab: tab }),
+      // クレート追加はタブを切り替えない (#151)。
+      // 「入った」ことは Crate タブの件数バッジで示す。
       addToCrate: (track) =>
         set((state) =>
           state.crate.some((t) => t.trackId === track.trackId)
             ? {}
-            : { crate: [...state.crate, track], railTab: "crate" },
+            : { crate: [...state.crate, track] },
         ),
       addTracksToCrate: (tracks) =>
         set((state) => {
@@ -525,7 +561,7 @@ export const useStore = create<AppState>()(
             added.push(track);
           }
           if (added.length === 0) return {};
-          return { crate: [...state.crate, ...added], railTab: "crate" as const };
+          return { crate: [...state.crate, ...added] };
         }),
       removeFromCrate: (trackId) =>
         set((state) => {
@@ -733,12 +769,18 @@ export const useStore = create<AppState>()(
           return { ripStatus: { ...state.ripStatus, log: [...state.ripStatus.log, line] } };
         }),
       clearRipStatus: () => set({ ripStatus: null }),
-      setSimilarBase: (trackId) =>
+      // 既定ではタブを切り替えない (#151)。Similar タブのインジケータで示す。
+      // focus: true は「Find similar」など、そこへ行きたいことが明らかな操作だけ。
+      setSimilarBase: (trackId, opts) =>
         set(
           trackId != null
-            ? { similarBaseTrackId: trackId, railTab: "similar" }
+            ? opts?.focus
+              ? { similarBaseTrackId: trackId, railTab: "similar" as const }
+              : { similarBaseTrackId: trackId }
             : { similarBaseTrackId: null },
         ),
+      setSimilarFilters: (patch) =>
+        set((state) => ({ similarFilters: { ...state.similarFilters, ...patch } })),
       setPendingUpdate: (pendingUpdate) => set({ pendingUpdate }),
 
       setAuditionMode: (auditionMode) => set({ auditionMode }),
@@ -768,7 +810,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 13,
+      version: 15,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -802,7 +844,7 @@ export const useStore = create<AppState>()(
           ripFormat: state.ripFormat,
           ripOutputDir: state.ripOutputDir,
           lastSyncDestRoot: state.lastSyncDestRoot,
-          auditionMode: state.auditionMode,
+          similarFilters: state.similarFilters,
         }) satisfies PersistedSettings,
       // v1(visibleColumns) からの移行: 旧キーは破棄してデフォルトに倒す。
       // v3: recentPlaylistIds を追加（旧データには無いので配列で補完）。
@@ -886,9 +928,21 @@ export const useStore = create<AppState>()(
           if (typeof p.railSplit !== "boolean") p.railSplit = false;
         }
         // v13: Audition モード設定。
-        if (version < 13 && persisted && typeof persisted === "object") {
+        // v14 で永続化をやめたため、ここでは何もしない（下の v14 で破棄する）。
+        // v14: Audition モードは永続化しない (#150)。旧データのキーを破棄して
+        // 起動ごとに OFF から始める。
+        if (version < 14 && persisted && typeof persisted === "object") {
           const p = persisted as Record<string, unknown>;
-          if (typeof p.auditionMode !== "boolean") p.auditionMode = false;
+          delete p.auditionMode;
+        }
+        // v15: Similar タブの絞り込み条件を永続化 (#151)。旧データには無いので既定で補完。
+        if (version < 15 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          const f = p.similarFilters;
+          p.similarFilters = {
+            ...DEFAULT_SIMILAR_FILTERS,
+            ...(typeof f === "object" && f !== null ? f : {}),
+          };
         }
         return persisted as PersistedSettings;
       },

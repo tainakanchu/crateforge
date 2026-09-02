@@ -2122,18 +2122,16 @@ pub async fn remote_get_state(State(state): State<ApiState>) -> Result<Json<Valu
     let guard = player
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // volume/shuffle/repeat は `PlaybackState` 自体が持つので、そこから組み立てる。
     let ps = guard.get_state();
-    let volume = guard.volume();
-    let shuffle = guard.shuffle();
-    let repeat = repeat_mode_str(guard.repeat());
     Ok(Json(json!({
         "isPlaying": ps.is_playing,
         "currentTrackId": ps.current_track_id,
         "positionMs": ps.position_ms,
         "durationMs": ps.duration_ms,
-        "volume": volume,
-        "shuffle": shuffle,
-        "repeat": repeat,
+        "volume": ps.volume,
+        "shuffle": ps.shuffle,
+        "repeat": repeat_mode_str(ps.repeat),
     })))
 }
 

@@ -14,6 +14,7 @@ interface ToolbarProps {
   onOpenRulesPanel: () => void;
   onOpenSyncProvision: () => void;
   onOpenSettings: () => void;
+  onOpenHelp: () => void;
 }
 
 function formatDuration(ms: number): string {
@@ -44,6 +45,9 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "dateAdded", label: "Date Added" },
   { field: "lastPlayed", label: "Last Played" },
 ];
+
+// 完了 status をサブバーから自動で消すまでの時間 (#152)。
+const STATUS_CLEAR_MS = 8000;
 
 // ツールバー(行)の実効幅がこれを下回ったら、右側のアクション群を ⋯ メニューに畳む。
 const COMPACT_WIDTH = 1200;
@@ -86,6 +90,7 @@ export function Toolbar({
   onOpenRulesPanel,
   onOpenSyncProvision,
   onOpenSettings,
+  onOpenHelp,
 }: ToolbarProps) {
   const {
     viewMode,
@@ -119,7 +124,39 @@ export function Toolbar({
   const [exporting, setExporting] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
-  const [status, setStatus] = useState("");
+  const [status, setStatusRaw] = useState("");
+  const statusTimerRef = useRef<number | null>(null);
+
+  /**
+   * サブバーの status を出す (#152)。
+   * 完了メッセージは出しっぱなしにせず STATUS_CLEAR_MS 後に自動で消す。
+   * 進行中 ("…" で終わる / "…中") とエラーは、次の status が来るまで残す。
+   */
+  const setStatus = useCallback((text: string) => {
+    if (statusTimerRef.current !== null) {
+      window.clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = null;
+    }
+    setStatusRaw(text);
+    if (!text) return;
+    const inProgress = text.endsWith("…") || text.includes("…中");
+    const isError = /error|失敗/i.test(text);
+    if (inProgress || isError) return;
+    statusTimerRef.current = window.setTimeout(() => {
+      statusTimerRef.current = null;
+      setStatusRaw("");
+    }, STATUS_CLEAR_MS);
+  }, []);
+
+  // アンマウント時にタイマーを片付ける。
+  useEffect(
+    () => () => {
+      if (statusTimerRef.current !== null) {
+        window.clearTimeout(statusTimerRef.current);
+      }
+    },
+    [],
+  );
   const [stats, setStats] = useState<LibraryStats | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
@@ -691,6 +728,14 @@ export function Toolbar({
               }
             >
               <Icon name="eye" size={16} />
+            </button>
+            <button
+              className="cb-btn cb-btn-iconly cb-btn-q"
+              onClick={onOpenHelp}
+              title="キーボードショートカット一覧 (?)"
+              aria-label="キーボードショートカット一覧"
+            >
+              ?
             </button>
             <button
               className="cb-btn cb-btn-iconly"
