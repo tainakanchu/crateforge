@@ -222,3 +222,41 @@ Tauri command 96 個、HTTP route 42 本を起点に確認。
 ## 7. ドキュメントの乖離
 - `docs/ui-spec.md` §2-3 は現物と一致しない（Albums ナビは存在しない、ツールバーは 5 → 16、PlayerBar は 6 → 14、RightRail/Inbox/Triage/Crate/Similar/Sync/Gig の節がない）。
 - README の制約節は「スマプレ条件は編集不可」（既にエディタあり）と「並び替え対応」（未配線）が逆。
+
+---
+
+## 8. 起票した issue（2026-09-02）
+
+| # | 内容 |
+|---|---|
+| #145 | ツールバー overflow（1280×720 で Settings 消失） |
+| #146 | 右レール幅のウィンドウ幅クランプ |
+| #147 | PlayerBar 音量/ミュートのクリップ |
+| #148 | ダイアログの固定フッタ |
+| #149 | IA 再編（ツールバー 16→6、Sets 一次ナビ化） |
+| #150 | Audition / Preview の入口・出口・永続化 |
+| #151 | 右レールの副作用タブ切替 / Split 表示 |
+| #152 | Sub-bar status とジョブ表示の集約 |
+| #153 | viewMode "albums" 除去、ui-spec / README 追従 |
+| #154 | Albums 表示のソート・カード表示・tie-break |
+| #155 | Artists のサーバ集約 + 仮想化 |
+| #156 | Sort Album / Sort Artist（読み） |
+| #157 | shuffle トグル時の Up Next 競合、backend→frontend 同期 |
+| #158 | モバイル shuffle の順列化 + 永続化 |
+| #159 | キュー・再生位置の永続化 |
+| #160 | ウィンドウ状態・表示状態の永続化 |
+| #161 | フォルダ再帰取り込み |
+| #162 | プレイリスト並替の配線、TrackTable→Sidebar D&D |
+| #163 | タグ書き戻しの organize root ゲート解除 |
+| #164 | Key / BPM の tag・XML 書き出し |
+| #165 | USB 書き出し、M3U |
+| #166 | トラック削除、Finder で表示 |
+| #167 | library.db バックアップ / integrity / VACUUM |
+| #168 | fielded search 拡張、key:compat、プレイリスト内検索 |
+| #169 | gapless / crossfade |
+| #170 | 出力デバイス選択 |
+| #171 | 技術メタ（bitrate 等） |
+| #172 | Key 手動上書き・表記切替、半星 |
+| #173 | 再生統計チャート、Scrobble |
+| #174 | i18n、TrackTable a11y |
+| #175 | Tray / global hotkey / 通知、sleep timer・再生速度 parity |
