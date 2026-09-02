@@ -22,6 +22,9 @@ function formatTime(ms: number): string {
   return `${min}:${sec.toString().padStart(2, "0")}`;
 }
 
+// ブラウザ (vite dev) では IPC が使えないので、ストア更新のみで動かす。
+const isTauri = "__TAURI_INTERNALS__" in window;
+
 const WAVE_N = 64;
 
 const JUMP_MARKERS = [0.25, 0.5, 0.75] as const;
@@ -39,6 +42,7 @@ export function PlayerBar() {
     setRepeat,
     setReplayGain,
     setRailTab,
+    pushToast,
     showRemainingTime,
     toggleRemainingTime,
     auditionMode,
@@ -157,18 +161,29 @@ export function PlayerBar() {
     [setVolume],
   );
 
+  // Rust 側プレイヤーに反映してからストアを更新する。
+  // 先にストアを更新すると Up Next の取り直し (RightRail) が古い再生順を読んでしまう。
+  // IPC は ~1ms なので体感は変わらない。失敗時はストアを変えずトーストで知らせる。
   const handleShuffleToggle = useCallback(async () => {
     const next = !shuffle;
-    setShuffle(next);
-    await playbackApi.setShuffle(next);
-  }, [shuffle, setShuffle]);
+    try {
+      if (isTauri) await playbackApi.setShuffle(next);
+      setShuffle(next);
+    } catch {
+      pushToast("error", "シャッフルを切り替えられませんでした");
+    }
+  }, [shuffle, setShuffle, pushToast]);
 
   const handleRepeatToggle = useCallback(async () => {
     const order = ["off", "all", "one"] as const;
     const next = order[(order.indexOf(repeat) + 1) % order.length];
-    setRepeat(next);
-    await playbackApi.setRepeat(next);
-  }, [repeat, setRepeat]);
+    try {
+      if (isTauri) await playbackApi.setRepeat(next);
+      setRepeat(next);
+    } catch {
+      pushToast("error", "リピートを切り替えられませんでした");
+    }
+  }, [repeat, setRepeat, pushToast]);
 
   const handleReplayGainToggle = useCallback(async () => {
     const next = !replayGain;
