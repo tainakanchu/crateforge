@@ -999,6 +999,30 @@ impl Database {
         rows.collect()
     }
 
+    /// 検索クエリ (search_tracks と同じ DSL) にマッチする track_id の集合を返す。
+    /// LIMIT/ORDER BY を伴わないので、Rust 側で候補を組み立ててから絞り込む用途
+    /// (スマートプレイリスト内検索など) に使える。
+    pub fn search_track_ids(&self, query: &str) -> Result<HashSet<i64>> {
+        let level = crate::text_fold::FoldLevel::from_state(
+            self.get_state("search_fold_level")
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        let (clauses, bind) = build_search_clauses(query, level, "tracks.");
+        let where_sql = if clauses.is_empty() {
+            "1=1".to_string()
+        } else {
+            clauses.join(" AND ")
+        };
+        let sql = format!("SELECT track_id FROM tracks WHERE {where_sql}");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), |r| {
+            r.get::<_, i64>(0)
+        })?;
+        rows.collect()
+    }
+
     pub fn get_track_by_track_id(&self, track_id: i64) -> Result<Option<Track>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
