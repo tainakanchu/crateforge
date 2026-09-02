@@ -239,6 +239,12 @@ input {
 .cb-prow.on svg {
   color: var(--ac);
 }
+/* 一覧からのトラック D&D 受け入れ中のハイライト (Crate の .cb-cratelist-drop に合わせる)。 */
+.cb-prow.dragover {
+  background: var(--ac-13, rgba(45, 212, 191, 0.08));
+  outline: 1px dashed var(--ac);
+  outline-offset: -2px;
+}
 .cb-prow.fold {
   color: #cfd3d7;
   font-weight: 550;
@@ -427,6 +433,10 @@ input {
   width: 34px;
   padding: 0;
   justify-content: center;
+}
+/* ショートカット一覧を開く "?" ボタン (#150) */
+.cb-btn-q {
+  font: 700 14px/1 var(--mono);
 }
 
 .cb-tb-spacer {
@@ -671,6 +681,28 @@ input {
 }
 .cb-row.missing .cb-nm .t {
   color: var(--tx2);
+}
+/* プレイリスト手動順のドラッグ並べ替え。列ヘッダ (.cb-h-drag) と同じ見た目に揃える。 */
+.cb-row.dragging {
+  opacity: 0.5;
+}
+.cb-row.dropbefore::before,
+.cb-row.dropafter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--ac);
+  border-radius: 1px;
+  z-index: 4;
+  pointer-events: none;
+}
+.cb-row.dropbefore::before {
+  top: 0;
+}
+.cb-row.dropafter::after {
+  bottom: 0;
 }
 
 /* Embedded artwork overlay (fills its rounded, clipped parent). */
@@ -1587,10 +1619,36 @@ input {
   background: var(--bg3);
   color: #eafbf8;
 }
+/* タブの状態インジケータ (#151): Crate の件数 / Similar の基準曲ドット */
+.cb-tab-count {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0 4px;
+  min-width: 15px;
+  border-radius: 7px;
+  background: var(--ac);
+  color: var(--on-ac);
+  font: 700 9.5px/15px var(--mono);
+  vertical-align: 1px;
+}
+.cb-tab-dot {
+  display: inline-block;
+  margin-left: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ac);
+  vertical-align: 2px;
+}
 .cb-split-toggle {
   flex: 0 0 auto;
   padding: 7px 8px;
   font-size: 11px;
+}
+/* 分割表示が効かないタブでは Split を無効表示にする (#151) */
+.cb-split-toggle.cb-split-na {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 .cb-prev-tab {
   flex: 0 0 auto;
@@ -2542,6 +2600,14 @@ input {
   align-self: center;
   user-select: none;
   white-space: nowrap;
+  /* クリックで解除できるボタン (#150) */
+  border: none;
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+.cb-audition-badge:hover,
+.cb-preview-badge:hover {
+  filter: brightness(1.15);
 }
 .cb-audition-badge {
   color: var(--on-ac);
@@ -2894,6 +2960,35 @@ input {
 }
 .context-menu-item:hover svg {
   color: var(--ac);
+}
+/* 破壊的な項目（ライブラリから削除）。hover / キーボードフォーカスも赤系に寄せる。 */
+.context-menu-item.danger {
+  color: #ef9d9d;
+}
+.context-menu-item.danger svg {
+  color: #ef9d9d;
+}
+.context-menu-item.danger:hover,
+.context-menu-item.danger.active {
+  background: rgba(221, 104, 104, 0.16);
+  color: #ffc0c0;
+}
+.context-menu-item.danger:hover svg,
+.context-menu-item.danger.active svg {
+  color: #ffc0c0;
+}
+/* 実行できない項目（ファイル欠損時の「表示」など）。存在は見せるが操作させない。 */
+.context-menu-item.disabled {
+  color: var(--mut);
+  cursor: default;
+  opacity: 0.55;
+}
+.context-menu-item.disabled:hover {
+  background: transparent;
+  color: var(--mut);
+}
+.context-menu-item.disabled:hover svg {
+  color: var(--mut);
 }
 .context-menu-divider {
   height: 1px;

@@ -1,7 +1,7 @@
 use std::{collections::HashSet, path::Path};
 
 use chrono::DateTime;
-use rusqlite::{params, OptionalExtension, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::Serialize;
 
 use super::Database;
@@ -1265,6 +1265,21 @@ impl Database {
         rows.collect()
     }
 
+    /// 複数トラックをライブラリから完全に削除する (依存行ごと)。
+    /// 実際に消えた曲数を返す (存在しない track_id は 0 件として無視)。
+    /// 1 トランザクションにまとめるので、途中で失敗しても中途半端に消えない。
+    pub fn delete_tracks(&self, track_ids: &[i64]) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut deleted = 0usize;
+        for &track_id in track_ids {
+            if delete_track_cascade(&tx, track_id)? {
+                deleted += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(deleted)
+    }
+
     /// 既存トラックの `location_path` から共通の親フォルダ(= ライブラリルート)を推定する。
     /// 実在ファイルのみ対象。曲数が十分にあれば、各アーティスト/アルバムで分岐するため
     /// 共通プレフィックスは音楽ルート(例 `…/iTunes Media/Music`)に収束する。
@@ -1324,6 +1339,55 @@ fn common_dir_prefix(paths: &[String]) -> Option<String> {
     Some(dir.to_string())
 }
 
+/// 1 曲分の `tracks` 行と、track_id / persistent_id で紐づく全依存行を削除する。
+/// 削除対象が存在して実際に消えたら `true`。
+///
+/// 「トラック行を消すすべての経路」(ライブラリからの削除・同期のエビクション) は
+/// 必ずここを通す。テーブルが増えたときの消し漏れをこの 1 箇所に集約するため。
+/// トランザクションは張らないので、呼び出し側でまとめること
+/// (`&Connection` は `Transaction` からの deref も受け付ける)。
+pub fn delete_track_cascade(conn: &Connection, track_id: i64) -> Result<bool> {
+    // 解析結果 / 同期メタは persistent_id キーなので tracks 行から引く。
+    let persistent_id: Option<String> = conn
+        .query_row(
+            "SELECT persistent_id FROM tracks WHERE track_id = ?1",
+            params![track_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+
+    // track_id キーの依存行。
+    conn.execute(
+        "DELETE FROM playlist_tracks WHERE track_id = ?1",
+        params![track_id],
+    )?;
+    conn.execute(
+        "DELETE FROM recent_tracks WHERE track_id = ?1",
+        params![track_id],
+    )?;
+    // 旧スキーマ (track_analysis の PK が track_id だった頃) 由来で persistent_id が
+    // 一致しない行が残っていても掃除できるよう、track_id でも消しておく。
+    conn.execute(
+        "DELETE FROM track_analysis WHERE track_id = ?1",
+        params![track_id],
+    )?;
+
+    // persistent_id キーの依存行。
+    if let Some(pid) = persistent_id.as_deref() {
+        conn.execute(
+            "DELETE FROM track_analysis WHERE persistent_id = ?1",
+            params![pid],
+        )?;
+        conn.execute(
+            "DELETE FROM sync_track WHERE persistent_id = ?1",
+            params![pid],
+        )?;
+    }
+
+    Ok(conn.execute("DELETE FROM tracks WHERE track_id = ?1", params![track_id])? > 0)
+}
+
 pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
     Ok(Track {
         id: row.get(0)?,
@@ -1361,6 +1425,8 @@ pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+
+    use rusqlite::params;
 
     use super::{album_order_by, common_dir_prefix, compute_search_text};
     use crate::db::Database;
@@ -1449,6 +1515,115 @@ mod tests {
         let hits = db.search_tracks("图书馆", 100, 0, None, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].track_id, 2);
+    }
+
+    /// ライブラリからの削除で、tracks 行と全依存行 (プレイリスト所属 / 再生履歴 /
+    /// 解析結果 / 同期メタ) が一緒に消え、他の曲の行は残ること。
+    /// テーブルを増やしたのに delete_track_cascade を更新し忘れると、ここが落ちる。
+    #[test]
+    fn delete_tracks_removes_dependent_rows() {
+        let db = Database::open_memory().unwrap();
+        for (tid, pid) in [(1i64, "AAAAAAAAAAAAAAA1"), (2, "AAAAAAAAAAAAAAA2")] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, persistent_id, name, file_exists)
+                     VALUES (?1, ?2, 'song', 1)",
+                    params![tid, pid],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index)
+                     VALUES (10, ?1, 0)",
+                    params![tid],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO recent_tracks (track_id) VALUES (?1)",
+                    params![tid],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO track_analysis (persistent_id, track_id, version, bpm)
+                     VALUES (?1, ?2, 1, 128.0)",
+                    params![pid, tid],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO sync_track (persistent_id, source_id, pulled_at)
+                     VALUES (?1, 1, '2024-01-01T00:00:00Z')",
+                    params![pid],
+                )
+                .unwrap();
+        }
+
+        // 存在しない ID を混ぜても件数は実際に消えた分だけ。
+        assert_eq!(db.delete_tracks(&[1, 999]).unwrap(), 1);
+
+        let count = |sql: &str| -> i64 { db.conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(count("SELECT COUNT(*) FROM tracks WHERE track_id = 1"), 0);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM playlist_tracks WHERE track_id = 1"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM recent_tracks WHERE track_id = 1"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM track_analysis WHERE track_id = 1"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM sync_track WHERE persistent_id = 'AAAAAAAAAAAAAAA1'"),
+            0
+        );
+
+        // 残した曲の行は一切触られていない。
+        assert_eq!(count("SELECT COUNT(*) FROM tracks WHERE track_id = 2"), 1);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM playlist_tracks WHERE track_id = 2"),
+            1
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM recent_tracks WHERE track_id = 2"),
+            1
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM track_analysis WHERE track_id = 2"),
+            1
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM sync_track WHERE persistent_id = 'AAAAAAAAAAAAAAA2'"),
+            1
+        );
+    }
+
+    /// persistent_id が無い曲 (ローカル追加直後など) でも削除できること。
+    #[test]
+    fn delete_tracks_handles_missing_persistent_id() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, file_exists) VALUES (7, 'no pid', 1)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO track_analysis (persistent_id, track_id, version) VALUES ('X', 7, 1)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(db.delete_tracks(&[7]).unwrap(), 1);
+        let left: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM track_analysis", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     /// update_track / genre タグ更新で search_text が再計算され、新しい値で検索できること。
