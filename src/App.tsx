@@ -593,6 +593,17 @@ export default function App() {
     libraryDirtyRef.current = false; // optimistic クリア
     try {
       await libraryApi.exportLibrary(autoExportPath);
+      // XML の自動エクスポートに成功したタイミングで、あわせて library.db 自体も
+      // バックアップする（解析結果・スキップ数・スマプレ条件・同期状態は XML に
+      // 出ないため #167）。30分未満の直近バックアップがあればバックエンド側で
+      // スキップされるので、失敗してもエクスポート自体は成功扱いのまま続行する。
+      if (useStore.getState().autoBackupEnabled) {
+        try {
+          await libraryApi.backupLibrary();
+        } catch (e) {
+          console.error("auto-backup failed:", e);
+        }
+      }
     } catch (e) {
       libraryDirtyRef.current = true;
       console.error("auto-export failed:", e);

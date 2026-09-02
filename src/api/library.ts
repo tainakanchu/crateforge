@@ -143,3 +143,29 @@ export async function getAlbums(
 export async function getAlbumTracks(albumKey: string): Promise<Track[]> {
   return invoke("get_album_tracks", { albumKey });
 }
+
+// === library.db バックアップ / 復元 / 整合性チェック / VACUUM (#167) ===
+
+/// library.db をバックアップする。`dest` 省略時はアプリのデータフォルダ配下
+/// `backups/library-YYYYMMDD-HHMMSS.db` へ書き出し、直近5件だけ残して
+/// ローテーションする（直近のバックアップが30分未満ならスキップしてそのパスを返す）。
+/// 書き出し先のパスを返す。
+export async function backupLibrary(dest?: string): Promise<string> {
+  return invoke("backup_library", { dest });
+}
+
+/// バックアップファイル (`src`) を検証してから library.db を置き換える。
+/// 戻り値 `true` はアプリの再起動が必要であることを示す。
+export async function restoreLibrary(src: string): Promise<boolean> {
+  return invoke("restore_library", { src });
+}
+
+/// 現在の library.db の整合性チェック結果を返す。`["ok"]` なら健全。
+export async function checkLibraryIntegrity(): Promise<string[]> {
+  return invoke("check_library_integrity");
+}
+
+/// 現在の library.db を VACUUM で最適化する。
+export async function vacuumLibrary(): Promise<void> {
+  return invoke("vacuum_library");
+}
