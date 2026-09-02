@@ -21,7 +21,12 @@ import type {
   CrateSection,
   AnchorKind,
 } from "../types";
-import { DEFAULT_FIELDS, ALBUM_SORT_FIELDS, DEFAULT_SET_META } from "../types";
+import {
+  DEFAULT_FIELDS,
+  ALBUM_SORT_FIELDS,
+  ARTIST_SORT_FIELDS,
+  DEFAULT_SET_META,
+} from "../types";
 import {
   loadSetWorkspacePersist,
   saveSetWorkspacePersist,
@@ -71,8 +76,8 @@ export interface RipStatus {
   error?: string;
 }
 
-// スコープ別ソート (#160)。"library" / "inbox" / "recent" / "albums" / "artists" /
-// `playlist:${id}` をキーに、ビューごとに最後に選んだソートを個別に覚える。
+// スコープ別ソート (#160)。"library" / "inbox" / "recent" / "artists" /
+// `playlist:${id}` (= ViewMode) をキーに、ビューごとに最後に選んだソートを個別に覚える。
 // "playlistOrder"（プレイリストの手動順・疑似フィールド）はここには書かない —
 // 通常プレイリストを List 表示したときの既定値として動的に導出する（defaultSortForScope）。
 export interface SortByScopeEntry {
@@ -126,6 +131,12 @@ interface PersistedSettings {
   // 右ペインの Set tools (Arc / Lint) 開閉状態 (#160)。
   setToolsOpen: boolean;
 }
+
+/// Artists ビューでしか意味を持たないソートフィールド (#155)。
+/// 他スコープにこの値が入っていたら resolveSort が既定へ倒す。
+const ARTIST_ONLY_SORT_FIELDS: SortField[] = ARTIST_SORT_FIELDS.filter(
+  (f) => f !== "name",
+);
 
 // 「前回入れたプレイリスト」ショートカットで保持する件数
 const MAX_RECENT_PLAYLISTS = 3;
@@ -296,7 +307,7 @@ interface AppState extends PersistedSettings {
   setSortField: (field: SortField) => void;
   setSortOrder: (order: SortOrder) => void;
   toggleSort: (field: SortField) => void;
-  /** 現在のスコープ（library / inbox / recent / albums / artists / playlist:id）へ直接書き込む。 */
+  /** 現在のスコープ（library / inbox / recent / artists / playlist:id）へ直接書き込む。 */
   setSort: (field: SortField, order: SortOrder) => void;
   /** 右ペインの Set tools (Arc / Lint) 開閉を切り替える (#160)。 */
   setSetToolsOpen: (open: boolean) => void;
@@ -443,6 +454,10 @@ function defaultSortForScope(state: {
   playlists: Playlist[];
   displayMode: DisplayMode;
 }): SortByScopeEntry {
+  // Artists ビュー (#155) はアーティスト粒度の語彙のみ。既定はアーティスト名の昇順。
+  if (state.viewMode === "artists") {
+    return { field: "name", order: "asc" };
+  }
   if (state.viewMode === "playlist" && state.selectedPlaylistId != null) {
     const pl = state.playlists.find(
       (p) => p.playlistId === state.selectedPlaylistId,
@@ -468,6 +483,17 @@ function resolveSort(state: {
 }): SortByScopeEntry {
   const key = sortScopeKey(state);
   let entry = state.sortByScope[key] ?? defaultSortForScope(state);
+  // Artists ビュー (#155) は displayMode に関わらず ArtistsView を描くので、
+  // アルバム粒度ではなくアーティスト粒度 (name/trackCount/albumCount) で正規化する。
+  if (state.viewMode === "artists") {
+    if (!ARTIST_SORT_FIELDS.includes(entry.field)) entry = defaultSortForScope(state);
+    return entry;
+  }
+  // 逆に、アーティスト専用フィールドが他スコープへ漏れていたら既定へ倒す
+  // (永続値が壊れていても「効かないソート」が残らないようにする)。
+  if (ARTIST_ONLY_SORT_FIELDS.includes(entry.field)) {
+    entry = defaultSortForScope(state);
+  }
   // Albums グリッド表示はアルバム粒度のソート語彙のみ (BPM 等トラック専用フィールドは無意味)。
   if (state.displayMode === "albums" && !ALBUM_SORT_FIELDS.includes(entry.field)) {
     entry = { field: "albumArtist", order: "asc" };
@@ -918,7 +944,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 17,
+      version: 18,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -1076,6 +1102,22 @@ export const useStore = create<AppState>()(
           }
           delete p.sortField;
           delete p.sortOrder;
+        }
+        // v18 (#155): Artists ビュー専用のソート (trackCount / albumCount) を追加。
+        // artists 以外のスコープにこの値が入っていると、そのビューでは効かないソートに
+        // なるのでエントリごと捨てる (defaultSortForScope が既定を返す)。
+        if (version < 18 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          const map = p.sortByScope;
+          if (typeof map === "object" && map !== null) {
+            const scopes = map as Record<string, { field?: unknown } | null>;
+            for (const [key, entry] of Object.entries(scopes)) {
+              if (key === "artists") continue;
+              if (ARTIST_ONLY_SORT_FIELDS.includes(entry?.field as SortField)) {
+                delete scopes[key];
+              }
+            }
+          }
         }
         return persisted as PersistedSettings;
       },

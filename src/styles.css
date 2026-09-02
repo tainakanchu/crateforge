@@ -3109,132 +3109,85 @@ input {
 }
 
 /* ============================================================
-   Album / Artist view
+   Artists view (viewMode = "artists")
+   カードグリッドは Albums 表示モード (.cb-card / .cov-*) を共用し、
+   ここは展開行のアルバム一覧まわりだけを定義する。
    ============================================================ */
-.album-view {
-  flex: 1;
-  overflow-y: auto;
-  padding: 18px 20px;
-  background: var(--bg);
-}
-.album-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 12px;
-}
-.album-card {
-  background: var(--bg2);
-  border: 1px solid var(--bd);
-  border-radius: 12px;
-  overflow: hidden;
-  transition: border-color 0.1s;
-}
-.album-card:hover {
-  border-color: var(--bd-strong);
-}
-.album-card.open {
-  grid-column: 1 / -1;
-  border-color: rgba(108, 161, 181, 0.4);
-}
-.album-card-header {
+.art-exp-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 11px;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.art-albs {
+  padding: 2px 0;
+}
+.art-alb + .art-alb {
+  border-top: 1px solid var(--bd);
+}
+.art-alb-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
   cursor: pointer;
 }
-.album-card-header:hover {
+.art-alb-head:hover,
+.art-alb.open .art-alb-head {
   background: var(--hover);
 }
-.album-meta {
-  flex: 1;
+.art-alb-cover {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 7px;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+}
+.art-alb-cover .glyph {
+  font-size: 16px;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.92);
+  font-family: "Hiragino Sans", "Noto Sans CJK SC", sans-serif;
+  line-height: 1;
+}
+.art-alb-meta {
   min-width: 0;
+  flex: 1;
 }
-.album-title {
-  font-size: 13.5px;
+.art-alb-meta .t {
+  font-size: 13px;
   font-weight: 650;
-  color: var(--tx-strong);
+  color: var(--tx);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.album-sub {
+.art-alb-meta .s {
   font-size: 11.5px;
-  color: var(--tx2);
+  color: var(--mut);
+  margin-top: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-top: 1px;
 }
-.album-stats {
-  font-size: 10.5px;
-  color: var(--mut);
-  margin-top: 3px;
-  font-variant-numeric: tabular-nums;
-}
-.album-play-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: var(--ac);
-  color: var(--on-ac);
+.art-alb-btn {
+  background: none;
   border: none;
+  color: var(--mut);
   cursor: pointer;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
 }
-.album-play-btn:hover {
-  background: var(--ac-hi);
-}
-.album-tracklist {
-  border-top: 1px solid var(--bd);
-  padding: 4px 0;
-  max-height: 380px;
-  overflow-y: auto;
-}
-.album-track-row {
-  display: grid;
-  grid-template-columns: 28px 1fr 50px;
-  align-items: center;
-  padding: 5px 14px;
-  font-size: 12.5px;
-  cursor: default;
-  gap: 10px;
-}
-.album-track-row:hover {
+.art-alb-btn:hover {
   background: var(--hover);
-}
-.album-track-row.playing {
-  background: var(--row-play);
-}
-.album-track-row.playing .album-track-name {
-  color: var(--ac);
-}
-.album-track-row.missing {
-  opacity: 0.5;
-}
-.album-track-num {
-  text-align: right;
-  color: var(--mut);
-  font-variant-numeric: tabular-nums;
-  font-size: 11px;
-}
-.album-track-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.album-track-album {
-  color: var(--tx2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.album-track-time {
-  text-align: right;
-  color: var(--tx2);
-  font-variant-numeric: tabular-nums;
+  color: var(--tx);
 }
 
 /* ============================================================

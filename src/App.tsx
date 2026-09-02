@@ -4,7 +4,7 @@ import { Sidebar } from "./components/Sidebar";
 import { TrackTable } from "./components/TrackTable";
 import { AlbumsView } from "./components/AlbumsView";
 import { TracksView } from "./components/TracksView";
-import { AlbumView } from "./components/AlbumView";
+import { ArtistsView } from "./components/ArtistsView";
 import { PlayerBar } from "./components/PlayerBar";
 import { RightRail } from "./components/RightRail";
 import { Toolbar } from "./components/Toolbar";
@@ -252,11 +252,6 @@ export default function App() {
           }
         } else if (viewMode === "recent") {
           result = await playbackApi.getRecentTracks(200);
-          setTracks(result);
-          setHasMore(false);
-        } else if (viewMode === "albums" || viewMode === "artists") {
-          // Group views need everything in-memory to group consistently.
-          result = await libraryApi.getTracks(50000, 0);
           setTracks(result);
           setHasMore(false);
         } else if (
@@ -1050,7 +1045,7 @@ export default function App() {
     exitTriage,
   ]);
 
-  const isAlbumView = viewMode === "albums" || viewMode === "artists";
+  const isArtistView = viewMode === "artists";
 
   // 右ペイン幅の CSS 変数は React style ではなく effect で同期する。
   // リサイズ中は RightRail が DOM を直接更新し、store は pointerup まで触らないため、
@@ -1125,11 +1120,8 @@ export default function App() {
             tracks={tracks}
             onRemoveFromInbox={handleRemoveFromInbox}
           />
-        ) : isAlbumView ? (
-          <AlbumView
-            mode={viewMode === "albums" ? "album" : "artist"}
-            onTracksChanged={triggerReload}
-          />
+        ) : isArtistView ? (
+          <ArtistsView reloadKey={reloadCount} />
         ) : displayMode === "albums" ? (
           <AlbumsView
             onLoadMore={handleLoadMore}

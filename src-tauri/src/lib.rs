@@ -203,6 +203,8 @@ pub fn run() {
             commands::library::set_search_fold_level,
             commands::library::get_albums,
             commands::library::get_album_tracks,
+            commands::library::get_artists,
+            commands::library::get_artist_albums,
             // バックアップ / 復元 / 整合性チェック / VACUUM (#167)
             commands::backup::backup_library,
             commands::backup::restore_library,

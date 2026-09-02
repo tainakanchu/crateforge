@@ -177,6 +177,20 @@ pub struct AlbumRow {
     pub bpm_max: Option<i64>,
 }
 
+/// Artists ビュー (サーバ集約) が返すアーティスト 1 件分の情報。
+/// `name` は表示名 (コンピレーションは "Various Artists" に束ねる)。
+/// `artwork_track_id` / `artwork_location_path` は代表曲 (実ファイルがある曲を優先)。
+/// パスはファイルが存在しない場合 None (ジャケットを引けないため)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistRow {
+    pub name: String,
+    pub album_count: i64,
+    pub track_count: i64,
+    pub artwork_track_id: Option<i64>,
+    pub artwork_location_path: Option<String>,
+}
+
 // === Audio analysis (DJ 向け: BPM / key / energy / loudness / similarity) ===
 
 /// 1 曲の解析結果。`track_analysis` テーブルに 1:1 で保存される。

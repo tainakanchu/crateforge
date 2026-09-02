@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Track,
   AlbumRow,
+  ArtistRow,
   ImportResult,
   ExportResult,
   ImportFileResult,
@@ -165,6 +166,22 @@ export async function getAlbums(
 /// 指定アルバムの曲を disc→track 順で取得。
 export async function getAlbumTracks(albumKey: string): Promise<Track[]> {
   return invoke("get_album_tracks", { albumKey });
+}
+
+/// ライブラリ全体をアーティスト単位に集約して取得 (コンピは Various Artists に巻き上げ)。
+/// sortField は name / trackCount / albumCount のみ有効 (他はサーバ側で name に倒れる)。
+export async function getArtists(
+  sortField?: SortField,
+  sortOrder?: SortOrder,
+  limit?: number,
+  offset?: number,
+): Promise<ArtistRow[]> {
+  return invoke("get_artists", { sortField, sortOrder, limit, offset });
+}
+
+/// 指定アーティストのアルバム一覧 (年→アルバム名順)。name は getArtists が返した表示名。
+export async function getArtistAlbums(name: string): Promise<AlbumRow[]> {
+  return invoke("get_artist_albums", { name });
 }
 
 // === library.db バックアップ / 復元 / 整合性チェック / VACUUM (#167) ===

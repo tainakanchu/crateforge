@@ -47,3 +47,15 @@ export interface AlbumRow {
   bpmMin: number | null;
   bpmMax: number | null;
 }
+
+/// Artists ビュー用のサーバ集約 1 行 (Rust: ArtistRow)。
+/// コンピレーションの曲は曲ごとのアーティストではなく "Various Artists" に巻き上がる。
+export interface ArtistRow {
+  name: string;
+  albumCount: number;
+  trackCount: number;
+  /// アートワーク代表曲。実ファイルがある曲を優先して選ぶ。
+  artworkTrackId: number | null;
+  /// 代表曲の実ファイルパス (ファイルが無い場合は null)。
+  artworkLocationPath: string | null;
+}

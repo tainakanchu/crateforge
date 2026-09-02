@@ -5,7 +5,7 @@ import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import { ColumnPicker } from "./ColumnPicker";
 import type { LibraryStats, SortField, ViewMode } from "../types";
-import { ALBUM_SORT_FIELDS } from "../types";
+import { ALBUM_SORT_FIELDS, ARTIST_SORT_FIELDS } from "../types";
 import { AUDIO_EXTENSIONS } from "../lib/audioExtensions";
 
 interface ToolbarProps {
@@ -46,6 +46,16 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "lastPlayed", label: "Last Played" },
 ];
 
+/// Artists ビュー専用のソート候補。アーティスト粒度で意味を持つのは
+/// ARTIST_SORT_FIELDS の 3 つだけなので、集合はそちらを単一の真実の源にする。
+const ARTIST_SORT_LABELS: Partial<Record<SortField, string>> = {
+  name: "Artist",
+  trackCount: "Tracks",
+  albumCount: "Albums",
+};
+const ARTIST_SORT_OPTIONS: { field: SortField; label: string }[] =
+  ARTIST_SORT_FIELDS.map((f) => ({ field: f, label: ARTIST_SORT_LABELS[f] ?? f }));
+
 // 完了 status をサブバーから自動で消すまでの時間 (#152)。
 const STATUS_CLEAR_MS = 8000;
 
@@ -78,7 +88,6 @@ function anchoredPopStyle(el: HTMLElement | null, width: number): React.CSSPrope
 const VIEW_TITLE: Record<ViewMode, string> = {
   library: "All Tracks",
   inbox: "Inbox",
-  albums: "Albums",
   artists: "Artists",
   recent: "Recently Played",
   playlist: "Playlist",
@@ -174,7 +183,7 @@ export function Toolbar({
   const sortBtnRef = useRef<HTMLButtonElement>(null);
   const moreBtnRef = useRef<HTMLButtonElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
-  const isListLike = viewMode !== "albums" && viewMode !== "artists";
+  const isListLike = viewMode !== "artists";
 
   // ツールバー幅を監視して compact を切り替える（初回描画前に確定させたいので layout effect）。
   useLayoutEffect(() => {
@@ -464,11 +473,12 @@ export function Toolbar({
     : activePlaylist
       ? activePlaylist.name
       : VIEW_TITLE[viewMode];
+  // Artists ビューは tracks を全件持たない (サーバ集約) ので、件数はライブラリ統計を使う。
   const subCount = isSearching
     ? tracks.length.toLocaleString()
     : activePlaylist
       ? activePlaylist.trackCount.toLocaleString()
-      : viewMode === "library" && stats
+      : (viewMode === "library" || viewMode === "artists") && stats
         ? stats.trackCount.toLocaleString()
         : tracks.length.toLocaleString();
 
@@ -483,8 +493,10 @@ export function Toolbar({
     !!activePlaylist &&
     !activePlaylist.isSmart &&
     !activePlaylist.isFolder;
-  const sortOptions =
-    displayMode === "albums"
+  // Artists ビューはアーティスト粒度、Albums 表示モードはアルバム粒度の語彙に絞る。
+  const sortOptions = !isListLike
+    ? ARTIST_SORT_OPTIONS
+    : displayMode === "albums"
       ? albumSortOptions
       : manualSortAvailable
         ? [PLAYLIST_ORDER_OPTION, ...SORT_OPTIONS]

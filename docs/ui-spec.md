@@ -24,7 +24,7 @@
 
 ### 1.4 設計上の重要原則
 - **状態の真実は SQLite**: フロントは表示と編集 UI のみを担う。
-- **大量データへの耐性**: 10,000+ トラックでも快適に動く必要があり、テーブルは仮想化必須、グループビュー (Albums/Artists) は全件をメモリにロードする想定。
+- **大量データへの耐性**: 10,000+ トラックでも快適に動く必要があり、テーブルは仮想化必須。Albums 表示モード / Artists ビューはサーバ集約 (`get_albums` / `get_artists`) + 仮想化で全件をメモリに載せない。
 - **キーボード駆動**: 検索 (`/`) / 再生 (`Space`) / ナビゲーション (`J K`) / 設定 (`S R`) / 音量 (`↑↓`) を完全にキーで操作できる。
 - **iTunes 風メンタルモデル**: 左サイドバー (ライブラリ + プレイリスト)、中央テーブル、下部プレーヤー、という古典的 3 ペイン構造。
 
@@ -40,7 +40,7 @@
 │ Sidebar  │  SearchBar (debounced 120ms / "/" focus)
 │ 240px    ├─────────────────────────────────────────┤
 │          │
-│          │  Main Content (TrackTable | AlbumView)
+│          │  Main Content (TrackTable | AlbumsView | ArtistsView)
 │          │
 ├──────────┴─────────────────────────────────────────┤
 │            PlayerBar (64px fixed)                  │
@@ -53,7 +53,7 @@
 **セクション**:
 1. **Library**
    - 🎶 All Tracks (viewMode = `library`)
-   - 💿 Albums (viewMode = `albums`)
+   - 📥 Inbox (viewMode = `inbox`)
    - 🎤 Artists (viewMode = `artists`)
    - 🕐 Recently Played (viewMode = `recent`, 200 件まで)
 2. **Playlists** (折り畳みなしのツリー、フォルダ階層対応)
@@ -88,10 +88,15 @@ viewMode により切替:
 | `library`     | TrackTable (全トラック、ページング 500 件ずつ)                          |
 | `playlist`    | TrackTable (選択中プレイリストのトラック)                               |
 | `recent`      | TrackTable (再生履歴順、最大 200 件)                                    |
-| `albums`      | AlbumView (アルバム単位のグリッド + 展開可能なトラックリスト)           |
-| `artists`     | AlbumView (アーティスト単位、`mode = "artist"`)                         |
+| `artists`     | ArtistsView (アーティスト単位のグリッド → アルバム → 曲へ展開)          |
 
 検索クエリが入力されている場合は viewMode に関わらず TrackTable に検索結果を表示する。
+
+**Albums は viewMode ではなく `displayMode`**: アルバム単位のグリッド (AlbumsView) は
+「どのコレクションを見ているか」(viewMode) と独立した中央ペインの描画モード
+(`displayMode = "list" | "albums" | "tracks"`) で、Toolbar のセグメント
+(List / Albums / Tracks) から切り替える。したがって library / playlist / recent の
+どのコレクションでもアルバム表示にできる。
 
 ### 2.6 PlayerBar (下部固定)
 4 つの領域:
@@ -146,15 +151,26 @@ viewMode により切替:
 - 区切り → **Add to playlist...** プレイリスト一覧
 - 区切り → **Genre tags**: ＋ Add tag… / 現タグごとに「− Remove "xxx"」
 
-### 3.2 AlbumView (Albums / Artists)
-**ビュー構造**:
-- グループ単位のカードグリッド。
-- カードヘッダ: `💿`/`🎤` プレースホルダ + タイトル + サブラベル (Album のみ Album Artist 表示) + `N tracks · MM:SS`
-- カード右端: ▶ Play album ボタン (全件をキューに入れて即再生)
-- カードクリック: トラックリストを展開
-- 展開時のトラック行: `#` / トラック名 / (Artist mode のみ) アルバム名 / Time。ダブルクリックで再生。
+### 3.2 ArtistsView (viewMode = `artists`)
+**データ取得**: すべてサーバ集約 + 遅延取得で、全曲をメモリに載せない。
+- 一覧: `get_artists(sortField, sortOrder, limit, offset)` → `{ name, albumCount, trackCount, artworkTrackId, artworkLocationPath }`。
+  500 件ずつページング (スクロール末尾で追加取得)。コンピレーション (`compilation=1`) の曲は
+  曲ごとのアーティストではなく **Various Artists** に巻き上がる (Albums 表示モードと同じ束ね方)。
+- 展開時: `get_artist_albums(name)` でそのアーティストのアルバム (年→アルバム名順)。
+- さらにアルバムを開くと `get_album_tracks(albumKey)` で曲 (disc→track 順)。取得結果はキャッシュする。
 
-**現状の不足**: アルバムアートは表示せず常にプレースホルダ絵文字のみ。再設計時はアートワーク埋め込み (Cover Art Archive キャッシュ) を想定可能。
+**ビュー構造**:
+- アーティストカードのグリッド (`useVirtualizer` で行単位に仮想化。Albums 表示モードと同じ実装)。
+- カード: アートワーク (代表曲の埋め込み画像、無ければグラデーション + 先頭グリフ) +
+  アルバム数バッジ + ▶ Play artist + ＋ Add artist to crate。
+- カード下ラベル: アーティスト名 / `N tracks · M albums`。
+- カードクリックで展開行を差し込み、アルバム一覧を表示 (Play / Queue / Crate をアーティスト単位でも提供)。
+- アルバム行: ジャケット + アルバム名 + `年 · N tracks · 時間` + ▶ / Queue / ＋。クリックで曲一覧を展開。
+- 曲行: `#` / 曲名 (別アーティストなら `— Artist`) / Time / ＋ Crate。ダブルクリックで再生。
+
+**ソート**: ツールバーの Sort は Artists ビューでは `Artist` (name) / `Tracks` (trackCount) /
+`Albums` (albumCount) の 3 つに絞られ、サーバ側 (`artist_order_by`) が同じ語彙で並べる。
+同値時は name → 束ねキーで安定させるので、ページ間で重複・取りこぼしが起きない。
 
 ### 3.3 PlayerBar の状態
 - `playback.isPlaying` で ▶/⏸ アイコン切替
@@ -226,7 +242,7 @@ viewMode により切替:
 **初回利用**:
 1. `📥 Import XML` で iTunes Library.xml を読み込む、または `🎵 Add Files`、または `💿 Rip CD`。
 2. ライブラリにトラックが現れる。
-3. 左サイドバーから「All Tracks」「Albums」「Artists」「Recently Played」と各プレイリストを切替。
+3. 左サイドバーから「All Tracks」「Inbox」「Artists」「Recently Played」と各プレイリストを切替。
 
 **プレイリスト作成と編集**:
 1. サイドバーの `＋` をクリック → 名前入力。
@@ -265,7 +281,7 @@ viewMode により切替:
 
 ### 4.3 マウスインタラクション規約
 - 単クリック: 選択 / ナビゲーション
-- ダブルクリック: 再生 (TrackTable / AlbumView) または名前変更 (Sidebar)
+- ダブルクリック: 再生 (TrackTable / AlbumsView / ArtistsView) または名前変更 (Sidebar)
 - 右クリック: コンテキストメニューまたは prompt (Sidebar)
 - `Ctrl/Cmd + クリック`: 追加選択
 - `Shift + クリック`: 範囲選択
@@ -276,7 +292,8 @@ viewMode により切替:
 
 ### 5.1 Zustand store (`useStore`)
 **ビュー状態**:
-- `viewMode`: `"library" | "playlist" | "recent" | "albums" | "artists"`
+- `viewMode`: `"library" | "playlist" | "recent" | "artists" | "inbox"`
+- `displayMode`: `"list" | "albums" | "tracks"` (中央ペインの描画モード。viewMode とは独立)
 - `selectedPlaylistId: number | null`
 - `searchQuery: string`
 
@@ -347,7 +364,7 @@ viewMode により切替:
 ### 7.1 視覚デザイン
 - **絵文字アイコンの代替**: トーン / 解像度が OS によりバラつく。SVG アイコンセット (Lucide / Phosphor 系) への置き換えを検討。
 - **アクセントカラー (`#ff3b5c`) の用途過多**: プライマリ・現在再生・通知の区別が弱い。
-- **アルバムアート未表示**: AlbumView / PlayerBar / TrackTable いずれもアートワークの表示余地がある。
+- **アルバムアート**: AlbumsView / ArtistsView は埋め込みジャケットを表示するが、PlayerBar / TrackTable にはまだ表示余地がある。
 - **コンテキストメニュー右クリックがネイティブ `prompt()` の場面 (Sidebar の右クリック)** が残っている。
 
 ### 7.2 情報密度と可読性
@@ -384,7 +401,7 @@ viewMode により切替:
 ┌─Sidebar───────────────┬─Toolbar (アクション + Stats + Status)──┐
 │ LIBRARY               ├──Search──────────────────────────────────┤
 │  🎶 All Tracks   *    │                                          │
-│  💿 Albums            │ ┌─Header (sortable cols + ⚙︎)──────────┐ │
+│  📥 Inbox             │ ┌─Header (sortable cols + ⚙︎)──────────┐ │
 │  🎤 Artists           │ │ Track | Artist | Album | ★ | … | Time│ │
 │  🕐 Recently Played   │ ├──────────────────────────────────────┤ │
 ├────────────────────── │ │ row (selected)                       │ │
@@ -397,20 +414,22 @@ viewMode により切替:
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.2 Albums / Artists ビュー
+### 8.2 Artists ビュー / Albums 表示モード
 ```
-[Album card]   [Album card]   [Album card]
- 💿 Title       💿 Title       💿 Title
- Album Artist   Album Artist   Album Artist
+[Artist card]  [Artist card]  [Artist card]
+ 🎤 Name        🎤 Name        🎤 Name
  12 tracks ·    8 tracks ·     14 tracks ·
- 1:02:30        45:11          1:18:09     [▶]
+ 3 albums       1 album        2 albums   [▶]
 
-(展開時)
- ┌─Tracklist────────────────────┐
- │ 01  Song name          3:22 │
- │ 02  Song name (playing)2:58 │  ← currentTrack の場合
- │ 03  Song name          4:11 │
- └──────────────────────────────┘
+(アーティスト展開時)
+ ┌─Artist───────────── [▶ Play][Queue][+ Crate] [^] ┐
+ │ 💿 Album A   2019 · 10 tracks · 45:11  ▶ ≡ + ⌄ │
+ │ 💿 Album B   2021 · 4 tracks · 18:09   ▶ ≡ + ⌄ │
+ │   ┌─(アルバム展開時)────────────────────────┐   │
+ │   │ 01  Song name              3:22   +  │   │
+ │   │ 02  Song name (playing)    2:58   ✓  │   │
+ │   └──────────────────────────────────────┘   │
+ └──────────────────────────────────────────────┘
 ```
 
 ### 8.3 RipDialog
@@ -504,7 +523,8 @@ src/
 │   ├── Sidebar.tsx               # 左
 │   ├── SearchBar.tsx
 │   ├── TrackTable.tsx            # 中央 (リスト)
-│   ├── AlbumView.tsx             # 中央 (アルバム/アーティスト)
+│   ├── AlbumsView.tsx            # 中央 (displayMode = "albums": アルバムグリッド)
+│   ├── ArtistsView.tsx           # 中央 (viewMode = "artists": アーティストグリッド)
 │   ├── PlayerBar.tsx             # 下部
 │   ├── TrackEditor.tsx           # モーダル: メタデータ編集
 │   ├── ColumnPicker.tsx          # モーダル: カラム選択

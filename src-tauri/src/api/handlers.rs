@@ -57,7 +57,7 @@ const ALL_ROWS: i64 = i64::MAX;
 /// 表示アーティスト名を契約のフォールバック規則で決める。
 /// `first || second || "Unknown Artist"` 相当: 各値は Some かつ非空文字なら採用、
 /// None / 空文字 "" は次へ、空白のみ " " は truthy として採用する
-/// (db 側 `get_artists` の SQL 表示名式と完全一致させる)。
+/// (db 側 `get_artists_legacy` の SQL 表示名式と完全一致させる)。
 fn display_artist(first: Option<&str>, second: Option<&str>) -> String {
     match first {
         Some(s) if !s.is_empty() => s.to_string(),
@@ -1201,7 +1201,7 @@ pub async fn get_artists(
     Query(q): Query<ArtistsQuery>,
 ) -> Result<Json<Vec<ArtistInfo>>, ApiError> {
     let by_album_artist = q.grouping.as_deref() == Some("albumArtist");
-    Ok(Json(state.db()?.get_artists(by_album_artist)?))
+    Ok(Json(state.db()?.get_artists_legacy(by_album_artist)?))
 }
 
 /// `GET /api/playlists` — 全プレイリスト。
