@@ -54,6 +54,8 @@ export default function RootLayout() {
     void useConnection.getState().hydrate();
     // expo-audio エンジンを差し込む（TV でもロック画面コントロールが使えるよう同じ実装を利用）。
     usePlayer.getState().setEngine(createAudioEngine());
+    // shuffle / repeat を SecureStore から復元する。
+    void usePlayer.getState().hydrate();
     // バックグラウンド再生・ロック画面コントロールを有効化する。
     void initPlayback();
     // OTA 更新チェック。

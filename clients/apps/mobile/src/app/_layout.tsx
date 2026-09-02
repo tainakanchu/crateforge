@@ -58,6 +58,8 @@ export default function RootLayout() {
       await Promise.all([
         useDownloads.getState().hydrate(),
         useSettings.getState().hydrate(),
+        // shuffle / repeat の復元（再生ストア）。
+        usePlayer.getState().hydrate(),
       ]);
       await useConnection.getState().hydrate();
     })();
