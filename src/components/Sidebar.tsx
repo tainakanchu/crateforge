@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { useStore } from "../store/useStore";
 import * as playlistsApi from "../api/playlists";
 import { Icon } from "./Icon";
+import { getTrackIdsData, hasTrackIdsData } from "../lib/trackDrag";
 import appIcon from "../assets/app-icon.png";
 import type { Playlist, ViewMode } from "../types";
 
@@ -153,7 +154,11 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
     pushToast,
     inboxCount,
     exitTriage,
+    pushRecentPlaylist,
   } = useStore();
+
+  // 一覧からドラッグしてきたトラックのドロップ先ハイライト (playlistId)。
+  const [dropTargetId, setDropTargetId] = useState<number | null>(null);
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -309,6 +314,54 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
     [startRename, handleDuplicate, onEditSmart, handleDelete],
   );
 
+  // === トラックのドロップ受け入れ (TrackTable / Similar からの D&D) ===
+  // 受け取れるのは「通常プレイリスト」だけ。フォルダとスマートは条件で決まるので対象外。
+  // 表示中のプレイリスト自身も除く（並べ替えドラッグの取りこぼしで重複追加しないため）。
+  const canDropTracks = useCallback(
+    (pl: Playlist) =>
+      !pl.isFolder &&
+      !pl.isSmart &&
+      !(viewMode === "playlist" && pl.playlistId === selectedPlaylistId),
+    [viewMode, selectedPlaylistId],
+  );
+
+  const handleTracksDragOver = useCallback(
+    (e: React.DragEvent, pl: Playlist) => {
+      if (!canDropTracks(pl) || !hasTrackIdsData(e.dataTransfer)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      setDropTargetId((cur) => (cur === pl.playlistId ? cur : pl.playlistId));
+    },
+    [canDropTracks],
+  );
+
+  const handleTracksDragLeave = useCallback((e: React.DragEvent, pl: Playlist) => {
+    // 子要素へ移っただけならハイライトを消さない。
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    // 隣の行へ移ったときは、そちらの dragover が既に立てた印を消さない。
+    setDropTargetId((cur) => (cur === pl.playlistId ? null : cur));
+  }, []);
+
+  const handleTracksDrop = useCallback(
+    async (e: React.DragEvent, pl: Playlist) => {
+      if (!canDropTracks(pl) || !hasTrackIdsData(e.dataTransfer)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setDropTargetId(null);
+      const ids = getTrackIdsData(e.dataTransfer);
+      if (ids.length === 0) return;
+      try {
+        const added = await playlistsApi.addTracksToPlaylist(pl.playlistId, ids);
+        pushRecentPlaylist(pl.playlistId);
+        onPlaylistsChanged();
+        pushToast("success", `「${pl.name}」に ${added} 曲を追加しました`);
+      } catch (err) {
+        pushToast("error", `追加に失敗しました: ${err}`);
+      }
+    },
+    [canDropTracks, onPlaylistsChanged, pushRecentPlaylist, pushToast],
+  );
+
   const rootPlaylists = playlists.filter((p) => !p.parentPersistentId);
   const childrenOf = (parentId: string | null) =>
     playlists.filter((p) => p.parentPersistentId === parentId);
@@ -323,9 +376,15 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
       <div key={pl.id}>
         <div
           className={
-            "cb-prow" + (isActive ? " on" : "") + (pl.isFolder ? " fold" : "")
+            "cb-prow" +
+            (isActive ? " on" : "") +
+            (pl.isFolder ? " fold" : "") +
+            (dropTargetId === pl.playlistId ? " dragover" : "")
           }
           style={{ paddingLeft: `${15 + depth * 14}px` }}
+          onDragOver={(e) => handleTracksDragOver(e, pl)}
+          onDragLeave={(e) => handleTracksDragLeave(e, pl)}
+          onDrop={(e) => handleTracksDrop(e, pl)}
           onClick={() =>
             pl.isFolder ? toggleFolder(pl.playlistId) : handlePlaylistClick(pl)
           }
@@ -353,7 +412,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
               ? "Click to collapse/expand, double-click to rename"
               : pl.isSmart
                 ? "Smart playlist — right-click for actions (Edit rules)"
-                : "Double-click to rename, right-click for actions"
+                : "曲をドロップで追加 / ダブルクリックで名前変更、右クリックでメニュー"
           }
         >
           {pl.isFolder && (

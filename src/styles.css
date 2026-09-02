@@ -239,6 +239,12 @@ input {
 .cb-prow.on svg {
   color: var(--ac);
 }
+/* 一覧からのトラック D&D 受け入れ中のハイライト (Crate の .cb-cratelist-drop に合わせる)。 */
+.cb-prow.dragover {
+  background: var(--ac-13, rgba(45, 212, 191, 0.08));
+  outline: 1px dashed var(--ac);
+  outline-offset: -2px;
+}
 .cb-prow.fold {
   color: #cfd3d7;
   font-weight: 550;
@@ -675,6 +681,28 @@ input {
 }
 .cb-row.missing .cb-nm .t {
   color: var(--tx2);
+}
+/* プレイリスト手動順のドラッグ並べ替え。列ヘッダ (.cb-h-drag) と同じ見た目に揃える。 */
+.cb-row.dragging {
+  opacity: 0.5;
+}
+.cb-row.dropbefore::before,
+.cb-row.dropafter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--ac);
+  border-radius: 1px;
+  z-index: 4;
+  pointer-events: none;
+}
+.cb-row.dropbefore::before {
+  top: 0;
+}
+.cb-row.dropafter::after {
+  bottom: 0;
 }
 
 /* Embedded artwork overlay (fills its rounded, clipped parent). */
