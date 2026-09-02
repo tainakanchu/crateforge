@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::AudioPlayer;
 
@@ -10,8 +10,8 @@ use crate::db::Database;
 use crate::importer;
 use crate::itunes_xml::{parser, writer};
 use crate::models::{
-    AlbumRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult, LibraryStats, Track,
-    TrackEdit,
+    AlbumRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult, ImportSummary,
+    LibraryStats, Track, TrackEdit,
 };
 use crate::organizer;
 
@@ -48,6 +48,26 @@ pub fn export_library(app: AppHandle, output_path: String) -> Result<ExportResul
 pub fn import_files(app: AppHandle, paths: Vec<String>) -> Result<ImportFileResult, String> {
     let db = get_db(&app)?;
     Ok(importer::import_files(&db, &paths))
+}
+
+/// フォルダ (とファイル) をまとめて取り込む。フォルダは再帰的に走査し、
+/// 対応拡張子のファイルだけを取り込む。既にライブラリにあるパスはスキップする。
+/// 進行状況は `import-progress` イベント (`{done, total}`) で通知する。
+#[tauri::command]
+pub fn import_folders(app: AppHandle, paths: Vec<String>) -> Result<ImportSummary, String> {
+    let db = get_db(&app)?;
+    let roots: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    let event_app = app.clone();
+    // 大量ファイルでイベントを流しすぎないよう、最初・最後・25件ごとだけ通知する。
+    let summary = importer::import_folders(&db, &roots, move |done, total| {
+        if done == 0 || done == total || done % 25 == 0 {
+            let _ = event_app.emit(
+                "import-progress",
+                serde_json::json!({ "done": done, "total": total }),
+            );
+        }
+    });
+    Ok(summary)
 }
 
 #[tauri::command]

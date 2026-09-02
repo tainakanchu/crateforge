@@ -86,6 +86,7 @@ export default function App() {
     selectedPlaylistId,
     playlists,
     searchQuery,
+    searchScope,
     filterTags,
     setTracks,
     appendTracks,
@@ -258,19 +259,16 @@ export default function App() {
           result = await libraryApi.getTracks(50000, 0);
           setTracks(result);
           setHasMore(false);
-        } else if (combinedQuery) {
-          result = await libraryApi.searchTracks(
-            combinedQuery,
-            PAGE_SIZE,
-            offset,
-            effectiveSort,
-            effectiveOrder,
-          );
-          if (reset) setTracks(result);
-          else appendTracks(result);
-          setHasMore(result.length === PAGE_SIZE);
-        } else if (viewMode === "playlist" && selectedPlaylistId !== null) {
+        } else if (
+          viewMode === "playlist" &&
+          selectedPlaylistId !== null &&
+          (!combinedQuery || searchScope === "playlist")
+        ) {
+          // プレイリスト表示中はスコープ既定が「このプレイリスト」なので、検索語があっても
+          // ライブラリ全体へ飛ばさず、同じ DSL でプレイリストの中だけを絞り込む。
+          // スコープが「ライブラリ全体」のときだけ下の検索分岐へ落とす。
           const pl = playlists.find((p) => p.playlistId === selectedPlaylistId);
+          const inPlaylistQuery = combinedQuery || undefined;
           result = pl?.isSmart
             ? await playlistsApi.getSmartPlaylistTracks(
                 selectedPlaylistId,
@@ -278,6 +276,7 @@ export default function App() {
                 offset,
                 effectiveSort,
                 effectiveOrder,
+                inPlaylistQuery,
               )
             : await playlistsApi.getPlaylistTracks(
                 selectedPlaylistId,
@@ -286,7 +285,19 @@ export default function App() {
                 // 手動順のときは sortField 未指定 → DB は pt.sort_index ASC を使う。
                 manualOrder ? undefined : effectiveSort,
                 manualOrder ? undefined : effectiveOrder,
+                inPlaylistQuery,
               );
+          if (reset) setTracks(result);
+          else appendTracks(result);
+          setHasMore(result.length === PAGE_SIZE);
+        } else if (combinedQuery) {
+          result = await libraryApi.searchTracks(
+            combinedQuery,
+            PAGE_SIZE,
+            offset,
+            effectiveSort,
+            effectiveOrder,
+          );
           if (reset) setTracks(result);
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
@@ -312,6 +323,7 @@ export default function App() {
       selectedPlaylistId,
       playlists,
       searchQuery,
+      searchScope,
       filterTags,
       sortField,
       sortOrder,
@@ -355,7 +367,7 @@ export default function App() {
   useEffect(() => {
     loadTracks(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, selectedPlaylistId, searchQuery, filterTags, sortField, sortOrder, reloadCount]);
+  }, [viewMode, selectedPlaylistId, searchQuery, searchScope, filterTags, sortField, sortOrder, reloadCount]);
 
   useEffect(() => {
     void refreshInboxCount();

@@ -98,10 +98,11 @@ export function Toolbar({
     setDisplayMode,
     searchQuery,
     setSearchQuery,
+    searchScope,
+    setSearchScope,
     filterTags,
     removeFilterTag,
     clearFilterTags,
-    setViewMode,
     sortField,
     sortOrder,
     toggleSort,
@@ -123,6 +124,7 @@ export function Toolbar({
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
+  const [importingFolders, setImportingFolders] = useState(false);
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
   const [status, setStatusRaw] = useState("");
   const statusTimerRef = useRef<number | null>(null);
@@ -276,11 +278,12 @@ export function Toolbar({
       clearTimeout(searchTimer.current);
       if (value.length === 1) return;
       searchTimer.current = setTimeout(() => {
+        // 表示中のビューは変えない。プレイリスト表示中は検索スコープ
+        // （このプレイリスト / ライブラリ全体）が対象を決める。
         setSearchQuery(value);
-        if (value) setViewMode("library");
       }, 300);
     },
-    [setSearchQuery, setViewMode],
+    [setSearchQuery],
   );
 
   const handleSearchKeyDown = useCallback(
@@ -358,6 +361,55 @@ export function Toolbar({
       setStatus(`Import files error: ${err}`);
     } finally {
       setImportingFiles(false);
+    }
+  }, [onLibraryChanged, refreshStats]);
+
+  // フォルダを選んで再帰的に取り込む (対応拡張子だけを Rust 側が拾う)。
+  const handleImportFolders = useCallback(async () => {
+    const selected = await open({ directory: true, multiple: true });
+    if (!selected) return;
+    const paths = Array.isArray(selected) ? selected : [selected];
+    if (paths.length === 0) return;
+    setImportingFolders(true);
+    setStatus(`${paths.length} フォルダを走査中…`);
+    // 走査後は 1 ファイルごとに進捗が飛んでくるのでサブバーに出す。
+    const unlisten = await libraryApi.onImportProgress(({ done, total }) => {
+      setStatus(total > 0 ? `取り込み中 ${done}/${total}` : "対応ファイルなし");
+    });
+    try {
+      const r = await libraryApi.importFolders(paths);
+      const detail =
+        (r.skipped > 0 ? `, skipped ${r.skipped}` : "") +
+        (r.failed > 0 ? `, failed ${r.failed}` : "");
+      setStatus(`Imported ${r.imported} file(s)${detail}`);
+      if (r.imported > 0) {
+        useStore
+          .getState()
+          .pushToast(
+            "success",
+            `${r.imported} 曲を取り込みました` +
+              (r.skipped > 0 ? `（${r.skipped} 件は取り込み済み）` : "") +
+              " — Inbox に追加されました。サイドバーの Inbox から整理できます",
+            5200,
+          );
+      } else {
+        useStore
+          .getState()
+          .pushToast(
+            "info",
+            r.skipped > 0
+              ? `新しい曲はありませんでした（${r.skipped} 件は取り込み済み）`
+              : "対応フォーマットのファイルが見つかりませんでした",
+          );
+      }
+      onLibraryChanged();
+      refreshStats();
+    } catch (err) {
+      setStatus(`Import folder error: ${err}`);
+      useStore.getState().pushToast("error", `フォルダ取り込みエラー: ${err}`);
+    } finally {
+      unlisten();
+      setImportingFolders(false);
     }
   }, [onLibraryChanged, refreshStats]);
 
@@ -469,6 +521,14 @@ export function Toolbar({
       disabled: importingFiles,
     },
     {
+      id: "importFolders",
+      label: "Add Folder",
+      icon: "folder",
+      title: "フォルダを丸ごと取り込む (サブフォルダも再帰的に走査)",
+      onClick: handleImportFolders,
+      disabled: importingFolders,
+    },
+    {
       id: "rip",
       label: "Rip CD",
       icon: "disc",
@@ -524,7 +584,10 @@ export function Toolbar({
               id="search-input"
               ref={searchInputRef}
               type="text"
-              placeholder="Search… or bpm:120-128  key:8A  energy:60-100  (/ or Ctrl+F)"
+              placeholder={
+                'Search… artist:"daft punk"  genre:house  year:2015-2020  rating:4-5  ' +
+                "bpm:120-128  key:compat:8A  analyzed:no  (/ or Ctrl+F)"
+              }
               value={localSearch}
               onChange={handleSearchChange}
               onKeyDown={handleSearchKeyDown}
@@ -555,6 +618,28 @@ export function Toolbar({
               </button>
             )}
           </div>
+
+          {/* プレイリスト表示中だけ出す検索スコープ切り替え。既定はこのプレイリスト内。 */}
+          {viewMode === "playlist" && (
+            <div className="cb-seg2" role="group" aria-label="検索範囲">
+              <button
+                className={"cb-segb2" + (searchScope === "playlist" ? " on" : "")}
+                onClick={() => setSearchScope("playlist")}
+                title="このプレイリストの中だけを検索"
+                aria-pressed={searchScope === "playlist"}
+              >
+                このプレイリスト
+              </button>
+              <button
+                className={"cb-segb2" + (searchScope === "library" ? " on" : "")}
+                onClick={() => setSearchScope("library")}
+                title="ライブラリ全体を検索"
+                aria-pressed={searchScope === "library"}
+              >
+                ライブラリ全体
+              </button>
+            </div>
+          )}
 
           <div className="cb-seg">
             <button

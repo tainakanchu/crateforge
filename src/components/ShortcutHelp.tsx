@@ -47,6 +47,16 @@ const GROUPS: Group[] = [
       { keys: ["Ctrl", "F"], label: "検索にフォーカス" },
       { keys: ["Ctrl", "L"], label: "ライブラリへ戻る（検索クリア）" },
       { keys: ["Esc"], label: "検索/入力を抜ける・ダイアログを閉じる" },
+      {
+        keys: ["検索"],
+        label:
+          "artist: album: albumartist: genre: comment: year:2015-2020 rating:4-5 bpm:120-128 key:8A key:compat:8A energy:60-100 analyzed:yes（値は \"…\" で囲める・空白区切りは AND）",
+      },
+      {
+        keys: ["スコープ"],
+        label:
+          "プレイリスト表示中は検索ボックス横で「このプレイリスト」/「ライブラリ全体」を切り替え",
+      },
     ],
   },
   {
