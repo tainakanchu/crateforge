@@ -347,6 +347,16 @@ pub struct ImportFileResult {
     pub skipped: usize,
 }
 
+/// フォルダ取り込み (`import_folders`) の結果。
+/// `skipped` は「既にライブラリにあるパス」、`failed` は「読み込み/追加に失敗」。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSummary {
+    pub imported: usize,
+    pub skipped: usize,
+    pub failed: usize,
+}
+
 // === Smart playlists ===
 
 /// スマートプレイリストの条件 (フラットなルール列 + 全/いずれか一致)。

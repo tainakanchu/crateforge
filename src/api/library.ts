@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Track,
   AlbumRow,
   ImportResult,
   ExportResult,
   ImportFileResult,
+  ImportSummary,
   LibraryStats,
   TrackEdit,
   GenreTagCount,
@@ -22,6 +24,27 @@ export async function exportLibrary(outputPath: string): Promise<ExportResult> {
 
 export async function importFiles(paths: string[]): Promise<ImportFileResult> {
   return invoke("import_files", { paths });
+}
+
+/**
+ * フォルダ (とファイル) をまとめて取り込む。フォルダは Rust 側で再帰的に走査され、
+ * 対応拡張子のファイルだけが取り込まれる。既存パスはスキップされる。
+ */
+export async function importFolders(paths: string[]): Promise<ImportSummary> {
+  return invoke("import_folders", { paths });
+}
+
+/** フォルダ取り込みの進捗 (`import_folders` 実行中に随時飛んでくる)。 */
+export interface ImportProgress {
+  done: number;
+  total: number;
+}
+
+/** フォルダ取り込みの進捗を購読する。戻り値を呼ぶと購読解除。 */
+export async function onImportProgress(
+  handler: (p: ImportProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ImportProgress>("import-progress", (e) => handler(e.payload));
 }
 
 export async function getTracks(

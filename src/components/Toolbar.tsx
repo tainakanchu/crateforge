@@ -110,6 +110,7 @@ export function Toolbar({
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
+  const [importingFolders, setImportingFolders] = useState(false);
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [stats, setStats] = useState<LibraryStats | null>(null);
@@ -316,6 +317,55 @@ export function Toolbar({
     }
   }, [onLibraryChanged, refreshStats]);
 
+  // フォルダを選んで再帰的に取り込む (対応拡張子だけを Rust 側が拾う)。
+  const handleImportFolders = useCallback(async () => {
+    const selected = await open({ directory: true, multiple: true });
+    if (!selected) return;
+    const paths = Array.isArray(selected) ? selected : [selected];
+    if (paths.length === 0) return;
+    setImportingFolders(true);
+    setStatus(`${paths.length} フォルダを走査中…`);
+    // 走査後は 1 ファイルごとに進捗が飛んでくるのでサブバーに出す。
+    const unlisten = await libraryApi.onImportProgress(({ done, total }) => {
+      setStatus(total > 0 ? `取り込み中 ${done}/${total}` : "対応ファイルなし");
+    });
+    try {
+      const r = await libraryApi.importFolders(paths);
+      const detail =
+        (r.skipped > 0 ? `, skipped ${r.skipped}` : "") +
+        (r.failed > 0 ? `, failed ${r.failed}` : "");
+      setStatus(`Imported ${r.imported} file(s)${detail}`);
+      if (r.imported > 0) {
+        useStore
+          .getState()
+          .pushToast(
+            "success",
+            `${r.imported} 曲を取り込みました` +
+              (r.skipped > 0 ? `（${r.skipped} 件は取り込み済み）` : "") +
+              " — Inbox に追加されました。サイドバーの Inbox から整理できます",
+            5200,
+          );
+      } else {
+        useStore
+          .getState()
+          .pushToast(
+            "info",
+            r.skipped > 0
+              ? `新しい曲はありませんでした（${r.skipped} 件は取り込み済み）`
+              : "対応フォーマットのファイルが見つかりませんでした",
+          );
+      }
+      onLibraryChanged();
+      refreshStats();
+    } catch (err) {
+      setStatus(`Import folder error: ${err}`);
+      useStore.getState().pushToast("error", `フォルダ取り込みエラー: ${err}`);
+    } finally {
+      unlisten();
+      setImportingFolders(false);
+    }
+  }, [onLibraryChanged, refreshStats]);
+
   const handleExport = useCallback(async () => {
     const path = await save({
       filters: [{ name: "iTunes Library XML", extensions: ["xml"] }],
@@ -408,6 +458,14 @@ export function Toolbar({
       title: "Add audio files to the library",
       onClick: handleImportFiles,
       disabled: importingFiles,
+    },
+    {
+      id: "importFolders",
+      label: "Add Folder",
+      icon: "folder",
+      title: "フォルダを丸ごと取り込む (サブフォルダも再帰的に走査)",
+      onClick: handleImportFolders,
+      disabled: importingFolders,
     },
     {
       id: "rip",
