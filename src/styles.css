@@ -1288,6 +1288,26 @@ input {
   font-family: var(--mono);
 }
 
+/* ライブラリ復元の確認モーダル (#167)。settings-modal より小さい固定幅。 */
+.restore-confirm-modal {
+  width: 460px;
+}
+.restore-confirm-modal .modal-body p {
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 10px;
+}
+.restore-confirm-modal .settings-path {
+  max-width: none;
+  white-space: normal;
+  word-break: break-all;
+  background: var(--bg3);
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: block;
+}
+
 /* toggle switch */
 .settings-toggle {
   width: 42px;

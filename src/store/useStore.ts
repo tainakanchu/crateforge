@@ -101,6 +101,8 @@ interface PersistedSettings {
   // iTunes 互換 XML の自動エクスポート
   autoExportEnabled: boolean;
   autoExportPath: string | null;
+  // 自動エクスポート成功時に library.db もあわせてバックアップするか (#167)。既定 true。
+  autoBackupEnabled: boolean;
   ripFormat: EncodeFormat;
   ripOutputDir: string | null;
   // サーバーから取り寄せる際に最後に選んだ保存先。
@@ -283,6 +285,7 @@ interface AppState extends PersistedSettings {
   pushRecentPlaylist: (id: number) => void;
   toggleFolder: (id: number) => void;
   setAutoExport: (enabled: boolean, path: string | null) => void;
+  setAutoBackupEnabled: (enabled: boolean) => void;
   setRipFormat: (f: EncodeFormat) => void;
   setRipOutputDir: (dir: string | null) => void;
   setLastSyncDestRoot: (dir: string | null) => void;
@@ -466,6 +469,7 @@ export const useStore = create<AppState>()(
       collapsedFolders: [],
       autoExportEnabled: false,
       autoExportPath: null,
+      autoBackupEnabled: true,
       ripFormat: "alac",
       ripOutputDir: null,
       lastSyncDestRoot: null,
@@ -755,6 +759,7 @@ export const useStore = create<AppState>()(
         })),
       setAutoExport: (autoExportEnabled, autoExportPath) =>
         set({ autoExportEnabled, autoExportPath }),
+      setAutoBackupEnabled: (autoBackupEnabled) => set({ autoBackupEnabled }),
       setRipFormat: (ripFormat) => set({ ripFormat }),
       setRipOutputDir: (ripOutputDir) => set({ ripOutputDir }),
       setLastSyncDestRoot: (lastSyncDestRoot) => set({ lastSyncDestRoot }),
@@ -810,7 +815,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 15,
+      version: 16,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -841,6 +846,7 @@ export const useStore = create<AppState>()(
           collapsedFolders: state.collapsedFolders,
           autoExportEnabled: state.autoExportEnabled,
           autoExportPath: state.autoExportPath,
+          autoBackupEnabled: state.autoBackupEnabled,
           ripFormat: state.ripFormat,
           ripOutputDir: state.ripOutputDir,
           lastSyncDestRoot: state.lastSyncDestRoot,
@@ -943,6 +949,11 @@ export const useStore = create<AppState>()(
             ...DEFAULT_SIMILAR_FILTERS,
             ...(typeof f === "object" && f !== null ? f : {}),
           };
+        }
+        // v14: library.db の自動バックアップ (#167)。既定 true (安全側)。
+        if (version < 16 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (typeof p.autoBackupEnabled !== "boolean") p.autoBackupEnabled = true;
         }
         return persisted as PersistedSettings;
       },

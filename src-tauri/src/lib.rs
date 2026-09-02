@@ -201,6 +201,11 @@ pub fn run() {
             commands::library::set_search_fold_level,
             commands::library::get_albums,
             commands::library::get_album_tracks,
+            // バックアップ / 復元 / 整合性チェック / VACUUM (#167)
+            commands::backup::backup_library,
+            commands::backup::restore_library,
+            commands::backup::check_library_integrity,
+            commands::backup::vacuum_library,
             commands::library::delete_tracks,
             commands::library::reveal_in_file_manager,
             // artwork
