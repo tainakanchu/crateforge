@@ -1,4 +1,9 @@
-import { type Track, type AudioEngine, type EngineHandlers, resetPlayer, usePlayer } from "@crateforge/core";
+import * as SecureStore from "expo-secure-store";
+
+import { type Track, type AudioEngine, type EngineHandlers, resetPlayer, upNextEntries, usePlayer } from "@crateforge/core";
+
+const getItem = SecureStore.getItemAsync as jest.Mock;
+const setItem = SecureStore.setItemAsync as jest.Mock;
 
 class FakeEngine implements AudioEngine {
   loaded: Track[] = [];
@@ -34,9 +39,27 @@ let engine: FakeEngine;
 
 beforeEach(() => {
   resetPlayer();
+  getItem.mockReset().mockResolvedValue(null);
+  setItem.mockReset().mockResolvedValue(undefined);
   engine = new FakeEngine();
   usePlayer.getState().setEngine(engine);
 });
+
+/** order が 0..n-1 の順列で、order[orderPos] === index であることを検証する。 */
+function expectPermutationInvariant(): void {
+  const { queue, order, orderPos, index } = s();
+  expect([...order].sort((a, b) => a - b)).toEqual(
+    Array.from({ length: queue.length }, (_, i) => i),
+  );
+  if (queue.length === 0) {
+    expect(orderPos).toBe(-1);
+    expect(index).toBe(-1);
+    return;
+  }
+  expect(orderPos).toBeGreaterThanOrEqual(0);
+  expect(orderPos).toBeLessThan(order.length);
+  expect(order[orderPos]).toBe(index);
+}
 
 const s = () => usePlayer.getState();
 
@@ -196,14 +219,191 @@ describe("error handling (#67)", () => {
   });
 });
 
-describe("shuffle", () => {
-  it("picks a different index on next", () => {
-    const spy = jest.spyOn(Math, "random").mockReturnValue(0); // -> index 0; same as current -> +1
-    s().setQueue([track(1), track(2), track(3)]); // index 0
+describe("shuffle (順列モデル #158)", () => {
+  /** Math.random を 0 に固定すると Fisher-Yates は決定的になる。 */
+  function fixedRandom(): jest.SpyInstance {
+    return jest.spyOn(Math, "random").mockReturnValue(0);
+  }
+
+  it("setShuffle(true) は現在位置より後ろだけを混ぜ、決定的な順列を作る", () => {
+    const spy = fixedRandom();
+    s().setQueue([track(1), track(2), track(3), track(4)]); // index 0
+    expect(s().order).toEqual([0, 1, 2, 3]);
     s().setShuffle(true);
+    // 先頭（再生中）は動かず、残り [1,2,3] が Fisher-Yates(random=0) で [2,3,1] に。
+    expect(s().order).toEqual([0, 2, 3, 1]);
+    expect(s().index).toBe(0);
+    expect(s().current()?.id).toBe(1);
+    expect(s().upNext().map((t) => t.id)).toEqual([3, 4, 2]);
+    expectPermutationInvariant();
+
     s().next();
-    expect(s().current()?.id).toBe(2); // 0 collided -> bumped to 1
+    expect(s().current()?.id).toBe(3);
+    s().next();
+    expect(s().current()?.id).toBe(4);
+    s().next();
+    expect(s().current()?.id).toBe(2);
+    expectPermutationInvariant();
     spy.mockRestore();
+  });
+
+  it("setShuffle(false) は自然順へ戻し、再生中の曲を現在位置に保つ", () => {
+    const spy = fixedRandom();
+    s().setQueue([track(1), track(2), track(3), track(4)]);
+    s().setShuffle(true);
+    s().next(); // order [0,2,3,1] -> track 3 (queue index 2)
+    expect(s().current()?.id).toBe(3);
+    s().setShuffle(false);
+    expect(s().order).toEqual([0, 1, 2, 3]);
+    expect(s().orderPos).toBe(2);
+    expect(s().current()?.id).toBe(3); // 同じ曲のまま
+    expect(s().upNext().map((t) => t.id)).toEqual([4]);
+    expectPermutationInvariant();
+    spy.mockRestore();
+  });
+
+  it("一巡の中で同じ曲が二度出ない（全曲をちょうど 1 回ずつ再生する）", () => {
+    const tracks = [track(1), track(2), track(3), track(4), track(5)];
+    s().setQueue(tracks);
+    s().setShuffle(true);
+    const seen = [s().current()!.id];
+    for (let i = 0; i < tracks.length - 1; i++) {
+      s().next();
+      seen.push(s().current()!.id);
+    }
+    expect([...seen].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
+    expect(new Set(seen).size).toBe(5);
+  });
+
+  it("末尾 + repeat all は次の一巡を再シャッフルし、直前の曲を先頭に置かない", () => {
+    s().setQueue([track(1), track(2), track(3), track(4)]);
+    s().setShuffle(true);
+    s().setRepeat("all");
+    for (let i = 0; i < 3; i++) s().next(); // 末尾まで進む
+    const last = s().current()!.id;
+    s().next(); // 新しい一巡へ
+    expect(s().current()?.id).not.toBe(last);
+    expect(s().orderPos).toBe(0);
+    expectPermutationInvariant();
+  });
+
+  it("next の直後の prev は同じ曲へ戻る（再生順を逆に辿る）", () => {
+    s().setQueue([track(1), track(2), track(3), track(4), track(5)]);
+    s().setShuffle(true);
+    const first = s().current()!.id;
+    s().next();
+    const second = s().current()!.id;
+    expect(second).not.toBe(first);
+    s().prev();
+    expect(s().current()?.id).toBe(first);
+    s().next();
+    expect(s().current()?.id).toBe(second); // 同じ順列を辿り直す
+  });
+
+  it("enqueueNext は shuffle 中でも再生順の「次」に入る", () => {
+    const spy = fixedRandom();
+    s().setQueue([track(1), track(2), track(3), track(4)]);
+    s().setShuffle(true);
+    s().enqueueNext(track(9));
+    expect(s().current()?.id).toBe(1); // 再生中は変わらない
+    expect(s().upNext().map((t) => t.id)).toEqual([9, 3, 4, 2]);
+    expectPermutationInvariant();
+    s().next();
+    expect(s().current()?.id).toBe(9);
+    spy.mockRestore();
+  });
+
+  it("removeQueueAt / moveQueueItem は順列の不変条件を保つ", () => {
+    const spy = fixedRandom();
+    s().setQueue([track(1), track(2), track(3), track(4), track(5)]);
+    s().setShuffle(true);
+    s().removeQueueAt(3);
+    expectPermutationInvariant();
+    expect(s().queue.map((t) => t.id)).toEqual([1, 2, 3, 5]);
+    s().moveQueueItem(3, 1);
+    expectPermutationInvariant();
+    spy.mockRestore();
+  });
+
+  it("moveUpNext は Up Next 内だけ並べ替える（再生済み/再生中は動かせない）", () => {
+    const spy = fixedRandom();
+    s().setQueue([track(1), track(2), track(3), track(4)]);
+    s().setShuffle(true); // order [0,2,3,1], orderPos 0
+    expect(s().upNext().map((t) => t.id)).toEqual([3, 4, 2]);
+    s().moveUpNext(3, 1); // 末尾の 2 を Up Next の先頭へ
+    expect(s().upNext().map((t) => t.id)).toEqual([2, 3, 4]);
+    expectPermutationInvariant();
+    // 現在位置以前へは動かせない（no-op）。
+    const before = [...s().order];
+    s().moveUpNext(1, 0);
+    expect(s().order).toEqual(before);
+    spy.mockRestore();
+  });
+
+  it("upNextEntries は queue / order 上の位置を添えて返す", () => {
+    const spy = fixedRandom();
+    s().setQueue([track(1), track(2), track(3), track(4)]);
+    s().setShuffle(true); // order [0,2,3,1]
+    expect(upNextEntries(s())).toEqual([
+      { track: s().queue[2], queueIndex: 2, orderIndex: 1 },
+      { track: s().queue[3], queueIndex: 3, orderIndex: 2 },
+      { track: s().queue[1], queueIndex: 1, orderIndex: 3 },
+    ]);
+    spy.mockRestore();
+  });
+});
+
+describe("shuffle / repeat の永続化 (#158)", () => {
+  it("setShuffle が SecureStore へ書き込む", () => {
+    s().setShuffle(true);
+    expect(setItem).toHaveBeenCalledWith("crateforge.player.shuffle", "true");
+    s().setShuffle(false);
+    expect(setItem).toHaveBeenCalledWith("crateforge.player.shuffle", "false");
+  });
+
+  it("setRepeat が SecureStore へ書き込む", () => {
+    s().setRepeat("all");
+    expect(setItem).toHaveBeenCalledWith("crateforge.player.repeat", "all");
+  });
+
+  it("hydrate が保存済みの shuffle / repeat を復元する", async () => {
+    getItem.mockImplementation(async (key: string) =>
+      key === "crateforge.player.shuffle" ? "true"
+        : key === "crateforge.player.repeat" ? "one"
+          : null,
+    );
+    await s().hydrate();
+    expect(s().shuffle).toBe(true);
+    expect(s().repeat).toBe("one");
+  });
+
+  it("hydrate は不正な値を無視して既定のままにする", async () => {
+    getItem.mockImplementation(async () => "garbage");
+    await s().hydrate();
+    expect(s().shuffle).toBe(false);
+    expect(s().repeat).toBe("off");
+  });
+
+  it("hydrate 後の shuffle は既存キューの順列へ反映される", async () => {
+    const spy = jest.spyOn(Math, "random").mockReturnValue(0);
+    s().setQueue([track(1), track(2), track(3), track(4)]);
+    getItem.mockImplementation(async (key: string) =>
+      key === "crateforge.player.shuffle" ? "true" : null,
+    );
+    await s().hydrate();
+    expect(s().shuffle).toBe(true);
+    expect(s().order).toEqual([0, 2, 3, 1]);
+    expectPermutationInvariant();
+    spy.mockRestore();
+  });
+
+  it("読み出し失敗でも既定値で動く", async () => {
+    getItem.mockImplementation(async () => {
+      throw new Error("boom");
+    });
+    await s().hydrate();
+    expect(s().shuffle).toBe(false);
+    expect(s().repeat).toBe("off");
   });
 });
 

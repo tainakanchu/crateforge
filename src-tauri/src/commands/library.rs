@@ -124,19 +124,10 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
     db.update_track(track_id, &edits)
         .map_err(|e| e.to_string())?;
 
-    // 3. 整理のガード: ルート未設定 / 整理 OFF / 旧トラックやファイルが無いなら終了。
-    //    タグ書き戻し・移動の失敗は「整理失敗」の警告に留め、編集自体は成功扱いとする。
-    let Some(root) = db.organize_root() else {
-        return Ok(());
-    };
+    // 3. 書き戻しのガード: 旧トラックや実ファイルが無いなら DB 更新だけで終了。
+    //    タグ書き戻し・移動の失敗は警告に留め、編集自体は成功扱いとする。
     let Some(before) = before else { return Ok(()) };
-    let Some(loc) = before.location_path.clone() else {
-        return Ok(());
-    };
-    let src = Path::new(&loc);
-    if !src.exists() {
-        return Ok(());
-    }
+    let loc = before.location_path.clone();
 
     // 4. 最終値を確定 (edits 優先、来なかった項目は旧値)。
     let name = edits.name.clone().or(before.name.clone());
@@ -154,7 +145,22 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
     // Compilation は編集された場合は新値、なければ旧値を引き継ぐ。
     let compilation = edits.compilation.unwrap_or(before.compilation);
 
+    // BPM / Key もファイルタグへ書く (#164)。
+    // BPM はトラック自身の値 (ユーザーが編集した可能性がある) を優先し、
+    // 未設定なら解析結果へフォールバックする。Key は解析結果の key_name のみ。
+    let analysis = db.get_analysis(track_id).ok().flatten();
+    let bpm = resolve_int(&edits.bpm, before.bpm)
+        .filter(|n| *n > 0)
+        .map(|n| n as f64)
+        .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
+    let key = analysis
+        .as_ref()
+        .and_then(|a| a.key_name.as_deref())
+        .and_then(organizer::key_name_to_initial_key);
+
     // 5. 実ファイルのタグを書き戻す (他アプリでも編集内容が見えるように)。
+    //    #163: これは整理先フォルダの設定とは無関係に常に行う。
+    //    HTTP API (PATCH /api/tracks/:id) と同じ organizer 側の関数を使う。
     let w = organizer::TagWrite {
         title: name.as_deref(),
         artist: artist.as_deref(),
@@ -169,13 +175,18 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
         disc_number,
         disc_count,
         compilation: Some(compilation),
+        bpm,
+        key,
     };
-    if let Err(e) = organizer::write_tags(src, &w) {
-        eprintln!("write_tags failed for {}: {}", loc, e);
-    }
+    organizer::write_tags_to_location(loc.as_deref(), &w);
 
-    // 6-9. 新ターゲット (フォルダ分け + iTunes 準拠リネーム) を算出して移動し、
-    //      DB の location を追従させる。
+    // 6. 整理 (フォルダ分け + iTunes 準拠リネーム) は整理先ルートが設定されている
+    //    ときだけ行う。未設定なら移動せずここで終了 (タグは 5 で書き戻し済み)。
+    let Some(loc) = loc else { return Ok(()) };
+    let src = Path::new(&loc);
+    if !src.exists() {
+        return Ok(());
+    }
     let meta = organizer::TrackMeta {
         title: name.as_deref(),
         artist: artist.as_deref(),
@@ -186,7 +197,10 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
         disc_number,
         disc_count,
     };
-    let target = organizer::target_path(Path::new(&root), &meta, src);
+    let Some(target) = organizer::organize_target(db.organize_root().as_deref(), &meta, src) else {
+        return Ok(());
+    };
+    // 7. 新ターゲットへ移動し、DB の location を追従させる。
     match organizer::relocate(src, &target, organizer::Mode::Move) {
         Ok(dest) if dest != src => {
             let dest_str = dest.to_string_lossy().to_string();

@@ -329,6 +329,9 @@ impl AudioPlayer {
             current_track_id: self.current_track_id,
             position_ms: position_ms.min(self.duration_ms.max(1)),
             duration_ms: self.duration_ms,
+            shuffle: self.shuffle,
+            repeat: self.repeat,
+            volume: self.volume,
         }
     }
 
@@ -970,5 +973,40 @@ mod tests {
         let mut p = make_player(vec![10, 20, 30], 0);
         assert!(!p.move_order(5, 1));
         assert!(!p.move_order(1, 5));
+    }
+
+    #[test]
+    fn get_state_carries_shuffle_repeat_volume() {
+        let mut p = make_player(vec![10, 20, 30], 0);
+        // 既定値。
+        let st = p.get_state();
+        assert!(!st.shuffle);
+        assert_eq!(st.repeat, RepeatMode::Off);
+        assert!((st.volume - 1.0).abs() < f32::EPSILON);
+
+        p.set_shuffle(true);
+        p.set_repeat(RepeatMode::One);
+        p.set_volume(0.4);
+        let st = p.get_state();
+        assert!(st.shuffle);
+        assert_eq!(st.repeat, RepeatMode::One);
+        assert!((st.volume - 0.4).abs() < 1e-6);
+    }
+
+    /// フロント (TS の `PlaybackState`) と Web API が読む JSON の形を固定する。
+    #[test]
+    fn playback_state_json_shape() {
+        let mut p = make_player(vec![10], 0);
+        p.set_repeat(RepeatMode::All);
+        p.set_shuffle(true);
+        p.set_volume(0.5);
+        let v = serde_json::to_value(p.get_state()).unwrap();
+        assert_eq!(v["shuffle"], serde_json::json!(true));
+        assert_eq!(v["repeat"], serde_json::json!("all"));
+        assert_eq!(v["volume"], serde_json::json!(0.5));
+        assert_eq!(v["isPlaying"], serde_json::json!(false));
+        assert!(v.get("currentTrackId").is_some());
+        assert!(v.get("positionMs").is_some());
+        assert!(v.get("durationMs").is_some());
     }
 }

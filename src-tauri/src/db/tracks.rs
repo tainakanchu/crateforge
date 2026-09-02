@@ -119,19 +119,20 @@ fn sort_field_to_column(sort_field: &str) -> Option<(&'static str, bool)> {
 
 /// アルバム粒度の ORDER BY 句を組み立てる。
 /// SQL インジェクション防止のため sort_field/sort_order は match で固定文字列に変換する。
+/// 全分岐の末尾に `album_key ASC` を足して並びを一意にする (build_order_by の track_id 相当)。
+/// これが無いと同値のアルバムの相対順が未定義になり、LIMIT/OFFSET のページ間で
+/// 重複・取りこぼしが起きる。`album_key` は get_albums の GROUP BY キーなので必ず一意。
 fn album_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String {
     let dir = if matches!(sort_order, Some("desc")) {
         "DESC"
     } else {
         "ASC"
     };
-    match sort_field {
-        Some("albumArtist") => format!(
-            "album_artist COLLATE NOCASE {dir}, album COLLATE NOCASE ASC"
-        ),
-        Some("album") => format!(
-            "album COLLATE NOCASE {dir}, album_artist COLLATE NOCASE ASC"
-        ),
+    let head = match sort_field {
+        Some("albumArtist") => {
+            format!("album_artist COLLATE NOCASE {dir}, album COLLATE NOCASE ASC")
+        }
+        Some("album") => format!("album COLLATE NOCASE {dir}, album_artist COLLATE NOCASE ASC"),
         Some("year") => format!(
             "(year IS NULL), year {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
         ),
@@ -141,11 +142,12 @@ fn album_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String 
         Some("rating") => format!(
             "(rating IS NULL), rating {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
         ),
-        Some("playCount") => format!(
-            "play_count {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
-        ),
+        Some("playCount") => {
+            format!("play_count {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC")
+        }
         _ => "album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC".to_string(),
-    }
+    };
+    format!("{head}, album_key ASC")
 }
 
 /// 検索トークンが bpm:/key:/energy: フィルタなら (SQL 句, バインド値) を返す。
@@ -1412,8 +1414,37 @@ mod tests {
 
     use rusqlite::params;
 
-    use super::{common_dir_prefix, compute_search_text};
+    use super::{album_order_by, common_dir_prefix, compute_search_text};
     use crate::db::Database;
+
+    /// album_order_by は全分岐で `album_key ASC` を最終タイブレークに持つこと
+    /// (LIMIT/OFFSET のページ間で並びが揺れないため)。
+    #[test]
+    fn album_order_by_always_ends_with_album_key_tiebreak() {
+        for field in [
+            None,
+            Some("albumArtist"),
+            Some("album"),
+            Some("year"),
+            Some("dateAdded"),
+            Some("rating"),
+            Some("playCount"),
+            Some("bogus"),
+        ] {
+            for order in [None, Some("asc"), Some("desc")] {
+                let sql = album_order_by(field, order);
+                assert!(
+                    sql.ends_with(", album_key ASC"),
+                    "missing tie-break for {field:?}/{order:?}: {sql}"
+                );
+            }
+        }
+        assert_eq!(
+            album_order_by(Some("year"), Some("desc")),
+            "(year IS NULL), year DESC, album_artist COLLATE NOCASE ASC, \
+             album COLLATE NOCASE ASC, album_key ASC"
+        );
+    }
 
     /// Standard 高速パス: 検索が `search_text` 1 列を見て、字体ゆれ (ひらがな⇔カタカナ・
     /// 全角英字・繁体字) を吸収して従来と同じ結果を返すこと。insert_track 経路で

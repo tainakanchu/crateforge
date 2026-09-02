@@ -291,16 +291,35 @@ input {
 
 /* Toolbar */
 .cb-tb {
-  display: flex;
-  align-items: center;
-  gap: 9px;
   padding: 11px 18px;
   border-bottom: 1px solid var(--bd);
   position: relative;
 }
+/* ツールバー本体の行。狭い幅では横スクロールさせ、ボタンが押せなくなるのを防ぐ。
+   ポップオーバー類はここではなく .cb-tb 基準／fixed で出すのでクリップされない。 */
+.cb-tb-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bd-strong) transparent;
+}
+.cb-tb-row::-webkit-scrollbar {
+  height: 6px;
+}
+.cb-tb-row::-webkit-scrollbar-track {
+  background: transparent;
+}
+.cb-tb-row::-webkit-scrollbar-thumb {
+  background: var(--bd-strong);
+  border-radius: 3px;
+}
 
 .cb-sbox {
   flex: 1;
+  /* アイコンだけに潰れないよう最小幅を確保する。 */
+  min-width: 140px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -408,6 +427,10 @@ input {
   width: 34px;
   padding: 0;
   justify-content: center;
+}
+/* ショートカット一覧を開く "?" ボタン (#150) */
+.cb-btn-q {
+  font: 700 14px/1 var(--mono);
 }
 
 .cb-tb-spacer {
@@ -943,6 +966,16 @@ input {
 .cov-meta .la {
   font-size: 11.5px;
   color: var(--mut);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+/* アクティブなソートキー (year/dateAdded/rating/playCount) の値を示す補助行。
+   色は .cb-dim を併用するのでここではサイズ・省略だけ。 */
+.cov-meta .ls {
+  font-size: 11px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1558,10 +1591,36 @@ input {
   background: var(--bg3);
   color: #eafbf8;
 }
+/* タブの状態インジケータ (#151): Crate の件数 / Similar の基準曲ドット */
+.cb-tab-count {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0 4px;
+  min-width: 15px;
+  border-radius: 7px;
+  background: var(--ac);
+  color: var(--on-ac);
+  font: 700 9.5px/15px var(--mono);
+  vertical-align: 1px;
+}
+.cb-tab-dot {
+  display: inline-block;
+  margin-left: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ac);
+  vertical-align: 2px;
+}
 .cb-split-toggle {
   flex: 0 0 auto;
   padding: 7px 8px;
   font-size: 11px;
+}
+/* 分割表示が効かないタブでは Split を無効表示にする (#151) */
+.cb-split-toggle.cb-split-na {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 .cb-prev-tab {
   flex: 0 0 auto;
@@ -2513,6 +2572,14 @@ input {
   align-self: center;
   user-select: none;
   white-space: nowrap;
+  /* クリックで解除できるボタン (#150) */
+  border: none;
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+.cb-audition-badge:hover,
+.cb-preview-badge:hover {
+  filter: brightness(1.15);
 }
 .cb-audition-badge {
   color: var(--on-ac);
@@ -2784,6 +2851,31 @@ input {
 .cb-sortitem .dir {
   margin-left: auto;
   color: var(--ac);
+}
+
+/* ⋯ (その他の操作) メニュー。Sort ポップオーバーの見た目を流用する。 */
+.cb-morepop .cb-sortitem {
+  width: 100%;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+}
+.cb-morepop .cb-sortitem svg {
+  color: var(--mut);
+}
+.cb-morepop .cb-sortitem.on,
+.cb-morepop .cb-sortitem.on svg {
+  color: var(--ac);
+}
+.cb-morepop .cb-sortitem:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.cb-morepop .cb-sortitem:focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: -2px;
 }
 
 /* ============================================================
@@ -3197,6 +3289,16 @@ input {
   padding: 13px 16px;
   overflow-y: auto;
   flex: 1;
+}
+/* ダイアログの操作ボタン行。.modal-body の外（.modal の直下）に置く固定フッタ。
+   スクロール領域の外に置くことで、ウィンドウが低いときでもボタンが隠れない。 */
+.modal-footer {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--bd);
 }
 
 /* generic buttons reused inside modals */

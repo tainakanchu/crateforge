@@ -484,7 +484,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   // 右クリックした 1 曲を基準に右レールの Similar タブを開く。
   const handleFindSimilar = useCallback(() => {
     if (!contextMenu) return;
-    setSimilarBase(contextMenu.track.trackId);
+    setSimilarBase(contextMenu.track.trackId, { focus: true });
     setContextMenu(null);
   }, [contextMenu, setSimilarBase]);
 

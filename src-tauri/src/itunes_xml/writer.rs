@@ -130,6 +130,12 @@ fn write_track(buf: &mut String, t: &Track, indent: usize) {
     if let Some(n) = t.bpm {
         push_kv_int(buf, inner, "BPM", n);
     }
+    // Key (Tonality) は **あえて書かない** (#164)。
+    // iTunes XML は Apple の plist スキーマであり、キーを表す標準の要素が存在しない。
+    // rekordbox の iTunes XML インポータも BPM と Comments は読むがキーは読まないため、
+    // 独自の <key>Tonality</key> を足しても効果が無く、Apple 互換性だけを失う。
+    // そのため Key は実ファイルのタグ (InitialKey = ID3v2 TKEY 等) 経由で渡す。
+    // 変換は organizer::key_name_to_initial_key / 書き込みは organizer::write_tags を参照。
     if let Some(n) = t.disc_number {
         push_kv_int(buf, inner, "Disc Number", n);
     }

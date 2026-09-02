@@ -2,7 +2,7 @@
 // その下に「Up Next」（残りキュー）と「Similar」（現在曲の類似曲）を並べる。
 // 依存追加禁止のため、シークバーは Pressable のレイアウト幅から位置を計算する自作。
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -17,7 +17,7 @@ import type { LayoutChangeEvent, GestureResponderEvent } from "react-native";
 import { useRouter } from "expo-router";
 
 import { BRAND, PALETTE } from "@/constants/brand";
-import { type SimilarHit, type Track, formatDuration, ratingToStars, trackTitle, trackArtist, trackAlbumArtist, useConnection, usePlayer, useSettings } from "@crateforge/core";
+import { type SimilarHit, type Track, formatDuration, ratingToStars, trackTitle, trackArtist, trackAlbumArtist, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
 import IconButton from "@/components/IconButton";
@@ -44,6 +44,9 @@ export default function PlayerScreen() {
   const current = usePlayer((s) => s.current());
   const queue = usePlayer((s) => s.queue);
   const index = usePlayer((s) => s.index);
+  // 再生順（順列）。Up Next は queue の並びではなくこちらから作る。
+  const order = usePlayer((s) => s.order);
+  const orderPos = usePlayer((s) => s.orderPos);
   const isPlaying = usePlayer((s) => s.isPlaying);
   const positionMs = usePlayer((s) => s.positionMs);
   const durationMs = usePlayer((s) => s.durationMs);
@@ -80,6 +83,12 @@ export default function PlayerScreen() {
     prevIndexRef.current = index;
   }, [index, stopAtTrackEnd]);
 
+  // Up Next = 再生順で現在位置より後ろ。毎レンダーで新配列を作らないよう useMemo。
+  const upNext = useMemo(
+    () => upNextEntries({ queue, order, orderPos }),
+    [queue, order, orderPos],
+  );
+
   if (!current) {
     return (
       <Screen style={styles.empty}>
@@ -95,7 +104,6 @@ export default function PlayerScreen() {
     );
   }
 
-  const upNext = queue.slice(index + 1);
   const progress =
     durationMs > 0 ? Math.max(0, Math.min(1, positionMs / durationMs)) : 0;
 
@@ -113,14 +121,14 @@ export default function PlayerScreen() {
       </View>
 
       <FlatList<ListItem>
-        data={buildList(upNext, index)}
+        data={buildList(upNext)}
         keyExtractor={(item) =>
           item.kind === "section"
             ? `section-${item.title}`
             : item.kind === "similar"
               ? "similar-section"
               : item.kind === "upnext-track"
-                ? `upnext-${item.queueIndex}`
+                ? `upnext-${item.orderIndex}`
                 : `track-${item.track.id}`
         }
         renderItem={({ item }) =>
@@ -132,6 +140,7 @@ export default function PlayerScreen() {
             <UpNextRow
               track={item.track}
               queueIndex={item.queueIndex}
+              orderIndex={item.orderIndex}
               onPress={item.onPress}
             />
           ) : (
@@ -162,33 +171,40 @@ export default function PlayerScreen() {
 // Up Next の各行（削除＋並べ替えボタン付き）
 interface UpNextRowProps {
   track: Track;
+  /** queue 上の位置（削除に使う）。 */
   queueIndex: number;
+  /** 再生順 order 上の位置（並べ替えに使う）。 */
+  orderIndex: number;
   onPress: () => void;
 }
 
-function UpNextRow({ track, queueIndex, onPress }: UpNextRowProps) {
-  const queue = usePlayer((s) => s.queue);
+function UpNextRow({ track, queueIndex, orderIndex, onPress }: UpNextRowProps) {
+  const orderLength = usePlayer((s) => s.order.length);
+  const orderPos = usePlayer((s) => s.orderPos);
   const removeQueueAt = usePlayer((s) => s.removeQueueAt);
-  const moveQueueItem = usePlayer((s) => s.moveQueueItem);
+  const moveUpNext = usePlayer((s) => s.moveUpNext);
+  // 並べ替えは「再生順」上で行う（shuffle 中でも見たまま動く）。
+  const canMoveUp = orderIndex > orderPos + 1;
+  const canMoveDown = orderIndex < orderLength - 1;
 
   return (
     <View style={styles.upNextRow}>
       <View style={styles.upNextArrows}>
         <TouchableOpacity
-          onPress={() => moveQueueItem(queueIndex, queueIndex - 1)}
-          disabled={queueIndex <= 0}
+          onPress={() => moveUpNext(orderIndex, orderIndex - 1)}
+          disabled={!canMoveUp}
           accessibilityLabel="上へ移動"
           style={styles.arrowBtn}
         >
-          <Text style={[styles.arrowText, queueIndex <= 0 && styles.arrowDisabled]}>▲</Text>
+          <Text style={[styles.arrowText, !canMoveUp && styles.arrowDisabled]}>▲</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          onPress={() => moveQueueItem(queueIndex, queueIndex + 1)}
-          disabled={queueIndex >= queue.length - 1}
+          onPress={() => moveUpNext(orderIndex, orderIndex + 1)}
+          disabled={!canMoveDown}
           accessibilityLabel="下へ移動"
           style={styles.arrowBtn}
         >
-          <Text style={[styles.arrowText, queueIndex >= queue.length - 1 && styles.arrowDisabled]}>▼</Text>
+          <Text style={[styles.arrowText, !canMoveDown && styles.arrowDisabled]}>▼</Text>
         </TouchableOpacity>
       </View>
       <View style={styles.upNextTrack}>
@@ -635,34 +651,27 @@ function SimilarSection({ trackId }: { trackId: number }) {
 type ListItem =
   | { kind: "section"; title: string }
   | { kind: "similar" }
-  | { kind: "upnext-track"; track: Track; queueIndex: number; onPress: () => void }
+  | { kind: "upnext-track"; track: Track; queueIndex: number; orderIndex: number; onPress: () => void }
   | { kind: "track"; track: Track; onPress: () => void };
 
-function buildList(upNext: Track[], currentIndex: number): ListItem[] {
+/** 再生順の Up Next（upNextEntries の結果）からリスト項目を組み立てる。 */
+function buildList(upNext: ReturnType<typeof upNextEntries>): ListItem[] {
   const items: ListItem[] = [];
   if (upNext.length > 0) {
     items.push({ kind: "section", title: "Up Next" });
-    for (let i = 0; i < upNext.length; i++) {
-      const track = upNext[i];
-      const queueIndex = currentIndex + 1 + i;
+    for (const entry of upNext) {
       items.push({
         kind: "upnext-track",
-        track,
-        queueIndex,
-        onPress: () => playFromUpNext(track),
+        track: entry.track,
+        queueIndex: entry.queueIndex,
+        orderIndex: entry.orderIndex,
+        onPress: () => usePlayer.getState().playAt(entry.queueIndex),
       });
     }
   }
   items.push({ kind: "section", title: "Similar" });
   items.push({ kind: "similar" });
   return items;
-}
-
-/** Up Next の曲をタップ：現在キュー内のその位置から再生する。 */
-function playFromUpNext(track: Track): void {
-  const { queue, playAt } = usePlayer.getState();
-  const at = queue.findIndex((t) => t.id === track.id);
-  if (at >= 0) playAt(at);
 }
 
 const ART_SIZE = 280;

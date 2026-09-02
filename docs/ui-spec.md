@@ -287,8 +287,10 @@ viewMode により切替:
 - `isLoading`, `hasMore` (ページング制御)
 
 **再生状態**:
-- `playback: { isPlaying, currentTrackId, positionMs, durationMs }` — Rust 側から 250ms ポーリング
+- `playback: { isPlaying, currentTrackId, positionMs, durationMs, shuffle, repeat, volume }` — Rust 側から 250ms ポーリング
 - `volume`, `shuffle`, `repeat` (永続化対象)
+  - 切り替えは Rust 側 (`set_shuffle` / `set_repeat`) の完了を待ってからストアへ反映する (Up Next が古い再生順を読まないように)
+  - ポーリングのたびに `playback.shuffle / repeat / volume` をストアへ逆同期する (リモート API 経由の変更を拾うため)
 
 **永続化対象 (`localStorage`)**:
 - `visibleColumns`, `sortField`, `sortOrder`, `volume`, `shuffle`, `repeat`
@@ -296,7 +298,7 @@ viewMode により切替:
 ### 5.2 主要データ型 (UI 関連)
 - `Track`: id / trackId / persistentId / name / artist / albumArtist / composer / album / genre / year / rating (0〜100) / playCount / skipCount / totalTimeMs / dateAdded / dateModified / bpm / comments / locationRaw / locationPath / trackType / disabled / compilation / discNumber / discCount / trackNumber / trackCount / fileExists
 - `Playlist`: id / playlistId / persistentId / parentPersistentId / name / isFolder / isSmart / isUserCreated / trackCount
-- `PlaybackState`: isPlaying / currentTrackId / positionMs / durationMs
+- `PlaybackState`: isPlaying / currentTrackId / positionMs / durationMs / shuffle / repeat / volume
 - `QueueState`: trackIds / currentIndex / shuffle / repeat / volume
 - `Rating`: 0〜100 の整数 (UI 上では 0〜5 ★、`stars = round(rating / 20)`)
 

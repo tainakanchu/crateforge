@@ -163,7 +163,8 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleFindSimilar = useCallback(() => {
     if (!contextMenu) return;
-    setSimilarBase(contextMenu.track.trackId);
+    // 明示的な「Find similar」なので Similar タブへフォーカスする (#151)
+    setSimilarBase(contextMenu.track.trackId, { focus: true });
     closeMenu();
   }, [contextMenu, setSimilarBase, closeMenu]);
 
