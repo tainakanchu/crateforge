@@ -39,9 +39,46 @@ import {
   mergeInboxSources,
 } from "./lib/triage";
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
-import type { Track } from "./types";
+import type { PlaybackState, RepeatMode, Track } from "./types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
+
+/// Rust プレイヤー側の「フロントのストアと二重管理になっている値」。
+type RemotePlayerState = { shuffle: boolean; repeat: RepeatMode; volume: number };
+
+/// f32 で往復するので音量は誤差を許容して比較する。
+const VOLUME_EPS = 0.005;
+
+/// Rust プレイヤーの shuffle / repeat / volume をストアへ逆同期する。
+/// リモート API (/api/remote/shuffle など) や別クライアントからの変更を拾うのが目的。
+/// ローカル操作は backend 完了後にストアへ書くので基本的に食い違わないが、
+/// 念のため「2 回続けて同じ値がストアと違う」ときだけ反映して取り合いを防ぐ。
+function reconcilePlayerState(
+  state: PlaybackState,
+  lastRemoteRef: { current: RemotePlayerState | null },
+) {
+  const remote: RemotePlayerState = {
+    shuffle: state.shuffle,
+    repeat: state.repeat,
+    volume: state.volume,
+  };
+  const prev = lastRemoteRef.current;
+  lastRemoteRef.current = remote;
+  if (!prev) return;
+  const store = useStore.getState();
+  if (prev.shuffle === remote.shuffle && remote.shuffle !== store.shuffle) {
+    store.setShuffle(remote.shuffle);
+  }
+  if (prev.repeat === remote.repeat && remote.repeat !== store.repeat) {
+    store.setRepeat(remote.repeat);
+  }
+  if (
+    Math.abs(prev.volume - remote.volume) <= VOLUME_EPS &&
+    Math.abs(remote.volume - store.volume) > VOLUME_EPS
+  ) {
+    store.setVolume(remote.volume);
+  }
+}
 
 export default function App() {
   const {
@@ -99,6 +136,10 @@ export default function App() {
 
   const PAGE_SIZE = 500;
   const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  // マウント時の push (永続値 → Rust) が終わるまでは逆同期しない。
+  const mountSyncedRef = useRef(false);
+  // 直前のポーリングで見えた Rust 側の shuffle / repeat / volume。
+  const lastRemoteRef = useRef<RemotePlayerState | null>(null);
   // 自動 XML エクスポート用: ライブラリに変更があったか。
   const libraryDirtyRef = useRef(false);
   // デバウンス自動保存用。
@@ -347,22 +388,32 @@ export default function App() {
   }, []);
 
   // Sync persisted volume / shuffle / repeat to the Rust player on mount.
+  // 押し込みが終わるまでポーリング側の逆同期は保留する (mountSyncedRef)。
   useEffect(() => {
     if (!isTauri) return;
-    playbackApi.setVolume(volume).catch(() => {});
-    playbackApi.setShuffle(shuffle).catch(() => {});
-    playbackApi.setRepeat(repeat).catch(() => {});
-    playbackApi.setReplayGain(replayGain).catch(() => {});
+    Promise.allSettled([
+      playbackApi.setVolume(volume),
+      playbackApi.setShuffle(shuffle),
+      playbackApi.setRepeat(repeat),
+      playbackApi.setReplayGain(replayGain),
+    ]).then(() => {
+      mountSyncedRef.current = true;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Playback state poll.
+  // Rust プレイヤーが持つ shuffle / repeat / volume はリモート API (/api/remote/*) から
+  // 変わりうるので、ポーリングのたびにストアへ逆同期する。
+  // ローカル操作 (PlayerBar / S・R キー) は backend 完了後にストアを更新するため、
+  // 一過性の食い違いを掴まないよう「2 回続けて同じ値がストアと違う」ときだけ反映する。
   useEffect(() => {
     if (!isTauri) return;
     pollRef.current = setInterval(async () => {
       try {
         const state = await playbackApi.getPlaybackState();
         setPlayback(state);
+        if (mountSyncedRef.current) reconcilePlayerState(state, lastRemoteRef);
       } catch {
         // ignore
       }
@@ -906,15 +957,28 @@ export default function App() {
       } else if (e.key.toLowerCase() === "k") {
         if (isTauri) playbackApi.playNext();
       } else if (e.key.toLowerCase() === "s") {
+        // backend に反映してからストアを更新する (Up Next が古い順を読まないように)。
         const next = !shuffle;
-        setShuffle(next);
-        if (isTauri) playbackApi.setShuffle(next);
+        void (async () => {
+          try {
+            if (isTauri) await playbackApi.setShuffle(next);
+            setShuffle(next);
+          } catch {
+            useStore.getState().pushToast("error", "シャッフルを切り替えられませんでした");
+          }
+        })();
       } else if (e.key.toLowerCase() === "r") {
         const order = ["off", "all", "one"] as const;
         const i = order.indexOf(repeat);
         const next = order[(i + 1) % order.length];
-        setRepeat(next);
-        if (isTauri) playbackApi.setRepeat(next);
+        void (async () => {
+          try {
+            if (isTauri) await playbackApi.setRepeat(next);
+            setRepeat(next);
+          } catch {
+            useStore.getState().pushToast("error", "リピートを切り替えられませんでした");
+          }
+        })();
       }
       // 矢印キーは TrackTable の選択移動に使うのでここでは扱わない。
       // 音量は PlayerBar の +/- とスライダーで調整できる。

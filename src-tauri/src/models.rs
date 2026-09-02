@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::audio::RepeatMode;
+
 // === Library models ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +60,12 @@ pub struct PlaybackState {
     pub current_track_id: Option<i64>,
     pub position_ms: u64,
     pub duration_ms: u64,
+    /// シャッフルの ON/OFF。リモート API 経由でも変わるためフロントと同期する。
+    pub shuffle: bool,
+    /// リピートモード ("off"|"all"|"one")。
+    pub repeat: RepeatMode,
+    /// 音量 (0.0-1.0)。ReplayGain 適用前のユーザー設定値。
+    pub volume: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
