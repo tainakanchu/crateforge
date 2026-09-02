@@ -205,6 +205,8 @@ pub fn run() {
             commands::backup::restore_library,
             commands::backup::check_library_integrity,
             commands::backup::vacuum_library,
+            commands::library::delete_tracks,
+            commands::library::reveal_in_file_manager,
             // artwork
             commands::artwork::set_artwork_from_data,
             commands::artwork::set_artwork_from_file,

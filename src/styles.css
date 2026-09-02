@@ -2981,6 +2981,35 @@ input {
 .context-menu-item:hover svg {
   color: var(--ac);
 }
+/* 破壊的な項目（ライブラリから削除）。hover / キーボードフォーカスも赤系に寄せる。 */
+.context-menu-item.danger {
+  color: #ef9d9d;
+}
+.context-menu-item.danger svg {
+  color: #ef9d9d;
+}
+.context-menu-item.danger:hover,
+.context-menu-item.danger.active {
+  background: rgba(221, 104, 104, 0.16);
+  color: #ffc0c0;
+}
+.context-menu-item.danger:hover svg,
+.context-menu-item.danger.active svg {
+  color: #ffc0c0;
+}
+/* 実行できない項目（ファイル欠損時の「表示」など）。存在は見せるが操作させない。 */
+.context-menu-item.disabled {
+  color: var(--mut);
+  cursor: default;
+  opacity: 0.55;
+}
+.context-menu-item.disabled:hover {
+  background: transparent;
+  color: var(--mut);
+}
+.context-menu-item.disabled:hover svg {
+  color: var(--mut);
+}
 .context-menu-divider {
   height: 1px;
   background: var(--bd);

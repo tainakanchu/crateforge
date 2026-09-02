@@ -9,6 +9,7 @@ import * as audition from "../lib/audition";
 import { Icon, Stars } from "./Icon";
 import { Cover } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
+import { DeleteTracksDialog } from "./DeleteTracksDialog";
 import { GenreTagInput } from "./GenreTagInput";
 import { bpmColor } from "../lib/art";
 import {
@@ -389,6 +390,8 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [showAddTagDialog, setShowAddTagDialog] = useState(false);
+  // 削除確認モーダルの対象曲（null で非表示）。window.confirm は使わない。
+  const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
   const [newTag, setNewTag] = useState("");
   // 一覧からのジャンル直接編集（ポップオーバー）。
   const [genreEdit, setGenreEdit] = useState<GenreEditState | null>(null);
@@ -665,6 +668,24 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     if (ids.length > 0) onConvert(ids);
     setContextMenu(null);
   }, [ctxIds, onConvert]);
+
+  // 選択（or 右クリック対象）の曲を削除確認モーダルへ渡す。
+  const handleDelete = useCallback(() => {
+    const ids = new Set(ctxIds());
+    const sel = tracks.filter((t) => ids.has(t.trackId));
+    if (sel.length > 0) setDeleteTargets(sel);
+    setContextMenu(null);
+  }, [ctxIds, tracks]);
+
+  // 右クリックした 1 曲を Finder / エクスプローラで表示する。
+  const handleReveal = useCallback(async (path: string) => {
+    try {
+      await libraryApi.revealInFileManager(path);
+    } catch (err) {
+      pushToast("error", `ファイルマネージャで表示できませんでした: ${err}`);
+    }
+    setContextMenu(null);
+  }, [pushToast]);
 
   const closeMenu = useCallback(() => setContextMenu(null), []);
 
@@ -1197,6 +1218,11 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           playlists={playlists}
           recentPlaylists={recentPlaylists}
           showRemoveFromPlaylist={viewMode === "playlist"}
+          revealPath={
+            // 「表示」は単曲のみ。複数選択・ファイル欠損時は無効表示にする。
+            ctxIds().length === 1 && ctxTrack.fileExists ? ctxTrack.locationPath : null
+          }
+          deleteCount={ctxIds().length}
           onClose={closeMenu}
           onPlay={() => handleDoubleClick(ctxTrack)}
           onSetRating={handleSetRatingForSelection}
@@ -1208,6 +1234,8 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onConvert={handleConvert}
           onGetInfo={handleGetInfo}
           onRemoveFromPlaylist={() => handleRemoveFromPlaylist(ctxTrack)}
+          onReveal={() => void handleReveal(ctxTrack.locationPath ?? "")}
+          onDelete={handleDelete}
           onAddToPlaylist={handleAddToPlaylist}
           onAddTag={() => setShowAddTagDialog(true)}
           onRemoveTag={handleRemoveGenreTag}
@@ -1253,6 +1281,18 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
             </div>
           </div>
         </div>
+      )}
+
+      {/* ライブラリからの削除（確認モーダル） */}
+      {deleteTargets && (
+        <DeleteTracksDialog
+          tracks={deleteTargets}
+          onClose={() => setDeleteTargets(null)}
+          onDeleted={() => {
+            setSelectedTrackIds(new Set());
+            onTracksChanged();
+          }}
+        />
       )}
 
       {/* 一覧からのジャンル編集ポップオーバー（外側クリックで保存） */}

@@ -9,6 +9,7 @@ import * as analysisApi from "../api/analysis";
 import { Icon } from "./Icon";
 import { ArtworkImg } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
+import { DeleteTracksDialog } from "./DeleteTracksDialog";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
 import { ALBUM_SORT_FIELDS } from "../types";
 import type { Track, Playlist, AlbumRow, SortField, SortOrder } from "../types";
@@ -299,6 +300,8 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const [contextMenu, setContextMenu] = useState<CoversCtxMenu | null>(null);
   const [showAddTagDialog, setShowAddTagDialog] = useState(false);
   const [newTag, setNewTag] = useState("");
+  // 削除確認モーダルの対象曲（null で非表示）。
+  const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
   // ライブラリスコープの遅延取得キャッシュ (albumKey → tracks)。
   const [trackCache, setTrackCache] = useState<Map<string, Track[]>>(new Map());
 
@@ -539,6 +542,28 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     closeMenu();
   }, [contextMenu, onConvert, closeMenu]);
 
+  // Finder / エクスプローラで表示（単曲メニューのときのみ有効）。
+  const handleReveal = useCallback(async () => {
+    const path = contextMenu?.primary.locationPath;
+    if (!path) return;
+    try {
+      await libraryApi.revealInFileManager(path);
+    } catch (err) {
+      pushToast("error", `ファイルマネージャで表示できませんでした: ${err}`);
+    }
+    closeMenu();
+  }, [contextMenu, closeMenu, pushToast]);
+
+  // 削除対象はメニューの操作対象 (trackIds) と揃える。
+  // アルバムのカバーから開いた場合はアルバム全曲が対象になる。
+  const handleDelete = useCallback(() => {
+    if (!contextMenu) return;
+    const ids = new Set(contextMenu.trackIds);
+    const targets = contextMenu.tracks.filter((t) => ids.has(t.trackId));
+    setDeleteTargets(targets.length > 0 ? targets : [contextMenu.primary]);
+    closeMenu();
+  }, [contextMenu, closeMenu]);
+
   const handleGetInfo = useCallback(() => {
     if (!contextMenu) return;
     onEditTrack(contextMenu.tracks.length > 0 ? contextMenu.tracks : [contextMenu.primary]);
@@ -761,6 +786,13 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           playlists={playlists}
           recentPlaylists={recentPlaylists}
           showRemoveFromPlaylist={viewMode === "playlist"}
+          revealPath={
+            // 「表示」は単曲メニューのみ。アルバム全体・ファイル欠損時は無効表示。
+            contextMenu.trackIds.length === 1 && ctxPrimary.fileExists
+              ? ctxPrimary.locationPath
+              : null
+          }
+          deleteCount={contextMenu.trackIds.length}
           onClose={closeMenu}
           onPlay={() => {
             void playTracks(contextMenu.tracks, contextMenu.primary.trackId);
@@ -775,9 +807,23 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onConvert={handleConvert}
           onGetInfo={handleGetInfo}
           onRemoveFromPlaylist={handleRemoveFromPlaylist}
+          onReveal={() => void handleReveal()}
+          onDelete={handleDelete}
           onAddToPlaylist={handleAddToPlaylist}
           onAddTag={() => setShowAddTagDialog(true)}
           onRemoveTag={handleRemoveTag}
+        />
+      )}
+
+      {deleteTargets && (
+        <DeleteTracksDialog
+          tracks={deleteTargets}
+          onClose={() => setDeleteTargets(null)}
+          onDeleted={() => {
+            // アルバム展開のキャッシュに消えた曲が残らないよう捨てる。
+            setTrackCache(new Map());
+            onTracksChanged();
+          }}
         />
       )}
 
