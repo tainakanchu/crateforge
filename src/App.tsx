@@ -990,6 +990,7 @@ export default function App() {
           onOpenRulesPanel={() => setRulesOpen(true)}
           onOpenSyncProvision={() => setSyncProvisionOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenHelp={() => setHelpOpen(true)}
         />
         {viewMode === "inbox" && !triageMode && (
           <div className="inbox-banner">

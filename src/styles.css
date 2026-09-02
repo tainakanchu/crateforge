@@ -409,6 +409,10 @@ input {
   padding: 0;
   justify-content: center;
 }
+/* ショートカット一覧を開く "?" ボタン (#150) */
+.cb-btn-q {
+  font: 700 14px/1 var(--mono);
+}
 
 .cb-tb-spacer {
   flex: 1;
@@ -2512,6 +2516,14 @@ input {
   align-self: center;
   user-select: none;
   white-space: nowrap;
+  /* クリックで解除できるボタン (#150) */
+  border: none;
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+.cb-audition-badge:hover,
+.cb-preview-badge:hover {
+  filter: brightness(1.15);
 }
 .cb-audition-badge {
   color: var(--on-ac);

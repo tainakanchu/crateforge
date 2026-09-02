@@ -14,6 +14,7 @@ interface ToolbarProps {
   onOpenRulesPanel: () => void;
   onOpenSyncProvision: () => void;
   onOpenSettings: () => void;
+  onOpenHelp: () => void;
 }
 
 function formatDuration(ms: number): string {
@@ -54,6 +55,7 @@ export function Toolbar({
   onOpenRulesPanel,
   onOpenSyncProvision,
   onOpenSettings,
+  onOpenHelp,
 }: ToolbarProps) {
   const {
     viewMode,
@@ -492,6 +494,14 @@ export function Toolbar({
             }
           >
             <Icon name="eye" size={16} />
+          </button>
+          <button
+            className="cb-btn cb-btn-iconly cb-btn-q"
+            onClick={onOpenHelp}
+            title="キーボードショートカット一覧 (?)"
+            aria-label="キーボードショートカット一覧"
+          >
+            ?
           </button>
           <button
             className="cb-btn cb-btn-iconly"

@@ -85,8 +85,6 @@ interface PersistedSettings {
   ripOutputDir: string | null;
   // サーバーから取り寄せる際に最後に選んだ保存先。
   lastSyncDestRoot: string | null;
-  // Audition モード (波形強調・ジャンプキー)。設定として永続化可。
-  auditionMode: boolean;
 }
 
 // 「前回入れたプレイリスト」ショートカットで保持する件数
@@ -138,6 +136,10 @@ interface AppState extends PersistedSettings {
   similarBaseTrackId: number | null;
   // 「閉じるときに更新」が予約されていれば、そのインストーラ URL とバージョン。
   pendingUpdate: { url: string; version: string } | null;
+
+  // Audition モード (波形強調・ジャンプキー) — セッション状態。
+  // 起動ごとに OFF から始める（永続化すると解除口が分からず閉じ込められる #150）。
+  auditionMode: boolean;
 
   // Audition Preview セッション — 永続化しない。
   // previewActive: 単曲プレビュー中 (Esc で復帰可能)
@@ -683,7 +685,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 13,
+      version: 14,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -709,7 +711,6 @@ export const useStore = create<AppState>()(
           ripFormat: state.ripFormat,
           ripOutputDir: state.ripOutputDir,
           lastSyncDestRoot: state.lastSyncDestRoot,
-          auditionMode: state.auditionMode,
         }) satisfies PersistedSettings,
       // v1(visibleColumns) からの移行: 旧キーは破棄してデフォルトに倒す。
       // v3: recentPlaylistIds を追加（旧データには無いので配列で補完）。
@@ -793,9 +794,12 @@ export const useStore = create<AppState>()(
           if (typeof p.railSplit !== "boolean") p.railSplit = false;
         }
         // v13: Audition モード設定。
-        if (version < 13 && persisted && typeof persisted === "object") {
+        // v14 で永続化をやめたため、ここでは何もしない（下の v14 で破棄する）。
+        // v14: Audition モードは永続化しない (#150)。旧データのキーを破棄して
+        // 起動ごとに OFF から始める。
+        if (version < 14 && persisted && typeof persisted === "object") {
           const p = persisted as Record<string, unknown>;
-          if (typeof p.auditionMode !== "boolean") p.auditionMode = false;
+          delete p.auditionMode;
         }
         return persisted as PersistedSettings;
       },
