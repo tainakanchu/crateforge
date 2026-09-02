@@ -195,6 +195,17 @@ pub fn target_path(root: &Path, meta: &TrackMeta, source: &Path) -> PathBuf {
     root.join(artist_dir).join(album_dir).join(file_name)
 }
 
+/// 整理先ルートが設定されているときだけ relocate 先パスを返す。
+///
+/// 「タグをファイルへ書き戻す」ことと「ファイルを整理先へ移動する」ことを
+/// 分離するための判定関数 (#163)。ルート未設定 (`None` / 空白のみ) は
+/// 「整理しない」を意味する `None` を返し、呼び出し側はファイルを移動せず
+/// タグ書き戻しだけを行う。
+pub fn organize_target(root: Option<&str>, meta: &TrackMeta, source: &Path) -> Option<PathBuf> {
+    let root = root.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(target_path(Path::new(root), meta, source))
+}
+
 /// 既存の別ファイルと衝突する場合 ` (2)` などを付けて回避する。
 pub(crate) fn resolve_collision(target: &Path, source: &Path) -> PathBuf {
     if !target.exists() {
@@ -364,6 +375,32 @@ pub fn write_tags(path: &Path, w: &TagWrite) -> Result<(), String> {
         .save_to_path(path, WriteOptions::default())
         .map_err(|e| format!("save tags failed: {e}"))?;
     Ok(())
+}
+
+/// DB の `location_path` が指す実ファイルへタグを書き戻す。
+///
+/// パスが無い / 空 / ファイルが存在しない場合は何もしない (= 失敗ではない)。
+/// 書き込みを試みて失敗したときだけ `true` を返す (呼び出し側は
+/// `fileWriteFailed` として利用者へ伝える)。
+///
+/// この関数は整理 (フォルダ移動) を一切行わない。移動は整理先ルートが
+/// 設定されている場合にのみ [`organize_target`] + [`relocate`] で別途行う。
+/// GUI コマンドと HTTP API の双方がこの 1 か所を呼ぶことで、
+/// 「整理先未設定だとタグが書き戻されない」差異をなくす (#163)。
+pub fn write_tags_to_location(loc: Option<&str>, w: &TagWrite) -> bool {
+    let Some(loc) = loc else { return false };
+    if loc.trim().is_empty() {
+        return false;
+    }
+    let path = Path::new(loc);
+    if !path.exists() {
+        return false;
+    }
+    if let Err(e) = write_tags(path, w) {
+        eprintln!("write_tags failed for {loc}: {e}");
+        return true;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -578,6 +615,47 @@ mod tests {
         );
         let p = target_path(root, &m, src);
         assert_eq!(p, Path::new("/lib/Compilations/Hits/03 Hit.mp3"));
+    }
+
+    #[test]
+    fn organize_target_is_none_without_root() {
+        // #163: 整理先ルート未設定なら「移動しない」。
+        // (タグ書き戻しはこの判定とは独立に常に行われる)
+        let src = Path::new("/in/x.mp3");
+        let m = meta(Some("Song"), Some("A"), None, Some("Alb"), false, Some(1));
+        assert_eq!(organize_target(None, &m, src), None);
+        assert_eq!(organize_target(Some(""), &m, src), None);
+        assert_eq!(organize_target(Some("   "), &m, src), None);
+    }
+
+    #[test]
+    fn organize_target_matches_target_path_with_root() {
+        // ルートが設定されている場合の挙動は target_path と完全に同じ。
+        let src = Path::new("/in/x.mp3");
+        let m = meta(Some("Song"), Some("A"), None, Some("Alb"), false, Some(1));
+        assert_eq!(
+            organize_target(Some("/lib"), &m, src),
+            Some(PathBuf::from("/lib/A/Alb/01 Song.mp3"))
+        );
+        // 前後の空白は落として扱う。
+        assert_eq!(
+            organize_target(Some(" /lib "), &m, src),
+            Some(target_path(Path::new("/lib"), &m, src))
+        );
+    }
+
+    #[test]
+    fn write_tags_to_location_skips_missing_paths() {
+        // パス無し / 空 / 実体無し は「書き込み失敗」ではない。
+        let w = TagWrite::default();
+        assert!(!write_tags_to_location(None, &w));
+        assert!(!write_tags_to_location(Some(""), &w));
+        assert!(!write_tags_to_location(Some("   "), &w));
+        let missing = unique_tmp_dir().join("nope.mp3");
+        assert!(!write_tags_to_location(
+            Some(&missing.to_string_lossy()),
+            &w
+        ));
     }
 
     #[test]

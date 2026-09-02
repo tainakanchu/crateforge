@@ -1453,16 +1453,10 @@ pub async fn replace_playlist_tracks(
 /// 実ファイルのタグへ書き戻す。`location_path` が無い / ファイルが存在しない場合は
 /// 何もしない (= 失敗ではない)。書き込みを試みて失敗したときだけ true を返す。
 /// 整理 (フォルダ移動) はせず、その場でタグだけ更新する (rekordbox 等 他アプリへ反映)。
+///
+/// 実体は GUI の `update_track` と共有する [`crate::organizer::write_tags_to_location`]。
 fn writeback(loc: Option<&str>, w: &crate::organizer::TagWrite) -> bool {
-    let Some(loc) = loc else { return false };
-    if loc.is_empty() {
-        return false;
-    }
-    let path = std::path::Path::new(loc);
-    if !path.exists() {
-        return false;
-    }
-    crate::organizer::write_tags(path, w).is_err()
+    crate::organizer::write_tags_to_location(loc, w)
 }
 
 /// `POST /api/tracks/genre-tags/{add,remove}` のボディ。
