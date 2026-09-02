@@ -3159,6 +3159,16 @@ input {
   overflow-y: auto;
   flex: 1;
 }
+/* ダイアログの操作ボタン行。.modal-body の外（.modal の直下）に置く固定フッタ。
+   スクロール領域の外に置くことで、ウィンドウが低いときでもボタンが隠れない。 */
+.modal-footer {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--bd);
+}
 
 /* generic buttons reused inside modals */
 .toolbar-btn {

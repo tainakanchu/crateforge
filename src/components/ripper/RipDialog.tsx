@@ -174,20 +174,20 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged: _onLibraryC
           </div>
           <div className="modal-body">
             <pre className="rip-log">{ripStatus.log.join("\n")}</pre>
-            {ripStatus.phase !== "ripping" && (
-              <div className="rip-actions">
-                <button
-                  className="toolbar-btn primary"
-                  onClick={() => {
-                    useStore.getState().clearRipStatus();
-                    onClose();
-                  }}
-                >
-                  閉じる
-                </button>
-              </div>
-            )}
           </div>
+          {ripStatus.phase !== "ripping" && (
+            <div className="modal-footer">
+              <button
+                className="toolbar-btn primary"
+                onClick={() => {
+                  useStore.getState().clearRipStatus();
+                  onClose();
+                }}
+              >
+                閉じる
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -344,21 +344,23 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged: _onLibraryC
                 </div>
               )}
 
-              <div className="rip-actions">
-                <button className="toolbar-btn" onClick={onClose}>Cancel</button>
-                <button
-                  className="toolbar-btn primary"
-                  onClick={handleRip}
-                  disabled={selectedTracks.size === 0 || (!organizeActive && !outputDir)}
-                >
-                  <Icon name="play" size={14} fill="currentColor" stroke={0} /> Start Ripping (
-                  {selectedTracks.size})
-                </button>
-              </div>
             </>
           )}
 
         </div>
+        {toc && stage !== "ripping" && stage !== "done" && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" onClick={onClose}>Cancel</button>
+            <button
+              className="toolbar-btn primary"
+              onClick={handleRip}
+              disabled={selectedTracks.size === 0 || (!organizeActive && !outputDir)}
+            >
+              <Icon name="play" size={14} fill="currentColor" stroke={0} /> Start Ripping (
+              {selectedTracks.size})
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
