@@ -765,7 +765,8 @@ export default function App() {
           selectedTrackIds.size > 0 ? Array.from(selectedTrackIds)[0] : null;
         if (first != null) {
           setRightRailVisible(true);
-          setSimilarBase(first);
+          // Ctrl/Cmd+Shift+S は明示的な「似た曲を探す」操作 (#151)
+          setSimilarBase(first, { focus: true });
         }
         return;
       }
@@ -990,6 +991,7 @@ export default function App() {
           onOpenRulesPanel={() => setRulesOpen(true)}
           onOpenSyncProvision={() => setSyncProvisionOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenHelp={() => setHelpOpen(true)}
         />
         {viewMode === "inbox" && !triageMode && (
           <div className="inbox-banner">

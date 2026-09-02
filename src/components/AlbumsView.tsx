@@ -528,7 +528,8 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleFindSimilar = useCallback(() => {
     if (!contextMenu) return;
-    setSimilarBase(contextMenu.primary.trackId);
+    // 明示的な「Find similar」なので Similar タブへフォーカスする (#151)
+    setSimilarBase(contextMenu.primary.trackId, { focus: true });
     closeMenu();
   }, [contextMenu, setSimilarBase, closeMenu]);
 

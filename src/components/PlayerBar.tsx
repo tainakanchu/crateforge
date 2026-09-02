@@ -5,6 +5,7 @@ import * as analysisApi from "../api/analysis";
 import { Icon } from "./Icon";
 import { Cover } from "./Cover";
 import { bpmColor } from "../lib/art";
+import * as audition from "../lib/audition";
 
 // 残り時間を "-mm:ss" 形式でフォーマット。
 function formatRemainingTime(positionMs: number, durationMs: number): string {
@@ -252,17 +253,26 @@ export function PlayerBar() {
             {repeat === "one" && <span className="cb-repeat-badge">1</span>}
           </button>
           {auditionMode && (
-            <span
+            <button
+              type="button"
               className="cb-audition-badge"
-              title="Audition mode (A) — 1/2/3 jump · Esc exits preview"
+              onClick={() => audition.toggleAuditionMode()}
+              title="Audition mode — クリックで解除 (A) · 1/2/3 jump"
             >
               AUDITION
-            </span>
+            </button>
           )}
           {previewActive && (
-            <span className="cb-preview-badge" title="Preview session (Esc to restore)">
+            <button
+              type="button"
+              className="cb-preview-badge"
+              onClick={() => {
+                audition.exitPreview({ restore: true }).catch(() => {});
+              }}
+              title="Preview 中 — クリックで元に戻す (Esc)"
+            >
               PREVIEW
-            </span>
+            </button>
           )}
         </div>
         <div className="cb-seek">
