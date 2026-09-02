@@ -949,6 +949,16 @@ input {
   white-space: nowrap;
   margin-top: 1px;
 }
+/* アクティブなソートキー (year/dateAdded/rating/playCount) の値を示す補助行。
+   色は .cb-dim を併用するのでここではサイズ・省略だけ。 */
+.cov-meta .ls {
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
 .cov-play {
   position: absolute;
   left: 50%;
