@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use lofty::file::{AudioFile, TaggedFileExt};
@@ -6,8 +7,140 @@ use lofty::tag::{Accessor, ItemKey, Tag};
 
 use crate::db::Database;
 use crate::itunes_xml::writer::path_to_file_url;
-use crate::models::ImportFileResult;
+use crate::models::{ImportFileResult, ImportSummary};
 use crate::organizer;
+
+/// 取り込み対象とするオーディオ拡張子 (小文字)。
+/// フロントの `src/lib/audioExtensions.ts` の `AUDIO_EXTENSIONS` と揃えること
+/// (ファイル選択ダイアログ / D&D のフィルタと同じ集合にする)。
+pub const AUDIO_EXTENSIONS: &[&str] = &[
+    "flac", "mp3", "m4a", "wav", "aac", "ogg", "opus", "aiff", "wma",
+];
+
+/// フォルダ探索の最大深さ。異常なネスト (壊れたリンク構造など) で暴走しない保険。
+const MAX_DEPTH: usize = 32;
+
+/// 拡張子が対応オーディオ形式かどうか (大文字小文字は無視)。
+pub fn is_audio_file(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => {
+            let lower = ext.to_ascii_lowercase();
+            AUDIO_EXTENSIONS.contains(&lower.as_str())
+        }
+        None => false,
+    }
+}
+
+/// 隠しファイル/隠しフォルダ (`.` 始まり) かどうか。macOS の `.DS_Store` や
+/// `.git` などを取り込まないために使う。
+fn is_hidden(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.'))
+}
+
+/// `roots` に含まれるファイル / フォルダを再帰的に走査し、対応オーディオファイルの
+/// パスをソート済み・重複なしで返す。
+///
+/// - フォルダは深さ優先で再帰的に辿る (`std::fs::read_dir`)。
+/// - 隠しファイル / 隠しフォルダ (`.` 始まり) はスキップする。ただし利用者が
+///   明示的に指定した root 自身は隠しでも対象にする。
+/// - シンボリックリンクのループは訪問済みディレクトリ (canonicalize 済み) の
+///   集合と深さ上限で防ぐ。
+/// - 読めないディレクトリは黙って読み飛ばす (権限エラーなどで全体を止めない)。
+pub fn collect_audio_files(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    // 同じ実体のディレクトリを二度辿らない = シンボリックリンクのループ対策。
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    // (パス, 深さ) のスタックで深さ優先探索する (再帰でスタックを溢れさせない)。
+    let mut stack: Vec<(PathBuf, usize)> = Vec::new();
+
+    for root in roots {
+        if root.is_dir() {
+            stack.push((root.clone(), 0));
+        } else if root.is_file() && is_audio_file(root) {
+            // 明示指定されたファイルは隠しでも受け入れる。
+            out.push(root.clone());
+        }
+    }
+
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > MAX_DEPTH {
+            continue;
+        }
+        // canonicalize できない場合はパスそのものを鍵にして少なくとも同一パスの
+        // 再訪だけは防ぐ。
+        let key = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !visited.insert(key) {
+            continue;
+        }
+
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("collect_audio_files: skip {} ({})", dir.display(), e);
+                continue;
+            }
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if is_hidden(&path) {
+                continue;
+            }
+            // `file_type()` はリンク自身を指すので、リンク先の種別は `path.is_dir()`
+            // (= metadata 追従) で判定する。ループは visited 側で止める。
+            if path.is_dir() {
+                stack.push((path, depth + 1));
+            } else if path.is_file() && is_audio_file(&path) {
+                out.push(path);
+            }
+        }
+    }
+
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// フォルダ (およびファイル) をまとめて取り込む。
+/// フォルダは再帰的に展開し、既にライブラリに登録済みのパスは `skipped` に数える。
+/// 読み取り/DB 追加に失敗したファイルは `failed` に数える。
+///
+/// `on_progress(done, total)` を 1 ファイルごとに呼ぶ (`total` は展開後のファイル数。
+/// 走査完了時点で確定するので、最初に `0/total` を 1 回通知する)。進捗が不要なら
+/// `|_, _| {}` を渡す。
+pub fn import_folders(
+    db: &Database,
+    roots: &[PathBuf],
+    mut on_progress: impl FnMut(usize, usize),
+) -> ImportSummary {
+    let files = collect_audio_files(roots);
+    let existing = db.existing_location_paths().unwrap_or_default();
+    let root_dir = db.organize_root().map(PathBuf::from);
+
+    let mut summary = ImportSummary::default();
+    let total = files.len();
+    on_progress(0, total);
+
+    for (i, file) in files.iter().enumerate() {
+        let as_str = file.to_string_lossy().to_string();
+        if existing.contains(&as_str) {
+            summary.skipped += 1;
+        } else {
+            match read_and_insert(db, file, root_dir.as_deref()) {
+                Ok(_) => summary.imported += 1,
+                Err(e) => {
+                    eprintln!("import_folders: failed {} ({})", as_str, e);
+                    summary.failed += 1;
+                }
+            }
+        }
+        on_progress(i + 1, total);
+    }
+
+    summary
+}
 
 /// 任意の音声ファイル群をライブラリ DB に追加する。
 /// 既存パスとの重複検査は行わない (UI 側で確認することを想定)。
@@ -165,4 +298,115 @@ fn read_bpm(tag: &Tag) -> Option<i64> {
         .and_then(|s| s.trim().parse::<f64>().ok())
         .map(|f| f.round() as i64)
         .filter(|&n| n > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, b"x").unwrap();
+    }
+
+    /// 収集結果をルートからの相対パス文字列 (`/` 区切り) にして比較しやすくする。
+    fn rel(root: &Path, files: &[PathBuf]) -> Vec<String> {
+        files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn collects_audio_files_recursively_sorted() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        touch(&root.join("b.mp3"));
+        touch(&root.join("a.flac"));
+        touch(&root.join("Artist/Album/01.m4a"));
+        touch(&root.join("Artist/Album/02.WAV")); // 大文字拡張子も拾う
+        touch(&root.join("Artist/notes.txt")); // 非オーディオは除外
+        touch(&root.join("cover.jpg"));
+
+        let files = collect_audio_files(&[root.to_path_buf()]);
+        assert_eq!(
+            rel(root, &files),
+            vec![
+                "Artist/Album/01.m4a",
+                "Artist/Album/02.WAV",
+                "a.flac",
+                "b.mp3",
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_hidden_files_and_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        touch(&root.join("ok.mp3"));
+        touch(&root.join(".hidden.mp3"));
+        touch(&root.join(".hidden_dir/inside.mp3"));
+        touch(&root.join("sub/.DS_Store"));
+        touch(&root.join("sub/ok2.flac"));
+
+        let files = collect_audio_files(&[root.to_path_buf()]);
+        assert_eq!(rel(root, &files), vec!["ok.mp3", "sub/ok2.flac"]);
+    }
+
+    #[test]
+    fn accepts_plain_files_and_dedupes_overlapping_roots() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        touch(&root.join("sub/one.mp3"));
+        touch(&root.join("two.ogg"));
+
+        // フォルダとその中のファイルを同時に渡しても重複しない。
+        let files = collect_audio_files(&[
+            root.to_path_buf(),
+            root.join("sub"),
+            root.join("sub/one.mp3"),
+            root.join("missing.mp3"),
+        ]);
+        assert_eq!(rel(root, &files), vec!["sub/one.mp3", "two.ogg"]);
+    }
+
+    #[test]
+    fn non_audio_root_file_is_ignored() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        touch(&root.join("readme.txt"));
+        assert!(collect_audio_files(&[root.join("readme.txt")]).is_empty());
+        assert!(collect_audio_files(&[]).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_loop_terminates() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        touch(&root.join("deep/song.mp3"));
+        // deep/loop -> root（自分自身を含む親へのリンク）で無限ループを作る。
+        std::os::unix::fs::symlink(root, root.join("deep/loop")).unwrap();
+
+        let files = collect_audio_files(&[root.to_path_buf()]);
+        assert_eq!(rel(root, &files), vec!["deep/song.mp3"]);
+    }
+
+    #[test]
+    fn is_audio_file_checks_extension_case_insensitively() {
+        assert!(is_audio_file(Path::new("/m/a.FLAC")));
+        assert!(is_audio_file(Path::new("/m/a.mp3")));
+        assert!(!is_audio_file(Path::new("/m/a.txt")));
+        assert!(!is_audio_file(Path::new("/m/noext")));
+    }
 }

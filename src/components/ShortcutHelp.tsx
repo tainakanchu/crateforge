@@ -65,6 +65,18 @@ const GROUPS: Group[] = [
       { keys: ["↑", "↓"], label: "選択を上下に移動" },
       { keys: ["Ctrl", "A"], label: "すべて選択" },
       { keys: ["Ctrl", "I"], label: "選択した曲を編集" },
+      {
+        keys: ["Alt", "↑"],
+        label: "選択曲を 1 つ上へ (プレイリストを Playlist Order で表示中)",
+      },
+      {
+        keys: ["Alt", "↓"],
+        label: "選択曲を 1 つ下へ (プレイリストを Playlist Order で表示中)",
+      },
+      {
+        keys: ["D&D"],
+        label: "行をドラッグ: プレイリスト内で並べ替え / サイドバーのプレイリスト・Crate へ追加",
+      },
       { keys: ["≣"], label: "コンテキストメニュー（アプリケーションキー）" },
     ],
   },

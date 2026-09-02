@@ -1,8 +1,15 @@
+import type { RepeatMode } from "./edit";
+
 export interface PlaybackState {
   isPlaying: boolean;
   currentTrackId: number | null;
   positionMs: number;
   durationMs: number;
+  /// Rust 側プレイヤーが持つ実際の値。リモート API からも変わるので
+  /// ポーリングでストアへ反映する (App.tsx)。
+  shuffle: boolean;
+  repeat: RepeatMode;
+  volume: number;
 }
 
 export type ViewMode =

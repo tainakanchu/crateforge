@@ -1,13 +1,17 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::audio::AudioPlayer;
 
 use crate::db::Database;
 use crate::importer;
 use crate::itunes_xml::{parser, writer};
 use crate::models::{
-    AlbumRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult, LibraryStats, Track,
-    TrackEdit,
+    AlbumRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult, ImportSummary,
+    LibraryStats, Track, TrackEdit,
 };
 use crate::organizer;
 
@@ -44,6 +48,26 @@ pub fn export_library(app: AppHandle, output_path: String) -> Result<ExportResul
 pub fn import_files(app: AppHandle, paths: Vec<String>) -> Result<ImportFileResult, String> {
     let db = get_db(&app)?;
     Ok(importer::import_files(&db, &paths))
+}
+
+/// フォルダ (とファイル) をまとめて取り込む。フォルダは再帰的に走査し、
+/// 対応拡張子のファイルだけを取り込む。既にライブラリにあるパスはスキップする。
+/// 進行状況は `import-progress` イベント (`{done, total}`) で通知する。
+#[tauri::command]
+pub fn import_folders(app: AppHandle, paths: Vec<String>) -> Result<ImportSummary, String> {
+    let db = get_db(&app)?;
+    let roots: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    let event_app = app.clone();
+    // 大量ファイルでイベントを流しすぎないよう、最初・最後・25件ごとだけ通知する。
+    let summary = importer::import_folders(&db, &roots, move |done, total| {
+        if done == 0 || done == total || done % 25 == 0 {
+            let _ = event_app.emit(
+                "import-progress",
+                serde_json::json!({ "done": done, "total": total }),
+            );
+        }
+    });
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -120,19 +144,10 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
     db.update_track(track_id, &edits)
         .map_err(|e| e.to_string())?;
 
-    // 3. 整理のガード: ルート未設定 / 整理 OFF / 旧トラックやファイルが無いなら終了。
-    //    タグ書き戻し・移動の失敗は「整理失敗」の警告に留め、編集自体は成功扱いとする。
-    let Some(root) = db.organize_root() else {
-        return Ok(());
-    };
+    // 3. 書き戻しのガード: 旧トラックや実ファイルが無いなら DB 更新だけで終了。
+    //    タグ書き戻し・移動の失敗は警告に留め、編集自体は成功扱いとする。
     let Some(before) = before else { return Ok(()) };
-    let Some(loc) = before.location_path.clone() else {
-        return Ok(());
-    };
-    let src = Path::new(&loc);
-    if !src.exists() {
-        return Ok(());
-    }
+    let loc = before.location_path.clone();
 
     // 4. 最終値を確定 (edits 優先、来なかった項目は旧値)。
     let name = edits.name.clone().or(before.name.clone());
@@ -150,7 +165,22 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
     // Compilation は編集された場合は新値、なければ旧値を引き継ぐ。
     let compilation = edits.compilation.unwrap_or(before.compilation);
 
+    // BPM / Key もファイルタグへ書く (#164)。
+    // BPM はトラック自身の値 (ユーザーが編集した可能性がある) を優先し、
+    // 未設定なら解析結果へフォールバックする。Key は解析結果の key_name のみ。
+    let analysis = db.get_analysis(track_id).ok().flatten();
+    let bpm = resolve_int(&edits.bpm, before.bpm)
+        .filter(|n| *n > 0)
+        .map(|n| n as f64)
+        .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
+    let key = analysis
+        .as_ref()
+        .and_then(|a| a.key_name.as_deref())
+        .and_then(organizer::key_name_to_initial_key);
+
     // 5. 実ファイルのタグを書き戻す (他アプリでも編集内容が見えるように)。
+    //    #163: これは整理先フォルダの設定とは無関係に常に行う。
+    //    HTTP API (PATCH /api/tracks/:id) と同じ organizer 側の関数を使う。
     let w = organizer::TagWrite {
         title: name.as_deref(),
         artist: artist.as_deref(),
@@ -165,13 +195,18 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
         disc_number,
         disc_count,
         compilation: Some(compilation),
+        bpm,
+        key,
     };
-    if let Err(e) = organizer::write_tags(src, &w) {
-        eprintln!("write_tags failed for {}: {}", loc, e);
-    }
+    organizer::write_tags_to_location(loc.as_deref(), &w);
 
-    // 6-9. 新ターゲット (フォルダ分け + iTunes 準拠リネーム) を算出して移動し、
-    //      DB の location を追従させる。
+    // 6. 整理 (フォルダ分け + iTunes 準拠リネーム) は整理先ルートが設定されている
+    //    ときだけ行う。未設定なら移動せずここで終了 (タグは 5 で書き戻し済み)。
+    let Some(loc) = loc else { return Ok(()) };
+    let src = Path::new(&loc);
+    if !src.exists() {
+        return Ok(());
+    }
     let meta = organizer::TrackMeta {
         title: name.as_deref(),
         artist: artist.as_deref(),
@@ -182,7 +217,10 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
         disc_number,
         disc_count,
     };
-    let target = organizer::target_path(Path::new(&root), &meta, src);
+    let Some(target) = organizer::organize_target(db.organize_root().as_deref(), &meta, src) else {
+        return Ok(());
+    };
+    // 7. 新ターゲットへ移動し、DB の location を追従させる。
     match organizer::relocate(src, &target, organizer::Mode::Move) {
         Ok(dest) if dest != src => {
             let dest_str = dest.to_string_lossy().to_string();
@@ -295,6 +333,132 @@ pub fn get_albums(
 pub fn get_album_tracks(app: AppHandle, album_key: String) -> Result<Vec<Track>, String> {
     let db = get_db(&app)?;
     db.get_album_tracks(&album_key).map_err(|e| e.to_string())
+}
+
+/// 削除対象の実ファイルが「整理ルート配下」にあることを検証し、正規化パスを返す。
+///
+/// `trash` クレートを依存に持たないため OS のゴミ箱へは送れず、削除は復元不能になる。
+/// そのためアプリが管理するライブラリルート配下に限って実削除を許可し、
+/// それ以外 (外部参照のファイル) は消さずにエラーで返す。
+/// symlink でルート外を指すファイルも弾けるよう、両者 canonicalize してから比較する。
+fn ensure_inside_root(root: &Path, file: &Path) -> Result<PathBuf, String> {
+    let canonical = std::fs::canonicalize(file)
+        .map_err(|e| format!("{} のパスを解決できませんでした: {}", file.display(), e))?;
+    if !canonical.starts_with(root) {
+        return Err(format!(
+            "{} はライブラリルート ({}) の外にあるため、安全のためファイルを削除しません。\
+             「ファイルも削除する」のチェックを外せば、ライブラリ (DB) からの削除だけを行えます。",
+            file.display(),
+            root.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+/// 指定トラックをライブラリから削除する。実際に消えた曲数を返す。
+///
+/// - DB からはトラック行と依存行 (プレイリスト所属 / 再生履歴 / 解析結果 / 同期メタ) を消す。
+/// - `delete_files` が true のときだけ実ファイルも削除する。ゴミ箱へ送れない
+///   (`trash` クレート非依存) ため、ライブラリルート配下のファイルに限定し、
+///   1 件でもルート外があれば **何も消さずに** エラーを返す。
+/// - 削除した曲が再生中 / キューに積まれていれば、再生を止めキューから外す。
+#[tauri::command]
+pub fn delete_tracks(
+    app: AppHandle,
+    track_ids: Vec<i64>,
+    delete_files: bool,
+    player: tauri::State<'_, Mutex<AudioPlayer>>,
+) -> Result<usize, String> {
+    if track_ids.is_empty() {
+        return Ok(0);
+    }
+    let db = get_db(&app)?;
+
+    // 1. ファイル削除は「全件検証 → まとめて実行」にして、途中失敗で
+    //    DB とファイルがちぐはぐになるのを防ぐ。
+    let mut files: Vec<PathBuf> = Vec::new();
+    if delete_files {
+        let root = db.organize_root().ok_or_else(|| {
+            "ファイルを削除するにはライブラリルート (整理先) の設定が必要です。\
+             設定でルートを指定するか、ライブラリ (DB) からの削除だけを行ってください。"
+                .to_string()
+        })?;
+        let root = std::fs::canonicalize(&root)
+            .map_err(|e| format!("ライブラリルート ({}) を解決できませんでした: {}", root, e))?;
+        for track in db
+            .get_tracks_by_ids(&track_ids)
+            .map_err(|e| e.to_string())?
+        {
+            let Some(loc) = track.location_path.filter(|p| !p.is_empty()) else {
+                continue;
+            };
+            let path = Path::new(&loc);
+            // 既に存在しないファイルは検証せずスキップ (DB の掃除だけ行う)。
+            if !path.exists() {
+                continue;
+            }
+            files.push(ensure_inside_root(&root, path)?);
+        }
+    }
+
+    // 2. DB から削除 (1 トランザクション)。
+    let deleted = db.delete_tracks(&track_ids).map_err(|e| e.to_string())?;
+
+    // 3. 検証済みファイルを削除する。個別の失敗 (権限など) は警告に留め、
+    //    DB 側の削除は確定させる (再試行しても DB に行は残っていない)。
+    for path in files {
+        if let Err(e) = std::fs::remove_file(&path) {
+            eprintln!("remove_file failed for {}: {}", path.display(), e);
+            crate::logging::write_line(
+                "warn",
+                &format!("failed to delete file {}: {}", path.display(), e),
+            );
+        }
+    }
+
+    // 4. 再生中 / キューに残っている曲を落とす。
+    let removed: HashSet<i64> = track_ids.into_iter().collect();
+    crate::commands::playback::drop_tracks_from_playback(&app, &player, &removed);
+
+    Ok(deleted)
+}
+
+/// OS のファイルマネージャでファイルを表示する (Finder / エクスプローラで表示)。
+///
+/// `tauri-plugin-shell` の Rust 側 API (`shell().command()`) を使う。こちらは
+/// フロントの `shell:allow-execute` スコープを通らない (ACL は IPC 経由の呼び出しにのみ効く)
+/// ため capabilities の追加は不要で、実行するプログラムと引数はこの関数が固定する。
+#[tauri::command]
+pub fn reveal_in_file_manager(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+
+    let target = Path::new(&path);
+    if !target.exists() {
+        return Err(format!("ファイルが見つかりません: {}", path));
+    }
+    let shell = app.shell();
+
+    #[cfg(target_os = "macos")]
+    let cmd = shell.command("open").args(["-R", path.as_str()]);
+
+    // explorer は `/select,<path>` を 1 引数として受け取る。
+    #[cfg(target_os = "windows")]
+    let cmd = shell.command("explorer").arg(format!("/select,{}", path));
+
+    // Linux にはファイルを選択状態で開く共通の方法が無いので、親ディレクトリを開く。
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let cmd = {
+        let dir = target
+            .parent()
+            .ok_or_else(|| format!("親ディレクトリを特定できません: {}", path))?;
+        shell
+            .command("xdg-open")
+            .arg(dir.to_string_lossy().to_string())
+    };
+
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("ファイルマネージャを起動できませんでした: {}", e))
 }
 
 pub(crate) fn open_db(app: &AppHandle) -> Result<Database, String> {

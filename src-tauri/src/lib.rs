@@ -184,6 +184,7 @@ pub fn run() {
             commands::library::import_library,
             commands::library::export_library,
             commands::library::import_files,
+            commands::library::import_folders,
             commands::library::get_tracks,
             commands::library::get_tracks_by_ids,
             commands::library::search_tracks,
@@ -200,6 +201,8 @@ pub fn run() {
             commands::library::set_search_fold_level,
             commands::library::get_albums,
             commands::library::get_album_tracks,
+            commands::library::delete_tracks,
+            commands::library::reveal_in_file_manager,
             // artwork
             commands::artwork::set_artwork_from_data,
             commands::artwork::set_artwork_from_file,

@@ -1453,16 +1453,10 @@ pub async fn replace_playlist_tracks(
 /// 実ファイルのタグへ書き戻す。`location_path` が無い / ファイルが存在しない場合は
 /// 何もしない (= 失敗ではない)。書き込みを試みて失敗したときだけ true を返す。
 /// 整理 (フォルダ移動) はせず、その場でタグだけ更新する (rekordbox 等 他アプリへ反映)。
+///
+/// 実体は GUI の `update_track` と共有する [`crate::organizer::write_tags_to_location`]。
 fn writeback(loc: Option<&str>, w: &crate::organizer::TagWrite) -> bool {
-    let Some(loc) = loc else { return false };
-    if loc.is_empty() {
-        return false;
-    }
-    let path = std::path::Path::new(loc);
-    if !path.exists() {
-        return false;
-    }
-    crate::organizer::write_tags(path, w).is_err()
+    crate::organizer::write_tags_to_location(loc, w)
 }
 
 /// `POST /api/tracks/genre-tags/{add,remove}` のボディ。
@@ -2122,18 +2116,16 @@ pub async fn remote_get_state(State(state): State<ApiState>) -> Result<Json<Valu
     let guard = player
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // volume/shuffle/repeat は `PlaybackState` 自体が持つので、そこから組み立てる。
     let ps = guard.get_state();
-    let volume = guard.volume();
-    let shuffle = guard.shuffle();
-    let repeat = repeat_mode_str(guard.repeat());
     Ok(Json(json!({
         "isPlaying": ps.is_playing,
         "currentTrackId": ps.current_track_id,
         "positionMs": ps.position_ms,
         "durationMs": ps.duration_ms,
-        "volume": volume,
-        "shuffle": shuffle,
-        "repeat": repeat,
+        "volume": ps.volume,
+        "shuffle": ps.shuffle,
+        "repeat": repeat_mode_str(ps.repeat),
     })))
 }
 
@@ -2420,6 +2412,20 @@ fn apply_track_edit(
         Some(t) => t,
         None => return Ok(None),
     };
+    // BPM / Key もファイルタグへ書く (#164)。BPM はトラック自身の値を優先し、
+    // 未設定なら解析結果へフォールバックする。Key は解析結果の key_name から
+    // DJ ソフトが読む音楽表記 ("Am" 等) に変換して InitialKey へ書く。
+    let analysis = db.get_analysis(track_id).ok().flatten();
+    let bpm = track
+        .bpm
+        .filter(|n| *n > 0)
+        .map(|n| n as f64)
+        .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
+    let key = analysis
+        .as_ref()
+        .and_then(|a| a.key_name.as_deref())
+        .and_then(crate::organizer::key_name_to_initial_key);
+
     // 現在の DB 値を実ファイルのタグへ書き戻す (GUI の update_track と同様、他アプリにも反映)。
     let file_failed = {
         let w = crate::organizer::TagWrite {
@@ -2436,6 +2442,8 @@ fn apply_track_edit(
             disc_number: track.disc_number,
             disc_count: track.disc_count,
             compilation: Some(track.compilation),
+            bpm,
+            key,
         };
         writeback(track.location_path.as_deref(), &w)
     };
