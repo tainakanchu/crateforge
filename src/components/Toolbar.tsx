@@ -72,7 +72,6 @@ function anchoredPopStyle(el: HTMLElement | null, width: number): React.CSSPrope
 const VIEW_TITLE: Record<ViewMode, string> = {
   library: "All Tracks",
   inbox: "Inbox",
-  albums: "Albums",
   artists: "Artists",
   recent: "Recently Played",
   playlist: "Playlist",
@@ -164,7 +163,7 @@ export function Toolbar({
   const sortBtnRef = useRef<HTMLButtonElement>(null);
   const moreBtnRef = useRef<HTMLButtonElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
-  const isListLike = viewMode !== "albums" && viewMode !== "artists";
+  const isListLike = viewMode !== "artists";
 
   // ツールバー幅を監視して compact を切り替える（初回描画前に確定させたいので layout effect）。
   useLayoutEffect(() => {

@@ -16,7 +16,6 @@ export type ViewMode =
   | "library"
   | "playlist"
   | "recent"
-  | "albums"
   | "artists"
   | "inbox";
 
