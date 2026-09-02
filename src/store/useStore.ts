@@ -71,6 +71,16 @@ export interface RipStatus {
   error?: string;
 }
 
+// スコープ別ソート (#160)。"library" / "inbox" / "recent" / "albums" / "artists" /
+// `playlist:${id}` をキーに、ビューごとに最後に選んだソートを個別に覚える。
+// "playlistOrder"（プレイリストの手動順・疑似フィールド）はここには書かない —
+// 通常プレイリストを List 表示したときの既定値として動的に導出する（defaultSortForScope）。
+export interface SortByScopeEntry {
+  field: SortField;
+  order: SortOrder;
+}
+export type SortByScope = Record<string, SortByScopeEntry>;
+
 interface PersistedSettings {
   fields: FieldKey[];
   // 列ごとのユーザー指定幅 (px)。未指定の列は FIELD_DEFS の既定幅を使う。
@@ -88,8 +98,7 @@ interface PersistedSettings {
   rowH: number;
   coverSize: CoverSize;
   displayMode: DisplayMode;
-  sortField: SortField;
-  sortOrder: SortOrder;
+  sortByScope: SortByScope;
   volume: number;
   shuffle: boolean;
   repeat: RepeatMode;
@@ -110,6 +119,12 @@ interface PersistedSettings {
   lastSyncDestRoot: string | null;
   // Similar タブの絞り込み条件 (#151)。
   similarFilters: SimilarFilters;
+  // 表示状態 (#160): 次回起動時に復元する直近のビュー / 選択プレイリスト / 絞り込みチップ。
+  viewMode: ViewMode;
+  selectedPlaylistId: number | null;
+  filterTags: string[];
+  // 右ペインの Set tools (Arc / Lint) 開閉状態 (#160)。
+  setToolsOpen: boolean;
 }
 
 // 「前回入れたプレイリスト」ショートカットで保持する件数
@@ -152,20 +167,18 @@ export function clampRailWidthToViewport(
 }
 
 interface AppState extends PersistedSettings {
-  // View
-  viewMode: ViewMode;
-  selectedPlaylistId: number | null;
+  // View（viewMode / selectedPlaylistId / filterTags は PersistedSettings 側で永続化 #160）
   /**
-   * 手動順 (sortField: "playlistOrder") へ自動で切り替える直前のソート。
-   * プレイリストを離れたら元へ戻すために覚えておく（永続化しない）。
+   * 現在のスコープで有効なソート（sortByScope から導出されるミラー値）。
+   * 読み取りは従来どおりこの 2 フィールドで OK — 書き込みは setSort 系アクション経由で
+   * 現在スコープの sortByScope エントリを更新し、ここへ反映する。
    */
-  sortBeforeManual: { field: SortField; order: SortOrder } | null;
+  sortField: SortField;
+  sortOrder: SortOrder;
   searchQuery: string;
   // 検索スコープ。プレイリスト表示中のみ意味を持ち、"playlist" ならそのプレイリストの
   // 中だけを、"library" ならライブラリ全体を検索する（セッション内のみ）。
   searchScope: SearchScope;
-  // ジャンル等の絞り込みチップ（フリーテキスト検索と AND 結合、セッション内のみ）
-  filterTags: string[];
 
   // Data
   tracks: Track[];
@@ -283,6 +296,10 @@ interface AppState extends PersistedSettings {
   setSortField: (field: SortField) => void;
   setSortOrder: (order: SortOrder) => void;
   toggleSort: (field: SortField) => void;
+  /** 現在のスコープ（library / inbox / recent / albums / artists / playlist:id）へ直接書き込む。 */
+  setSort: (field: SortField, order: SortOrder) => void;
+  /** 右ペインの Set tools (Arc / Lint) 開閉を切り替える (#160)。 */
+  setSetToolsOpen: (open: boolean) => void;
   setVolume: (v: number) => void;
   setShuffle: (on: boolean) => void;
   setRepeat: (mode: RepeatMode) => void;
@@ -397,18 +414,107 @@ function persistSetWorkspaceSlice(state: {
   });
 }
 
+// === スコープ別ソート (#160) ===
+// 1 本の sortField/sortOrder ではなく、ビュー（スコープ）ごとに最後のソートを覚える。
+// sortField/sortOrder は「現在のスコープの実効ソート」を映すミラーとして残し、
+// Toolbar/TrackTable/AlbumsView/App.tsx はほぼ無改修のまま動く。
+
+/** 現在の viewMode / selectedPlaylistId から sortByScope のキーを決める。 */
+function sortScopeKey(state: {
+  viewMode: ViewMode;
+  selectedPlaylistId: number | null;
+}): string {
+  if (state.viewMode === "playlist") {
+    return state.selectedPlaylistId != null
+      ? `playlist:${state.selectedPlaylistId}`
+      : "library";
+  }
+  return state.viewMode;
+}
+
 /**
- * 手動順 (playlistOrder) を解除して直前のソートへ戻す差分を返す。
- * 記録が無ければ既定の name / asc へ。
+ * スコープに sortByScope エントリが無いときの既定値。
+ * 通常プレイリスト（スマート/フォルダでない）を List 表示しているときだけ、
+ * DB の sort_index 順を指す疑似フィールド "playlistOrder" を返す。
  */
-function restoreSort(state: {
-  sortBeforeManual: { field: SortField; order: SortOrder } | null;
-}): { sortField: SortField; sortOrder: SortOrder; sortBeforeManual: null } {
+function defaultSortForScope(state: {
+  viewMode: ViewMode;
+  selectedPlaylistId: number | null;
+  playlists: Playlist[];
+  displayMode: DisplayMode;
+}): SortByScopeEntry {
+  if (state.viewMode === "playlist" && state.selectedPlaylistId != null) {
+    const pl = state.playlists.find(
+      (p) => p.playlistId === state.selectedPlaylistId,
+    );
+    if (pl && !pl.isSmart && !pl.isFolder && state.displayMode === "list") {
+      return { field: "playlistOrder", order: "asc" };
+    }
+  }
+  return { field: "name", order: "asc" };
+}
+
+/**
+ * 現在のスコープで実際に使うソートを解決する。
+ * sortByScope の明示エントリ（無ければ既定値）を、表示モードの制約
+ * （Albums グリッドはアルバム粒度のみ／手動順は List 専用）で正規化する。
+ */
+function resolveSort(state: {
+  viewMode: ViewMode;
+  selectedPlaylistId: number | null;
+  playlists: Playlist[];
+  displayMode: DisplayMode;
+  sortByScope: SortByScope;
+}): SortByScopeEntry {
+  const key = sortScopeKey(state);
+  let entry = state.sortByScope[key] ?? defaultSortForScope(state);
+  // Albums グリッド表示はアルバム粒度のソート語彙のみ (BPM 等トラック専用フィールドは無意味)。
+  if (state.displayMode === "albums" && !ALBUM_SORT_FIELDS.includes(entry.field)) {
+    entry = { field: "albumArtist", order: "asc" };
+  }
+  return entry;
+}
+
+/**
+ * 現在スコープの sortByScope エントリを書き換え、実効ソート（ミラー）を返す差分。
+ * "playlistOrder" は疑似フィールドなので永続化せず、そのスコープのエントリを消して
+ * 既定値（defaultSortForScope）に委ねる。
+ */
+function writeSort(
+  state: {
+    viewMode: ViewMode;
+    selectedPlaylistId: number | null;
+    playlists: Playlist[];
+    displayMode: DisplayMode;
+    sortByScope: SortByScope;
+  },
+  entry: SortByScopeEntry,
+): { sortByScope: SortByScope; sortField: SortField; sortOrder: SortOrder } {
+  const key = sortScopeKey(state);
+  const nextMap = { ...state.sortByScope };
+  if (entry.field === "playlistOrder") {
+    delete nextMap[key];
+  } else {
+    nextMap[key] = entry;
+  }
+  const resolved = resolveSort({ ...state, sortByScope: nextMap });
   return {
-    sortField: state.sortBeforeManual?.field ?? "name",
-    sortOrder: state.sortBeforeManual?.order ?? "asc",
-    sortBeforeManual: null,
+    sortByScope: nextMap,
+    sortField: resolved.field,
+    sortOrder: resolved.order,
   };
+}
+
+/** スコープ切り替え（viewMode / selectedPlaylistId / displayMode / playlists）後に sortField/sortOrder ミラーを再計算する差分。 */
+function resyncSort(state: {
+  viewMode: ViewMode;
+  selectedPlaylistId: number | null;
+  playlists: Playlist[];
+  displayMode: DisplayMode;
+  sortByScope: SortByScope;
+}): { sortField: SortField; sortOrder: SortOrder } {
+  const resolved = resolveSort(state);
+  return { sortField: resolved.field, sortOrder: resolved.order };
 }
 
 export const useStore = create<AppState>()(
@@ -416,7 +522,6 @@ export const useStore = create<AppState>()(
     (set) => ({
       viewMode: "library",
       selectedPlaylistId: null,
-      sortBeforeManual: null,
       searchQuery: "",
       searchScope: "playlist",
       filterTags: [],
@@ -465,8 +570,12 @@ export const useStore = create<AppState>()(
       rowH: 40,
       coverSize: 20,
       displayMode: "list",
+      // sortByScope の "library" 既定 (name/asc) と同じ。実際のミラー値は
+      // ハイドレーション直後に resyncSort で現在スコープに合わせて補正される。
       sortField: "name",
       sortOrder: "asc",
+      sortByScope: {},
+      setToolsOpen: false,
       volume: 1.0,
       shuffle: false,
       repeat: "off",
@@ -482,39 +591,17 @@ export const useStore = create<AppState>()(
       similarFilters: DEFAULT_SIMILAR_FILTERS,
       auditionMode: false,
 
-      // プレイリストを離れるときは手動順 (playlistOrder) を解除し、
-      // 直前のソートへ戻す（手動順はプレイリスト専用の並びなので他ビューでは無意味）。
+      // スコープが変わるので、そのスコープの sortByScope エントリ（無ければ既定値。
+      // 通常プレイリストを List 表示していれば手動順 "playlistOrder"）へミラーを合わせる。
       setViewMode: (mode) =>
-        set((state) =>
-          mode !== "playlist" && state.sortField === "playlistOrder"
-            ? { viewMode: mode, ...restoreSort(state) }
-            : { viewMode: mode },
-        ),
-      // 通常プレイリストを開いたら手動順 (DB の sort_index 順) で表示する。
-      // スマート/フォルダ/未選択、あるいは List 以外の表示モードでは通常ソートへ戻す。
+        set((state) => {
+          const next = { ...state, viewMode: mode };
+          return { viewMode: mode, ...resyncSort(next) };
+        }),
       setSelectedPlaylistId: (id) =>
         set((state) => {
-          const pl =
-            id != null
-              ? state.playlists.find((p) => p.playlistId === id)
-              : undefined;
-          const manual =
-            !!pl && !pl.isSmart && !pl.isFolder && state.displayMode === "list";
-          if (manual) {
-            if (state.sortField === "playlistOrder") {
-              return { selectedPlaylistId: id };
-            }
-            return {
-              selectedPlaylistId: id,
-              sortBeforeManual: { field: state.sortField, order: state.sortOrder },
-              sortField: "playlistOrder" as SortField,
-              sortOrder: "asc" as SortOrder,
-            };
-          }
-          if (state.sortField === "playlistOrder") {
-            return { selectedPlaylistId: id, ...restoreSort(state) };
-          }
-          return { selectedPlaylistId: id };
+          const next = { ...state, selectedPlaylistId: id };
+          return { selectedPlaylistId: id, ...resyncSort(next) };
         }),
       setSearchQuery: (query) => set({ searchQuery: query }),
       setSearchScope: (scope) => set({ searchScope: scope }),
@@ -535,7 +622,14 @@ export const useStore = create<AppState>()(
       appendAlbums: (albums) =>
         set((state) => ({ albums: [...state.albums, ...albums] })),
       setAlbumsHasMore: (albumsHasMore) => set({ albumsHasMore }),
-      setPlaylists: (playlists) => set({ playlists }),
+      // playlists のロード完了で初めて選択中プレイリストの isSmart/isFolder が分かるので、
+      // 起動直後の永続復元 (#160) では playlists がまだ空のまま resyncSort していた
+      // ミラーをここで補正する（通常プレイリストなら手動順へ）。
+      setPlaylists: (playlists) =>
+        set((state) => {
+          const next = { ...state, playlists };
+          return { playlists, ...resyncSort(next) };
+        }),
       setIsLoading: (loading) => set({ isLoading: loading }),
       setHasMore: (hasMore) => set({ hasMore }),
       setPlayback: (playback) => set({ playback }),
@@ -695,18 +789,12 @@ export const useStore = create<AppState>()(
       clearSetMeta: () => set({ setMeta: { ...DEFAULT_SET_META } }),
 
       // Persisted settings
+      // displayMode もソートの制約 (Albums はアルバム粒度のみ／手動順は List 専用) に
+      // 効くので、切り替えのたびに resyncSort でミラーを引き直す。
       setDisplayMode: (mode) =>
         set((state) => {
-          // Albums モードはアルバム粒度のソート語彙のみ。トラック専用フィールド
-          // (BPM 等) のままだと無意味に散るので albumArtist 昇順へ正規化する。
-          if (mode === "albums" && !ALBUM_SORT_FIELDS.includes(state.sortField)) {
-            return { displayMode: mode, sortField: "albumArtist", sortOrder: "asc" };
-          }
-          // 手動順は List ビュー専用（並べ替え UI が一覧行にしかない）。
-          if (mode !== "list" && state.sortField === "playlistOrder") {
-            return { displayMode: mode, ...restoreSort(state) };
-          }
-          return { displayMode: mode };
+          const next = { ...state, displayMode: mode };
+          return { displayMode: mode, ...resyncSort(next) };
         }),
       setFields: (fields) => set({ fields }),
       toggleField: (key) =>
@@ -732,6 +820,7 @@ export const useStore = create<AppState>()(
       setRightRailWidth: (width) =>
         set({ rightRailWidth: clampRailWidthToViewport(width) }),
       setRailSplit: (railSplit) => set({ railSplit }),
+      setSetToolsOpen: (setToolsOpen) => set({ setToolsOpen }),
       setShowRemainingTime: (showRemainingTime) => set({ showRemainingTime }),
       toggleRemainingTime: () =>
         set((state) => ({ showRemainingTime: !state.showRemainingTime })),
@@ -739,14 +828,21 @@ export const useStore = create<AppState>()(
       setCoverSize: (coverSize) => set({ coverSize }),
       resetColumns: () =>
         set({ fields: DEFAULT_FIELDS, fieldWidths: {}, rowH: 40, coverSize: 20 }),
-      setSortField: (field) => set({ sortField: field }),
-      setSortOrder: (order) => set({ sortOrder: order }),
+      // 以下はすべて現在スコープの sortByScope エントリを書き換える (#160)。
+      setSortField: (field) =>
+        set((state) => writeSort(state, { field, order: state.sortOrder })),
+      setSortOrder: (order) =>
+        set((state) => writeSort(state, { field: state.sortField, order })),
       toggleSort: (field) =>
         set((state) =>
-          state.sortField === field
-            ? { sortOrder: state.sortOrder === "asc" ? "desc" : "asc" }
-            : { sortField: field, sortOrder: "asc" },
+          writeSort(
+            state,
+            state.sortField === field
+              ? { field, order: state.sortOrder === "asc" ? "desc" : "asc" }
+              : { field, order: "asc" },
+          ),
         ),
+      setSort: (field, order) => set((state) => writeSort(state, { field, order })),
       setVolume: (volume) => set({ volume }),
       setShuffle: (shuffle) => set({ shuffle }),
       setRepeat: (repeat) => set({ repeat }),
@@ -822,7 +918,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 16,
+      version: 17,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -835,16 +931,7 @@ export const useStore = create<AppState>()(
           rowH: state.rowH,
           coverSize: state.coverSize,
           displayMode: state.displayMode,
-          // 手動順は「そのプレイリストを開いている間」だけの並び。起動時は
-          // ライブラリ表示なので、永続化する値は通常ソートへ倒しておく。
-          sortField:
-            state.sortField === "playlistOrder"
-              ? (state.sortBeforeManual?.field ?? "name")
-              : state.sortField,
-          sortOrder:
-            state.sortField === "playlistOrder"
-              ? (state.sortBeforeManual?.order ?? "asc")
-              : state.sortOrder,
+          sortByScope: state.sortByScope,
           volume: state.volume,
           shuffle: state.shuffle,
           repeat: state.repeat,
@@ -858,6 +945,10 @@ export const useStore = create<AppState>()(
           ripOutputDir: state.ripOutputDir,
           lastSyncDestRoot: state.lastSyncDestRoot,
           similarFilters: state.similarFilters,
+          viewMode: state.viewMode,
+          selectedPlaylistId: state.selectedPlaylistId,
+          filterTags: state.filterTags,
+          setToolsOpen: state.setToolsOpen,
         }) satisfies PersistedSettings,
       // v1(visibleColumns) からの移行: 旧キーは破棄してデフォルトに倒す。
       // v3: recentPlaylistIds を追加（旧データには無いので配列で補完）。
@@ -957,16 +1048,52 @@ export const useStore = create<AppState>()(
             ...(typeof f === "object" && f !== null ? f : {}),
           };
         }
-        // v14: library.db の自動バックアップ (#167)。既定 true (安全側)。
+        // v16: library.db の自動バックアップ (#167)。既定 true (安全側)。
         if (version < 16 && persisted && typeof persisted === "object") {
           const p = persisted as Record<string, unknown>;
           if (typeof p.autoBackupEnabled !== "boolean") p.autoBackupEnabled = true;
+        }
+        // v17 (#160): 表示状態 (viewMode / selectedPlaylistId / filterTags / Set tools 開閉) を
+        // 永続化。加えて単一の sortField/sortOrder をスコープ別の sortByScope へ移行し、
+        // 旧値は "library" スコープの既定として引き継ぐ（"playlistOrder" は疑似フィールドなので
+        // 旧データには存在しない）。
+        if (version < 17 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (typeof p.viewMode !== "string") p.viewMode = "library";
+          if (
+            p.selectedPlaylistId !== null &&
+            typeof p.selectedPlaylistId !== "number"
+          ) {
+            p.selectedPlaylistId = null;
+          }
+          if (!Array.isArray(p.filterTags)) p.filterTags = [];
+          if (typeof p.setToolsOpen !== "boolean") p.setToolsOpen = false;
+          if (typeof p.sortByScope !== "object" || p.sortByScope === null) {
+            const field =
+              typeof p.sortField === "string" ? (p.sortField as SortField) : "name";
+            const order = p.sortOrder === "desc" ? "desc" : "asc";
+            p.sortByScope = { library: { field, order } } satisfies SortByScope;
+          }
+          delete p.sortField;
+          delete p.sortOrder;
         }
         return persisted as PersistedSettings;
       },
     },
   ),
 );
+
+// 起動時、永続復元された viewMode/selectedPlaylistId/sortByScope に合わせて
+// sortField/sortOrder ミラーを引き直す（#160）。create() 完了時点で localStorage
+// からの同期ハイドレーションは済んでいるので、ここで一度呼べば起動直後の状態になる。
+// （選択中プレイリストの isSmart/isFolder が要る場合は setPlaylists 側でも再計算する。）
+if (typeof window !== "undefined") {
+  const st = useStore.getState();
+  const resolved = resolveSort(st);
+  if (resolved.field !== st.sortField || resolved.order !== st.sortOrder) {
+    useStore.setState({ sortField: resolved.field, sortOrder: resolved.order });
+  }
+}
 
 // 右ペイン幅をウィンドウ幅でクランプする（#146）。
 // - 起動時（永続化設定のハイドレーション直後）に一度実行。

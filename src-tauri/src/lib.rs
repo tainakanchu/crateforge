@@ -56,6 +56,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // ウィンドウのサイズ・位置・最大化状態を次回起動時に復元する。
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         // 埋め込みジャケットを `artwork://localhost/<percent-encoded path>` で配信。
         // <img> から遅延ロードされ、WebView がレスポンスをキャッシュする。
         .register_asynchronous_uri_scheme_protocol("artwork", |_ctx, request, responder| {
