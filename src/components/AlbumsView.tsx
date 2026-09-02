@@ -10,12 +10,14 @@ import { Icon } from "./Icon";
 import { ArtworkImg } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
-import type { Track, Playlist, AlbumRow } from "../types";
+import { ALBUM_SORT_FIELDS } from "../types";
+import type { Track, Playlist, AlbumRow, SortField, SortOrder } from "../types";
 
 const GAP = 18;
 const PAD_X = 20;
 const MIN_CARD = 150;
 const META_H = 46; // カード下のアルバム名・曲数ラベルのおよその高さ
+const SORT_LINE_H = 15; // ソートキー表示行 (.cov-meta .ls) のおよその高さ
 
 interface AlbumsViewProps {
   onLoadMore: () => void;
@@ -35,6 +37,12 @@ interface AlbumVM {
   coverTrackId: number | null;
   coverPath: string | null; // file_exists でなければ null
   totalTimeMs: number;
+  // ソート/表示に使うアルバム粒度の集約値。サーバ集約 (AlbumRow) と同じ意味になるよう
+  // クライアント束ねでも year=MIN(非 null), dateAdded=MAX, rating=MAX, playCount=SUM で揃える。
+  year: number | null;
+  dateAdded: string | null;
+  rating: number | null;
+  playCount: number;
   bpmMin: number | null;
   bpmMax: number | null;
   // null = 未取得 (ライブラリ; 展開・操作時に getAlbumTracks で遅延取得)、
@@ -76,28 +84,105 @@ function albumRowToVM(r: AlbumRow): AlbumVM {
     coverTrackId: r.coverTrackId,
     coverPath: r.coverFileExists ? r.coverLocationPath : null,
     totalTimeMs: r.totalTimeMs,
+    year: r.year,
+    dateAdded: r.dateAdded,
+    rating: r.rating,
+    playCount: r.playCount,
     bpmMin: r.bpmMin,
     bpmMax: r.bpmMax,
     tracks: null,
   };
 }
 
+const ALBUM_SORT_SET = new Set<string>(ALBUM_SORT_FIELDS);
+
+// 文字列比較。空 (null/空白のみ) は方向によらず末尾に置き、sign は非空同士にだけ効かせる。
+function cmpText(a: string | null, b: string | null, sign = 1): number {
+  const av = (a ?? "").trim();
+  const bv = (b ?? "").trim();
+  if (!av || !bv) return av === bv ? 0 : av ? -1 : 1;
+  return sign * av.localeCompare(bv, undefined, { sensitivity: "base", numeric: true });
+}
+
+// null を方向によらず末尾に置く比較 (サーバの `(x IS NULL), x {dir}` と同じ挙動)。
+function cmpNullsLast<T>(
+  a: T | null,
+  b: T | null,
+  sign: number,
+  cmp: (x: T, y: T) => number,
+): number {
+  if (a == null || b == null) return a == null && b == null ? 0 : a == null ? 1 : -1;
+  return sign * cmp(a, b);
+}
+
+const cmpNum = (a: number, b: number) => (a === b ? 0 : a < b ? -1 : 1);
+const cmpIso = (a: string, b: string) => (a === b ? 0 : a < b ? -1 : 1);
+
+/// Albums グリッドの比較関数。ALBUM_SORT_FIELDS 外の sortField (List ビュー由来の
+/// bpm/trackNumber 等) はアルバム粒度で意味を持たないので albumArtist→album に倒す。
+/// 二次キーはサーバの album_order_by と同じ並び、最後は albumKey で必ず安定させる。
+function albumComparator(
+  sortField: SortField,
+  sortOrder: SortOrder,
+): (a: AlbumVM, b: AlbumVM) => number {
+  const field = ALBUM_SORT_SET.has(sortField) ? sortField : "albumArtist";
+  const sign = sortOrder === "desc" ? -1 : 1;
+  return (a, b) => {
+    let c = 0;
+    switch (field) {
+      case "album":
+        c = cmpText(a.album, b.album, sign) || cmpText(a.albumArtist, b.albumArtist);
+        break;
+      case "year":
+        c =
+          cmpNullsLast(a.year, b.year, sign, cmpNum) ||
+          cmpText(a.albumArtist, b.albumArtist) ||
+          cmpText(a.album, b.album);
+        break;
+      case "dateAdded":
+        c =
+          cmpNullsLast(a.dateAdded || null, b.dateAdded || null, sign, cmpIso) ||
+          cmpText(a.albumArtist, b.albumArtist) ||
+          cmpText(a.album, b.album);
+        break;
+      case "rating":
+        c =
+          cmpNullsLast(a.rating, b.rating, sign, cmpNum) ||
+          cmpText(a.albumArtist, b.albumArtist) ||
+          cmpText(a.album, b.album);
+        break;
+      case "playCount":
+        c =
+          sign * cmpNum(a.playCount, b.playCount) ||
+          cmpText(a.albumArtist, b.albumArtist) ||
+          cmpText(a.album, b.album);
+        break;
+      default: // albumArtist
+        c = cmpText(a.albumArtist, b.albumArtist, sign) || cmpText(a.album, b.album);
+        break;
+    }
+    // 最終タイブレーク: 束ねキー (安定化)。
+    return c || (a.key === b.key ? 0 : a.key < b.key ? -1 : 1);
+  };
+}
+
 // ロード済みトラックをクライアント側でアルバム単位に束ねる (スコープ外: プレイリスト/検索/最近)。
-// 束ねキー:
-//   compilation → cmp:<album>            (アルバムアーティストが違っても album だけで束ねる)
+// 束ねキーの優先順位はサーバの ALBUM_KEY_EXPR と一致させる (album 空を先に判定):
 //   album 空    → tr:<trackId>           (巨大な「(unknown)」へ吸い込まれないように)
+//   compilation → cmp:<album>            (アルバムアーティストが違っても album だけで束ねる)
 //   それ以外    → al:<albumArtist|artist>␟<album>
 // アルバム内は disc→track 順 (multi-disc を正しく並べる)。
-function groupAlbums(tracks: Track[]): AlbumVM[] {
+// 束ね後はライブラリスコープ (サーバ ORDER BY) と同じ規則でグリッド順にソートする。
+function groupAlbums(tracks: Track[], sortField: SortField, sortOrder: SortOrder): AlbumVM[] {
   const map = new Map<string, { vm: AlbumVM; cover: Track | null }>();
   const order: string[] = [];
   for (const t of tracks) {
     const albumName = (t.album || "").trim();
     const isCmp = t.compilation === true;
-    const key = isCmp
-      ? `cmp:${albumName.toLowerCase()}`
-      : !albumName
-        ? `tr:${t.trackId}`
+    const key = !albumName
+      ? `tr:${t.trackId}`
+      : isCmp
+        ? `cmp:${albumName.toLowerCase()}`
         : `al:${(t.albumArtist || t.artist || "").toLowerCase()}␟${albumName.toLowerCase()}`;
     let entry = map.get(key);
     if (!entry) {
@@ -111,6 +196,10 @@ function groupAlbums(tracks: Track[]): AlbumVM[] {
           coverTrackId: null,
           coverPath: null,
           totalTimeMs: 0,
+          year: null,
+          dateAdded: null,
+          rating: null,
+          playCount: 0,
           bpmMin: null,
           bpmMax: null,
           tracks: [],
@@ -139,11 +228,39 @@ function groupAlbums(tracks: Track[]): AlbumVM[] {
     const bpms = ts.map((t) => t.bpm).filter((b): b is number => b != null);
     vm.bpmMin = bpms.length ? Math.min(...bpms) : null;
     vm.bpmMax = bpms.length ? Math.max(...bpms) : null;
+    // サーバ集約と同じ意味づけ: year=MIN(非 null) / dateAdded=MAX / rating=MAX / playCount=SUM。
+    const years = ts.map((t) => t.year).filter((y): y is number => y != null);
+    vm.year = years.length ? Math.min(...years) : null;
+    const dates = ts.map((t) => t.dateAdded).filter((d): d is string => !!d);
+    vm.dateAdded = dates.length ? dates.reduce((a, b) => (b > a ? b : a)) : null;
+    const ratings = ts.map((t) => t.rating).filter((r): r is number => r != null);
+    vm.rating = ratings.length ? Math.max(...ratings) : null;
+    vm.playCount = ts.reduce((s, t) => s + (t.playCount ?? 0), 0);
     vm.coverTrackId = cover?.trackId ?? null;
     vm.coverPath = cover && cover.fileExists ? cover.locationPath : null;
     out.push(vm);
   }
+  out.sort(albumComparator(sortField, sortOrder));
   return out;
+}
+
+/// カード下に出す「今のソートキーの値」ラベル。album/albumArtist はカード本文と
+/// 重複するので出さない (null を返す)。
+function sortKeyLabel(vm: AlbumVM, sortField: SortField): string | null {
+  switch (sortField) {
+    case "year":
+      return vm.year != null ? String(vm.year) : null;
+    case "dateAdded":
+      return vm.dateAdded ? `Added ${vm.dateAdded.slice(0, 10)}` : null;
+    case "rating": {
+      const n = ratingToStars(vm.rating);
+      return n > 0 ? "★".repeat(n) + "☆".repeat(Math.max(0, 5 - n)) : null;
+    }
+    case "playCount":
+      return vm.playCount > 0 ? `${vm.playCount} play${vm.playCount === 1 ? "" : "s"}` : null;
+    default:
+      return null;
+  }
 }
 
 type Row = { type: "grid"; albums: AlbumVM[] } | { type: "expand"; album: AlbumVM };
@@ -171,6 +288,8 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     recentPlaylistIds,
     pushRecentPlaylist,
     setSimilarBase,
+    sortField,
+    sortOrder,
   } = useStore();
   // グローバルトースト通知
   const pushToast = useStore((s) => s.pushToast);
@@ -198,10 +317,17 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     return () => ro.disconnect();
   }, []);
 
+  // ライブラリスコープはサーバ ORDER BY 済み。スコープ外は同じ規則でクライアントソートする。
   const albums = useMemo<AlbumVM[]>(
-    () => (isLibraryScope ? storeAlbums.map(albumRowToVM) : groupAlbums(tracks)),
-    [isLibraryScope, storeAlbums, tracks],
+    () =>
+      isLibraryScope
+        ? storeAlbums.map(albumRowToVM)
+        : groupAlbums(tracks, sortField, sortOrder),
+    [isLibraryScope, storeAlbums, tracks, sortField, sortOrder],
   );
+  // ソートキーがアルバム粒度で意味を持ち、かつカード本文と重複しないときだけ補助行を出す。
+  const showSortLine =
+    ALBUM_SORT_SET.has(sortField) && sortField !== "album" && sortField !== "albumArtist";
   const moreAvailable = isLibraryScope ? albumsHasMore : hasMore;
   const crateSet = useMemo(() => new Set(crate.map((t) => t.trackId)), [crate]);
 
@@ -253,7 +379,8 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: (i) => (rows[i].type === "grid" ? cardW + META_H + GAP : 260),
+    estimateSize: (i) =>
+      rows[i].type === "grid" ? cardW + META_H + (showSortLine ? SORT_LINE_H : 0) + GAP : 260,
     overscan: 6,
     paddingStart: 18,
     paddingEnd: 18,
@@ -533,6 +660,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                     const allIn = kt ? kt.length > 0 && kt.every((t) => crateSet.has(t.trackId)) : false;
                     const isCurrent = kt ? kt.some((t) => playback.currentTrackId === t.trackId) : false;
                     const isOpen = expanded === al.key;
+                    const sortLabel = showSortLine ? sortKeyLabel(al, sortField) : null;
                     return (
                       <div key={al.key} className="cb-cardwrap">
                         <div
@@ -597,6 +725,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                         >
                           <div className="cj">{al.album}</div>
                           <div className="la">{al.albumArtist}</div>
+                          {showSortLine && <div className="ls cb-dim">{sortLabel ?? "—"}</div>}
                         </div>
                       </div>
                     );

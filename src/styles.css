@@ -291,16 +291,35 @@ input {
 
 /* Toolbar */
 .cb-tb {
-  display: flex;
-  align-items: center;
-  gap: 9px;
   padding: 11px 18px;
   border-bottom: 1px solid var(--bd);
   position: relative;
 }
+/* ツールバー本体の行。狭い幅では横スクロールさせ、ボタンが押せなくなるのを防ぐ。
+   ポップオーバー類はここではなく .cb-tb 基準／fixed で出すのでクリップされない。 */
+.cb-tb-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bd-strong) transparent;
+}
+.cb-tb-row::-webkit-scrollbar {
+  height: 6px;
+}
+.cb-tb-row::-webkit-scrollbar-track {
+  background: transparent;
+}
+.cb-tb-row::-webkit-scrollbar-thumb {
+  background: var(--bd-strong);
+  border-radius: 3px;
+}
 
 .cb-sbox {
   flex: 1;
+  /* アイコンだけに潰れないよう最小幅を確保する。 */
+  min-width: 140px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -947,6 +966,16 @@ input {
 .cov-meta .la {
   font-size: 11.5px;
   color: var(--mut);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+/* アクティブなソートキー (year/dateAdded/rating/playCount) の値を示す補助行。
+   色は .cb-dim を併用するのでここではサイズ・省略だけ。 */
+.cov-meta .ls {
+  font-size: 11px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2480,8 +2509,9 @@ input {
   display: flex;
   align-items: center;
   gap: 11px;
-  width: 460px;
-  max-width: 48vw;
+  /* 460px を上限に、狭い幅では 220px まで縮む（#147）。 */
+  width: clamp(220px, 40vw, 460px);
+  min-width: 0;
   font: 11px var(--mono);
   color: var(--mut);
 }
@@ -2561,8 +2591,7 @@ input {
   border: 1px solid color-mix(in srgb, var(--ac) 50%, transparent);
 }
 .cb-player.audition .cb-seek {
-  width: 520px;
-  max-width: 56vw;
+  width: clamp(220px, 44vw, 520px);
 }
 .cb-player.preview .cb-pinfo .cj {
   color: var(--ac);
@@ -2573,6 +2602,9 @@ input {
   gap: 12px;
   justify-content: flex-end;
   color: var(--mut);
+  /* 右レール分ウィンドウが狭いとき、ボタンが右レールへはみ出さないようにする (#147) */
+  min-width: 0;
+  overflow: hidden;
 }
 .cb-pr-btn {
   background: none;
@@ -2599,6 +2631,13 @@ input {
   inset: 0;
   background: #8c9197;
   border-radius: 3px;
+}
+
+/* 狭いウィンドウでは音量スライダーを畳んでミュートボタンだけ残す (#147) */
+@media (max-width: 1100px) {
+  .cb-vbar {
+    display: none;
+  }
 }
 
 /* ============================================================
@@ -2812,6 +2851,31 @@ input {
 .cb-sortitem .dir {
   margin-left: auto;
   color: var(--ac);
+}
+
+/* ⋯ (その他の操作) メニュー。Sort ポップオーバーの見た目を流用する。 */
+.cb-morepop .cb-sortitem {
+  width: 100%;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+}
+.cb-morepop .cb-sortitem svg {
+  color: var(--mut);
+}
+.cb-morepop .cb-sortitem.on,
+.cb-morepop .cb-sortitem.on svg {
+  color: var(--ac);
+}
+.cb-morepop .cb-sortitem:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.cb-morepop .cb-sortitem:focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: -2px;
 }
 
 /* ============================================================
@@ -3196,6 +3260,16 @@ input {
   padding: 13px 16px;
   overflow-y: auto;
   flex: 1;
+}
+/* ダイアログの操作ボタン行。.modal-body の外（.modal の直下）に置く固定フッタ。
+   スクロール領域の外に置くことで、ウィンドウが低いときでもボタンが隠れない。 */
+.modal-footer {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--bd);
 }
 
 /* generic buttons reused inside modals */

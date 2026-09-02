@@ -212,14 +212,14 @@ export function CloseUpdateDialog({ info, onClose }: CloseUpdateDialogProps) {
               {info.releaseNotes}
             </pre>
           )}
-          <div className="rip-actions" style={{ marginTop: 16 }}>
-            <button className="toolbar-btn" onClick={onClose}>
-              あとで
-            </button>
-            <button className="toolbar-btn primary" onClick={handleOpen}>
-              リリースページを開く
-            </button>
-          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="toolbar-btn" onClick={onClose}>
+            あとで
+          </button>
+          <button className="toolbar-btn primary" onClick={handleOpen}>
+            リリースページを開く
+          </button>
         </div>
       </div>
     </div>
