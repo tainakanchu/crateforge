@@ -5,6 +5,7 @@ import {
   RIGHT_RAIL_WIDTH_MIN,
   RIGHT_RAIL_WIDTH_MAX,
 } from "../store/useStore";
+import type { BpmTolOpt } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
@@ -31,8 +32,6 @@ import {
   type AnchorKind,
 } from "../types";
 
-/** BPM 許容（サーバー opts）。null = off。 */
-type BpmTolOpt = 0.04 | 0.08 | 0.12 | null;
 
 interface RightRailProps {
   onPlaylistsChanged: () => void;
@@ -136,6 +135,8 @@ export function RightRail({
     setRightRailWidth,
     railSplit,
     setRailSplit,
+    similarFilters,
+    setSimilarFilters,
     selectedTrackIds,
     setMeta,
     setSetMeta,
@@ -195,12 +196,15 @@ export function RightRail({
 
   // Similar タブ: 基準は similarBaseTrackId、無ければ再生中の曲。
   const [similar, setSimilar] = useState<SimilarHit[]>([]);
-  const [harmonic, setHarmonic] = useState(true);
-  const [bpmTol, setBpmTol] = useState<BpmTolOpt>(0.08);
-  const [energyClose, setEnergyClose] = useState(false);
-  const [excludeInCrate, setExcludeInCrate] = useState(true);
-  const [excludeSameArtist, setExcludeSameArtist] = useState(false);
-  const [ratingMinOn, setRatingMinOn] = useState(false);
+  // Dig フィルタは store の永続化設定 (#151)。セッションをまたいで保持される。
+  const {
+    harmonic,
+    bpmTol,
+    energyClose,
+    excludeInCrate,
+    excludeSameArtist,
+    ratingMinOn,
+  } = similarFilters;
   const [simLoading, setSimLoading] = useState(false);
   // Digging history（セッション内）。意図的に base を変えたときだけ push。
   const [similarBackStack, setSimilarBackStack] = useState<number[]>([]);
@@ -247,9 +251,10 @@ export function RightRail({
     : null;
   const showRichMeta = rightRailWidth >= 420;
 
-  // 分割表示: Crate/Similar タブ時に railSplit が ON なら両方を同時表示
-  const workbenchSplit =
-    railSplit && (railTab === "crate" || railTab === "similar");
+  // 分割表示: Crate/Similar タブ時に railSplit が ON なら両方を同時表示。
+  // splitAvailable = いま Split が効くタブか（Split ボタンの活性表示に使う #151）。
+  const splitAvailable = railTab === "crate" || railTab === "similar";
+  const workbenchSplit = railSplit && splitAvailable;
   const showCrate = railTab === "crate" || workbenchSplit;
   const showSimilar = railTab === "similar" || workbenchSplit;
   const showNow = railTab === "now" && !workbenchSplit;
@@ -1601,7 +1606,7 @@ export function RightRail({
       <div className="cb-sim-filters">
         <button
           className={"cb-tab" + (harmonic ? " on" : "")}
-          onClick={() => setHarmonic((v) => !v)}
+          onClick={() => setSimilarFilters({ harmonic: !harmonic })}
           title="Camelot 互換キーのみに絞る（BPM フィルタとは独立）"
         >
           Harmonic
@@ -1616,8 +1621,9 @@ export function RightRail({
             value={bpmTol == null ? "off" : String(bpmTol)}
             onChange={(e) => {
               const v = e.target.value;
-              if (v === "off") setBpmTol(null);
-              else setBpmTol(Number(v) as BpmTolOpt);
+              setSimilarFilters({
+                bpmTol: v === "off" ? null : (Number(v) as BpmTolOpt),
+              });
             }}
           >
             <option value="0.04">4%</option>
@@ -1628,7 +1634,7 @@ export function RightRail({
         </label>
         <button
           className={"cb-tab" + (energyClose ? " on" : "")}
-          onClick={() => setEnergyClose((v) => !v)}
+          onClick={() => setSimilarFilters({ energyClose: !energyClose })}
           title="Energy 差 ≤ 0.15 のみ"
         >
           Energy close
@@ -1637,7 +1643,7 @@ export function RightRail({
           <input
             type="checkbox"
             checked={excludeInCrate}
-            onChange={(e) => setExcludeInCrate(e.target.checked)}
+            onChange={(e) => setSimilarFilters({ excludeInCrate: e.target.checked })}
           />
           除外: Crate
         </label>
@@ -1645,7 +1651,7 @@ export function RightRail({
           <input
             type="checkbox"
             checked={excludeSameArtist}
-            onChange={(e) => setExcludeSameArtist(e.target.checked)}
+            onChange={(e) => setSimilarFilters({ excludeSameArtist: e.target.checked })}
           />
           除外: 同一Artist
         </label>
@@ -1653,7 +1659,7 @@ export function RightRail({
           <input
             type="checkbox"
             checked={ratingMinOn}
-            onChange={(e) => setRatingMinOn(e.target.checked)}
+            onChange={(e) => setSimilarFilters({ ratingMinOn: e.target.checked })}
           />
           ★★★+
         </label>
@@ -1887,8 +1893,17 @@ export function RightRail({
               ((railTab === "crate" || workbenchSplit) ? " on" : "")
             }
             onClick={() => switchRailTab("crate")}
+            title={
+              crate.length > 0
+                ? `Crate — ${crate.length} 曲`
+                : "Crate"
+            }
           >
             Crate
+            {/* 自動でタブを切り替える代わりに件数で知らせる (#151) */}
+            {crate.length > 0 && (
+              <span className="cb-tab-count">{crate.length}</span>
+            )}
           </button>
           <button
             className={
@@ -1896,14 +1911,32 @@ export function RightRail({
               ((railTab === "similar" || workbenchSplit) ? " on" : "")
             }
             onClick={() => switchRailTab("similar")}
+            title={
+              similarBaseTrackId != null
+                ? "Similar — 基準曲が設定されています"
+                : "Similar"
+            }
           >
             Similar
+            {/* 基準曲がピンされていることをドットで知らせる (#151) */}
+            {similarBaseTrackId != null && (
+              <span className="cb-tab-dot" aria-hidden />
+            )}
           </button>
         </div>
         <button
-          className={"cb-tab cb-split-toggle" + (railSplit ? " on" : "")}
+          className={
+            "cb-tab cb-split-toggle" +
+            (workbenchSplit ? " on" : "") +
+            (splitAvailable ? "" : " cb-split-na")
+          }
           onClick={toggleSplit}
-          title="Crate と Similar を上下分割表示"
+          disabled={!splitAvailable}
+          title={
+            splitAvailable
+              ? "Crate と Similar を上下分割表示"
+              : "分割表示は Crate / Similar タブでのみ有効"
+          }
         >
           Split
         </button>
