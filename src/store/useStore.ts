@@ -97,9 +97,35 @@ export const RIGHT_RAIL_WIDTH_DEFAULT = 348;
 export const RIGHT_RAIL_WIDTH_MIN = 280;
 export const RIGHT_RAIL_WIDTH_MAX = 560;
 
+// App シェルの他カラム幅（#146）。.app の grid-template-columns (styles.css) と対応させる。
+// サイドバー固定幅 + センター（トラック表）が潰れないための最小幅。
+export const SIDEBAR_WIDTH = 202;
+export const CENTER_MIN_WIDTH = 420;
+
 function clampRightRailWidth(w: number): number {
   if (!Number.isFinite(w)) return RIGHT_RAIL_WIDTH_DEFAULT;
   return Math.min(RIGHT_RAIL_WIDTH_MAX, Math.max(RIGHT_RAIL_WIDTH_MIN, Math.round(w)));
+}
+
+/**
+ * 右ペイン幅をウィンドウ幅に応じてクランプする（#146）。
+ * サイドバー(SIDEBAR_WIDTH) とセンター最小幅(CENTER_MIN_WIDTH) を確保した残りを
+ * 上限とし、RIGHT_RAIL_WIDTH_MIN/MAX の範囲内に収める。
+ * 常に RIGHT_RAIL_WIDTH_MIN 以上は返す（ウィンドウが極端に狭い場合はセンターが
+ * その分圧迫される）。viewportWidth 省略時は window.innerWidth を使い、
+ * window が無い環境（テスト等）では従来どおり MIN/MAX のみでクランプする。
+ */
+export function clampRailWidthToViewport(
+  w: number,
+  viewportWidth: number = typeof window !== "undefined" ? window.innerWidth : Infinity,
+): number {
+  const width = Number.isFinite(w) ? w : RIGHT_RAIL_WIDTH_DEFAULT;
+  const dynamicMax = viewportWidth - SIDEBAR_WIDTH - CENTER_MIN_WIDTH;
+  const effectiveMax = Math.max(
+    RIGHT_RAIL_WIDTH_MIN,
+    Math.min(RIGHT_RAIL_WIDTH_MAX, dynamicMax),
+  );
+  return Math.min(effectiveMax, Math.max(RIGHT_RAIL_WIDTH_MIN, Math.round(width)));
 }
 
 interface AppState extends PersistedSettings {
@@ -598,7 +624,7 @@ export const useStore = create<AppState>()(
       toggleRightRail: () =>
         set((state) => ({ rightRailVisible: !state.rightRailVisible })),
       setRightRailWidth: (width) =>
-        set({ rightRailWidth: clampRightRailWidth(width) }),
+        set({ rightRailWidth: clampRailWidthToViewport(width) }),
       setRailSplit: (railSplit) => set({ railSplit }),
       setShowRemainingTime: (showRemainingTime) => set({ showRemainingTime }),
       toggleRemainingTime: () =>
@@ -802,6 +828,32 @@ export const useStore = create<AppState>()(
     },
   ),
 );
+
+// 右ペイン幅をウィンドウ幅でクランプする（#146）。
+// - 起動時（永続化設定のハイドレーション直後）に一度実行。
+// - window resize のたびに rAF で間引きながら再実行。
+// センターペインが極端に狭い状態で開かれる/リサイズされることを防ぐ。
+if (typeof window !== "undefined") {
+  const syncRailWidthToViewport = () => {
+    const { rightRailWidth } = useStore.getState();
+    const clamped = clampRailWidthToViewport(rightRailWidth, window.innerWidth);
+    if (clamped !== rightRailWidth) {
+      useStore.setState({ rightRailWidth: clamped });
+    }
+  };
+  // create() 完了時点で localStorage からの同期ハイドレーションは済んでいるため、
+  // ここで一度呼べば「マウント時」のクランプになる。
+  syncRailWidthToViewport();
+
+  let resizeRaf: number | null = null;
+  window.addEventListener("resize", () => {
+    if (resizeRaf != null) return;
+    resizeRaf = window.requestAnimationFrame(() => {
+      resizeRaf = null;
+      syncRailWidthToViewport();
+    });
+  });
+}
 
 // Set Workspace を localStorage へ同期（crate trackIds + meta/anchors/sections）。
 useStore.subscribe((state, prev) => {
