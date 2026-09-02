@@ -427,20 +427,6 @@ export function SyncManagementDialog({
               )}
 
               {error && <div className="sync-error" role="alert">{error}</div>}
-              <div className="sync-actions sync-management-actions">
-                <button className="toolbar-btn" type="button" onClick={onBack}>戻る</button>
-                <button className="toolbar-btn" type="button" onClick={loadCandidates}>
-                  <Icon name="trash" size={14} /> 削除候補を確認
-                </button>
-                <button
-                  className="toolbar-btn primary"
-                  type="button"
-                  onClick={startResync}
-                  disabled={selections.length === 0}
-                >
-                  <Icon name="repeat" size={14} /> 再同期
-                </button>
-              </div>
             </section>
           )}
 
@@ -508,14 +494,6 @@ export function SyncManagementDialog({
                 <div className="sync-error" role="status">{resyncSummary.dirtyExcludedNote}</div>
               )}
               <Failures failures={resyncSummary.failures} />
-              <div className="sync-actions">
-                <button className="toolbar-btn" onClick={() => setStep("manage")}>管理画面に戻る</button>
-                {resyncSummary.evictionCandidates > 0 && (
-                  <button className="toolbar-btn primary" onClick={loadCandidates} data-autofocus>
-                    削除候補を確認
-                  </button>
-                )}
-              </div>
             </section>
           )}
 
@@ -551,11 +529,6 @@ export function SyncManagementDialog({
                     プレイリストも削除して削除候補に回す
                   </button>
                 </div>
-              </div>
-              <div className="sync-actions">
-                <button className="toolbar-btn" type="button" onClick={cancelRemoveSelection}>
-                  キャンセル
-                </button>
               </div>
             </section>
           )}
@@ -606,16 +579,6 @@ export function SyncManagementDialog({
               ) : (
                 <div className="sync-empty">削除できる曲はありません。</div>
               )}
-              <div className="sync-actions">
-                <button className="toolbar-btn" onClick={() => setStep("manage")}>戻る</button>
-                <button
-                  className="toolbar-btn danger"
-                  onClick={() => setStep("evictConfirm")}
-                  disabled={selectedCandidates.size === 0}
-                >
-                  削除に進む
-                </button>
-              </div>
             </section>
           )}
 
@@ -631,10 +594,6 @@ export function SyncManagementDialog({
                 <div><dt>対象サイズ</dt><dd>{formatBytes(selectedCandidateBytes)}</dd></div>
               </dl>
               {error && <div className="sync-error" role="alert">{error}</div>}
-              <div className="sync-actions">
-                <button className="toolbar-btn" onClick={() => setStep("candidates")} data-autofocus>キャンセル</button>
-                <button className="toolbar-btn danger" onClick={runEviction}>削除する</button>
-              </div>
             </section>
           )}
 
@@ -665,13 +624,67 @@ export function SyncManagementDialog({
                 <div className="sync-error" role="status">{evictionSummary.dirtyExcludedNote}</div>
               )}
               <Failures failures={evictionSummary.failures} />
-              <div className="sync-actions">
-                <button className="toolbar-btn" onClick={() => void loadManagement()} data-autofocus>管理画面に戻る</button>
-                <button className="toolbar-btn primary" onClick={onClose}>閉じる</button>
-              </div>
             </section>
           )}
         </div>
+
+        {step === "manage" && (
+          <div className="modal-footer sync-management-actions">
+            <button className="toolbar-btn" type="button" onClick={onBack}>戻る</button>
+            <button className="toolbar-btn" type="button" onClick={loadCandidates}>
+              <Icon name="trash" size={14} /> 削除候補を確認
+            </button>
+            <button
+              className="toolbar-btn primary"
+              type="button"
+              onClick={startResync}
+              disabled={selections.length === 0}
+            >
+              <Icon name="repeat" size={14} /> 再同期
+            </button>
+          </div>
+        )}
+        {step === "resyncComplete" && resyncSummary && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" onClick={() => setStep("manage")}>管理画面に戻る</button>
+            {resyncSummary.evictionCandidates > 0 && (
+              <button className="toolbar-btn primary" onClick={loadCandidates} data-autofocus>
+                削除候補を確認
+              </button>
+            )}
+          </div>
+        )}
+        {step === "removeConfirm" && removeTarget && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" type="button" onClick={cancelRemoveSelection}>
+              キャンセル
+            </button>
+          </div>
+        )}
+        {step === "candidates" && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" onClick={() => setStep("manage")}>戻る</button>
+            <button
+              className="toolbar-btn danger"
+              onClick={() => setStep("evictConfirm")}
+              disabled={selectedCandidates.size === 0}
+            >
+              削除に進む
+            </button>
+          </div>
+        )}
+        {step === "evictConfirm" && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" onClick={() => setStep("candidates")} data-autofocus>キャンセル</button>
+            <button className="toolbar-btn danger" onClick={runEviction}>削除する</button>
+          </div>
+        )}
+        {step === "evictComplete" && evictionSummary && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" onClick={() => void loadManagement()} data-autofocus>管理画面に戻る</button>
+            <button className="toolbar-btn primary" onClick={onClose}>閉じる</button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -571,28 +571,11 @@ export function SyncProvisionDialog({
                 <div className="sync-empty">接続済みのサーバーはありません。</div>
               )}
               {error && <div className="sync-error" role="alert">{error}</div>}
-              <div className="sync-actions">
-                {error && (
-                  <button className="toolbar-btn" onClick={loadSources} data-autofocus>
-                    再読み込み
-                  </button>
-                )}
-                <button
-                  className="toolbar-btn primary"
-                  onClick={() => {
-                    setError(null);
-                    setStep("connect");
-                  }}
-                  data-autofocus={sources.length === 0 && !error ? true : undefined}
-                >
-                  <Icon name="plus" size={14} /> 新しいサーバーに接続
-                </button>
-              </div>
             </section>
           )}
 
           {step === "connect" && (
-            <form onSubmit={handlePairStart}>
+            <form id="sync-connect-form" onSubmit={handlePairStart}>
               <h3 className="sync-section-title">新しいサーバーに接続</h3>
               <label className="sync-field">
                 <span>サーバー URL</span>
@@ -620,18 +603,6 @@ export function SyncProvisionDialog({
                 />
               </label>
               {error && <div className="sync-error" role="alert">{error}</div>}
-              <div className="sync-actions">
-                <button className="toolbar-btn" type="button" onClick={() => setStep("sources")}>
-                  戻る
-                </button>
-                <button
-                  className="toolbar-btn primary"
-                  type="submit"
-                  disabled={pairingBusy || !baseUrl.trim() || !deviceName.trim()}
-                >
-                  {pairingBusy ? "接続中…" : "接続する"}
-                </button>
-              </div>
             </form>
           )}
 
@@ -645,18 +616,11 @@ export function SyncProvisionDialog({
               <p>承認されると、自動的に次の画面へ進みます。</p>
               {!error && <div className="sync-waiting">承認を待っています…</div>}
               {error && <div className="sync-error" role="alert">{error}</div>}
-              {error && (
-                <div className="sync-actions">
-                  <button className="toolbar-btn primary" onClick={retryPairing} data-autofocus>
-                    もう一度試す
-                  </button>
-                </div>
-              )}
             </section>
           )}
 
           {step === "playlists" && selectedSource && (
-            <form onSubmit={handleProvisionSubmit}>
+            <form id="sync-playlists-form" onSubmit={handleProvisionSubmit}>
               <div className="sync-playlist-heading">
                 <div>
                   <h3 className="sync-section-title">プレイリストを選択</h3>
@@ -756,18 +720,6 @@ export function SyncProvisionDialog({
                 </div>
               </div>
 
-              <div className="sync-actions">
-                <button className="toolbar-btn" type="button" onClick={() => setStep("sources")}>
-                  戻る
-                </button>
-                <button
-                  className="toolbar-btn primary"
-                  type="submit"
-                  disabled={selectedPids.size === 0 || !destRoot.trim() || playlistsLoading}
-                >
-                  取り寄せを開始
-                </button>
-              </div>
             </form>
           )}
 
@@ -819,11 +771,6 @@ export function SyncProvisionDialog({
                   </ul>
                 </details>
               )}
-              <div className="sync-actions">
-                <button className="toolbar-btn primary" onClick={onClose} data-autofocus>
-                  閉じる
-                </button>
-              </div>
             </section>
           )}
 
@@ -832,17 +779,83 @@ export function SyncProvisionDialog({
               <div className="sync-result-icon error"><Icon name="x" size={26} /></div>
               <h3>取り寄せに失敗しました</h3>
               <div className="sync-error" role="alert">{error || "不明なエラーが発生しました。"}</div>
-              <div className="sync-actions">
-                <button className="toolbar-btn" onClick={() => setStep("playlists")}>
-                  選択画面に戻る
-                </button>
-                <button className="toolbar-btn primary" onClick={startProvision} data-autofocus>
-                  再試行
-                </button>
-              </div>
             </section>
           )}
         </div>
+
+        {step === "sources" && (
+          <div className="modal-footer">
+            {error && (
+              <button className="toolbar-btn" onClick={loadSources} data-autofocus>
+                再読み込み
+              </button>
+            )}
+            <button
+              className="toolbar-btn primary"
+              onClick={() => {
+                setError(null);
+                setStep("connect");
+              }}
+              data-autofocus={sources.length === 0 && !error ? true : undefined}
+            >
+              <Icon name="plus" size={14} /> 新しいサーバーに接続
+            </button>
+          </div>
+        )}
+        {step === "connect" && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" type="button" onClick={() => setStep("sources")}>
+              戻る
+            </button>
+            <button
+              className="toolbar-btn primary"
+              type="submit"
+              form="sync-connect-form"
+              disabled={pairingBusy || !baseUrl.trim() || !deviceName.trim()}
+            >
+              {pairingBusy ? "接続中…" : "接続する"}
+            </button>
+          </div>
+        )}
+        {step === "pairing" && error && (
+          <div className="modal-footer">
+            <button className="toolbar-btn primary" onClick={retryPairing} data-autofocus>
+              もう一度試す
+            </button>
+          </div>
+        )}
+        {step === "playlists" && selectedSource && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" type="button" onClick={() => setStep("sources")}>
+              戻る
+            </button>
+            <button
+              className="toolbar-btn primary"
+              type="submit"
+              form="sync-playlists-form"
+              disabled={selectedPids.size === 0 || !destRoot.trim() || playlistsLoading}
+            >
+              取り寄せを開始
+            </button>
+          </div>
+        )}
+        {step === "complete" && summary && (
+          <div className="modal-footer">
+            <button className="toolbar-btn primary" onClick={onClose} data-autofocus>
+              閉じる
+            </button>
+          </div>
+        )}
+        {step === "failed" && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" onClick={() => setStep("playlists")}>
+              選択画面に戻る
+            </button>
+            <button className="toolbar-btn primary" onClick={startProvision} data-autofocus>
+              再試行
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
