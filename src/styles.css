@@ -291,16 +291,35 @@ input {
 
 /* Toolbar */
 .cb-tb {
-  display: flex;
-  align-items: center;
-  gap: 9px;
   padding: 11px 18px;
   border-bottom: 1px solid var(--bd);
   position: relative;
 }
+/* ツールバー本体の行。狭い幅では横スクロールさせ、ボタンが押せなくなるのを防ぐ。
+   ポップオーバー類はここではなく .cb-tb 基準／fixed で出すのでクリップされない。 */
+.cb-tb-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bd-strong) transparent;
+}
+.cb-tb-row::-webkit-scrollbar {
+  height: 6px;
+}
+.cb-tb-row::-webkit-scrollbar-track {
+  background: transparent;
+}
+.cb-tb-row::-webkit-scrollbar-thumb {
+  background: var(--bd-strong);
+  border-radius: 3px;
+}
 
 .cb-sbox {
   flex: 1;
+  /* アイコンだけに潰れないよう最小幅を確保する。 */
+  min-width: 140px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2784,6 +2803,31 @@ input {
 .cb-sortitem .dir {
   margin-left: auto;
   color: var(--ac);
+}
+
+/* ⋯ (その他の操作) メニュー。Sort ポップオーバーの見た目を流用する。 */
+.cb-morepop .cb-sortitem {
+  width: 100%;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+}
+.cb-morepop .cb-sortitem svg {
+  color: var(--mut);
+}
+.cb-morepop .cb-sortitem.on,
+.cb-morepop .cb-sortitem.on svg {
+  color: var(--ac);
+}
+.cb-morepop .cb-sortitem:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.cb-morepop .cb-sortitem:focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: -2px;
 }
 
 /* ============================================================
