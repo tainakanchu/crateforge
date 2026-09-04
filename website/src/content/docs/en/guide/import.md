@@ -33,12 +33,62 @@ With **"🎵 Add Files"** in the toolbar, you can import your own music files di
 - Tags (title / artist / album / genre / year, etc.) are read with `lofty`.
 - The **BPM tag** (TBPM / tmpo / Vorbis BPM) is also read on import.
 
+## Importing whole folders (Add Folder / drag and drop)
+
+Pick a folder with **"Add Folder"** in the toolbar (inside the ⋯ menu when the window is narrow) and it
+**walks subfolders recursively**, importing every supported file it finds. **Dragging and dropping** onto the window
+goes through the same path, so you can drop a mix of files and folders.
+
+- Only files with a supported extension are imported (everything else is ignored).
+- **Hidden files and folders (starting with `.`) are skipped** (`.DS_Store` and friends).
+  Files you point at explicitly are imported even if they are hidden.
+- **Files already in the library (same path) are skipped**, so dropping the same folder again never creates duplicates.
+- Symlink loops are detected and cut off, and unreadable folders are skipped so the rest still imports.
+- The result is shown as a toast: how many were imported, how many were skipped as already imported, and how many failed.
+- Imported tracks land in the **Inbox** in the sidebar, where you can [rate them and add them to the Crate](../playback/).
+
 ### Organize folder (auto-organize)
 
 If you set an "organize folder (library root)" in settings, files are placed under
 `<organize folder>/<album artist>/<album>/` with iTunes-style renaming on import and edit.
 
 Using **"Auto-detect"** in settings infers the organize folder from the paths of existing tracks and sets it.
+
+## Writing tags back to files
+
+When you edit a track (Get Info / `Ctrl + I`), Crateforge updates the database **and writes the tags back to the
+actual file (ID3 / Vorbis / MP4)**. No organize folder is required — **tags are written back even when it is not set**
+(when it is set, the file is also moved and renamed into place).
+
+The write-back includes the following as well.
+
+- **BPM** — written as an integer to TBPM (ID3v2) / tmpo (MP4) / `BPM` (Vorbis Comments).
+  The track's own BPM takes priority, falling back to the [analysis](../dj-analysis/) result.
+- **Key** — written to **InitialKey** (ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY) in musical notation
+  (`Am` / `F#m` / `C`), not Camelot, because that is what rekordbox / Serato / Traktor read.
+
+:::note
+Key is not written to the iTunes-compatible XML (Apple's plist schema has no standard element for it).
+It reaches other software through the InitialKey file tag instead. BPM is included in the XML as well.
+:::
+
+## Deleting tracks / revealing files
+
+Right-click a track for the following actions.
+
+- **"Finder / エクスプローラで表示" (Reveal in file manager)** — opens the track's file in your OS file manager
+  (selected in Finder on macOS, selected in Explorer on Windows, and the parent folder on Linux).
+- **"ライブラリから削除…" (Delete from library…)** — removes the selected tracks from the library (the database).
+  In the confirmation dialog you can also check **"delete the files too"** to remove the actual files.
+  If a deleted track was playing or queued, playback stops and it is removed from the queue.
+
+:::caution
+Deleting actual files is **limited to files inside the organize folder (library root)**. Files are removed directly, not sent to the trash.
+
+- When no organize folder is set, "delete the files too" cannot be selected (only the database entries are removed).
+- If even one selected track lives outside the organize folder, the operation fails **without deleting any file**.
+  Uncheck the box in that case and remove the tracks from the library (database) only.
+:::
 
 ## Exporting iTunes-compatible XML
 
@@ -56,6 +106,9 @@ The exported XML includes the following.
 
 Turning on the **🕐 toggle** in the toolbar automatically exports the Library XML **only when there have been changes, roughly every 30 minutes plus on exit**.
 This is handy when you always want to keep your DJ software fed with the latest library.
+
+When an auto-export succeeds, `library.db` is backed up along with it
+(toggle it under [library backups](../install/) in settings).
 
 ## Importing from a CD (ripping)
 
