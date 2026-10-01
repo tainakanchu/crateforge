@@ -22,6 +22,8 @@ import type {
   RemoteQueue,
   SimilarHit,
   SimilarQuery,
+  Tag,
+  TagCount,
   Track,
   TracksQuery,
 } from "../types";
@@ -184,6 +186,40 @@ export class ApiClient {
   async setRating(trackId: number, rating: number): Promise<void> {
     const clamped = Math.round(Math.max(0, Math.min(100, rating)));
     await this.post<unknown>(`/api/tracks/${trackId}/rating`, { rating: clamped });
+  }
+
+  // ---- first-class Tags（Genre とは独立・DB のみ。古いホストは 404）----
+  /**
+   * 全タグの頻度一覧（`GET /api/tags`）。
+   * ホストが未対応なら ApiError(404) を投げる → 呼び出し側で degrade。
+   */
+  listTags(): Promise<TagCount[]> {
+    return this.get<TagCount[]>("/api/tags");
+  }
+
+  /**
+   * 1 曲に付いている first-class Tags（`GET /api/tracks/{id}/tags`）。
+   * ホストが未対応なら ApiError(404)。
+   */
+  getTrackTags(trackId: number): Promise<Tag[]> {
+    return this.get<Tag[]>(`/api/tracks/${trackId}/tags`);
+  }
+
+  /**
+   * 複数曲に first-class Tag を付与（`POST /api/tracks/tags/add`）。
+   * `tag` は `mood:dreamy` 形式、free は `bridge` のように value のみ。
+   * 更新件数を返す。ホスト未対応なら 404。
+   */
+  async addTrackTags(trackIds: number[], tag: string): Promise<{ updated: number }> {
+    return this.post<{ updated: number }>("/api/tracks/tags/add", { trackIds, tag });
+  }
+
+  /**
+   * 複数曲から first-class Tag を除去（`POST /api/tracks/tags/remove`）。
+   * ホスト未対応なら 404。
+   */
+  async removeTrackTags(trackIds: number[], tag: string): Promise<{ updated: number }> {
+    return this.post<{ updated: number }>("/api/tracks/tags/remove", { trackIds, tag });
   }
 
   // ---- メディア ----
