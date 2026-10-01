@@ -32,6 +32,12 @@ While connected, you can browse the desktop library in the following units.
 ## On-device and background playback
 
 - Choosing "Play on this device" plays on the mobile device (**background playback** supported).
+- **Shuffle now decides a play order (a permutation) up front.** No track repeats within a pass, and the
+  **Up Next** list on the player screen shows exactly what will play next.
+  Pressing "previous" right after skipping forward returns to the same track.
+- Turning shuffle on shuffles **only what comes after the current position**; turning it off restores the natural order
+  (in both cases the currently playing track keeps playing).
+- **Shuffle and repeat are stored on the device and carried over to the next launch.**
 - Streaming supports client-oriented parameters.
   - `?native=1` — formats the device can play are served without conversion (ALAC / FLAC, etc. stay lossless)
   - `?original=1` — always the original

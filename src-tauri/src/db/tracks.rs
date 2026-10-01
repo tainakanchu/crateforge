@@ -1,12 +1,12 @@
 use std::{collections::HashSet, path::Path};
 
 use chrono::DateTime;
-use rusqlite::{params, OptionalExtension, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::Serialize;
 
 use super::Database;
 use crate::itunes_xml::parser::RawTrack;
-use crate::models::{AlbumRow, GenreTagCount, Track, TrackEdit};
+use crate::models::{AlbumRow, ArtistRow, GenreTagCount, Track, TrackEdit};
 
 /// `/api/albums` で返す、ライブラリ内の distinct なアルバム 1 件分の情報。
 /// `sample_track_id` はアートワーク表示用の代表トラック (アルバム内最小 track_id)。
@@ -62,6 +62,23 @@ const ALBUM_KEY_EXPR: &str = "CASE \
   WHEN compilation = 1 THEN 'cmp:' || lower(trim(album)) \
   ELSE 'al:' || lower(trim(coalesce(nullif(trim(album_artist),''), artist, ''))) || char(31) || lower(trim(album)) \
 END";
+
+/// アーティスト表示名の算出式。get_artists の GROUP BY と get_artist_albums の WHERE で
+/// 同一に使うので、ALBUM_KEY_EXPR と同じくコンピレーションを特別扱いする:
+/// - compilation=1 → 'Various Artists' (曲ごとのアーティストではなく 1 つへ巻き上げる)
+/// - それ以外      → album_artist (空白のみは無効) → artist → 'Unknown Artist'
+///
+/// ALBUM_KEY_EXPR の `al:` 分岐と同じ優先順 (album_artist → artist) を保つこと。
+const ARTIST_NAME_EXPR: &str = "CASE \
+  WHEN compilation = 1 THEN 'Various Artists' \
+  ELSE coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''), 'Unknown Artist') \
+END";
+
+/// 大文字小文字のゆれを畳んだアーティスト束ねキー (ALBUM_KEY_EXPR の lower(...) と同じ方針)。
+/// 表示名は ARTIST_NAME_EXPR 側で trim 済みなので lower() だけで足りる。
+fn artist_key_expr() -> String {
+    format!("lower({ARTIST_NAME_EXPR})")
+}
 
 /// `search_text` を **Rust 側で** 計算する。insert 経路で、まだ DB に行が無い段階の
 /// 値から `search_text` を組み立てるのに使う。SQL 側 `SEARCH_TEXT_EXPR` と等価:
@@ -119,19 +136,20 @@ fn sort_field_to_column(sort_field: &str) -> Option<(&'static str, bool)> {
 
 /// アルバム粒度の ORDER BY 句を組み立てる。
 /// SQL インジェクション防止のため sort_field/sort_order は match で固定文字列に変換する。
+/// 全分岐の末尾に `album_key ASC` を足して並びを一意にする (build_order_by の track_id 相当)。
+/// これが無いと同値のアルバムの相対順が未定義になり、LIMIT/OFFSET のページ間で
+/// 重複・取りこぼしが起きる。`album_key` は get_albums の GROUP BY キーなので必ず一意。
 fn album_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String {
     let dir = if matches!(sort_order, Some("desc")) {
         "DESC"
     } else {
         "ASC"
     };
-    match sort_field {
-        Some("albumArtist") => format!(
-            "album_artist COLLATE NOCASE {dir}, album COLLATE NOCASE ASC"
-        ),
-        Some("album") => format!(
-            "album COLLATE NOCASE {dir}, album_artist COLLATE NOCASE ASC"
-        ),
+    let head = match sort_field {
+        Some("albumArtist") => {
+            format!("album_artist COLLATE NOCASE {dir}, album COLLATE NOCASE ASC")
+        }
+        Some("album") => format!("album COLLATE NOCASE {dir}, album_artist COLLATE NOCASE ASC"),
         Some("year") => format!(
             "(year IS NULL), year {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
         ),
@@ -141,25 +159,250 @@ fn album_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String 
         Some("rating") => format!(
             "(rating IS NULL), rating {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
         ),
-        Some("playCount") => format!(
-            "play_count {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
-        ),
+        Some("playCount") => {
+            format!("play_count {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC")
+        }
         _ => "album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC".to_string(),
+    };
+    format!("{head}, album_key ASC")
+}
+
+/// アーティスト粒度の ORDER BY 句を組み立てる。
+/// 受け付けるのは name / trackCount / albumCount のみで、それ以外 (List ビュー由来の
+/// bpm など) は name に倒す。album_order_by と同様、全分岐の末尾に `artist_key ASC` を
+/// 足して並びを一意にする (LIMIT/OFFSET のページ間で重複・取りこぼしが起きないため)。
+fn artist_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String {
+    let dir = if matches!(sort_order, Some("desc")) {
+        "DESC"
+    } else {
+        "ASC"
+    };
+    let head = match sort_field {
+        Some("trackCount") => format!("track_count {dir}, name COLLATE NOCASE ASC"),
+        Some("albumCount") => format!("album_count {dir}, name COLLATE NOCASE ASC"),
+        _ => format!("name COLLATE NOCASE {dir}"),
+    };
+    format!("{head}, artist_key ASC")
+}
+
+/// アルバム集約 SELECT の共通部分 (get_albums / get_artist_albums で共有)。
+/// `filter` は base に対する WHERE 句 (空文字なら無条件)、`tail` は ORDER BY の後ろ
+/// (LIMIT/OFFSET 句など)。base には album_key に加えて artist_key も載せるので、
+/// 「あるアーティストのアルバム」を同じ集約ロジックのまま絞り込める。
+fn album_agg_sql(filter: &str, order_by: &str, tail: &str) -> String {
+    format!(
+        "WITH base AS (
+              SELECT *,
+                ({key}) AS album_key,
+                ({artist}) AS artist_key,
+                ROW_NUMBER() OVER (
+                  PARTITION BY ({key})
+                  ORDER BY file_exists DESC, (disc_number IS NULL), disc_number,
+                           (track_number IS NULL), track_number, track_id
+                ) AS rn
+              FROM tracks
+            )
+            SELECT
+              album_key,
+              MAX(coalesce(nullif(trim(album),''), name, '(unknown)'))          AS album,
+              MAX(CASE WHEN compilation=1 THEN 'Various Artists'
+                       ELSE coalesce(nullif(trim(album_artist),''), artist, '') END) AS album_artist,
+              MAX(compilation)                                                   AS is_compilation,
+              COUNT(*)                                                           AS track_count,
+              MAX(CASE WHEN rn=1 THEN track_id END)                              AS cover_track_id,
+              MAX(CASE WHEN rn=1 THEN location_path END)                         AS cover_location_path,
+              MAX(CASE WHEN rn=1 THEN file_exists END)                           AS cover_file_exists,
+              COALESCE(SUM(total_time_ms),0)                                     AS total_time_ms,
+              MIN(year)                                                          AS year,
+              MAX(date_added)                                                    AS date_added,
+              MAX(rating)                                                        AS rating,
+              COALESCE(SUM(play_count),0)                                        AS play_count,
+              MIN(bpm)                                                           AS bpm_min,
+              MAX(bpm)                                                           AS bpm_max
+            FROM base
+            {filter}
+            GROUP BY album_key
+            ORDER BY {order_by}
+            {tail}",
+        key = ALBUM_KEY_EXPR,
+        artist = artist_key_expr(),
+    )
+}
+
+/// album_agg_sql の 1 行を AlbumRow へ (列順は album_agg_sql の SELECT と一致させること)。
+fn row_to_album_row(r: &rusqlite::Row) -> rusqlite::Result<AlbumRow> {
+    Ok(AlbumRow {
+        album_key: r.get(0)?,
+        album: r.get(1)?,
+        album_artist: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        is_compilation: r.get::<_, i32>(3)? != 0,
+        track_count: r.get(4)?,
+        cover_track_id: r.get(5)?,
+        cover_location_path: r.get(6)?,
+        cover_file_exists: r.get::<_, Option<i32>>(7)?.unwrap_or(0) != 0,
+        total_time_ms: r.get(8)?,
+        year: r.get(9)?,
+        date_added: r.get(10)?,
+        rating: r.get(11)?,
+        play_count: r.get(12)?,
+        bpm_min: r.get(13)?,
+        bpm_max: r.get(14)?,
+    })
+}
+
+/// フィールド検索で使える「テキスト列」の別名 → 実カラム名。
+/// ここに無いキーは通常のフリーテキストとして扱う。列名はこの表の右辺 (固定文字列) しか
+/// SQL に埋めないため、インジェクションの余地は無い。
+const TEXT_FIELDS: [(&str, &str); 6] = [
+    ("artist", "artist"),
+    ("album", "album"),
+    ("albumartist", "album_artist"),
+    ("album_artist", "album_artist"),
+    ("genre", "genre"),
+    ("comment", "comments"),
+];
+
+/// `search_text` 相当の式を、任意のテーブル別名付きで組み立てる。
+/// `prefix` は "" (別名なし) か "t." のような別名 + ドット。
+/// prefix が空のときは定数 `SEARCH_TEXT_EXPR` と完全に一致する (テストで保証)。
+fn search_text_expr(prefix: &str) -> String {
+    SEARCH_COLS
+        .iter()
+        .map(|c| format!("COALESCE(fold({prefix}{c},2),'')"))
+        .collect::<Vec<_>>()
+        .join("||char(10)||")
+}
+
+/// 検索クエリをトークンに分解する。空白区切りだが、二重引用符で囲まれた範囲は
+/// 空白を含めて 1 トークンにまとめる (`artist:"daft punk"` → `artist:daft punk`)。
+/// 引用符自体はトークンに残さない。閉じ引用符が無い場合は行末までを 1 トークンとみなす。
+fn tokenize_query(query: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote = false;
+    for ch in query.chars() {
+        match ch {
+            '"' => in_quote = !in_quote,
+            c if c.is_whitespace() && !in_quote => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// テキスト列 1 本に対する部分一致句。フリーテキスト検索と同じ fold レベルで畳むので、
+/// `artist:サクラ` と `artist:さくら` が同じ結果になる (Standard 時)。
+/// `col` は `TEXT_FIELDS` の右辺 (固定文字列) のみ。値は必ずバインドする。
+fn text_like_clause(
+    prefix: &str,
+    col: &str,
+    value: &str,
+    level: crate::text_fold::FoldLevel,
+) -> (String, rusqlite::types::Value) {
+    use rusqlite::types::Value;
+    match level {
+        crate::text_fold::FoldLevel::Off => (
+            format!("({prefix}{col} LIKE ?)"),
+            Value::Text(format!("%{value}%")),
+        ),
+        _ => {
+            let n = level.as_i64();
+            (
+                format!("(fold({prefix}{col}, {n}) LIKE ?)"),
+                Value::Text(format!("%{}%", crate::text_fold::fold(value, level))),
+            )
+        }
     }
 }
 
-/// 検索トークンが bpm:/key:/energy:/tag: フィルタなら (SQL 句, バインド値) を返す。
-/// 句は相関サブクエリ / EXISTS で他テーブルを参照する (SELECT 句や JOIN を変えずに済む)。
-fn parse_analysis_filter(tok: &str) -> Option<(String, Vec<rusqlite::types::Value>)> {
+/// "2015-2020" → (2015,2020)、"2018" → (2018,2018)。整数の単一値/範囲。
+fn parse_int_range(s: &str) -> Option<(i64, i64)> {
+    let s = s.trim();
+    if let Some((a, b)) = s.split_once('-') {
+        let lo: i64 = a.trim().parse().ok()?;
+        let hi: i64 = b.trim().parse().ok()?;
+        Some((lo.min(hi), lo.max(hi)))
+    } else {
+        let v: i64 = s.parse().ok()?;
+        Some((v, v))
+    }
+}
+
+/// 星 (0..=5) を rating 列 (0..=100) の範囲に写す。
+/// 星 n は「n 〜 n.5 星」= `n*20 ..= n*20+19` に対応させ、5 は 100 で頭打ちにする。
+/// rating が NULL の曲は 0 星扱い (COALESCE) なので `rating:0` で未評価を拾える。
+fn parse_star_range(s: &str) -> Option<(i64, i64)> {
+    let (lo, hi) = parse_int_range(s)?;
+    if !(0..=5).contains(&lo) || !(0..=5).contains(&hi) {
+        return None;
+    }
+    Some((lo * 20, (hi * 20 + 19).min(100)))
+}
+
+/// `yes`/`no` 系の真偽値を解釈する。
+fn parse_bool(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "yes" | "y" | "true" | "1" | "on" => Some(true),
+        "no" | "n" | "false" | "0" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Camelot キー `base` (例 "8A") とハーモニックに互換なキーを、Camelot ホイール
+/// 24 キーから列挙する。判定は analyzer::similarity::camelot_compatible をそのまま
+/// 使う (同番号 = 同キー/平行調、隣接番号 ±1 で同種、環状)。
+/// `base` が Camelot として解釈できなければ None。
+fn compatible_camelot_keys(base: &str) -> Option<Vec<String>> {
+    use crate::analyzer::similarity::{camelot_compatible, parse_camelot};
+    let base = base.trim().to_uppercase();
+    parse_camelot(&base)?;
+    let keys: Vec<String> = (1..=12u8)
+        .flat_map(|n| ["A", "B"].map(move |m| format!("{n}{m}")))
+        .filter(|k| camelot_compatible(&base, k))
+        .collect();
+    if keys.is_empty() {
+        None
+    } else {
+        Some(keys)
+    }
+}
+
+/// 検索トークンがフィールド指定 (`bpm:` `key:` `energy:` `artist:` `album:` `albumartist:`
+/// `genre:` `year:` `rating:` `comment:` `analyzed:` `tag:`) なら (SQL 句, バインド値) を返す。\n/// `key:` は `key:compat:8A` の形でハーモニック互換キー一括指定もできる。
+/// 解釈できないキー/値なら None を返し、呼び出し側でフリーテキストとして扱う。
+/// `prefix` は tracks テーブルの別名 + ドット ("tracks." / "t.")。
+/// SQL に埋め込むのは固定文字列だけで、ユーザー入力は必ずバインドする。
+fn parse_field_filter(
+    tok: &str,
+    level: crate::text_fold::FoldLevel,
+    prefix: &str,
+) -> Option<(String, Vec<rusqlite::types::Value>)> {
     use rusqlite::types::Value;
     let (kind, val) = tok.split_once(':')?;
-    match kind {
+    let kind = kind.to_ascii_lowercase();
+    if let Some((_, col)) = TEXT_FIELDS.iter().find(|(k, _)| *k == kind) {
+        let v = val.trim();
+        if v.is_empty() {
+            return None;
+        }
+        let (clause, bind) = text_like_clause(prefix, col, v, level);
+        return Some((clause, vec![bind]));
+    }
+    match kind.as_str() {
         "bpm" => {
             let (lo, hi) = parse_range(val, 2.0)?;
             Some((
-                "(COALESCE((SELECT bpm FROM track_analysis WHERE track_id = tracks.track_id), \
-                 tracks.bpm) BETWEEN ? AND ?)"
-                    .to_string(),
+                format!(
+                    "(COALESCE((SELECT bpm FROM track_analysis WHERE track_id = {prefix}track_id), \
+                     {prefix}bpm) BETWEEN ? AND ?)"
+                ),
                 vec![Value::Real(lo), Value::Real(hi)],
             ))
         }
@@ -168,18 +411,57 @@ fn parse_analysis_filter(tok: &str) -> Option<(String, Vec<rusqlite::types::Valu
             if k.is_empty() {
                 return None;
             }
+            // `key:compat:8A` — 8A とハーモニックに繋がるキー全部 (同キー / 平行調 /
+            // ホイール ±1) を IN (...) で並べる。
+            if let Some(base) = k.strip_prefix("COMPAT:") {
+                let keys = compatible_camelot_keys(base)?;
+                let holes = vec!["?"; keys.len()].join(",");
+                return Some((
+                    format!(
+                        "{prefix}track_id IN (SELECT track_id FROM track_analysis \
+                         WHERE UPPER(key_camelot) IN ({holes}))"
+                    ),
+                    keys.into_iter().map(Value::Text).collect(),
+                ));
+            }
             Some((
-                "tracks.track_id IN (SELECT track_id FROM track_analysis WHERE UPPER(key_camelot) = ?)"
-                    .to_string(),
+                format!(
+                    "{prefix}track_id IN (SELECT track_id FROM track_analysis WHERE UPPER(key_camelot) = ?)"
+                ),
                 vec![Value::Text(k)],
             ))
         }
         "energy" => {
             let (lo, hi) = parse_energy_range(val)?;
             Some((
-                "tracks.track_id IN (SELECT track_id FROM track_analysis WHERE energy BETWEEN ? AND ?)"
-                    .to_string(),
+                format!(
+                    "{prefix}track_id IN (SELECT track_id FROM track_analysis WHERE energy BETWEEN ? AND ?)"
+                ),
                 vec![Value::Real(lo), Value::Real(hi)],
+            ))
+        }
+        "year" => {
+            let (lo, hi) = parse_int_range(val)?;
+            Some((
+                format!("({prefix}year BETWEEN ? AND ?)"),
+                vec![Value::Integer(lo), Value::Integer(hi)],
+            ))
+        }
+        "rating" => {
+            let (lo, hi) = parse_star_range(val)?;
+            Some((
+                format!("(COALESCE({prefix}rating, 0) BETWEEN ? AND ?)"),
+                vec![Value::Integer(lo), Value::Integer(hi)],
+            ))
+        }
+        "analyzed" => {
+            let yes = parse_bool(val)?;
+            let op = if yes { "EXISTS" } else { "NOT EXISTS" };
+            Some((
+                format!(
+                    "{op} (SELECT 1 FROM track_analysis a WHERE a.track_id = {prefix}track_id)"
+                ),
+                Vec::new(),
             ))
         }
         // tag:bridge → value 一致 (namespace 問わず)
@@ -196,29 +478,92 @@ fn parse_analysis_filter(tok: &str) -> Option<(String, Vec<rusqlite::types::Valu
                     return None;
                 }
                 Some((
-                    "EXISTS (\
-                       SELECT 1 FROM track_tags tt \
-                       JOIN tags g ON g.id = tt.tag_id \
-                       WHERE tt.track_id = tracks.track_id \
-                         AND g.namespace = ? AND g.value = ?\
-                     )"
-                    .to_string(),
+                    format!(
+                        "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id \
+                         WHERE tt.track_id = {prefix}track_id AND g.namespace = ? AND g.value = ?)"
+                    ),
                     vec![Value::Text(ns.to_string()), Value::Text(v.to_string())],
                 ))
             } else {
                 Some((
-                    "EXISTS (\
-                       SELECT 1 FROM track_tags tt \
-                       JOIN tags g ON g.id = tt.tag_id \
-                       WHERE tt.track_id = tracks.track_id AND g.value = ?\
-                     )"
-                    .to_string(),
+                    format!(
+                        "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id \
+                         WHERE tt.track_id = {prefix}track_id AND g.value = ?)"
+                    ),
                     vec![Value::Text(rest.to_string())],
                 ))
             }
         }
         _ => None,
     }
+}
+
+/// 検索クエリを WHERE 句の断片 (AND 結合前) とバインド値に変換する。
+/// フィールド指定トークンはそれぞれの絞り込みに、それ以外はフリーテキストの
+/// 部分一致になる。ライブラリ検索とプレイリスト内検索で同じ構文を共有するため、
+/// テーブル別名 `prefix` を引数で受ける。
+pub(super) fn build_search_clauses(
+    query: &str,
+    level: crate::text_fold::FoldLevel,
+    prefix: &str,
+) -> (Vec<String>, Vec<rusqlite::types::Value>) {
+    use rusqlite::types::Value;
+    let mut clauses: Vec<String> = Vec::new();
+    let mut bind: Vec<Value> = Vec::new();
+    for tok in tokenize_query(query) {
+        if let Some((clause, mut binds)) = parse_field_filter(&tok, level, prefix) {
+            clauses.push(clause);
+            bind.append(&mut binds);
+            continue;
+        }
+        match level {
+            // 高速パス (既定): 事前計算済みの `search_text` (Standard で fold 済みの
+            // 6 列連結) 1 列だけを LIKE で見る。クエリ時の fold() UDF 呼び出しと
+            // 6 列 OR が消え、数万曲でも 1 列スキャンで済む。トークンも Standard で畳む。
+            // search_text が NULL の行 (バックフィル前 / 直 SQL 挿入など) のみ、安全網として
+            // その場で search_text 相当の式を評価する。通常は COALESCE が短絡し fold は走らない。
+            crate::text_fold::FoldLevel::Standard => {
+                let pat = format!(
+                    "%{}%",
+                    crate::text_fold::fold(&tok, crate::text_fold::FoldLevel::Standard)
+                );
+                bind.push(Value::Text(pat));
+                clauses.push(format!(
+                    "(COALESCE({prefix}search_text, {expr}) LIKE ?)",
+                    expr = search_text_expr(prefix)
+                ));
+            }
+            // Off: 従来どおり `col LIKE ?` に生トークンの `%..%` をバインド。
+            crate::text_fold::FoldLevel::Off => {
+                let pat = format!("%{}%", tok);
+                let group = SEARCH_COLS
+                    .iter()
+                    .map(|c| {
+                        bind.push(Value::Text(pat.clone()));
+                        format!("{prefix}{c} LIKE ?")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                clauses.push(format!("({})", group));
+            }
+            // Light: search_text は Standard 固定なので使えない。列側を `fold(col, 1)` で
+            // 畳み、パターンも Rust 側で Light に畳んでからバインドする従来パス。
+            crate::text_fold::FoldLevel::Light => {
+                let pat = format!("%{}%", crate::text_fold::fold(&tok, level));
+                let n = level.as_i64();
+                let group = SEARCH_COLS
+                    .iter()
+                    .map(|c| {
+                        bind.push(Value::Text(pat.clone()));
+                        format!("fold({prefix}{c}, {n}) LIKE ?")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                clauses.push(format!("({})", group));
+            }
+        }
+    }
+    (clauses, bind)
 }
 
 /// "120-128" → (120,128)、"128" → (128-pad, 128+pad)。
@@ -732,8 +1077,10 @@ impl Database {
     }
 
     /// 空白区切りの各トークンを AND で結合した検索。
-    /// 各トークンは name/artist/album/album_artist/genre/comments の
-    /// いずれかに部分一致 (OR)、トークン同士は AND。
+    /// フィールド指定 (`artist:` `album:` `albumartist:` `genre:` `year:` `rating:`
+    /// `comment:` `analyzed:` `bpm:` `key:` `energy:`) はその条件に、それ以外は
+    /// name/artist/album/album_artist/genre/comments のいずれかへの部分一致 (OR) になり、
+    /// トークン同士は AND。値は `artist:"daft punk"` のように引用符で囲める。
     pub fn search_tracks(
         &self,
         query: &str,
@@ -746,7 +1093,7 @@ impl Database {
 
         let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NOCASE ASC");
 
-        // 検索の字体ゆれ吸収レベル。Off のときは下の分岐で従来と完全に同じ SQL/バインドを使う。
+        // 検索の字体ゆれ吸収レベル。Off のときは従来と完全に同じ SQL/バインドになる。
         let level = crate::text_fold::FoldLevel::from_state(
             self.get_state("search_fold_level")
                 .ok()
@@ -754,64 +1101,10 @@ impl Database {
                 .as_deref(),
         );
 
-        // 各トークンを AND 結合。bpm:/key:/energy: は track_analysis、
-        // tag: は track_tags/tags への絞り込み、それ以外はテキスト列への部分一致。
-        // バインド値は句の出現順に積む。
-        let mut clauses: Vec<String> = Vec::new();
-        let mut bind: Vec<Value> = Vec::new();
-        for tok in query.split_whitespace() {
-            if let Some((clause, mut binds)) = parse_analysis_filter(tok) {
-                clauses.push(clause);
-                bind.append(&mut binds);
-                continue;
-            }
-            match level {
-                // 高速パス (既定): 事前計算済みの `search_text` (Standard で fold 済みの
-                // 6 列連結) 1 列だけを LIKE で見る。クエリ時の fold() UDF 呼び出しと
-                // 6 列 OR が消え、数万曲でも 1 列スキャンで済む。トークンも Standard で畳む。
-                // search_text が NULL の行 (バックフィル前 / 直 SQL 挿入など) のみ、安全網として
-                // その場で SEARCH_TEXT_EXPR を評価する。通常は COALESCE が短絡し fold は走らない。
-                crate::text_fold::FoldLevel::Standard => {
-                    let pat = format!(
-                        "%{}%",
-                        crate::text_fold::fold(tok, crate::text_fold::FoldLevel::Standard)
-                    );
-                    bind.push(Value::Text(pat));
-                    clauses.push(format!(
-                        "(COALESCE(search_text, {expr}) LIKE ?)",
-                        expr = SEARCH_TEXT_EXPR
-                    ));
-                }
-                // Off: 従来どおり `col LIKE ?` に生トークンの `%..%` をバインド。
-                crate::text_fold::FoldLevel::Off => {
-                    let pat = format!("%{}%", tok);
-                    let group = SEARCH_COLS
-                        .iter()
-                        .map(|c| {
-                            bind.push(Value::Text(pat.clone()));
-                            format!("{} LIKE ?", c)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" OR ");
-                    clauses.push(format!("({})", group));
-                }
-                // Light: search_text は Standard 固定なので使えない。列側を `fold(col, 1)` で
-                // 畳み、パターンも Rust 側で Light に畳んでからバインドする従来パス。
-                crate::text_fold::FoldLevel::Light => {
-                    let pat = format!("%{}%", crate::text_fold::fold(tok, level));
-                    let n = level.as_i64();
-                    let group = SEARCH_COLS
-                        .iter()
-                        .map(|c| {
-                            bind.push(Value::Text(pat.clone()));
-                            format!("fold({}, {}) LIKE ?", c, n)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" OR ");
-                    clauses.push(format!("({})", group));
-                }
-            }
-        }
+        // 各トークンを AND 結合。句とバインド値の組み立ては build_search_clauses に集約し、
+        // プレイリスト内検索と同じ構文を共有する (ここは FROM tracks なので prefix は "tracks.")。
+        let (clauses, mut bind): (Vec<String>, Vec<Value>) =
+            build_search_clauses(query, level, "tracks.");
         let where_sql = if clauses.is_empty() {
             "1=1".to_string()
         } else {
@@ -833,6 +1126,30 @@ impl Database {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), row_to_track)?;
+        rows.collect()
+    }
+
+    /// 検索クエリ (search_tracks と同じ DSL) にマッチする track_id の集合を返す。
+    /// LIMIT/ORDER BY を伴わないので、Rust 側で候補を組み立ててから絞り込む用途
+    /// (スマートプレイリスト内検索など) に使える。
+    pub fn search_track_ids(&self, query: &str) -> Result<HashSet<i64>> {
+        let level = crate::text_fold::FoldLevel::from_state(
+            self.get_state("search_fold_level")
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        let (clauses, bind) = build_search_clauses(query, level, "tracks.");
+        let where_sql = if clauses.is_empty() {
+            "1=1".to_string()
+        } else {
+            clauses.join(" AND ")
+        };
+        let sql = format!("SELECT track_id FROM tracks WHERE {where_sql}");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), |r| {
+            r.get::<_, i64>(0)
+        })?;
         rows.collect()
     }
 
@@ -1156,62 +1473,27 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<AlbumRow>> {
-        let order_by = album_order_by(sort_field, sort_order);
-        let sql = format!(
-            "WITH base AS (
-              SELECT *,
-                ({key}) AS album_key,
-                ROW_NUMBER() OVER (
-                  PARTITION BY ({key})
-                  ORDER BY file_exists DESC, (disc_number IS NULL), disc_number,
-                           (track_number IS NULL), track_number, track_id
-                ) AS rn
-              FROM tracks
-            )
-            SELECT
-              album_key,
-              MAX(coalesce(nullif(trim(album),''), name, '(unknown)'))          AS album,
-              MAX(CASE WHEN compilation=1 THEN 'Various Artists'
-                       ELSE coalesce(nullif(trim(album_artist),''), artist, '') END) AS album_artist,
-              MAX(compilation)                                                   AS is_compilation,
-              COUNT(*)                                                           AS track_count,
-              MAX(CASE WHEN rn=1 THEN track_id END)                              AS cover_track_id,
-              MAX(CASE WHEN rn=1 THEN location_path END)                         AS cover_location_path,
-              MAX(CASE WHEN rn=1 THEN file_exists END)                           AS cover_file_exists,
-              COALESCE(SUM(total_time_ms),0)                                     AS total_time_ms,
-              MIN(year)                                                          AS year,
-              MAX(date_added)                                                    AS date_added,
-              MAX(rating)                                                        AS rating,
-              COALESCE(SUM(play_count),0)                                        AS play_count,
-              MIN(bpm)                                                           AS bpm_min,
-              MAX(bpm)                                                           AS bpm_max
-            FROM base
-            GROUP BY album_key
-            ORDER BY {order}
-            LIMIT ?1 OFFSET ?2",
-            key = ALBUM_KEY_EXPR,
-            order = order_by
+        let sql = album_agg_sql(
+            "",
+            &album_order_by(sort_field, sort_order),
+            "LIMIT ?1 OFFSET ?2",
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![limit, offset], |r| {
-            Ok(AlbumRow {
-                album_key: r.get(0)?,
-                album: r.get(1)?,
-                album_artist: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                is_compilation: r.get::<_, i32>(3)? != 0,
-                track_count: r.get(4)?,
-                cover_track_id: r.get(5)?,
-                cover_location_path: r.get(6)?,
-                cover_file_exists: r.get::<_, Option<i32>>(7)?.unwrap_or(0) != 0,
-                total_time_ms: r.get(8)?,
-                year: r.get(9)?,
-                date_added: r.get(10)?,
-                rating: r.get(11)?,
-                play_count: r.get(12)?,
-                bpm_min: r.get(13)?,
-                bpm_max: r.get(14)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![limit, offset], row_to_album_row)?;
+        rows.collect()
+    }
+
+    /// 指定アーティストのアルバム一覧を get_albums と同じ集約で返す (年→アルバム名順)。
+    /// `name` は get_artists が返した表示名。突き合わせは ARTIST_NAME_EXPR を lower() した
+    /// キー同士なので、大文字小文字のゆれがあっても同じグループに当たる。
+    pub fn get_artist_albums(&self, name: &str) -> Result<Vec<AlbumRow>> {
+        let sql = album_agg_sql(
+            "WHERE artist_key = lower(trim(?1))",
+            &album_order_by(Some("year"), Some("asc")),
+            "",
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![name], row_to_album_row)?;
         rows.collect()
     }
 
@@ -1236,13 +1518,14 @@ impl Database {
         rows.collect()
     }
 
-    /// ライブラリ内の distinct な表示アーティスト一覧を表示名 (NOCASE) 昇順で返す。
+    /// `/api/artists` (HTTP) 用の軽量版。ライブラリ内の distinct な表示アーティスト一覧を
+    /// 表示名 (NOCASE) 昇順で返す。Artists ビューが使う集約版は `get_artists` を参照。
     /// `by_album_artist=false` (grouping=artist): artist→album_artist→"Unknown Artist"。
     /// `by_album_artist=true`  (grouping=albumArtist): album_artist→artist→"Unknown Artist"。
     /// 表示名でグループ化し、`track_count` は COUNT(*)、`sample_track_id` は MIN(track_id)。
     /// 共有インターフェース契約 (TS の trackArtist/trackAlbumArtist) と完全一致させる:
     /// 空文字 "" は falsy=次へ、NULL も次へ、空白のみ " " は truthy=採用。
-    pub fn get_artists(&self, by_album_artist: bool) -> Result<Vec<ArtistInfo>> {
+    pub fn get_artists_legacy(&self, by_album_artist: bool) -> Result<Vec<ArtistInfo>> {
         // 表示名式: 優先列が NULL でも空文字 '' でもない → 採用、それ以外は次の列、
         // どちらも無効なら 'Unknown Artist'。grouping により artist/album_artist の優先を入替。
         let (first, second) = if by_album_artist {
@@ -1265,6 +1548,64 @@ impl Database {
                 artist: r.get(0)?,
                 track_count: r.get(1)?,
                 sample_track_id: r.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Artists ビュー向けの集約クエリ。ARTIST_NAME_EXPR で束ね (コンピレーションは
+    /// "Various Artists" に巻き上げ)、アルバム数・曲数・代表曲を 1 クエリで返す。
+    /// アルバム数は ALBUM_KEY_EXPR の distinct 数なので Albums ビューの枚数と一致する。
+    /// 代表曲は「実ファイルがある → アルバム名がある → disc/track 番号順」の先頭。
+    pub fn get_artists(
+        &self,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<ArtistRow>> {
+        let sql = format!(
+            "WITH base AS (
+              SELECT
+                ({name}) AS artist_name,
+                ({artist}) AS artist_key,
+                ({key}) AS album_key,
+                track_id,
+                location_path,
+                file_exists,
+                ROW_NUMBER() OVER (
+                  PARTITION BY ({artist})
+                  ORDER BY file_exists DESC, (album IS NULL OR trim(album) = ''),
+                           (disc_number IS NULL), disc_number,
+                           (track_number IS NULL), track_number, track_id
+                ) AS rn
+              FROM tracks
+            )
+            SELECT
+              artist_key,
+              MAX(CASE WHEN rn=1 THEN artist_name END)                     AS name,
+              COUNT(DISTINCT album_key)                                    AS album_count,
+              COUNT(*)                                                     AS track_count,
+              MAX(CASE WHEN rn=1 THEN track_id END)                        AS artwork_track_id,
+              MAX(CASE WHEN rn=1 AND file_exists=1 THEN location_path END) AS artwork_location_path
+            FROM base
+            GROUP BY artist_key
+            ORDER BY {order}
+            LIMIT ?1 OFFSET ?2",
+            name = ARTIST_NAME_EXPR,
+            artist = artist_key_expr(),
+            key = ALBUM_KEY_EXPR,
+            order = artist_order_by(sort_field, sort_order),
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit, offset], |r| {
+            Ok(ArtistRow {
+                // rn=1 の行は必ず 1 つあるので NULL にはならないが、念のため空文字に倒す。
+                name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                album_count: r.get(2)?,
+                track_count: r.get(3)?,
+                artwork_track_id: r.get(4)?,
+                artwork_location_path: r.get(5)?,
             })
         })?;
         rows.collect()
@@ -1299,6 +1640,21 @@ impl Database {
         rows.collect()
     }
 
+    /// 複数トラックをライブラリから完全に削除する (依存行ごと)。
+    /// 実際に消えた曲数を返す (存在しない track_id は 0 件として無視)。
+    /// 1 トランザクションにまとめるので、途中で失敗しても中途半端に消えない。
+    pub fn delete_tracks(&self, track_ids: &[i64]) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut deleted = 0usize;
+        for &track_id in track_ids {
+            if delete_track_cascade(&tx, track_id)? {
+                deleted += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(deleted)
+    }
+
     /// 既存トラックの `location_path` から共通の親フォルダ(= ライブラリルート)を推定する。
     /// 実在ファイルのみ対象。曲数が十分にあれば、各アーティスト/アルバムで分岐するため
     /// 共通プレフィックスは音楽ルート(例 `…/iTunes Media/Music`)に収束する。
@@ -1313,6 +1669,20 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
         Ok(common_dir_prefix(&paths))
+    }
+
+    /// ライブラリに登録済みの `location_path` を全て集めた集合を返す。
+    /// フォルダ取り込みで「既にライブラリにあるファイル」を弾くために使う。
+    pub fn existing_location_paths(&self) -> Result<HashSet<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT location_path FROM tracks
+             WHERE location_path IS NOT NULL AND location_path != ''",
+        )?;
+        let paths = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(paths)
     }
 }
 
@@ -1342,6 +1712,55 @@ fn common_dir_prefix(paths: &[String]) -> Option<String> {
         return None;
     }
     Some(dir.to_string())
+}
+
+/// 1 曲分の `tracks` 行と、track_id / persistent_id で紐づく全依存行を削除する。
+/// 削除対象が存在して実際に消えたら `true`。
+///
+/// 「トラック行を消すすべての経路」(ライブラリからの削除・同期のエビクション) は
+/// 必ずここを通す。テーブルが増えたときの消し漏れをこの 1 箇所に集約するため。
+/// トランザクションは張らないので、呼び出し側でまとめること
+/// (`&Connection` は `Transaction` からの deref も受け付ける)。
+pub fn delete_track_cascade(conn: &Connection, track_id: i64) -> Result<bool> {
+    // 解析結果 / 同期メタは persistent_id キーなので tracks 行から引く。
+    let persistent_id: Option<String> = conn
+        .query_row(
+            "SELECT persistent_id FROM tracks WHERE track_id = ?1",
+            params![track_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+
+    // track_id キーの依存行。
+    conn.execute(
+        "DELETE FROM playlist_tracks WHERE track_id = ?1",
+        params![track_id],
+    )?;
+    conn.execute(
+        "DELETE FROM recent_tracks WHERE track_id = ?1",
+        params![track_id],
+    )?;
+    // 旧スキーマ (track_analysis の PK が track_id だった頃) 由来で persistent_id が
+    // 一致しない行が残っていても掃除できるよう、track_id でも消しておく。
+    conn.execute(
+        "DELETE FROM track_analysis WHERE track_id = ?1",
+        params![track_id],
+    )?;
+
+    // persistent_id キーの依存行。
+    if let Some(pid) = persistent_id.as_deref() {
+        conn.execute(
+            "DELETE FROM track_analysis WHERE persistent_id = ?1",
+            params![pid],
+        )?;
+        conn.execute(
+            "DELETE FROM sync_track WHERE persistent_id = ?1",
+            params![pid],
+        )?;
+    }
+
+    Ok(conn.execute("DELETE FROM tracks WHERE track_id = ?1", params![track_id])? > 0)
 }
 
 pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
@@ -1382,8 +1801,39 @@ pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
 mod tests {
     use std::collections::HashSet;
 
-    use super::{common_dir_prefix, compute_search_text};
+    use rusqlite::params;
+
+    use super::{album_order_by, artist_order_by, common_dir_prefix, compute_search_text};
     use crate::db::Database;
+
+    /// album_order_by は全分岐で `album_key ASC` を最終タイブレークに持つこと
+    /// (LIMIT/OFFSET のページ間で並びが揺れないため)。
+    #[test]
+    fn album_order_by_always_ends_with_album_key_tiebreak() {
+        for field in [
+            None,
+            Some("albumArtist"),
+            Some("album"),
+            Some("year"),
+            Some("dateAdded"),
+            Some("rating"),
+            Some("playCount"),
+            Some("bogus"),
+        ] {
+            for order in [None, Some("asc"), Some("desc")] {
+                let sql = album_order_by(field, order);
+                assert!(
+                    sql.ends_with(", album_key ASC"),
+                    "missing tie-break for {field:?}/{order:?}: {sql}"
+                );
+            }
+        }
+        assert_eq!(
+            album_order_by(Some("year"), Some("desc")),
+            "(year IS NULL), year DESC, album_artist COLLATE NOCASE ASC, \
+             album COLLATE NOCASE ASC, album_key ASC"
+        );
+    }
 
     /// Standard 高速パス: 検索が `search_text` 1 列を見て、字体ゆれ (ひらがな⇔カタカナ・
     /// 全角英字・繁体字) を吸収して従来と同じ結果を返すこと。insert_track 経路で
@@ -1440,6 +1890,115 @@ mod tests {
         let hits = db.search_tracks("图书馆", 100, 0, None, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].track_id, 2);
+    }
+
+    /// ライブラリからの削除で、tracks 行と全依存行 (プレイリスト所属 / 再生履歴 /
+    /// 解析結果 / 同期メタ) が一緒に消え、他の曲の行は残ること。
+    /// テーブルを増やしたのに delete_track_cascade を更新し忘れると、ここが落ちる。
+    #[test]
+    fn delete_tracks_removes_dependent_rows() {
+        let db = Database::open_memory().unwrap();
+        for (tid, pid) in [(1i64, "AAAAAAAAAAAAAAA1"), (2, "AAAAAAAAAAAAAAA2")] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, persistent_id, name, file_exists)
+                     VALUES (?1, ?2, 'song', 1)",
+                    params![tid, pid],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index)
+                     VALUES (10, ?1, 0)",
+                    params![tid],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO recent_tracks (track_id) VALUES (?1)",
+                    params![tid],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO track_analysis (persistent_id, track_id, version, bpm)
+                     VALUES (?1, ?2, 1, 128.0)",
+                    params![pid, tid],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO sync_track (persistent_id, source_id, pulled_at)
+                     VALUES (?1, 1, '2024-01-01T00:00:00Z')",
+                    params![pid],
+                )
+                .unwrap();
+        }
+
+        // 存在しない ID を混ぜても件数は実際に消えた分だけ。
+        assert_eq!(db.delete_tracks(&[1, 999]).unwrap(), 1);
+
+        let count = |sql: &str| -> i64 { db.conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(count("SELECT COUNT(*) FROM tracks WHERE track_id = 1"), 0);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM playlist_tracks WHERE track_id = 1"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM recent_tracks WHERE track_id = 1"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM track_analysis WHERE track_id = 1"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM sync_track WHERE persistent_id = 'AAAAAAAAAAAAAAA1'"),
+            0
+        );
+
+        // 残した曲の行は一切触られていない。
+        assert_eq!(count("SELECT COUNT(*) FROM tracks WHERE track_id = 2"), 1);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM playlist_tracks WHERE track_id = 2"),
+            1
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM recent_tracks WHERE track_id = 2"),
+            1
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM track_analysis WHERE track_id = 2"),
+            1
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM sync_track WHERE persistent_id = 'AAAAAAAAAAAAAAA2'"),
+            1
+        );
+    }
+
+    /// persistent_id が無い曲 (ローカル追加直後など) でも削除できること。
+    #[test]
+    fn delete_tracks_handles_missing_persistent_id() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, file_exists) VALUES (7, 'no pid', 1)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO track_analysis (persistent_id, track_id, version) VALUES ('X', 7, 1)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(db.delete_tracks(&[7]).unwrap(), 1);
+        let left: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM track_analysis", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     /// update_track / genre タグ更新で search_text が再計算され、新しい値で検索できること。
@@ -1548,6 +2107,176 @@ mod tests {
         assert_eq!(rust_val, sql_val);
     }
 
+    /// フィールド検索のテスト用ライブラリ。artist/album/genre/year/rating/comments を
+    /// 一通り持たせ、track 1 のみ解析済み (track_analysis 行あり) にする。
+    fn fielded_db() -> Database {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks
+                   (track_id, name, artist, album, album_artist, genre, year, rating, comments, file_exists)
+                 VALUES
+                   (1,'One More Time','Daft Punk','Discovery','Daft Punk','House',2001,100,'club classic',1),
+                   (2,'Around the World','Daft Punk','Homework','Daft Punk','House',1997,80,'early single',1),
+                   (3,'Windowlicker','Aphex Twin','Windowlicker','Aphex Twin','IDM',1999,NULL,'weird',1),
+                   (4,'さくら','ＡＢＣ','Spring','ABC Band','J-Pop',2015,40,'メモ',1);
+                 INSERT INTO track_analysis (persistent_id, track_id, version, bpm, key_camelot, energy)
+                 VALUES ('P1', 1, 1, 123.0, '8A', 0.8);",
+            )
+            .unwrap();
+        db
+    }
+
+    fn ids(db: &Database, q: &str) -> Vec<i64> {
+        let mut v: Vec<i64> = db
+            .search_tracks(q, 100, 0, None, None)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.track_id)
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// テキスト系フィールド (artist/album/albumartist/genre/comment) の部分一致。
+    /// 引用符付きの値と、フリーテキストとの AND 結合も確認する。
+    #[test]
+    fn fielded_text_operators() {
+        let db = fielded_db();
+        assert_eq!(ids(&db, "artist:\"daft punk\""), vec![1, 2]);
+        assert_eq!(ids(&db, "artist:daft"), vec![1, 2]);
+        assert_eq!(ids(&db, "album:homework"), vec![2]);
+        assert_eq!(ids(&db, "albumartist:aphex"), vec![3]);
+        assert_eq!(ids(&db, "album_artist:aphex"), vec![3]);
+        assert_eq!(ids(&db, "genre:idm"), vec![3]);
+        assert_eq!(ids(&db, "comment:classic"), vec![1]);
+        // フィールド指定同士 / フリーテキストとの AND。
+        assert_eq!(ids(&db, "artist:\"daft punk\" album:discovery"), vec![1]);
+        assert_eq!(ids(&db, "artist:daft world"), vec![2]);
+        // 値が空のトークンはフィールド指定として扱わない (フリーテキスト扱いで 0 件)。
+        assert!(ids(&db, "artist:").is_empty());
+    }
+
+    /// テキスト系フィールドもフリーテキストと同じ fold レベルで比較されること
+    /// (既定 Standard: 全角/半角・ひらがな/カタカナのゆれを吸収)。
+    #[test]
+    fn fielded_text_operators_fold_variants() {
+        let db = fielded_db();
+        assert_eq!(ids(&db, "artist:abc"), vec![4]); // 半角 abc → 全角 ＡＢＣ
+        assert_eq!(ids(&db, "name:サクラ"), Vec::<i64>::new()); // name: は未対応 → フリーテキスト
+        assert_eq!(ids(&db, "genre:j-pop"), vec![4]);
+    }
+
+    /// year: は単一値と範囲 (2015-2020) の両方を受ける。
+    #[test]
+    fn fielded_year_operator() {
+        let db = fielded_db();
+        assert_eq!(ids(&db, "year:1997"), vec![2]);
+        assert_eq!(ids(&db, "year:1997-2001"), vec![1, 2, 3]);
+        assert_eq!(ids(&db, "year:2010-2020"), vec![4]);
+        // 範囲の左右が逆でも同じ結果。
+        assert_eq!(ids(&db, "year:2001-1997"), vec![1, 2, 3]);
+    }
+
+    /// rating: は星 (0..5) で受け、0..100 の rating 列に写す。未評価は 0 星。
+    #[test]
+    fn fielded_rating_operator() {
+        let db = fielded_db();
+        assert_eq!(ids(&db, "rating:5"), vec![1]);
+        assert_eq!(ids(&db, "rating:4"), vec![2]);
+        assert_eq!(ids(&db, "rating:4-5"), vec![1, 2]);
+        assert_eq!(ids(&db, "rating:2"), vec![4]);
+        assert_eq!(ids(&db, "rating:0"), vec![3]); // 未評価 (NULL)
+        // 範囲外の星はフィールド指定として扱わない → フリーテキスト扱いで 0 件。
+        assert!(ids(&db, "rating:9").is_empty());
+    }
+
+    /// analyzed: yes/no で track_analysis 行の有無を絞り込む。
+    #[test]
+    fn fielded_analyzed_operator() {
+        let db = fielded_db();
+        assert_eq!(ids(&db, "analyzed:yes"), vec![1]);
+        assert_eq!(ids(&db, "analyzed:no"), vec![2, 3, 4]);
+        assert_eq!(ids(&db, "analyzed:true"), vec![1]);
+        assert_eq!(ids(&db, "analyzed:0"), vec![2, 3, 4]);
+        // 既存の bpm:/key:/energy: が引き続き効くこと。
+        assert_eq!(ids(&db, "bpm:120-128"), vec![1]);
+        assert_eq!(ids(&db, "key:8a"), vec![1]);
+        assert_eq!(ids(&db, "energy:75-85"), vec![1]);
+    }
+
+    /// key:compat:<camelot> がハーモニック互換キー (同キー / 平行調 / ホイール ±1) を
+    /// まとめて拾うこと。互換判定は analyzer::similarity::camelot_compatible と同じ。
+    #[test]
+    fn key_compat_operator() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks (track_id, name, file_exists) VALUES
+                   (1,'same 8A',1), (2,'relative 8B',1), (3,'down 7A',1),
+                   (4,'up 9A',1), (5,'far 2A',1), (6,'other mode 9B',1),
+                   (7,'wrap 12A',1), (8,'unanalyzed',1);
+                 INSERT INTO track_analysis (persistent_id, track_id, version, key_camelot) VALUES
+                   ('P1',1,1,'8A'), ('P2',2,1,'8B'), ('P3',3,1,'7A'), ('P4',4,1,'9A'),
+                   ('P5',5,1,'2A'), ('P6',6,1,'9B'), ('P7',7,1,'12A');",
+            )
+            .unwrap();
+        // 8A: 8A / 8B (平行調) / 7A / 9A (±1 同種)。9B は同種でも隣接でもないので除外。
+        assert_eq!(ids(&db, "key:compat:8A"), vec![1, 2, 3, 4]);
+        // 小文字でも同じ。
+        assert_eq!(ids(&db, "key:compat:8a"), vec![1, 2, 3, 4]);
+        // ホイールの折り返し: 1A の隣は 12A と 2A。
+        assert_eq!(ids(&db, "key:compat:1A"), vec![5, 7]);
+        // 単一キー指定 (従来) は互換キーへ広がらない。
+        assert_eq!(ids(&db, "key:8A"), vec![1]);
+        // 解釈できない Camelot はフィールド指定にならずフリーテキスト扱い → 0 件。
+        assert!(ids(&db, "key:compat:99Z").is_empty());
+    }
+
+    /// 互換キー集合そのものの単体確認 (SQL を介さない)。
+    #[test]
+    fn compatible_camelot_keys_set() {
+        use super::compatible_camelot_keys;
+        let mut k = compatible_camelot_keys("8A").unwrap();
+        k.sort();
+        assert_eq!(k, vec!["7A", "8A", "8B", "9A"]);
+        let mut k = compatible_camelot_keys("12b").unwrap();
+        k.sort();
+        assert_eq!(k, vec!["11B", "12A", "12B", "1B"]);
+        assert!(compatible_camelot_keys("13A").is_none());
+        assert!(compatible_camelot_keys("").is_none());
+    }
+
+    /// フィールド値は必ずバインドされ、SQL に埋め込まれないこと (インジェクション防止)。
+    #[test]
+    fn fielded_values_are_parameterized() {
+        let db = fielded_db();
+        assert!(ids(&db, "artist:\"'; DROP TABLE tracks; --\"").is_empty());
+        assert!(ids(&db, "genre:\"' OR 1=1 --\"").is_empty());
+        // tracks テーブルが健在で、通常の検索も動くこと。
+        assert_eq!(ids(&db, "artist:aphex"), vec![3]);
+    }
+
+    /// 引用符を含むクエリのトークン分割。
+    #[test]
+    fn tokenize_query_handles_quotes() {
+        use super::tokenize_query;
+        assert_eq!(
+            tokenize_query("artist:\"daft punk\" house"),
+            vec!["artist:daft punk", "house"]
+        );
+        assert_eq!(tokenize_query("  a   b  "), vec!["a", "b"]);
+        // 閉じ引用符が無い場合は行末までを 1 トークンにする。
+        assert_eq!(tokenize_query("artist:\"daft punk"), vec!["artist:daft punk"]);
+    }
+
+    /// prefix 無しの search_text_expr が定数 SEARCH_TEXT_EXPR と完全一致すること
+    /// (ズレるとバックフィルと検索フォールバックで別の値になる)。
+    #[test]
+    fn search_text_expr_matches_const() {
+        assert_eq!(super::search_text_expr(""), super::SEARCH_TEXT_EXPR);
+    }
+
     /// get_albums は album ごとに distinct 集約し、track_count と最小 track_id を返す。
     /// album が NULL/空 の曲は除外し、album 名 (NOCASE) 昇順で並ぶ。
     #[test]
@@ -1586,11 +2315,12 @@ mod tests {
         assert_eq!(albums[1].album_artist.as_deref(), Some("AA1"));
     }
 
-    /// get_artists は grouping ごとに表示名でグループ化し、track_count と最小 track_id を返す。
+    /// get_artists_legacy (HTTP /api/artists) は grouping ごとに表示名でグループ化し、
+    /// track_count と最小 track_id を返す。
     /// 表示名フォールバック (artist→album_artist→Unknown / album_artist→artist→Unknown) と
     /// 空文字="" の扱い (falsy=次へ)、表示名 NOCASE 昇順を検証する。
     #[test]
-    fn get_artists_groups_by_display_name() {
+    fn get_artists_legacy_groups_by_display_name() {
         let db = Database::open_memory().unwrap();
         let rows = [
             // (track_id, artist, album_artist)
@@ -1612,7 +2342,7 @@ mod tests {
 
         // grouping=artist: 表示名 = artist || album_artist || "Unknown Artist"。
         // 期待される表示名: "alpha"(12), "Beta"(10,11), "Comp AA"(13), "Unknown Artist"(14)。
-        let artists = db.get_artists(false).unwrap();
+        let artists = db.get_artists_legacy(false).unwrap();
         let names: Vec<&str> = artists.iter().map(|a| a.artist.as_str()).collect();
         // NOCASE 昇順: alpha, Beta, Comp AA, Unknown Artist。
         assert_eq!(names, vec!["alpha", "Beta", "Comp AA", "Unknown Artist"]);
@@ -1631,12 +2361,185 @@ mod tests {
 
         // grouping=albumArtist: 表示名 = album_artist || artist || "Unknown Artist"。
         // 期待: "alpha"(12), "Comp AA"(13), "Unknown Artist"(14), "VA"(10,11)。
-        let aas = db.get_artists(true).unwrap();
+        let aas = db.get_artists_legacy(true).unwrap();
         let names: Vec<&str> = aas.iter().map(|a| a.artist.as_str()).collect();
         assert_eq!(names, vec!["alpha", "Comp AA", "Unknown Artist", "VA"]);
         let va = aas.iter().find(|a| a.artist == "VA").unwrap();
         assert_eq!(va.track_count, 2);
         assert_eq!(va.sample_track_id, 10);
+    }
+
+    /// テスト用: tracks に 1 行入れる薄いヘルパ (in-memory DB 前提)。
+    fn insert_artist_fixture(
+        db: &Database,
+        track_id: i64,
+        artist: Option<&str>,
+        album_artist: Option<&str>,
+        album: Option<&str>,
+        compilation: i64,
+    ) {
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, artist, album_artist, album, compilation,
+                                     file_exists)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+                rusqlite::params![
+                    track_id,
+                    format!("t{track_id}"),
+                    artist,
+                    album_artist,
+                    album,
+                    compilation
+                ],
+            )
+            .unwrap();
+    }
+
+    /// artist_order_by は全分岐で `artist_key ASC` を最終タイブレークに持つこと
+    /// (album_order_by と同じ理由: LIMIT/OFFSET のページ間で並びが揺れないため)。
+    /// 未知の sort_field は name に倒れる。
+    #[test]
+    fn artist_order_by_always_ends_with_artist_key_tiebreak() {
+        for field in [
+            None,
+            Some("name"),
+            Some("trackCount"),
+            Some("albumCount"),
+            Some("bpm"),
+            Some("bogus"),
+        ] {
+            for order in [None, Some("asc"), Some("desc")] {
+                let sql = artist_order_by(field, order);
+                assert!(
+                    sql.ends_with(", artist_key ASC"),
+                    "missing tie-break for {field:?}/{order:?}: {sql}"
+                );
+            }
+        }
+        assert_eq!(
+            artist_order_by(Some("trackCount"), Some("desc")),
+            "track_count DESC, name COLLATE NOCASE ASC, artist_key ASC"
+        );
+        // 未知フィールドは name 昇順へ。
+        assert_eq!(
+            artist_order_by(Some("bogus"), None),
+            "name COLLATE NOCASE ASC, artist_key ASC"
+        );
+    }
+
+    /// compilation=1 の曲は曲ごとのアーティストではなく "Various Artists" に巻き上げる。
+    /// album_count は ALBUM_KEY_EXPR の distinct 数 (コンピは album だけで 1 枚に束ねる)。
+    #[test]
+    fn get_artists_rolls_up_compilations() {
+        let db = Database::open_memory().unwrap();
+        // コンピ 1 枚 (アーティストは曲ごとにバラバラ、album_artist も別々)。
+        insert_artist_fixture(&db, 10, Some("A"), Some("AA1"), Some("Mixed"), 1);
+        insert_artist_fixture(&db, 11, Some("B"), Some("AA2"), Some("Mixed"), 1);
+        // 別のコンピ 1 枚 → Various Artists のアルバム数は 2 になる。
+        insert_artist_fixture(&db, 12, Some("C"), None, Some("Mixed 2"), 1);
+        // 通常アルバム (コンピではない)。
+        insert_artist_fixture(&db, 13, Some("A"), Some("Solo"), Some("Solo Album"), 0);
+
+        let artists = db.get_artists(None, None, 100, 0).unwrap();
+        let names: Vec<&str> = artists.iter().map(|a| a.name.as_str()).collect();
+        // name 昇順 (NOCASE): Solo, Various Artists。
+        assert_eq!(names, vec!["Solo", "Various Artists"]);
+
+        let va = artists
+            .iter()
+            .find(|a| a.name == "Various Artists")
+            .unwrap();
+        assert_eq!(va.track_count, 3);
+        assert_eq!(va.album_count, 2);
+        // 代表曲は実ファイルのある先頭 (track_id 最小)。
+        assert_eq!(va.artwork_track_id, Some(10));
+
+        let solo = artists.iter().find(|a| a.name == "Solo").unwrap();
+        assert_eq!(solo.track_count, 1);
+        assert_eq!(solo.album_count, 1);
+
+        // get_artist_albums も同じ束ね方: Various Artists は 2 枚。
+        let va_albums = db.get_artist_albums("Various Artists").unwrap();
+        assert_eq!(va_albums.len(), 2);
+        assert!(va_albums.iter().all(|a| a.is_compilation));
+        // 表示名の大文字小文字ゆれがあっても同じグループに当たる。
+        assert_eq!(db.get_artist_albums("various artists").unwrap().len(), 2);
+        // 通常アーティストは自分のアルバムだけ (コンピの曲は混ざらない)。
+        let solo_albums = db.get_artist_albums("Solo").unwrap();
+        assert_eq!(solo_albums.len(), 1);
+        assert_eq!(solo_albums[0].album, "Solo Album");
+    }
+
+    /// album_artist が NULL / 空 / 空白のみなら artist に、どちらも無ければ
+    /// "Unknown Artist" にフォールバックする。大文字小文字のゆれは 1 グループに畳む。
+    #[test]
+    fn get_artists_falls_back_when_album_artist_empty() {
+        let db = Database::open_memory().unwrap();
+        insert_artist_fixture(&db, 10, Some("Kraftwerk"), None, Some("A1"), 0);
+        insert_artist_fixture(&db, 11, Some("Kraftwerk"), Some(""), Some("A2"), 0);
+        insert_artist_fixture(&db, 12, Some("Kraftwerk"), Some("   "), Some("A3"), 0);
+        // 表記ゆれ (小文字) は同じキーへ畳む。
+        insert_artist_fixture(&db, 13, Some("kraftwerk"), None, Some("A1"), 0);
+        // artist / album_artist ともに無し → Unknown Artist。
+        insert_artist_fixture(&db, 14, None, None, Some("A4"), 0);
+        insert_artist_fixture(&db, 15, Some(""), Some(""), Some("A5"), 0);
+
+        let artists = db.get_artists(None, None, 100, 0).unwrap();
+        let names: Vec<&str> = artists.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["Kraftwerk", "Unknown Artist"]);
+
+        let k = &artists[0];
+        assert_eq!(k.track_count, 4);
+        // A1 は表記ゆれの 2 曲が同じアルバムに束ねられるので 3 枚。
+        assert_eq!(k.album_count, 3);
+        assert_eq!(k.artwork_track_id, Some(10));
+
+        let unknown = &artists[1];
+        assert_eq!(unknown.track_count, 2);
+        assert_eq!(unknown.album_count, 2);
+    }
+
+    /// ソート: trackCount / albumCount の降順と、同値時の name→artist_key タイブレーク。
+    /// ページング (limit/offset) が重複・取りこぼしなく全件を返すことも確認する。
+    #[test]
+    fn get_artists_sorts_and_pages_deterministically() {
+        let db = Database::open_memory().unwrap();
+        // Big: 3 曲 / 2 枚、Mid: 2 曲 / 2 枚、Ace & Bee: 1 曲 / 1 枚 (同値でタイブレーク)。
+        insert_artist_fixture(&db, 10, Some("Big"), None, Some("B1"), 0);
+        insert_artist_fixture(&db, 11, Some("Big"), None, Some("B1"), 0);
+        insert_artist_fixture(&db, 12, Some("Big"), None, Some("B2"), 0);
+        insert_artist_fixture(&db, 13, Some("Mid"), None, Some("M1"), 0);
+        insert_artist_fixture(&db, 14, Some("Mid"), None, Some("M2"), 0);
+        insert_artist_fixture(&db, 15, Some("Ace"), None, Some("S1"), 0);
+        insert_artist_fixture(&db, 16, Some("Bee"), None, Some("S2"), 0);
+
+        let by_tracks = db
+            .get_artists(Some("trackCount"), Some("desc"), 100, 0)
+            .unwrap();
+        let names: Vec<&str> = by_tracks.iter().map(|a| a.name.as_str()).collect();
+        // 3, 2, 1, 1 → 同値の Ace / Bee は name 昇順で安定。
+        assert_eq!(names, vec!["Big", "Mid", "Ace", "Bee"]);
+
+        let by_albums = db
+            .get_artists(Some("albumCount"), Some("asc"), 100, 0)
+            .unwrap();
+        let names: Vec<&str> = by_albums.iter().map(|a| a.name.as_str()).collect();
+        // 1, 1, 2, 2 → 同値は name 昇順。
+        assert_eq!(names, vec!["Ace", "Bee", "Big", "Mid"]);
+
+        // ページング: 2 件ずつ取っても全体の並びと一致する。
+        let all = db.get_artists(Some("name"), Some("asc"), 100, 0).unwrap();
+        let mut paged = Vec::new();
+        for offset in [0, 2] {
+            paged.extend(
+                db.get_artists(Some("name"), Some("asc"), 2, offset)
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            all.iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
+            paged.iter().map(|a| a.name.clone()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

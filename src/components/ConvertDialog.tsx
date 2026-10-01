@@ -206,18 +206,18 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
             </div>
           )}
 
-          <div className="rip-actions" style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button className="toolbar-btn" onClick={onClose} disabled={running}>
-              {done ? "Close" : "Cancel"}
-            </button>
-            <button
-              className="toolbar-btn primary"
-              onClick={handleConvert}
-              disabled={running || !outputDir}
-            >
-              {running ? "Converting…" : "Convert"}
-            </button>
-          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="toolbar-btn" onClick={onClose} disabled={running}>
+            {done ? "Close" : "Cancel"}
+          </button>
+          <button
+            className="toolbar-btn primary"
+            onClick={handleConvert}
+            disabled={running || !outputDir}
+          >
+            {running ? "Converting…" : "Convert"}
+          </button>
         </div>
       </div>
     </div>

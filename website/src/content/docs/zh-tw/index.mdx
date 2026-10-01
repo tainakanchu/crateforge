@@ -52,6 +52,9 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
   <Card title="AI 選曲" icon="puzzle">
     內建本機 HTTP API。可透過 Claude Code 外掛 dj-curator 產生選曲初稿。
   </Card>
+  <Card title="音樂庫備份" icon="document">
+    可對包含解析結果與同步狀態的 library.db 進行備份 / 還原 / 完整性檢查 / 最佳化。
+  </Card>
 </CardGrid>
 
 ## 支援的作業系統
@@ -62,9 +65,14 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 > 應用程式內的自動更新 **僅限 Windows**。macOS / Linux 需手動更新。
 
+> **關於更新到 v0.12.0** — 此版本變更了應用程式的權限設定（capabilities），因此 Windows 的
+> 應用程式內更新會 **經由安裝程式** 套用（可攜版仍是替換 zip）。
+> 詳情請參閱[安裝](./guide/install/)。
+
 ## 下一步
 
 - [安裝](./guide/install/) — 從下載到首次啟動與自動更新
 - [音樂庫匯入](./guide/import/) — iTunes XML / 資料夾匯入
 - [播放、佇列、Crate](./guide/playback/) — Up Next 與 DJ 選曲的用法
 - [DJ 解析](./guide/dj-analysis/) — BPM / Key / Energy / 相似度
+- [自訂顯示](./guide/customize/) — 搜尋語法與鍵盤快捷鍵

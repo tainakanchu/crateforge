@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   useStore,
   RIGHT_RAIL_WIDTH_DEFAULT,
+  clampRailWidthToViewport,
 } from "../store/useStore";
+import type { BpmTolOpt } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
@@ -15,6 +17,7 @@ import {
   hasSectionSplits,
 } from "../lib/setSmooth";
 import { lintSet } from "../lib/setLint";
+import { TRACK_IDS_MIME, parseTrackIds } from "../lib/trackDrag";
 import { Icon, Stars } from "./Icon";
 import { Cover, ArtworkImg } from "./Cover";
 import { SetArc } from "./SetArc";
@@ -29,8 +32,6 @@ import {
   type AnchorKind,
 } from "../types";
 
-/** BPM 許容（サーバー opts）。null = off。 */
-type BpmTolOpt = 0.04 | 0.08 | 0.12 | null;
 
 interface RightRailProps {
   onPlaylistsChanged: () => void;
@@ -45,7 +46,13 @@ interface QueueItem {
   orderIndex: number;
 }
 
-const SIMILAR_DRAG_MIME = "application/x-crateforge-track-id";
+/// Similar → Crate / 一覧 → Crate のドラッグで使う MIME (値はカンマ区切りの trackId 列)。
+const SIMILAR_DRAG_MIME = TRACK_IDS_MIME;
+
+function applyRailWidthCss(width: number) {
+  const app = document.querySelector(".app") as HTMLElement | null;
+  if (app) app.style.setProperty("--rail-w", `${width}px`);
+}
 
 function ratingToStars(rating: number | null): number {
   if (!rating) return 0;
@@ -107,6 +114,7 @@ export function RightRail({
     railTab,
     setRailTab,
     addToCrate,
+    addTracksToCrate,
     removeFromCrate,
     reorderCrate,
     setCrateOrder,
@@ -121,6 +129,8 @@ export function RightRail({
     setRightRailWidth,
     railSplit,
     setRailSplit,
+    similarFilters,
+    setSimilarFilters,
     selectedTrackIds,
     setMeta,
     setSetMeta,
@@ -129,6 +139,9 @@ export function RightRail({
     crateSections,
     addSection,
     removeSection,
+    // Set Workspace (#121) の Set tools (Arc / Lint) 開閉。次回起動でも保持する (#160)。
+    setToolsOpen,
+    setSetToolsOpen,
   } = useStore();
 
   const [queueTracks, setQueueTracks] = useState<QueueItem[]>([]);
@@ -146,8 +159,6 @@ export function RightRail({
   // Gig Readiness (#122)
   const [gigDialogOpen, setGigDialogOpen] = useState(false);
 
-  // Set Workspace (#121)
-  const [setToolsOpen, setSetToolsOpen] = useState(false);
   const [dismissedLints, setDismissedLints] = useState<Set<string>>(
     () => new Set(),
   );
@@ -171,35 +182,74 @@ export function RightRail({
   const draggingQueue = useRef(false);
 
   // リサイズハンドル
+  // ドラッグ中は store / localStorage を触らず ref + CSS 変数だけ更新し、
+  // pointerup で setRightRailWidth を 1 回呼んで確定する (毎 move の全体 re-render 回避)。
   const resizing = useRef(false);
   const resizeStartX = useRef(0);
   const resizeStartW = useRef(RIGHT_RAIL_WIDTH_DEFAULT);
+  const resizeCurrentW = useRef(RIGHT_RAIL_WIDTH_DEFAULT);
 
   // Similar タブ: 基準は similarBaseTrackId、無ければ再生中の曲。
   const [similar, setSimilar] = useState<SimilarHit[]>([]);
-  const [harmonic, setHarmonic] = useState(true);
-  const [bpmTol, setBpmTol] = useState<BpmTolOpt>(0.08);
-  const [energyClose, setEnergyClose] = useState(false);
-  const [excludeInCrate, setExcludeInCrate] = useState(true);
-  const [excludeSameArtist, setExcludeSameArtist] = useState(false);
-  const [ratingMinOn, setRatingMinOn] = useState(false);
+  // Dig フィルタは store の永続化設定 (#151)。セッションをまたいで保持される。
+  const {
+    harmonic,
+    bpmTol,
+    energyClose,
+    excludeInCrate,
+    excludeSameArtist,
+    ratingMinOn,
+  } = similarFilters;
   const [simLoading, setSimLoading] = useState(false);
   // Digging history（セッション内）。意図的に base を変えたときだけ push。
   const [similarBackStack, setSimilarBackStack] = useState<number[]>([]);
   const [similarForwardStack, setSimilarForwardStack] = useState<number[]>([]);
+  // Dig 候補はライブラリ全体から来る一方 tracks は現在ビューの部分集合のため、
+  // 基準曲・パンくず用に Track をセッション内キャッシュする。
+  const [similarTrackCache, setSimilarTrackCache] = useState<Map<number, Track>>(
+    () => new Map(),
+  );
+  // digSetBase / Back / Forward / Jump / Clear など内部操作では true。
+  // 外部の setSimilarBase（コンテキストメニュー等）と履歴を二重適用しない。
+  const historyDrivenRef = useRef(false);
+  // 直前の similarBaseTrackId（Strict Mode 二重 effect でも外部差分だけ処理するため）。
+  const prevSimilarPinRef = useRef<number | null | undefined>(undefined);
+  // ピン解除時も含めた実効 base（pin ?? now playing）の直前値。
+  // 外部 Find Similar が履歴に正しい prev を積むために使う。
+  const lastEffectiveBaseRef = useRef<number | null>(null);
+
+  const rememberSimilarTracks = useCallback((list: Track[]) => {
+    if (list.length === 0) return;
+    setSimilarTrackCache((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const t of list) {
+        if (next.get(t.trackId) !== t) {
+          next.set(t.trackId, t);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+
   const similarBaseId = similarBaseTrackId ?? playback.currentTrackId;
-  const similarBase = similarBaseId != null
-    ? tracks.find((t) => t.trackId === similarBaseId) ?? null
-    : null;
+  const similarBase =
+    similarBaseId != null
+      ? (similarTrackCache.get(similarBaseId) ??
+        tracks.find((t) => t.trackId === similarBaseId) ??
+        null)
+      : null;
   const baseAnalyzed = similarBaseId != null && analysisByTrack.has(similarBaseId);
   const baseAnalysis = similarBaseId != null
     ? analysisByTrack.get(similarBaseId) ?? null
     : null;
   const showRichMeta = rightRailWidth >= 420;
 
-  // 分割表示: Crate/Similar タブ時に railSplit が ON なら両方を同時表示
-  const workbenchSplit =
-    railSplit && (railTab === "crate" || railTab === "similar");
+  // 分割表示: Crate/Similar タブ時に railSplit が ON なら両方を同時表示。
+  // splitAvailable = いま Split が効くタブか（Split ボタンの活性表示に使う #151）。
+  const splitAvailable = railTab === "crate" || railTab === "similar";
+  const workbenchSplit = railSplit && splitAvailable;
   const showCrate = railTab === "crate" || workbenchSplit;
   const showSimilar = railTab === "similar" || workbenchSplit;
   const showNow = railTab === "now" && !workbenchSplit;
@@ -311,6 +361,89 @@ export function RightRail({
     analysisByTrack,
   ]);
 
+  // Similar ヒットの Track をキャッシュ（dig 先が現在の tracks ビュー外でも名前解決できる）。
+  useEffect(() => {
+    if (similar.length === 0) return;
+    rememberSimilarTracks(similar.map((h) => h.track));
+  }, [similar, rememberSimilarTracks]);
+
+  // 解決できた基準曲もキャッシュ（離脱後のパンくず用）。
+  useEffect(() => {
+    if (similarBase) rememberSimilarTracks([similarBase]);
+  }, [similarBase, rememberSimilarTracks]);
+
+  // cache / 現在ビューに無い base・履歴 ID を library から解決。
+  useEffect(() => {
+    const needed: number[] = [];
+    const consider = (id: number | null | undefined) => {
+      if (id == null) return;
+      if (similarTrackCache.has(id)) return;
+      if (tracks.some((t) => t.trackId === id)) return;
+      if (!needed.includes(id)) needed.push(id);
+    };
+    consider(similarBaseId);
+    for (const id of similarBackStack) consider(id);
+    for (const id of similarForwardStack) consider(id);
+    if (needed.length === 0) return;
+    let alive = true;
+    (async () => {
+      try {
+        const resolved = await libraryApi.getTracksByIds(needed);
+        if (alive && resolved.length > 0) rememberSimilarTracks(resolved);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // similarTrackCache は読み取りのみ（取得後の再走で重複 IPC を避ける）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cache membership checked intentionally without dep
+  }, [
+    similarBaseId,
+    similarBackStack,
+    similarForwardStack,
+    tracks,
+    rememberSimilarTracks,
+  ]);
+
+  // 外部 setSimilarBase（Find Similar / Clear / ショートカット）を履歴に取り込む。
+  // 内部 dig 系は historyDrivenRef でスキップ。prev 比較で Strict Mode の二重実行にも耐える。
+  useEffect(() => {
+    if (prevSimilarPinRef.current === undefined) {
+      prevSimilarPinRef.current = similarBaseTrackId;
+      return;
+    }
+    if (historyDrivenRef.current) {
+      historyDrivenRef.current = false;
+      prevSimilarPinRef.current = similarBaseTrackId;
+      return;
+    }
+    if (prevSimilarPinRef.current === similarBaseTrackId) {
+      return;
+    }
+    if (similarBaseTrackId == null) {
+      // Clear（またはピン無し）: 履歴を捨てる。
+      setSimilarBackStack([]);
+      setSimilarForwardStack([]);
+    } else {
+      const prevEffective = lastEffectiveBaseRef.current;
+      if (prevEffective != null && prevEffective !== similarBaseTrackId) {
+        setSimilarBackStack((h) => [...h, prevEffective]);
+        setSimilarForwardStack([]);
+      }
+      lastEffectiveBaseRef.current = similarBaseTrackId;
+    }
+    prevSimilarPinRef.current = similarBaseTrackId;
+  }, [similarBaseTrackId]);
+
+  // ピン無しのときは実効 base（再生中）を追従し、外部 Find Similar が正しい prev を積めるようにする。
+  useEffect(() => {
+    if (similarBaseTrackId == null) {
+      lastEffectiveBaseRef.current = playback.currentTrackId;
+    }
+  }, [similarBaseTrackId, playback.currentTrackId]);
+
   // クライアント側フィルタ（crate / 同一アーティスト / レーティング）。
   const { filteredSimilar, clientFilterNote } = useMemo(() => {
     const crateIds = new Set(crate.map((c) => c.trackId));
@@ -365,33 +498,42 @@ export function RightRail({
       resizing.current = true;
       resizeStartX.current = e.clientX;
       resizeStartW.current = rightRailWidth;
+      resizeCurrentW.current = rightRailWidth;
       (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     },
     [rightRailWidth],
   );
 
-  const onResizePointerMove = useCallback(
+  const onResizePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!resizing.current) return;
+    // 左端ハンドル: マウスを左へ動かすと幅が増える
+    // ウィンドウ幅も考慮してクランプする（センターペインが潰れないよう #146）。
+    const next = clampRailWidthToViewport(
+      resizeStartW.current + (resizeStartX.current - e.clientX),
+    );
+    resizeCurrentW.current = next;
+    applyRailWidthCss(next);
+  }, []);
+
+  const onResizePointerUp = useCallback(
     (e: React.PointerEvent) => {
       if (!resizing.current) return;
-      // 左端ハンドル: マウスを左へ動かすと幅が増える
-      const next = resizeStartW.current + (resizeStartX.current - e.clientX);
-      setRightRailWidth(next);
+      resizing.current = false;
+      // ドラッグ確定時のみ store / localStorage に書き込む
+      setRightRailWidth(resizeCurrentW.current);
+      try {
+        (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+      } catch {
+        /* ignore */
+      }
     },
     [setRightRailWidth],
   );
 
-  const onResizePointerUp = useCallback((e: React.PointerEvent) => {
-    if (!resizing.current) return;
-    resizing.current = false;
-    try {
-      (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   const onResizeDoubleClick = useCallback(() => {
-    setRightRailWidth(RIGHT_RAIL_WIDTH_DEFAULT);
+    const clamped = clampRailWidthToViewport(RIGHT_RAIL_WIDTH_DEFAULT);
+    setRightRailWidth(clamped);
+    applyRailWidthCss(clamped);
   }, [setRightRailWidth]);
 
   const isSimilarExternalDrag = (dt: DataTransfer) =>
@@ -441,6 +583,7 @@ export function RightRail({
   const onCrateListDrop = useCallback(
     async (e: React.DragEvent) => {
       setCrateExternalOver(false);
+      // 一覧からの複数選択ドロップもあるので、カンマ区切りの ID 列として読む。
       const raw =
         e.dataTransfer.getData(SIMILAR_DRAG_MIME) ||
         (similarDragTrackId.current != null
@@ -449,33 +592,42 @@ export function RightRail({
       similarDragTrackId.current = null;
       if (!raw) return;
       e.preventDefault();
-      const trackId = Number(raw);
-      if (!Number.isFinite(trackId)) return;
-      if (crate.some((c) => c.trackId === trackId)) return;
-      // まず similar ヒットや tracks から解決、無ければ API
-      const fromSim = similar.find((h) => h.track.trackId === trackId)?.track;
-      const fromTracks = tracks.find((t) => t.trackId === trackId);
-      let track = fromSim ?? fromTracks ?? null;
-      if (!track) {
+      const inCrate = new Set(crate.map((c) => c.trackId));
+      const trackIds = parseTrackIds(raw).filter((id) => !inCrate.has(id));
+      if (trackIds.length === 0) return;
+      // まず similar ヒットや tracks から解決、足りない分だけ API で引く。
+      const resolvedById = new Map<number, Track>();
+      for (const id of trackIds) {
+        const hit =
+          similar.find((h) => h.track.trackId === id)?.track ??
+          tracks.find((t) => t.trackId === id);
+        if (hit) resolvedById.set(id, hit);
+      }
+      const missing = trackIds.filter((id) => !resolvedById.has(id));
+      if (missing.length > 0) {
         try {
-          const resolved = await libraryApi.getTracksByIds([trackId]);
-          track = resolved[0] ?? null;
+          for (const t of await libraryApi.getTracksByIds(missing)) {
+            resolvedById.set(t.trackId, t);
+          }
         } catch {
-          track = null;
+          /* 解決できなかった曲は黙って諦める */
         }
       }
-      if (track) addToCrate(track);
+      const found = trackIds
+        .map((id) => resolvedById.get(id))
+        .filter((t): t is Track => !!t);
+      if (found.length > 0) addTracksToCrate(found);
     },
-    [crate, similar, tracks, addToCrate],
+    [crate, similar, tracks, addTracksToCrate],
   );
 
   // Save as Playlist ボタン → インライン入力を表示
   const handleSaveAsPlaylistOpen = useCallback(() => {
     if (crate.length === 0) return;
-    setSaveNameInput("");
+    setSaveNameInput(setMeta.title.trim() || "");
     // 次のフレームで input にフォーカス
     setTimeout(() => saveInputRef.current?.focus(), 0);
-  }, [crate]);
+  }, [crate, setMeta.title]);
 
   // インライン入力で Enter 確定 or 明示的呼び出し
   const handleSaveAsPlaylistCommit = useCallback(async (name: string) => {
@@ -689,15 +841,21 @@ export function RightRail({
 
   /** 意図的な dig / 基準変更: 前の base を履歴に積み、forward を捨てる。 */
   const digSetBase = useCallback(
-    (trackId: number) => {
+    (trackId: number, track?: Track) => {
+      if (track) rememberSimilarTracks([track]);
       const prev = similarBaseId;
       if (prev != null && prev !== trackId) {
         setSimilarBackStack((h) => [...h, prev]);
         setSimilarForwardStack([]);
       }
-      setSimilarBase(trackId);
+      // pin が変わらない場合は setState も historyDriven も立てない（effect 未発火で flag が残るのを防ぐ）
+      if (similarBaseTrackId !== trackId) {
+        historyDrivenRef.current = true;
+        setSimilarBase(trackId);
+      }
+      lastEffectiveBaseRef.current = trackId;
     },
-    [similarBaseId, setSimilarBase],
+    [similarBaseId, similarBaseTrackId, setSimilarBase, rememberSimilarTracks],
   );
 
   const digGoBack = useCallback(() => {
@@ -707,8 +865,12 @@ export function RightRail({
     if (similarBaseId != null) {
       setSimilarForwardStack((f) => [...f, similarBaseId]);
     }
-    setSimilarBase(prev);
-  }, [similarBackStack, similarBaseId, setSimilarBase]);
+    if (similarBaseTrackId !== prev) {
+      historyDrivenRef.current = true;
+      setSimilarBase(prev);
+    }
+    lastEffectiveBaseRef.current = prev;
+  }, [similarBackStack, similarBaseId, similarBaseTrackId, setSimilarBase]);
 
   const digGoForward = useCallback(() => {
     if (similarForwardStack.length === 0) return;
@@ -717,8 +879,39 @@ export function RightRail({
     if (similarBaseId != null) {
       setSimilarBackStack((h) => [...h, similarBaseId]);
     }
-    setSimilarBase(next);
-  }, [similarForwardStack, similarBaseId, setSimilarBase]);
+    if (similarBaseTrackId !== next) {
+      historyDrivenRef.current = true;
+      setSimilarBase(next);
+    }
+    lastEffectiveBaseRef.current = next;
+  }, [similarForwardStack, similarBaseId, similarBaseTrackId, setSimilarBase]);
+
+  /** パンくずクリック: dig ではなく履歴内ジャンプ（forward を digGoBack 連鎖と整合）。 */
+  const digJumpTo = useCallback(
+    (stackIndex: number) => {
+      if (stackIndex < 0 || stackIndex >= similarBackStack.length) return;
+      const target = similarBackStack[stackIndex];
+      const after = similarBackStack.slice(stackIndex + 1);
+      setSimilarBackStack(similarBackStack.slice(0, stackIndex));
+      setSimilarForwardStack([
+        ...similarForwardStack,
+        ...(similarBaseId != null ? [similarBaseId] : []),
+        ...[...after].reverse(),
+      ]);
+      if (similarBaseTrackId !== target) {
+        historyDrivenRef.current = true;
+        setSimilarBase(target);
+      }
+      lastEffectiveBaseRef.current = target;
+    },
+    [
+      similarBackStack,
+      similarForwardStack,
+      similarBaseId,
+      similarBaseTrackId,
+      setSimilarBase,
+    ],
+  );
 
   const setBaseFromSelection = useCallback(() => {
     const first =
@@ -728,13 +921,19 @@ export function RightRail({
 
   const setBaseFromNowPlaying = useCallback(() => {
     if (playback.currentTrackId != null) {
-      digSetBase(playback.currentTrackId);
+      digSetBase(playback.currentTrackId, now ?? undefined);
     }
-  }, [playback.currentTrackId, digSetBase]);
+  }, [playback.currentTrackId, digSetBase, now]);
 
   const clearSimilarPin = useCallback(() => {
-    setSimilarBase(null);
-  }, [setSimilarBase]);
+    setSimilarBackStack([]);
+    setSimilarForwardStack([]);
+    if (similarBaseTrackId != null) {
+      historyDrivenRef.current = true;
+      setSimilarBase(null);
+    }
+    lastEffectiveBaseRef.current = playback.currentTrackId;
+  }, [setSimilarBase, similarBaseTrackId, playback.currentTrackId]);
 
   const onSimilarDragStart = useCallback(
     (e: React.DragEvent, trackId: number) => {
@@ -752,10 +951,11 @@ export function RightRail({
 
   const crateRowFindSimilar = useCallback(
     (trackId: number) => {
-      digSetBase(trackId);
+      const track = crate.find((c) => c.trackId === trackId);
+      digSetBase(trackId, track);
       if (!railSplit) switchRailTab("similar");
     },
-    [digSetBase, railSplit, switchRailTab],
+    [digSetBase, railSplit, switchRailTab, crate],
   );
 
   const crateRowPlayNext = useCallback(async (trackId: number) => {
@@ -767,14 +967,16 @@ export function RightRail({
     }
   }, [pushToast]);
 
-  // 直近 dig 履歴の短いパンくず（最大 3）。
+  // 直近 dig 履歴の短いパンくず（最大 3）。stackIndex は履歴ジャンプ用。
   const digBreadcrumb = useMemo(() => {
-    const ids = similarBackStack.slice(-3);
-    return ids.map((id) => {
-      const t = tracks.find((x) => x.trackId === id);
-      return { id, name: t?.name || `#${id}` };
+    const start = Math.max(0, similarBackStack.length - 3);
+    return similarBackStack.slice(start).map((id, i) => {
+      const stackIndex = start + i;
+      const t =
+        similarTrackCache.get(id) ?? tracks.find((x) => x.trackId === id);
+      return { id, stackIndex, name: t?.name || `#${id}` };
     });
-  }, [similarBackStack, tracks]);
+  }, [similarBackStack, tracks, similarTrackCache]);
 
   const toggleSplit = useCallback(() => {
     const next = !railSplit;
@@ -824,7 +1026,7 @@ export function RightRail({
           <button
             className={"cb-clear" + (setToolsOpen ? " on" : "")}
             title="Set tools: Arc / Lint"
-            onClick={() => setSetToolsOpen((v) => !v)}
+            onClick={() => setSetToolsOpen(!setToolsOpen)}
           >
             set
           </button>
@@ -955,7 +1157,7 @@ export function RightRail({
       >
         {crate.length === 0 ? (
           <div className="cb-rail-empty">
-            曲リストやカバーの「＋」でクレートに追加。Similar からドラッグでも追加できます。
+            曲リストやカバーの「＋」でクレートに追加。一覧や Similar からドラッグでも追加できます。
           </div>
         ) : (
           crate.map((t, i) => {
@@ -1326,13 +1528,13 @@ export function RightRail({
         {digBreadcrumb.length > 0 && (
           <div className="cb-sim-breadcrumb" title="直近の基準曲">
             {digBreadcrumb.map((b, i) => (
-              <span key={b.id} className="cb-sim-bc-item">
+              <span key={`bc-${b.stackIndex}-${b.id}`} className="cb-sim-bc-item">
                 {i > 0 && <span className="cb-sim-bc-sep">›</span>}
                 <button
                   type="button"
                   className="cb-sim-bc-link"
                   title={b.name}
-                  onClick={() => digSetBase(b.id)}
+                  onClick={() => digJumpTo(b.stackIndex)}
                 >
                   {b.name}
                 </button>
@@ -1411,20 +1613,24 @@ export function RightRail({
       <div className="cb-sim-filters">
         <button
           className={"cb-tab" + (harmonic ? " on" : "")}
-          onClick={() => setHarmonic((v) => !v)}
-          title="Camelot 互換キーのみに絞る"
+          onClick={() => setSimilarFilters({ harmonic: !harmonic })}
+          title="Camelot 互換キーのみに絞る（BPM フィルタとは独立）"
         >
           Harmonic
         </button>
-        <label className="cb-sim-filter-label" title="BPM 許容差（base 比）">
+        <label
+          className="cb-sim-filter-label"
+          title="BPM 許容差（base 比）。Harmonic とは独立して効く"
+        >
           BPM
           <select
             className="cb-sim-select"
             value={bpmTol == null ? "off" : String(bpmTol)}
             onChange={(e) => {
               const v = e.target.value;
-              if (v === "off") setBpmTol(null);
-              else setBpmTol(Number(v) as BpmTolOpt);
+              setSimilarFilters({
+                bpmTol: v === "off" ? null : (Number(v) as BpmTolOpt),
+              });
             }}
           >
             <option value="0.04">4%</option>
@@ -1435,7 +1641,7 @@ export function RightRail({
         </label>
         <button
           className={"cb-tab" + (energyClose ? " on" : "")}
-          onClick={() => setEnergyClose((v) => !v)}
+          onClick={() => setSimilarFilters({ energyClose: !energyClose })}
           title="Energy 差 ≤ 0.15 のみ"
         >
           Energy close
@@ -1444,7 +1650,7 @@ export function RightRail({
           <input
             type="checkbox"
             checked={excludeInCrate}
-            onChange={(e) => setExcludeInCrate(e.target.checked)}
+            onChange={(e) => setSimilarFilters({ excludeInCrate: e.target.checked })}
           />
           除外: Crate
         </label>
@@ -1452,7 +1658,7 @@ export function RightRail({
           <input
             type="checkbox"
             checked={excludeSameArtist}
-            onChange={(e) => setExcludeSameArtist(e.target.checked)}
+            onChange={(e) => setSimilarFilters({ excludeSameArtist: e.target.checked })}
           />
           除外: 同一Artist
         </label>
@@ -1460,7 +1666,7 @@ export function RightRail({
           <input
             type="checkbox"
             checked={ratingMinOn}
-            onChange={(e) => setRatingMinOn(e.target.checked)}
+            onChange={(e) => setSimilarFilters({ ratingMinOn: e.target.checked })}
           />
           ★★★+
         </label>
@@ -1570,7 +1776,7 @@ export function RightRail({
                     title="Set as base / この曲を基準に掘る"
                     onClick={(e) => {
                       e.stopPropagation();
-                      digSetBase(t.trackId);
+                      digSetBase(t.trackId, t);
                     }}
                   >
                     <Icon name="sparkle" size={13} />
@@ -1610,7 +1816,7 @@ export function RightRail({
           <div className={"cb-cratefoot" + (compact ? " cb-cratefoot-compact" : "")}>
             <button
               className="cb-big"
-              onClick={() => filteredSimilar.forEach((h) => addToCrate(h.track))}
+              onClick={() => addTracksToCrate(filteredSimilar.map((h) => h.track))}
               disabled={allInCrate}
               style={compact ? { height: 32, fontSize: 12 } : undefined}
             >
@@ -1694,8 +1900,17 @@ export function RightRail({
               ((railTab === "crate" || workbenchSplit) ? " on" : "")
             }
             onClick={() => switchRailTab("crate")}
+            title={
+              crate.length > 0
+                ? `Crate — ${crate.length} 曲`
+                : "Crate"
+            }
           >
             Crate
+            {/* 自動でタブを切り替える代わりに件数で知らせる (#151) */}
+            {crate.length > 0 && (
+              <span className="cb-tab-count">{crate.length}</span>
+            )}
           </button>
           <button
             className={
@@ -1703,14 +1918,32 @@ export function RightRail({
               ((railTab === "similar" || workbenchSplit) ? " on" : "")
             }
             onClick={() => switchRailTab("similar")}
+            title={
+              similarBaseTrackId != null
+                ? "Similar — 基準曲が設定されています"
+                : "Similar"
+            }
           >
             Similar
+            {/* 基準曲がピンされていることをドットで知らせる (#151) */}
+            {similarBaseTrackId != null && (
+              <span className="cb-tab-dot" aria-hidden />
+            )}
           </button>
         </div>
         <button
-          className={"cb-tab cb-split-toggle" + (railSplit ? " on" : "")}
+          className={
+            "cb-tab cb-split-toggle" +
+            (workbenchSplit ? " on" : "") +
+            (splitAvailable ? "" : " cb-split-na")
+          }
           onClick={toggleSplit}
-          title="Crate と Similar を上下分割表示"
+          disabled={!splitAvailable}
+          title={
+            splitAvailable
+              ? "Crate と Similar を上下分割表示"
+              : "分割表示は Crate / Similar タブでのみ有効"
+          }
         >
           Split
         </button>

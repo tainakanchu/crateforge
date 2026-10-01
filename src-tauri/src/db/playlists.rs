@@ -252,8 +252,49 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
+        self.get_playlist_tracks_filtered(playlist_id, None, limit, offset, sort_field, sort_order)
+    }
+
+    /// プレイリスト内検索つきのトラック取得。`query` が Some のときは、ライブラリ検索と
+    /// **同じ DSL** (フリーテキスト + `artist:` `bpm:` `key:compat:` などのフィールド指定) で
+    /// プレイリストの中だけを絞り込む。None なら従来どおり全曲を返す。
+    pub fn get_playlist_tracks_filtered(
+        &self,
+        playlist_id: i64,
+        query: Option<&str>,
+        limit: i64,
+        offset: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<Vec<Track>> {
+        use rusqlite::types::Value;
+
         let order_by =
             super::tracks::build_order_by(sort_field, sort_order, "t.", "pt.sort_index ASC");
+
+        // 検索句は tracks 側の別名 "t." で組み立てる (JOIN しているので修飾が必要)。
+        let level = crate::text_fold::FoldLevel::from_state(
+            self.get_state("search_fold_level")
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        let (clauses, mut bind) = match query.map(str::trim).filter(|q| !q.is_empty()) {
+            Some(q) => super::tracks::build_search_clauses(q, level, "t."),
+            None => (Vec::new(), Vec::new()),
+        };
+        let filter_sql = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" AND {}", clauses.join(" AND "))
+        };
+
+        // バインド順は SQL の出現順: playlist_id → 検索句 → limit → offset。
+        let mut all_binds: Vec<Value> = vec![Value::Integer(playlist_id)];
+        all_binds.append(&mut bind);
+        all_binds.push(Value::Integer(limit));
+        all_binds.push(Value::Integer(offset));
+
         let sql = format!(
             "SELECT t.id, t.track_id, t.persistent_id, t.name, t.artist, t.album_artist, t.composer,
                     t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count, t.total_time_ms,
@@ -262,13 +303,13 @@ impl Database {
                     t.track_number, t.track_count, t.file_exists, t.last_played
              FROM tracks t
              INNER JOIN playlist_tracks pt ON t.track_id = pt.track_id
-             WHERE pt.playlist_id = ?1
+             WHERE pt.playlist_id = ?{}
              ORDER BY {}
-             LIMIT ?2 OFFSET ?3",
-            order_by
+             LIMIT ? OFFSET ?",
+            filter_sql, order_by
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![playlist_id, limit, offset], row_to_track)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(all_binds.iter()), row_to_track)?;
         rows.collect()
     }
 
@@ -635,8 +676,37 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
+        self.get_smart_playlist_tracks_filtered(
+            playlist_id,
+            None,
+            limit,
+            offset,
+            sort_field,
+            sort_order,
+        )
+    }
+
+    /// プレイリスト内検索つきのスマートプレイリスト評価。`query` は通常プレイリストと同じ
+    /// DSL で、criteria にマッチした曲へさらに AND で効く (criteria の limit を適用した
+    /// **後** に絞り込む = 「今表示されている曲の中から探す」挙動)。
+    pub fn get_smart_playlist_tracks_filtered(
+        &self,
+        playlist_id: i64,
+        query: Option<&str>,
+        limit: i64,
+        offset: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<Vec<Track>> {
         let Some(criteria) = self.get_smart_criteria(playlist_id)? else {
-            return self.get_playlist_tracks(playlist_id, limit, offset, sort_field, sort_order);
+            return self.get_playlist_tracks_filtered(
+                playlist_id,
+                query,
+                limit,
+                offset,
+                sort_field,
+                sort_order,
+            );
         };
 
         let all = self.get_all_tracks()?;
@@ -676,6 +746,12 @@ impl Database {
             matched.truncate(lim);
         }
 
+        // プレイリスト内検索: 同じ DSL の結果 (track_id 集合) と積を取る。
+        if let Some(q) = query.map(str::trim).filter(|q| !q.is_empty()) {
+            let hits = self.search_track_ids(q)?;
+            matched.retain(|t| hits.contains(&t.track_id));
+        }
+
         let start = offset.max(0) as usize;
         if start >= matched.len() {
             return Ok(Vec::new());
@@ -688,6 +764,94 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// プレイリスト内検索用のライブラリ。P(10) に 1..3 を入れる。
+    fn playlist_search_db() -> Database {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks (track_id, name, artist, album, genre, year, rating, file_exists)
+                 VALUES
+                   (1,'One More Time','Daft Punk','Discovery','House',2001,100,1),
+                   (2,'Windowlicker','Aphex Twin','Windowlicker','IDM',1999,60,1),
+                   (3,'Digital Love','Daft Punk','Discovery','House',2001,80,1),
+                   (4,'Outside','Daft Punk','Human After All','House',2005,80,1);
+                 INSERT INTO playlists (playlist_id, name) VALUES (10, 'P');
+                 INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES
+                   (10,1,0), (10,2,1), (10,3,2);",
+            )
+            .unwrap();
+        db
+    }
+
+    fn pl_ids(db: &Database, q: Option<&str>) -> Vec<i64> {
+        let mut v: Vec<i64> = db
+            .get_playlist_tracks_filtered(10, q, 100, 0, None, None)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.track_id)
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// プレイリスト内検索: ライブラリ検索と同じ DSL で、そのプレイリストの中だけを絞り込む。
+    /// プレイリスト外の曲 (track 4) は、条件に合っても出てこない。
+    #[test]
+    fn playlist_tracks_filtered_by_query() {
+        let db = playlist_search_db();
+        assert_eq!(pl_ids(&db, None), vec![1, 2, 3]);
+        assert_eq!(pl_ids(&db, Some("")), vec![1, 2, 3]);
+        // フリーテキスト。
+        assert_eq!(pl_ids(&db, Some("love")), vec![3]);
+        // フィールド指定 (commit 1 と同じパーサ) がそのまま使える。
+        assert_eq!(pl_ids(&db, Some("artist:\"daft punk\"")), vec![1, 3]);
+        assert_eq!(pl_ids(&db, Some("year:1999")), vec![2]);
+        assert_eq!(pl_ids(&db, Some("rating:4-5")), vec![1, 3]);
+        assert_eq!(pl_ids(&db, Some("genre:house time")), vec![1]);
+        // プレイリスト外の曲は絞り込みにヒットしても返らない。
+        assert_eq!(pl_ids(&db, Some("album:\"human after all\"")), Vec::<i64>::new());
+        // 値は必ずバインドされる。
+        assert_eq!(pl_ids(&db, Some("artist:\"'; DROP TABLE tracks; --\"")), Vec::<i64>::new());
+        assert_eq!(pl_ids(&db, None), vec![1, 2, 3]);
+    }
+
+    /// スマートプレイリストも同じ DSL で内部検索できる (criteria の結果へ AND)。
+    #[test]
+    fn smart_playlist_tracks_filtered_by_query() {
+        use crate::models::{SmartCriteria, SmartOp, SmartRule};
+        let db = playlist_search_db();
+        let criteria = SmartCriteria {
+            match_all: true,
+            rules: vec![SmartRule {
+                field: "genre".to_string(),
+                op: SmartOp::Is,
+                value: "House".to_string(),
+            }],
+            limit: None,
+            sort_by: None,
+            sort_desc: false,
+        };
+        db.set_smart_criteria(10, &criteria).unwrap();
+
+        let ids = |q: Option<&str>| {
+            let mut v: Vec<i64> = db
+                .get_smart_playlist_tracks_filtered(10, q, 100, 0, None, None)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.track_id)
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        // criteria のみ: House の 3 曲 (プレイリストの所属とは無関係にライブラリ全体を評価)。
+        assert_eq!(ids(None), vec![1, 3, 4]);
+        // 内部検索で更に絞る。
+        assert_eq!(ids(Some("album:discovery")), vec![1, 3]);
+        assert_eq!(ids(Some("year:2005")), vec![4]);
+        // criteria に合わない曲は内部検索でも出ない。
+        assert_eq!(ids(Some("artist:aphex")), Vec::<i64>::new());
+    }
 
     /// 回帰防止: row_to_track を共有する全 SELECT の列が一致していること。
     /// get_playlist_tracks の SELECT に last_played が欠けていると、row.get(28) が

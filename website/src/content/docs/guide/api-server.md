@@ -48,12 +48,19 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 ### 書き込み（メタデータ）
 
 - `PATCH /api/tracks/{id}` — name / artist / album / genre / year / bpm / rating / composer / comments などを部分更新。
-  name / artist / album / genre / year / composer / comments などは実ファイルのタグへ書き戻し、`bpm` / `rating` / `disabled` / `playCount` / `skipCount` は DB のみ。
+  name / artist / album / genre / year / composer / comments などは実ファイルのタグへ書き戻し、`rating` / `disabled` / `playCount` / `skipCount` は DB のみ。
 - `PATCH /api/tracks`（`{trackIds, edit}`） — 複数曲の一括更新。
 - `POST /api/tracks/genre-tags/add` / `/remove` — ジャンルタグを末尾に一括で増減。
 
 メタデータの書き込みは DB 更新に加えて **実ファイルの ID3 / Vorbis / MP4 タグへ書き戻し**（フォルダ移動はせずタグのみ）、
-GUI に即時反映します。
+GUI に即時反映します。書き戻しの処理はデスクトップ GUI の編集と共通です。
+
+書き戻しには **BPM** と **Key** も含まれます（デスクトップの編集と同じ扱い）。
+
+- **BPM** — TBPM（ID3v2）/ tmpo（MP4）/ `BPM`（Vorbis Comments）へ整数で書きます。
+  曲自身の BPM を優先し、未設定なら解析結果を使います。
+- **Key** — 解析結果のキーを **InitialKey**（ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY）へ、
+  Camelot ではなく音楽表記（`Am` など）で書きます。
 
 ### プレイリスト
 
@@ -87,3 +94,8 @@ iOS は **「ホーム画面に追加」で全画面アプリ化（PWA）** で�
 リモコンには **再生 / 一時停止・前後・シーク・音量スライダー・シャッフル / リピートのトグル** があり、
 状態は `GET /api/remote/state`（音量 / シャッフル / リピートを含む）、操作は `POST /api/remote/*`
 （`play` / `pause` / `resume` / `next` / `prev` / `seek` / `volume` / `shuffle` / `repeat` など）で行います。
+
+Web UI にはデスクトップ本体に近い **キーボードショートカット** があり、`?` で一覧を開けます
+（`Space` 再生 / 一時停止、`J` / `K` 前後、`Shift + ←` / `Shift + →` 5 秒シーク、`S` シャッフル、`R` リピート、
+`Ctrl + ↑` / `Ctrl + ↓` 音量、`/` と `Ctrl + F` 検索、`Ctrl + L` ライブラリへ戻る、`↑` / `↓` でリスト選択）。
+「この端末で再生」しているときも、シャッフル / リピート / 音量を Web UI 側で操作できます。

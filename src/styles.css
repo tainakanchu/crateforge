@@ -239,6 +239,12 @@ input {
 .cb-prow.on svg {
   color: var(--ac);
 }
+/* 一覧からのトラック D&D 受け入れ中のハイライト (Crate の .cb-cratelist-drop に合わせる)。 */
+.cb-prow.dragover {
+  background: var(--ac-13, rgba(45, 212, 191, 0.08));
+  outline: 1px dashed var(--ac);
+  outline-offset: -2px;
+}
 .cb-prow.fold {
   color: #cfd3d7;
   font-weight: 550;
@@ -291,16 +297,35 @@ input {
 
 /* Toolbar */
 .cb-tb {
-  display: flex;
-  align-items: center;
-  gap: 9px;
   padding: 11px 18px;
   border-bottom: 1px solid var(--bd);
   position: relative;
 }
+/* ツールバー本体の行。狭い幅では横スクロールさせ、ボタンが押せなくなるのを防ぐ。
+   ポップオーバー類はここではなく .cb-tb 基準／fixed で出すのでクリップされない。 */
+.cb-tb-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bd-strong) transparent;
+}
+.cb-tb-row::-webkit-scrollbar {
+  height: 6px;
+}
+.cb-tb-row::-webkit-scrollbar-track {
+  background: transparent;
+}
+.cb-tb-row::-webkit-scrollbar-thumb {
+  background: var(--bd-strong);
+  border-radius: 3px;
+}
 
 .cb-sbox {
   flex: 1;
+  /* アイコンだけに潰れないよう最小幅を確保する。 */
+  min-width: 140px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -408,6 +433,10 @@ input {
   width: 34px;
   padding: 0;
   justify-content: center;
+}
+/* ショートカット一覧を開く "?" ボタン (#150) */
+.cb-btn-q {
+  font: 700 14px/1 var(--mono);
 }
 
 .cb-tb-spacer {
@@ -652,6 +681,28 @@ input {
 }
 .cb-row.missing .cb-nm .t {
   color: var(--tx2);
+}
+/* プレイリスト手動順のドラッグ並べ替え。列ヘッダ (.cb-h-drag) と同じ見た目に揃える。 */
+.cb-row.dragging {
+  opacity: 0.5;
+}
+.cb-row.dropbefore::before,
+.cb-row.dropafter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--ac);
+  border-radius: 1px;
+  z-index: 4;
+  pointer-events: none;
+}
+.cb-row.dropbefore::before {
+  top: 0;
+}
+.cb-row.dropafter::after {
+  bottom: 0;
 }
 
 /* Embedded artwork overlay (fills its rounded, clipped parent). */
@@ -949,6 +1000,16 @@ input {
   white-space: nowrap;
   margin-top: 1px;
 }
+/* アクティブなソートキー (year/dateAdded/rating/playCount) の値を示す補助行。
+   色は .cb-dim を併用するのでここではサイズ・省略だけ。 */
+.cov-meta .ls {
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
 .cov-play {
   position: absolute;
   left: 50%;
@@ -1225,6 +1286,26 @@ input {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
+}
+
+/* ライブラリ復元の確認モーダル (#167)。settings-modal より小さい固定幅。 */
+.restore-confirm-modal {
+  width: 460px;
+}
+.restore-confirm-modal .modal-body p {
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 10px;
+}
+.restore-confirm-modal .settings-path {
+  max-width: none;
+  white-space: normal;
+  word-break: break-all;
+  background: var(--bg3);
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: block;
 }
 
 /* toggle switch */
@@ -1558,10 +1639,36 @@ input {
   background: var(--bg3);
   color: #eafbf8;
 }
+/* タブの状態インジケータ (#151): Crate の件数 / Similar の基準曲ドット */
+.cb-tab-count {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0 4px;
+  min-width: 15px;
+  border-radius: 7px;
+  background: var(--ac);
+  color: var(--on-ac);
+  font: 700 9.5px/15px var(--mono);
+  vertical-align: 1px;
+}
+.cb-tab-dot {
+  display: inline-block;
+  margin-left: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ac);
+  vertical-align: 2px;
+}
 .cb-split-toggle {
   flex: 0 0 auto;
   padding: 7px 8px;
   font-size: 11px;
+}
+/* 分割表示が効かないタブでは Split を無効表示にする (#151) */
+.cb-split-toggle.cb-split-na {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 .cb-prev-tab {
   flex: 0 0 auto;
@@ -2450,8 +2557,9 @@ input {
   display: flex;
   align-items: center;
   gap: 11px;
-  width: 460px;
-  max-width: 48vw;
+  /* 460px を上限に、狭い幅では 220px まで縮む（#147）。 */
+  width: clamp(220px, 40vw, 460px);
+  min-width: 0;
   font: 11px var(--mono);
   color: var(--mut);
 }
@@ -2512,6 +2620,14 @@ input {
   align-self: center;
   user-select: none;
   white-space: nowrap;
+  /* クリックで解除できるボタン (#150) */
+  border: none;
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+.cb-audition-badge:hover,
+.cb-preview-badge:hover {
+  filter: brightness(1.15);
 }
 .cb-audition-badge {
   color: var(--on-ac);
@@ -2523,8 +2639,7 @@ input {
   border: 1px solid color-mix(in srgb, var(--ac) 50%, transparent);
 }
 .cb-player.audition .cb-seek {
-  width: 520px;
-  max-width: 56vw;
+  width: clamp(220px, 44vw, 520px);
 }
 .cb-player.preview .cb-pinfo .cj {
   color: var(--ac);
@@ -2535,6 +2650,9 @@ input {
   gap: 12px;
   justify-content: flex-end;
   color: var(--mut);
+  /* 右レール分ウィンドウが狭いとき、ボタンが右レールへはみ出さないようにする (#147) */
+  min-width: 0;
+  overflow: hidden;
 }
 .cb-pr-btn {
   background: none;
@@ -2561,6 +2679,13 @@ input {
   inset: 0;
   background: #8c9197;
   border-radius: 3px;
+}
+
+/* 狭いウィンドウでは音量スライダーを畳んでミュートボタンだけ残す (#147) */
+@media (max-width: 1100px) {
+  .cb-vbar {
+    display: none;
+  }
 }
 
 /* ============================================================
@@ -2776,6 +2901,31 @@ input {
   color: var(--ac);
 }
 
+/* ⋯ (その他の操作) メニュー。Sort ポップオーバーの見た目を流用する。 */
+.cb-morepop .cb-sortitem {
+  width: 100%;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+}
+.cb-morepop .cb-sortitem svg {
+  color: var(--mut);
+}
+.cb-morepop .cb-sortitem.on,
+.cb-morepop .cb-sortitem.on svg {
+  color: var(--ac);
+}
+.cb-morepop .cb-sortitem:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.cb-morepop .cb-sortitem:focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: -2px;
+}
+
 /* ============================================================
    Context menu
    ============================================================ */
@@ -2830,6 +2980,35 @@ input {
 }
 .context-menu-item:hover svg {
   color: var(--ac);
+}
+/* 破壊的な項目（ライブラリから削除）。hover / キーボードフォーカスも赤系に寄せる。 */
+.context-menu-item.danger {
+  color: #ef9d9d;
+}
+.context-menu-item.danger svg {
+  color: #ef9d9d;
+}
+.context-menu-item.danger:hover,
+.context-menu-item.danger.active {
+  background: rgba(221, 104, 104, 0.16);
+  color: #ffc0c0;
+}
+.context-menu-item.danger:hover svg,
+.context-menu-item.danger.active svg {
+  color: #ffc0c0;
+}
+/* 実行できない項目（ファイル欠損時の「表示」など）。存在は見せるが操作させない。 */
+.context-menu-item.disabled {
+  color: var(--mut);
+  cursor: default;
+  opacity: 0.55;
+}
+.context-menu-item.disabled:hover {
+  background: transparent;
+  color: var(--mut);
+}
+.context-menu-item.disabled:hover svg {
+  color: var(--mut);
 }
 .context-menu-divider {
   height: 1px;
@@ -2930,132 +3109,85 @@ input {
 }
 
 /* ============================================================
-   Album / Artist view
+   Artists view (viewMode = "artists")
+   カードグリッドは Albums 表示モード (.cb-card / .cov-*) を共用し、
+   ここは展開行のアルバム一覧まわりだけを定義する。
    ============================================================ */
-.album-view {
-  flex: 1;
-  overflow-y: auto;
-  padding: 18px 20px;
-  background: var(--bg);
-}
-.album-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 12px;
-}
-.album-card {
-  background: var(--bg2);
-  border: 1px solid var(--bd);
-  border-radius: 12px;
-  overflow: hidden;
-  transition: border-color 0.1s;
-}
-.album-card:hover {
-  border-color: var(--bd-strong);
-}
-.album-card.open {
-  grid-column: 1 / -1;
-  border-color: rgba(108, 161, 181, 0.4);
-}
-.album-card-header {
+.art-exp-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 11px;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.art-albs {
+  padding: 2px 0;
+}
+.art-alb + .art-alb {
+  border-top: 1px solid var(--bd);
+}
+.art-alb-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
   cursor: pointer;
 }
-.album-card-header:hover {
+.art-alb-head:hover,
+.art-alb.open .art-alb-head {
   background: var(--hover);
 }
-.album-meta {
-  flex: 1;
+.art-alb-cover {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 7px;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+}
+.art-alb-cover .glyph {
+  font-size: 16px;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.92);
+  font-family: "Hiragino Sans", "Noto Sans CJK SC", sans-serif;
+  line-height: 1;
+}
+.art-alb-meta {
   min-width: 0;
+  flex: 1;
 }
-.album-title {
-  font-size: 13.5px;
+.art-alb-meta .t {
+  font-size: 13px;
   font-weight: 650;
-  color: var(--tx-strong);
+  color: var(--tx);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.album-sub {
+.art-alb-meta .s {
   font-size: 11.5px;
-  color: var(--tx2);
+  color: var(--mut);
+  margin-top: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-top: 1px;
 }
-.album-stats {
-  font-size: 10.5px;
-  color: var(--mut);
-  margin-top: 3px;
-  font-variant-numeric: tabular-nums;
-}
-.album-play-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: var(--ac);
-  color: var(--on-ac);
+.art-alb-btn {
+  background: none;
   border: none;
+  color: var(--mut);
   cursor: pointer;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
 }
-.album-play-btn:hover {
-  background: var(--ac-hi);
-}
-.album-tracklist {
-  border-top: 1px solid var(--bd);
-  padding: 4px 0;
-  max-height: 380px;
-  overflow-y: auto;
-}
-.album-track-row {
-  display: grid;
-  grid-template-columns: 28px 1fr 50px;
-  align-items: center;
-  padding: 5px 14px;
-  font-size: 12.5px;
-  cursor: default;
-  gap: 10px;
-}
-.album-track-row:hover {
+.art-alb-btn:hover {
   background: var(--hover);
-}
-.album-track-row.playing {
-  background: var(--row-play);
-}
-.album-track-row.playing .album-track-name {
-  color: var(--ac);
-}
-.album-track-row.missing {
-  opacity: 0.5;
-}
-.album-track-num {
-  text-align: right;
-  color: var(--mut);
-  font-variant-numeric: tabular-nums;
-  font-size: 11px;
-}
-.album-track-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.album-track-album {
-  color: var(--tx2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.album-track-time {
-  text-align: right;
-  color: var(--tx2);
-  font-variant-numeric: tabular-nums;
+  color: var(--tx);
 }
 
 /* ============================================================
@@ -3158,6 +3290,16 @@ input {
   padding: 13px 16px;
   overflow-y: auto;
   flex: 1;
+}
+/* ダイアログの操作ボタン行。.modal-body の外（.modal の直下）に置く固定フッタ。
+   スクロール領域の外に置くことで、ウィンドウが低いときでもボタンが隠れない。 */
+.modal-footer {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--bd);
 }
 
 /* generic buttons reused inside modals */

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::audio::RepeatMode;
+
 // === Library models ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +60,12 @@ pub struct PlaybackState {
     pub current_track_id: Option<i64>,
     pub position_ms: u64,
     pub duration_ms: u64,
+    /// シャッフルの ON/OFF。リモート API 経由でも変わるためフロントと同期する。
+    pub shuffle: bool,
+    /// リピートモード ("off"|"all"|"one")。
+    pub repeat: RepeatMode,
+    /// 音量 (0.0-1.0)。ReplayGain 適用前のユーザー設定値。
+    pub volume: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +194,20 @@ pub struct AlbumRow {
     pub play_count: i64,
     pub bpm_min: Option<i64>,
     pub bpm_max: Option<i64>,
+}
+
+/// Artists ビュー (サーバ集約) が返すアーティスト 1 件分の情報。
+/// `name` は表示名 (コンピレーションは "Various Artists" に束ねる)。
+/// `artwork_track_id` / `artwork_location_path` は代表曲 (実ファイルがある曲を優先)。
+/// パスはファイルが存在しない場合 None (ジャケットを引けないため)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistRow {
+    pub name: String,
+    pub album_count: i64,
+    pub track_count: i64,
+    pub artwork_track_id: Option<i64>,
+    pub artwork_location_path: Option<String>,
 }
 
 // === Audio analysis (DJ 向け: BPM / key / energy / loudness / similarity) ===
@@ -364,6 +386,16 @@ pub enum RipProgress {
 pub struct ImportFileResult {
     pub added_tracks: usize,
     pub skipped: usize,
+}
+
+/// フォルダ取り込み (`import_folders`) の結果。
+/// `skipped` は「既にライブラリにあるパス」、`failed` は「読み込み/追加に失敗」。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSummary {
+    pub imported: usize,
+    pub skipped: usize,
+    pub failed: usize,
 }
 
 // === Smart playlists ===

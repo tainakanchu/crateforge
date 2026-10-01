@@ -52,6 +52,9 @@ DJ 向けの解析（BPM / Key (Camelot) / Energy）・類似度選曲・フォ�
   <Card title="AI 選曲" icon="puzzle">
     ローカル HTTP API を内蔵。Claude Code プラグイン dj-curator から選曲の叩き台を生成できます。
   </Card>
+  <Card title="ライブラリのバックアップ" icon="document">
+    解析結果や同期状態まで含む library.db を、バックアップ / 復元 / 整合性チェック / 最適化できます。
+  </Card>
 </CardGrid>
 
 ## 対応 OS
@@ -62,9 +65,14 @@ DJ 向けの解析（BPM / Key (Camelot) / Energy）・類似度選曲・フォ�
 
 > アプリ内の自動更新は **Windows 専用** です。macOS / Linux は手動更新になります。
 
+> **v0.12.0 への更新について** — この版はアプリの権限設定（capabilities）が変わったため、
+> Windows のアプリ内アップデートは **インストーラ経由** で適用されます（ポータブル版は zip の差し替えのままです）。
+> 詳しくは[インストール](./guide/install/)を参照してください。
+
 ## 次のステップ
 
 - [インストール](./guide/install/) — ダウンロードから初回起動・自動アップデートまで
 - [ライブラリ取り込み](./guide/import/) — iTunes XML / フォルダ取り込み
 - [再生・キュー・Crate](./guide/playback/) — Up Next と DJ 選曲の使い方
 - [DJ 解析](./guide/dj-analysis/) — BPM / Key / Energy / 類似度
+- [表示のカスタマイズ](./guide/customize/) — 検索構文とキーボードショートカット
