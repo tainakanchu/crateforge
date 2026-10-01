@@ -10,6 +10,76 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.12.0] - 2026-10-01
+
+<!-- [installer-required] -->
+
+### 日本語
+
+#### デスクトップ
+- **右ペインを選曲ワークベンチに**: 右ペインの幅をドラッグで変更・記憶できるように（ウィンドウ幅に応じて自動で収まる）。Similar と Crate を上下に並べる Split 表示、Similar から Crate への D&D、Crate 行からの Similar / 次に再生 / 再生 / 削除、キーボード操作（`Ctrl+]` / `Ctrl+1–4` など）に対応。曲を Crate に入れたり基準曲を変えたりしても勝手にタブが切り替わらなくなり、代わりに Crate タブの件数バッジと Similar タブの基準設定ドットで状態が分かる。(#133, #176, #179)
+- **Similar Digging**: Similar の基準曲を Back / Forward で行き来できる履歴とパンくず、候補ごとに「なぜ似ているか」を示す理由チップ（Key / BPM / Energy / Harmonic / 距離）、掘り用フィルタ（BPM 許容幅・Energy 近似・Crate 済み除外・同一アーティスト除外・★★★ 以上）を追加。フィルタ設定は再起動後も残る。(#135, #179)
+- **Audition Mode とプレビュー再生**: `A` で波形を強調し 25/50/75% マーカーへキーボードでジャンプできる試聴モードを追加。Similar / Crate からのプレビュー再生は再生回数・最終再生日・Recently Played に記録されず、`Esc` で元の曲・再生位置へ戻る。プレーヤーバーの AUDITION / PREVIEW 表示をクリックしても解除でき、ツールバーの `?` ボタンからショートカット一覧を開ける。(#134, #179)
+- **Inbox / Triage Mode**: サイドバーに「Inbox」を追加し、最近追加・未評価・あとで の曲をまとめて処理できるように。Triage Mode では 1 曲ずつ、レーティング（`1–5`）/ Crate（`C`）/ 完了（`D`）/ あとで（`S`）をキーボードだけで振り分けられる。取り込み完了時のトーストから Inbox へ移動できる。(#136)
+- **Set Workspace**: Crate をセット作りの作業場として拡張。セット名・目標尺・メモ、Anchor（固定 / オープニング / ピーク / クロージング）と Section 区切り、BPM / Energy の流れ（Arc）の可視化、無視もできる注意点チェック（Set Lint）、Anchor と Section を崩さずに曲順を整える smooth に対応。(#137)
+- **Gig Readiness とスナップショット**: セットやプレイリストが本番に出せる状態か（ファイル欠落・未解析・重複・尺・エクスポート）を 1 画面で確認し、解析 / 欠落表示 / 同期準備などの修復操作へそのまま進めるように。本番前の状態を Gig Snapshot として保存・一覧・削除できる。(#139)
+- **Set History**: 実際にかけたセットの履歴を保存・閲覧できるように。M3U / CSV から取り込んでライブラリの曲と自動照合し、見つからない曲は手動で紐付け可能。Crate への読み込みや、Gig Snapshot と比べた「予定と実際」の差分表示にも対応。(#140)
+- **ジャンルと独立したタグ**: `mood:dreamy` のような名前空間つきタグや自由タグを、ジャンルとは別に曲へ付けられるように。Track Info のチップ UI で編集でき、複数曲の一括編集では共通タグの表示と追加に対応。検索では `tag:mood:dreamy` で絞り込める。LAN API からも利用可能。(#141)
+- **検索構文の拡張とプレイリスト内検索**: `artist:` `album:` `albumartist:` `genre:` `comment:` `year:`（範囲指定可）`rating:` `analyzed:yes|no` と、Camelot で相性の良いキーに絞る `key:compat:8A` を追加（引用符で空白を含む値も指定可能）。プレイリスト表示中は、そのプレイリストの中だけを検索するかライブラリ全体を検索するかを切り替えられる。(#188)
+- **プレイリストの並べ替えと D&D 追加**: 通常プレイリストは「Playlist Order」順で表示され、行のドラッグ（複数選択可）や `Alt+↑/↓` で曲順を並べ替えられるように。曲をサイドバーのプレイリストや Crate へドラッグして追加することもできる。(#184)
+- **フォルダの再帰取り込み**: ツールバーの「Add Folder」やフォルダの D&D で、サブフォルダを含めた音源をまとめて取り込めるように。取り込み済みの曲はスキップし、進捗と結果（追加 / スキップ / 失敗）を表示する。(#186)
+- **ライブラリからの削除と Finder / エクスプローラで表示**: 右クリックメニューに「Finder / エクスプローラで表示」と「ライブラリから削除…」を追加。削除はプレイリストや解析結果などの関連データもまとめて消し、再生キューからも外す。ファイル自体の削除は、整理先フォルダ配下の曲に限って選べる。(#185)
+- **ライブラリのバックアップと復元**: 設定に「ライブラリのバックアップ」を追加し、今すぐバックアップ / バックアップから復元 / 整合性チェック / 最適化を実行できるように。XML 自動エクスポートのタイミングで自動バックアップも行う（既定 ON、最新 5 件を保持）。(#187)
+- **タグの書き戻しを常時実行し、BPM / Key も書き出すように**: 曲情報の編集内容は、整理先フォルダを設定していなくても音源ファイルのタグへ書き戻されるように。あわせて BPM と Key（InitialKey、`Am` / `F#m` 形式）もファイルタグへ書き出し、他の DJ ソフトから参照できるようにした。(#183)
+- **ウィンドウと表示状態を記憶**: ウィンドウの位置・サイズに加え、表示モード・選択中のプレイリスト・タグフィルタ・Set ツールの開閉を再起動後も復元。ソートは Library / Inbox / Recent / Albums / Artists / 各プレイリストごとに個別に記憶されるように。(#189)
+- **Artists / Albums 表示の改善**: Artists 表示をサーバ側集約と仮想スクロールに作り直し、大規模ライブラリでも軽快に。アーティスト → アルバム → 曲と辿れ、曲数・アルバム数でのソートにも対応。Albums 表示は検索結果やプレイリストでも指定のソートどおりに並ぶよう修正し、ソート中の値（年 / 追加日 / レーティング / 再生回数）をカードに表示。(#180, #190)
+- **シャッフル / リピートの表示ずれを修正**: 切替が再生エンジンに反映されてから表示を更新するようにし、Up Next の順序と食い違わないように。リモコン操作など外部からの変更（シャッフル / リピート / 音量）も画面に反映される。(#182)
+- **狭いウィンドウでのレイアウト改善**: ツールバーは幅が足りないとき操作を `⋯` メニューにまとめ、検索欄の幅を確保。プレーヤーバー右側が切れる問題、ダイアログが長いと操作ボタンがスクロールしないと押せない問題を修正し、完了メッセージは数秒で自動的に消えるように。最小ウィンドウ幅は 1024px に変更。(#176, #177, #178, #179)
+- **LAN Web Player のキーボード操作**: ブラウザ版プレーヤーに、Space で再生 / 一時停止・`J`/`K` で前後・`S`/`R` でシャッフル / リピート・`/` で検索などのショートカット（`?` で一覧）を追加。「この端末」で再生するときもシャッフル / リピート / 音量を操作・記憶できるようになり、OS のメディアキーやロック画面にも対応。PC 再生時のシーク位置のずれも修正。(#144)
+
+#### モバイル（OTA 配信）
+- **オフラインでも整理できるように**: 曲の長押しや Now Playing から、レーティング・タグ・「あとで聴く」を数タップで付けられるように。圏外でも変更は保存され、再接続時に母艦へ反映される。母艦側でも同じ曲のレーティングが変わっていた場合は黙って上書きせず、設定画面で未同期の件数と衝突を確認し、どちらを採るか選べる。(#142)
+- **シャッフルの挙動をデスクトップと統一**: シャッフルをオンにしても再生済みの曲順は保たれ、前の曲へ戻る操作もシャッフル後の順で辿れるように。全曲リピート時は一巡ごとに並びを変え、Up Next の表示と並べ替えも実際の再生順と一致。シャッフル / リピートの設定はアプリ再起動後も記憶される。(#181)
+
+#### TV（OTA 配信）
+- **シャッフルの挙動をデスクトップと統一**: モバイルと同じく、シャッフルの曲順がデスクトップと同じ規則になり、シャッフル / リピートの設定がアプリ再起動後も記憶されるように。(#181)
+
+#### ドキュメント
+- **使い方ガイドを v0.12.0 の機能に合わせて更新**: 検索構文、プレイリストの並べ替え、フォルダ取り込み、ライブラリからの削除、バックアップ、Audition / Set Workspace / Gig Readiness / Inbox / Similar Digging などを日本語・英語・繁體中文で追記。(#191)
+
+### English
+
+#### Desktop
+- **Right pane becomes a track-selection workbench**: the right pane can be resized by dragging and remembers its width (automatically fitting the window). Adds a Split view with Similar above Crate, drag & drop from Similar into the Crate, Similar / Play Next / Play / Remove actions on Crate rows, and keyboard control (`Ctrl+]`, `Ctrl+1–4`, etc.). Adding to the Crate or changing the similarity base no longer switches tabs on you; instead the Crate tab shows a count badge and the Similar tab shows a dot when a base is set. (#133, #176, #179)
+- **Similar Digging**: Back / Forward history with breadcrumbs for the Similar base track, reason chips on each candidate explaining why it matches (Key / BPM / Energy / Harmonic / distance), and digging filters (BPM tolerance, close energy, exclude Crate tracks, exclude same artist, ★★★ and up). Filter settings persist across restarts. (#135, #179)
+- **Audition Mode and preview playback**: press `A` for an audition mode that emphasizes the waveform and lets you jump to 25/50/75% markers from the keyboard. Previews started from Similar / Crate don't count toward play count, last played, or Recently Played, and `Esc` returns to the original track and position. Clicking the AUDITION / PREVIEW badge in the player bar also exits, and a `?` toolbar button opens the shortcut list. (#134, #179)
+- **Inbox / Triage Mode**: a new sidebar "Inbox" gathers recently added, unrated, and later tracks to work through. Triage Mode focuses one track at a time so you can rate (`1–5`), send to Crate (`C`), mark done (`D`), or defer (`S`) entirely from the keyboard. The import-complete toast links straight to the Inbox. (#136)
+- **Set Workspace**: the Crate now doubles as a set-building workspace, with set title, target length and notes; Anchors (lock / opening / peak / closing) and Section boundaries; a BPM / Energy arc visualization; non-blocking set lint hints; and a smooth ordering that respects Anchors and Sections. (#137)
+- **Gig Readiness and snapshots**: check on one screen whether a set or playlist is ready to play out (missing files, unanalyzed tracks, duplicates, length, export), with direct fix-up actions such as analyze, show missing, or prepare sync. Save, list, and delete Gig Snapshots of the pre-gig state. (#139)
+- **Set History**: save and browse the sets you actually played. Import from M3U / CSV with automatic matching against your library, bind unmatched tracks manually, load a set into the Crate, and compare planned vs. played against a Gig Snapshot. (#140)
+- **Tags independent of genre**: attach namespaced tags such as `mood:dreamy`, or free-form tags, to tracks separately from genre. Edit them as chips in Track Info, including multi-track editing that shows shared tags and merges additions; filter with `tag:mood:dreamy` in search. Also available through the LAN API. (#141)
+- **Richer search syntax and in-playlist search**: adds `artist:` `album:` `albumartist:` `genre:` `comment:` `year:` (ranges supported) `rating:` `analyzed:yes|no`, plus `key:compat:8A` to narrow to harmonically compatible Camelot keys; quoted values may contain spaces. While viewing a playlist you can switch between searching within that playlist and searching the whole library. (#188)
+- **Playlist reordering and drag-to-add**: regular playlists now display in "Playlist Order", and you can reorder tracks by dragging rows (multi-selection supported) or with `Alt+↑/↓`. Tracks can also be dragged onto a playlist in the sidebar or into the Crate to add them. (#184)
+- **Recursive folder import**: "Add Folder" in the toolbar, or dropping a folder onto the window, imports audio from the folder and all its subfolders. Already-imported tracks are skipped, with progress and a summary of imported / skipped / failed. (#186)
+- **Remove from library and reveal in Finder / Explorer**: the context menu gains "Show in Finder / Explorer" and "Remove from Library…". Removal also clears related data such as playlist entries and analysis results and drops the tracks from the play queue; deleting the files themselves is offered only for tracks inside your organize folder. (#185)
+- **Library backup and restore**: a new "Library backup" section in Settings offers back up now, restore from backup, integrity check, and optimize. An automatic backup runs alongside the XML auto-export (on by default, keeping the latest 5). (#187)
+- **Tag writeback always on, now including BPM / Key**: track edits are written back to the audio file's tags even when no organize folder is configured. BPM and Key (InitialKey, in `Am` / `F#m` form) are now written to file tags too, so other DJ software can read them. (#183)
+- **Window and view state remembered**: window position and size, plus the view mode, selected playlist, tag filter, and Set tools panel state, are restored after a restart. Sorting is now remembered separately for Library / Inbox / Recent / Albums / Artists and each playlist. (#189)
+- **Better Artists / Albums views**: the Artists view is rebuilt on server-side aggregation with virtual scrolling, staying responsive on large libraries; drill down artist → album → track, and sort by track or album count. The Albums view now honors the chosen sort in search results and playlists too, and shows the sort value (year / date added / rating / play count) on each card. (#180, #190)
+- **Fixed shuffle / repeat getting out of sync**: toggles now update the UI only after the playback engine applies them, so Up Next order always matches. Changes made elsewhere, such as from a remote (shuffle / repeat / volume), are reflected on screen. (#182)
+- **Layout fixes for narrow windows**: the toolbar folds its actions into a `⋯` menu when space runs out, keeping the search box usable. Fixed the right side of the player bar being clipped and dialog buttons scrolling out of reach on long dialogs; completion messages now clear themselves after a few seconds. The minimum window width is now 1024px. (#176, #177, #178, #179)
+- **Keyboard control for the LAN Web Player**: the browser player gains shortcuts — Space to play / pause, `J`/`K` for previous / next, `S`/`R` for shuffle / repeat, `/` to search, and more (`?` lists them). Shuffle / repeat / volume can now be controlled and are remembered when playing on "this device", and OS media keys and the lock screen are supported. Also fixes seeking landing in the wrong place when playing on the PC. (#144)
+
+#### Mobile (OTA)
+- **Triage on the go, even offline**: set ratings, tags, and "listen later" in a few taps from a track's long-press menu or Now Playing. Changes are kept while offline and sent to the mothership on reconnect. If the same track's rating also changed on the mothership, it isn't silently overwritten — Settings shows pending changes and conflicts and lets you pick which value to keep. (#142)
+- **Shuffle now behaves like the desktop**: turning shuffle on keeps the already-played order, and going back follows the shuffled order. With repeat-all, the order is reshuffled on each pass, and Up Next (including reordering) matches the actual playback order. Shuffle / repeat settings are remembered across app restarts. (#181)
+
+#### TV (OTA)
+- **Shuffle now behaves like the desktop**: as on mobile, shuffle order follows the same rules as the desktop, and shuffle / repeat settings are remembered across app restarts. (#181)
+
+#### Docs
+- **User guide updated for v0.12.0**: covers the search syntax, playlist reordering, folder import, removing from the library, backups, and Audition / Set Workspace / Gig Readiness / Inbox / Similar Digging, in Japanese, English, and Traditional Chinese. (#191)
+
 ## [v0.11.1] - 2026-08-10
 
 ### 日本語
