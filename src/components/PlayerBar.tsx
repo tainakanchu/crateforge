@@ -5,6 +5,7 @@ import * as analysisApi from "../api/analysis";
 import { Icon } from "./Icon";
 import { Cover } from "./Cover";
 import { bpmColor } from "../lib/art";
+import * as audition from "../lib/audition";
 
 // 残り時間を "-mm:ss" 形式でフォーマット。
 function formatRemainingTime(positionMs: number, durationMs: number): string {
@@ -21,6 +22,9 @@ function formatTime(ms: number): string {
   const sec = totalSec % 60;
   return `${min}:${sec.toString().padStart(2, "0")}`;
 }
+
+// ブラウザ (vite dev) では IPC が使えないので、ストア更新のみで動かす。
+const isTauri = "__TAURI_INTERNALS__" in window;
 
 const WAVE_N = 64;
 
@@ -39,6 +43,7 @@ export function PlayerBar() {
     setRepeat,
     setReplayGain,
     setRailTab,
+    pushToast,
     showRemainingTime,
     toggleRemainingTime,
     auditionMode,
@@ -157,18 +162,29 @@ export function PlayerBar() {
     [setVolume],
   );
 
+  // Rust 側プレイヤーに反映してからストアを更新する。
+  // 先にストアを更新すると Up Next の取り直し (RightRail) が古い再生順を読んでしまう。
+  // IPC は ~1ms なので体感は変わらない。失敗時はストアを変えずトーストで知らせる。
   const handleShuffleToggle = useCallback(async () => {
     const next = !shuffle;
-    setShuffle(next);
-    await playbackApi.setShuffle(next);
-  }, [shuffle, setShuffle]);
+    try {
+      if (isTauri) await playbackApi.setShuffle(next);
+      setShuffle(next);
+    } catch {
+      pushToast("error", "シャッフルを切り替えられませんでした");
+    }
+  }, [shuffle, setShuffle, pushToast]);
 
   const handleRepeatToggle = useCallback(async () => {
     const order = ["off", "all", "one"] as const;
     const next = order[(order.indexOf(repeat) + 1) % order.length];
-    setRepeat(next);
-    await playbackApi.setRepeat(next);
-  }, [repeat, setRepeat]);
+    try {
+      if (isTauri) await playbackApi.setRepeat(next);
+      setRepeat(next);
+    } catch {
+      pushToast("error", "リピートを切り替えられませんでした");
+    }
+  }, [repeat, setRepeat, pushToast]);
 
   const handleReplayGainToggle = useCallback(async () => {
     const next = !replayGain;
@@ -252,17 +268,26 @@ export function PlayerBar() {
             {repeat === "one" && <span className="cb-repeat-badge">1</span>}
           </button>
           {auditionMode && (
-            <span
+            <button
+              type="button"
               className="cb-audition-badge"
-              title="Audition mode (A) — 1/2/3 jump · Esc exits preview"
+              onClick={() => audition.toggleAuditionMode()}
+              title="Audition mode — クリックで解除 (A) · 1/2/3 jump"
             >
               AUDITION
-            </span>
+            </button>
           )}
           {previewActive && (
-            <span className="cb-preview-badge" title="Preview session (Esc to restore)">
+            <button
+              type="button"
+              className="cb-preview-badge"
+              onClick={() => {
+                audition.exitPreview({ restore: true }).catch(() => {});
+              }}
+              title="Preview 中 — クリックで元に戻す (Esc)"
+            >
               PREVIEW
-            </span>
+            </button>
           )}
         </div>
         <div className="cb-seek">

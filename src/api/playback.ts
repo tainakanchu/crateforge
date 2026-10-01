@@ -121,3 +121,9 @@ export async function onPlaybackAdvanced(
     cb(e.payload.trackId),
   );
 }
+
+/// プレビュー曲が終端に達したとき (auto-advance せず停止したとき) に発火する。
+/// フロントは Esc と同じく exitPreview({ restore: true }) する。
+export async function onPreviewEnded(cb: () => void): Promise<UnlistenFn> {
+  return listen("preview-ended", () => cb());
+}

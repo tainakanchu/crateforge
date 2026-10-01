@@ -1,5 +1,8 @@
 // Audition / Preview セッションのフロント側ヘルパー。
 // playCount / lastPlayed / Recently Played を汚さない聴き比べ用。
+//
+// 統計スキップは Rust 側が PlayReport.preview (再生開始時のフラグ) で判断する。
+// フロントの setPreviewMode の呼び出し順は統計結果に影響しない。
 
 import * as playbackApi from "../api/playback";
 import { useStore } from "../store/useStore";
@@ -44,7 +47,7 @@ export async function startPreview(track: Track): Promise<void> {
 /**
  * プレビューを終了する。
  * - バックエンド preview を OFF
- * - restore が true (既定) なら保存した曲・位置へ戻す
+ * - restore が true (既定) なら保存した曲・位置へ戻す (Esc / 曲終端と同じ)
  */
 export async function exitPreview(opts?: { restore?: boolean }): Promise<void> {
   const restore = opts?.restore !== false;

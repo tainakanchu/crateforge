@@ -6,12 +6,15 @@ export async function getPlaylists(): Promise<Playlist[]> {
   return invoke("get_playlists");
 }
 
+/// プレイリストの曲を取得する。`query` を渡すとライブラリ検索と同じ DSL
+/// （フリーテキスト / `artist:` `year:` `key:compat:` …）でプレイリスト内を絞り込む。
 export async function getPlaylistTracks(
   playlistId: number,
   limit?: number,
   offset?: number,
   sortField?: SortField,
   sortOrder?: SortOrder,
+  query?: string,
 ): Promise<Track[]> {
   return invoke("get_playlist_tracks", {
     playlistId,
@@ -19,6 +22,7 @@ export async function getPlaylistTracks(
     offset,
     sortField,
     sortOrder,
+    query,
   });
 }
 
@@ -86,12 +90,15 @@ export async function getSmartCriteria(playlistId: number): Promise<SmartCriteri
   return invoke("get_smart_criteria", { playlistId });
 }
 
+/// スマートプレイリストの曲をライブ評価で取得する。`query` は通常プレイリストと同じく
+/// プレイリスト内検索として criteria の結果へ AND で効く。
 export async function getSmartPlaylistTracks(
   playlistId: number,
   limit?: number,
   offset?: number,
   sortField?: SortField,
   sortOrder?: SortOrder,
+  query?: string,
 ): Promise<Track[]> {
   return invoke("get_smart_playlist_tracks", {
     playlistId,
@@ -99,6 +106,7 @@ export async function getSmartPlaylistTracks(
     offset,
     sortField,
     sortOrder,
+    query,
   });
 }
 

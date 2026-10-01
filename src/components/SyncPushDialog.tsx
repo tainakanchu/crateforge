@@ -315,22 +315,6 @@ export function SyncPushDialog({
               ) : (
                 <div className="sync-empty">母艦へ送る曲はありません</div>
               )}
-
-              <div className="sync-actions">
-                <button className="toolbar-btn" type="button" onClick={onBack}>
-                  戻る
-                </button>
-                {tracks.length > 0 && (
-                  <button
-                    className="toolbar-btn primary"
-                    type="button"
-                    onClick={startPush}
-                    disabled={selectedIds.size === 0}
-                  >
-                    <Icon name="upload" size={14} /> 送信
-                  </button>
-                )}
-              </div>
             </section>
           )}
 
@@ -382,14 +366,6 @@ export function SyncPushDialog({
                   </ul>
                 </details>
               )}
-              <div className="sync-actions">
-                <button className="toolbar-btn" onClick={onBack}>
-                  接続先に戻る
-                </button>
-                <button className="toolbar-btn primary" onClick={onClose} data-autofocus>
-                  閉じる
-                </button>
-              </div>
             </section>
           )}
 
@@ -400,23 +376,53 @@ export function SyncPushDialog({
               <div className="sync-error" role="alert">
                 {error || "不明なエラーが発生しました。"}
               </div>
-              <div className="sync-actions">
-                <button className="toolbar-btn" onClick={onBack}>
-                  接続先に戻る
-                </button>
-                {loadSucceeded ? (
-                  <button className="toolbar-btn primary" onClick={() => setStep("select")} data-autofocus>
-                    選択画面に戻る
-                  </button>
-                ) : (
-                  <button className="toolbar-btn primary" onClick={loadPushable} data-autofocus>
-                    再試行
-                  </button>
-                )}
-              </div>
             </section>
           )}
         </div>
+
+        {step === "select" && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" type="button" onClick={onBack}>
+              戻る
+            </button>
+            {tracks.length > 0 && (
+              <button
+                className="toolbar-btn primary"
+                type="button"
+                onClick={startPush}
+                disabled={selectedIds.size === 0}
+              >
+                <Icon name="upload" size={14} /> 送信
+              </button>
+            )}
+          </div>
+        )}
+        {step === "complete" && summary && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" onClick={onBack}>
+              接続先に戻る
+            </button>
+            <button className="toolbar-btn primary" onClick={onClose} data-autofocus>
+              閉じる
+            </button>
+          </div>
+        )}
+        {step === "failed" && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" onClick={onBack}>
+              接続先に戻る
+            </button>
+            {loadSucceeded ? (
+              <button className="toolbar-btn primary" onClick={() => setStep("select")} data-autofocus>
+                選択画面に戻る
+              </button>
+            ) : (
+              <button className="toolbar-btn primary" onClick={loadPushable} data-autofocus>
+                再試行
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

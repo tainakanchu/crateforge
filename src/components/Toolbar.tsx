@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import * as libraryApi from "../api/library";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import { ColumnPicker } from "./ColumnPicker";
 import type { LibraryStats, SortField, ViewMode } from "../types";
-import { ALBUM_SORT_FIELDS } from "../types";
+import { ALBUM_SORT_FIELDS, ARTIST_SORT_FIELDS } from "../types";
 import { AUDIO_EXTENSIONS } from "../lib/audioExtensions";
 
 interface ToolbarProps {
@@ -14,6 +14,7 @@ interface ToolbarProps {
   onOpenRulesPanel: () => void;
   onOpenSyncProvision: () => void;
   onOpenSettings: () => void;
+  onOpenHelp: () => void;
 }
 
 function formatDuration(ms: number): string {
@@ -22,6 +23,12 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor((totalSec % 3600) / 60);
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
+
+/// プレイリストの手動順 (DB の sort_index 順)。プレイリスト表示のときだけ選べる。
+const PLAYLIST_ORDER_OPTION: { field: SortField; label: string } = {
+  field: "playlistOrder",
+  label: "Playlist Order",
+};
 
 const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "name", label: "Track" },
@@ -39,21 +46,61 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "lastPlayed", label: "Last Played" },
 ];
 
+/// Artists ビュー専用のソート候補。アーティスト粒度で意味を持つのは
+/// ARTIST_SORT_FIELDS の 3 つだけなので、集合はそちらを単一の真実の源にする。
+const ARTIST_SORT_LABELS: Partial<Record<SortField, string>> = {
+  name: "Artist",
+  trackCount: "Tracks",
+  albumCount: "Albums",
+};
+const ARTIST_SORT_OPTIONS: { field: SortField; label: string }[] =
+  ARTIST_SORT_FIELDS.map((f) => ({ field: f, label: ARTIST_SORT_LABELS[f] ?? f }));
+
+// 完了 status をサブバーから自動で消すまでの時間 (#152)。
+const STATUS_CLEAR_MS = 8000;
+
+// ツールバー(行)の実効幅がこれを下回ったら、右側のアクション群を ⋯ メニューに畳む。
+const COMPACT_WIDTH = 1200;
+const MORE_MENU_WIDTH = 248;
+
+// ⋯ メニューにも通常のボタンにも同じ定義から描画するためのアクション記述。
+interface ToolAction {
+  id: string;
+  label: string;
+  icon: string;
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  on?: boolean;
+  primary?: boolean;
+  /** 通常表示時にラベルまで出すか（false ならアイコンのみ） */
+  showLabel?: boolean;
+}
+
+// ツールバーは横スクロールするため、ポップオーバーは fixed で画面基準に置いてクリップを避ける。
+function anchoredPopStyle(el: HTMLElement | null, width: number): React.CSSProperties {
+  if (!el) return { width };
+  const r = el.getBoundingClientRect();
+  const left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
+  return { position: "fixed", top: r.bottom + 6, left, width };
+}
+
 const VIEW_TITLE: Record<ViewMode, string> = {
   library: "All Tracks",
   inbox: "Inbox",
   history: "Set History",
-  albums: "Albums",
   artists: "Artists",
   recent: "Recently Played",
   playlist: "Playlist",
 };
+
 export function Toolbar({
   onLibraryChanged,
   onOpenRipDialog,
   onOpenRulesPanel,
   onOpenSyncProvision,
   onOpenSettings,
+  onOpenHelp,
 }: ToolbarProps) {
   const {
     viewMode,
@@ -61,13 +108,16 @@ export function Toolbar({
     setDisplayMode,
     searchQuery,
     setSearchQuery,
+    searchScope,
+    setSearchScope,
     filterTags,
     removeFilterTag,
     clearFilterTags,
-    setViewMode,
     sortField,
     sortOrder,
     toggleSort,
+    setSortField,
+    setSortOrder,
     fields,
     selectedPlaylistId,
     playlists,
@@ -84,17 +134,114 @@ export function Toolbar({
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
+  const [importingFolders, setImportingFolders] = useState(false);
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
-  const [status, setStatus] = useState("");
+  const [status, setStatusRaw] = useState("");
+  const statusTimerRef = useRef<number | null>(null);
+
+  /**
+   * サブバーの status を出す (#152)。
+   * 完了メッセージは出しっぱなしにせず STATUS_CLEAR_MS 後に自動で消す。
+   * 進行中 ("…" で終わる / "…中") とエラーは、次の status が来るまで残す。
+   */
+  const setStatus = useCallback((text: string) => {
+    if (statusTimerRef.current !== null) {
+      window.clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = null;
+    }
+    setStatusRaw(text);
+    if (!text) return;
+    const inProgress = text.endsWith("…") || text.includes("…中");
+    const isError = /error|失敗/i.test(text);
+    if (inProgress || isError) return;
+    statusTimerRef.current = window.setTimeout(() => {
+      statusTimerRef.current = null;
+      setStatusRaw("");
+    }, STATUS_CLEAR_MS);
+  }, []);
+
+  // アンマウント時にタイマーを片付ける。
+  useEffect(
+    () => () => {
+      if (statusTimerRef.current !== null) {
+        window.clearTimeout(statusTimerRef.current);
+      }
+    },
+    [],
+  );
   const [stats, setStats] = useState<LibraryStats | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  // 幅が足りないときだけアクション群を ⋯ に畳む。
+  const [compact, setCompact] = useState(false);
   // 検索ボックス: 表示用ローカル state（即時反映）。store への反映はデバウンス。
   const [localSearch, setLocalSearch] = useState(searchQuery);
 
   const searchTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const isListLike = viewMode !== "albums" && viewMode !== "artists";
+  const rowRef = useRef<HTMLDivElement>(null);
+  const sortBtnRef = useRef<HTMLButtonElement>(null);
+  const moreBtnRef = useRef<HTMLButtonElement>(null);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+  const isListLike = viewMode !== "artists";
+
+  // ツールバー幅を監視して compact を切り替える（初回描画前に確定させたいので layout effect）。
+  useLayoutEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    setCompact(el.clientWidth < COMPACT_WIDTH);
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) setCompact(e.contentRect.width < COMPACT_WIDTH);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // 広くなって ⋯ ボタン自体が消える場合はメニューも閉じる。
+  useEffect(() => {
+    if (!compact) setMoreOpen(false);
+  }, [compact]);
+
+  // メニューを開いたら先頭項目にフォーカス。
+  useEffect(() => {
+    if (!moreOpen) return;
+    const first = moreMenuRef.current?.querySelector<HTMLButtonElement>(
+      '[role="menuitem"]:not(:disabled)',
+    );
+    first?.focus();
+  }, [moreOpen]);
+
+  // Esc で閉じる / 上下キーで移動。
+  const handleMoreKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setMoreOpen(false);
+      moreBtnRef.current?.focus();
+      return;
+    }
+    const items = Array.from(
+      moreMenuRef.current?.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitem"]:not(:disabled)',
+      ) ?? [],
+    );
+    if (items.length === 0) return;
+    const cur = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const next =
+        e.key === "ArrowDown"
+          ? (cur + 1) % items.length
+          : (cur - 1 + items.length) % items.length;
+      items[next]?.focus();
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      items[0]?.focus();
+    } else if (e.key === "End") {
+      e.preventDefault();
+      items[items.length - 1]?.focus();
+    }
+  }, []);
 
   const refreshStats = useCallback(async () => {
     try {
@@ -141,11 +288,12 @@ export function Toolbar({
       clearTimeout(searchTimer.current);
       if (value.length === 1) return;
       searchTimer.current = setTimeout(() => {
+        // 表示中のビューは変えない。プレイリスト表示中は検索スコープ
+        // （このプレイリスト / ライブラリ全体）が対象を決める。
         setSearchQuery(value);
-        if (value) setViewMode("library");
       }, 300);
     },
-    [setSearchQuery, setViewMode],
+    [setSearchQuery],
   );
 
   const handleSearchKeyDown = useCallback(
@@ -226,6 +374,55 @@ export function Toolbar({
     }
   }, [onLibraryChanged, refreshStats]);
 
+  // フォルダを選んで再帰的に取り込む (対応拡張子だけを Rust 側が拾う)。
+  const handleImportFolders = useCallback(async () => {
+    const selected = await open({ directory: true, multiple: true });
+    if (!selected) return;
+    const paths = Array.isArray(selected) ? selected : [selected];
+    if (paths.length === 0) return;
+    setImportingFolders(true);
+    setStatus(`${paths.length} フォルダを走査中…`);
+    // 走査後は 1 ファイルごとに進捗が飛んでくるのでサブバーに出す。
+    const unlisten = await libraryApi.onImportProgress(({ done, total }) => {
+      setStatus(total > 0 ? `取り込み中 ${done}/${total}` : "対応ファイルなし");
+    });
+    try {
+      const r = await libraryApi.importFolders(paths);
+      const detail =
+        (r.skipped > 0 ? `, skipped ${r.skipped}` : "") +
+        (r.failed > 0 ? `, failed ${r.failed}` : "");
+      setStatus(`Imported ${r.imported} file(s)${detail}`);
+      if (r.imported > 0) {
+        useStore
+          .getState()
+          .pushToast(
+            "success",
+            `${r.imported} 曲を取り込みました` +
+              (r.skipped > 0 ? `（${r.skipped} 件は取り込み済み）` : "") +
+              " — Inbox に追加されました。サイドバーの Inbox から整理できます",
+            5200,
+          );
+      } else {
+        useStore
+          .getState()
+          .pushToast(
+            "info",
+            r.skipped > 0
+              ? `新しい曲はありませんでした（${r.skipped} 件は取り込み済み）`
+              : "対応フォーマットのファイルが見つかりませんでした",
+          );
+      }
+      onLibraryChanged();
+      refreshStats();
+    } catch (err) {
+      setStatus(`Import folder error: ${err}`);
+      useStore.getState().pushToast("error", `フォルダ取り込みエラー: ${err}`);
+    } finally {
+      unlisten();
+      setImportingFolders(false);
+    }
+  }, [onLibraryChanged, refreshStats]);
+
   const handleExport = useCallback(async () => {
     const path = await save({
       filters: [{ name: "iTunes Library XML", extensions: ["xml"] }],
@@ -277,11 +474,12 @@ export function Toolbar({
     : activePlaylist
       ? activePlaylist.name
       : VIEW_TITLE[viewMode];
+  // Artists ビューは tracks を全件持たない (サーバ集約) ので、件数はライブラリ統計を使う。
   const subCount = isSearching
     ? tracks.length.toLocaleString()
     : activePlaylist
       ? activePlaylist.trackCount.toLocaleString()
-      : viewMode === "library" && stats
+      : (viewMode === "library" || viewMode === "artists") && stats
         ? stats.trackCount.toLocaleString()
         : tracks.length.toLocaleString();
 
@@ -289,217 +487,362 @@ export function Toolbar({
   const albumSortOptions = ALBUM_SORT_FIELDS.map(
     (f) => SORT_OPTIONS.find((o) => o.field === f)!,
   );
-  const sortOptions = displayMode === "albums" ? albumSortOptions : SORT_OPTIONS;
+  // 手動順は「通常プレイリストを List 表示していて、検索していない」ときだけ。
+  const manualSortAvailable =
+    displayMode === "list" &&
+    !isSearching &&
+    !!activePlaylist &&
+    !activePlaylist.isSmart &&
+    !activePlaylist.isFolder;
+  // Artists ビューはアーティスト粒度、Albums 表示モードはアルバム粒度の語彙に絞る。
+  const sortOptions = !isListLike
+    ? ARTIST_SORT_OPTIONS
+    : displayMode === "albums"
+      ? albumSortOptions
+      : manualSortAvailable
+        ? [PLAYLIST_ORDER_OPTION, ...SORT_OPTIONS]
+        : SORT_OPTIONS;
   const curSort = sortOptions.find((s) => s.field === sortField);
+  // 手動順に昇順/降順は無い（常に保存された並び）。
+  const manualSortActive = sortField === "playlistOrder";
+
+  // 幅が足りないときに ⋯ メニューへ畳むアクション群（挙動は畳んでも同じ）。
+  const overflowActions: ToolAction[] = [
+    {
+      id: "sync",
+      label: "サーバーから取り寄せ",
+      icon: "download",
+      title: "接続済みサーバーからプレイリストと曲を取り寄せる",
+      onClick: onOpenSyncProvision,
+      showLabel: true,
+    },
+    {
+      id: "import",
+      label: "Import XML",
+      icon: "download",
+      title: "Import an existing iTunes Library.xml",
+      onClick: handleImport,
+      disabled: importing,
+      primary: true,
+    },
+    {
+      id: "importFiles",
+      label: "Add Files",
+      icon: "filePlus",
+      title: "Add audio files to the library",
+      onClick: handleImportFiles,
+      disabled: importingFiles,
+    },
+    {
+      id: "importFolders",
+      label: "Add Folder",
+      icon: "folder",
+      title: "フォルダを丸ごと取り込む (サブフォルダも再帰的に走査)",
+      onClick: handleImportFolders,
+      disabled: importingFolders,
+    },
+    {
+      id: "rip",
+      label: "Rip CD",
+      icon: "disc",
+      title: "Rip an audio CD",
+      onClick: onOpenRipDialog,
+    },
+    {
+      id: "rules",
+      label: "Rules",
+      icon: "layers",
+      title: "Build playlists from YAML rules",
+      onClick: onOpenRulesPanel,
+    },
+    {
+      id: "libraryRoot",
+      label: "整理先フォルダ",
+      icon: "folderPlus",
+      title: libraryRoot
+        ? `整理先 (編集時に自動でフォルダ分け): ${libraryRoot}\nクリックで変更`
+        : "整理先フォルダを設定 (未設定だと自動整理オフ)",
+      onClick: handleSetLibraryRoot,
+      on: !!libraryRoot,
+    },
+    {
+      id: "export",
+      label: "Export XML",
+      icon: "upload",
+      title: "Export library to iTunes-compatible XML",
+      onClick: handleExport,
+      disabled: exporting || (stats?.trackCount ?? 0) === 0,
+    },
+    {
+      id: "autoExport",
+      label: "自動エクスポート",
+      icon: "clock",
+      title: autoExportEnabled
+        ? `自動 XML エクスポート: ON\n${autoExportPath ?? ""}\n(変更時に約30分間隔＋終了時に自動書き出し)\nクリックで OFF`
+        : "iTunes 互換 XML を自動エクスポート (変更時のみ・約30分間隔＋終了時)",
+      onClick: handleToggleAutoExport,
+      on: autoExportEnabled,
+    },
+  ];
+
 
   return (
     <>
       <div className="cb-tb">
-        <div className="cb-sbox" style={{ position: "relative" }}>
-          <Icon name="search" size={15} />
-          <input
-            id="search-input"
-            ref={searchInputRef}
-            type="text"
-            placeholder="Search… or bpm:120-128  key:8A  energy:60-100  tag:mood:dreamy  (/ or Ctrl+F)"
-            value={localSearch}
-            onChange={handleSearchChange}
-            onKeyDown={handleSearchKeyDown}
-            autoComplete="off"
-            spellCheck={false}
-          />
-          {/* 検索文字がある時だけ × を表示 */}
-          {localSearch && (
-            <button
-              onClick={handleClearSearch}
-              title="検索をクリア"
-              style={{
-                position: "absolute",
-                right: 6,
-                top: "50%",
-                transform: "translateY(-50%)",
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                padding: "2px 4px",
-                color: "var(--tx2)",
-                lineHeight: 1,
-                display: "flex",
-                alignItems: "center",
-              }}
-            >
-              <Icon name="x" size={13} />
-            </button>
+        {/* 狭い幅では横スクロールさせ、どのボタンも必ず届くようにする。 */}
+        <div className="cb-tb-row" ref={rowRef}>
+          <div className="cb-sbox" style={{ position: "relative" }}>
+            <Icon name="search" size={15} />
+            <input
+              id="search-input"
+              ref={searchInputRef}
+              type="text"
+              placeholder={
+                'Search… artist:"daft punk"  genre:house  year:2015-2020  rating:4-5  ' +
+                "bpm:120-128  key:compat:8A  tag:mood:dreamy  analyzed:no  (/ or Ctrl+F)"
+              }
+              value={localSearch}
+              onChange={handleSearchChange}
+              onKeyDown={handleSearchKeyDown}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {/* 検索文字がある時だけ × を表示 */}
+            {localSearch && (
+              <button
+                onClick={handleClearSearch}
+                title="検索をクリア"
+                style={{
+                  position: "absolute",
+                  right: 6,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: "2px 4px",
+                  color: "var(--tx2)",
+                  lineHeight: 1,
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                <Icon name="x" size={13} />
+              </button>
+            )}
+          </div>
+
+          {/* プレイリスト表示中だけ出す検索スコープ切り替え。既定はこのプレイリスト内。 */}
+          {viewMode === "playlist" && (
+            <div className="cb-seg2" role="group" aria-label="検索範囲">
+              <button
+                className={"cb-segb2" + (searchScope === "playlist" ? " on" : "")}
+                onClick={() => setSearchScope("playlist")}
+                title="このプレイリストの中だけを検索"
+                aria-pressed={searchScope === "playlist"}
+              >
+                このプレイリスト
+              </button>
+              <button
+                className={"cb-segb2" + (searchScope === "library" ? " on" : "")}
+                onClick={() => setSearchScope("library")}
+                title="ライブラリ全体を検索"
+                aria-pressed={searchScope === "library"}
+              >
+                ライブラリ全体
+              </button>
+            </div>
           )}
-        </div>
 
-        <div className="cb-seg">
-          <button
-            className={"cb-segb" + (displayMode === "list" ? " on" : "")}
-            onClick={() => setDisplayMode("list")}
-            title="List view"
-          >
-            <Icon name="list" size={14} /> List
-          </button>
-          <button
-            className={"cb-segb" + (displayMode === "albums" ? " on" : "")}
-            onClick={() => setDisplayMode("albums")}
-            title="Albums view"
-          >
-            <Icon name="grid" size={14} /> Albums
-          </button>
-          <button
-            className={"cb-segb" + (displayMode === "tracks" ? " on" : "")}
-            onClick={() => setDisplayMode("tracks")}
-            title="Track wall"
-          >
-            <Icon name="disc" size={14} /> Tracks
-          </button>
-        </div>
+          <div className="cb-seg">
+            <button
+              className={"cb-segb" + (displayMode === "list" ? " on" : "")}
+              onClick={() => setDisplayMode("list")}
+              title="List view"
+            >
+              <Icon name="list" size={14} /> List
+            </button>
+            <button
+              className={"cb-segb" + (displayMode === "albums" ? " on" : "")}
+              onClick={() => setDisplayMode("albums")}
+              title="Albums view"
+            >
+              <Icon name="grid" size={14} /> Albums
+            </button>
+            <button
+              className={"cb-segb" + (displayMode === "tracks" ? " on" : "")}
+              onClick={() => setDisplayMode("tracks")}
+              title="Track wall"
+            >
+              <Icon name="disc" size={14} /> Tracks
+            </button>
+          </div>
 
-        <div style={{ position: "relative" }}>
-          <button
-            className={"cb-btn" + (sortOpen ? " on" : "")}
-            onClick={() => {
-              setSortOpen((v) => !v);
-              setPickerOpen(false);
-            }}
-            title="Sort"
-          >
-            {/* ソートフィールド名＋現在の昇順/降順を常時表示 */}
-            Sort: {curSort?.label ?? "—"} {sortOrder === "asc" ? "↑" : "↓"}
-            <Icon name="chevronD" size={12} />
-          </button>
-          {sortOpen && (
+          <div style={{ position: "relative" }}>
+            <button
+              ref={sortBtnRef}
+              className={"cb-btn" + (sortOpen ? " on" : "")}
+              onClick={() => {
+                setSortOpen((v) => !v);
+                setPickerOpen(false);
+                setMoreOpen(false);
+              }}
+              title="Sort"
+            >
+              {/* ソートフィールド名＋現在の昇順/降順を常時表示 */}
+              Sort: {curSort?.label ?? "—"}{" "}
+              {manualSortActive ? "" : sortOrder === "asc" ? "↑" : "↓"}
+              <Icon name="chevronD" size={12} />
+            </button>
+            {sortOpen && (
+              <>
+                <div className="cb-scrim" onClick={() => setSortOpen(false)} />
+                <div className="cb-sortpop" style={anchoredPopStyle(sortBtnRef.current, 200)}>
+                  {sortOptions.map((s) => {
+                    const on = s.field === sortField;
+                    return (
+                      <div
+                        key={s.field}
+                        className={"cb-sortitem" + (on ? " on" : "")}
+                        onClick={() => {
+                          // 手動順は方向を持たないので、トグルせず昇順で固定する。
+                          if (s.field === "playlistOrder") {
+                            setSortField("playlistOrder");
+                            setSortOrder("asc");
+                          } else {
+                            toggleSort(s.field);
+                          }
+                        }}
+                      >
+                        {s.label}
+                        {on && s.field !== "playlistOrder" && (
+                          <span className="dir">
+                            <Icon name="chevronD" size={12} style={{ transform: sortOrder === "asc" ? "rotate(180deg)" : undefined }} />
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+
+          {isListLike && displayMode === "list" && (
             <>
-              <div className="cb-scrim" onClick={() => setSortOpen(false)} />
-              <div className="cb-sortpop" style={{ right: 0 }}>
-                {sortOptions.map((s) => {
-                  const on = s.field === sortField;
-                  return (
-                    <div
-                      key={s.field}
-                      className={"cb-sortitem" + (on ? " on" : "")}
-                      onClick={() => toggleSort(s.field)}
-                    >
-                      {s.label}
-                      {on && (
-                        <span className="dir">
-                          <Icon name="chevronD" size={12} style={{ transform: sortOrder === "asc" ? "rotate(180deg)" : undefined }} />
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+              <button
+                className={"cb-btn" + (pickerOpen ? " on" : "")}
+                onClick={() => {
+                  setPickerOpen((v) => !v);
+                  setSortOpen(false);
+                  setMoreOpen(false);
+                }}
+                title="Customize columns"
+              >
+                <Icon name="sliders" size={15} /> Columns
+                <span className="cb-btn-badge">{fields.length}</span>
+              </button>
             </>
           )}
-        </div>
 
-        {isListLike && displayMode === "list" && (
-          <>
+          <div className="cb-tb-spacer" />
+
+          <div className="cb-tb-actions">
+            {/* 幅に余裕があるときは従来どおり横並び、狭いときは ⋯ メニューに畳む。 */}
+            {!compact &&
+              overflowActions.map((a) => (
+                <button
+                  key={a.id}
+                  className={
+                    "cb-btn" +
+                    (a.showLabel ? "" : " cb-btn-iconly") +
+                    (a.primary ? " primary" : "") +
+                    (a.on ? " on" : "")
+                  }
+                  onClick={a.onClick}
+                  disabled={a.disabled}
+                  title={a.title}
+                >
+                  <Icon name={a.icon} size={a.showLabel ? 15 : 16} />
+                  {a.showLabel && a.label}
+                </button>
+              ))}
+            {compact && (
+              <>
+                <button
+                  ref={moreBtnRef}
+                  className={"cb-btn cb-btn-iconly" + (moreOpen ? " on" : "")}
+                  onClick={() => {
+                    setMoreOpen((v) => !v);
+                    setSortOpen(false);
+                    setPickerOpen(false);
+                  }}
+                  title="その他の操作"
+                  aria-haspopup="menu"
+                  aria-expanded={moreOpen}
+                >
+                  <Icon name="more" size={16} />
+                </button>
+                {moreOpen && (
+                  <>
+                    <div className="cb-scrim" onClick={() => setMoreOpen(false)} />
+                    <div
+                      ref={moreMenuRef}
+                      className="cb-sortpop cb-morepop"
+                      role="menu"
+                      aria-label="その他の操作"
+                      style={anchoredPopStyle(moreBtnRef.current, MORE_MENU_WIDTH)}
+                      onKeyDown={handleMoreKeyDown}
+                    >
+                      {overflowActions.map((a) => (
+                        <button
+                          key={a.id}
+                          type="button"
+                          role="menuitem"
+                          className={"cb-sortitem" + (a.on ? " on" : "")}
+                          onClick={() => {
+                            setMoreOpen(false);
+                            a.onClick();
+                          }}
+                          disabled={a.disabled}
+                          title={a.title}
+                        >
+                          <Icon name={a.icon} size={15} />
+                          {a.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
             <button
-              className={"cb-btn" + (pickerOpen ? " on" : "")}
-              onClick={() => {
-                setPickerOpen((v) => !v);
-                setSortOpen(false);
-              }}
-              title="Customize columns"
+              className={"cb-btn cb-btn-iconly" + (rightRailVisible ? " on" : "")}
+              onClick={toggleRightRail}
+              title={
+                rightRailVisible
+                  ? "右ペイン (Now Playing / Crate) を隠す"
+                  : "右ペイン (Now Playing / Crate) を表示"
+              }
             >
-              <Icon name="sliders" size={15} /> Columns
-              <span className="cb-btn-badge">{fields.length}</span>
+              <Icon name="eye" size={16} />
             </button>
-          </>
-        )}
-
-        <div className="cb-tb-spacer" />
-
-        <div className="cb-tb-actions">
-          <button
-            className="cb-btn"
-            onClick={onOpenSyncProvision}
-            title="接続済みサーバーからプレイリストと曲を取り寄せる"
-          >
-            <Icon name="download" size={15} /> サーバーから取り寄せ
-          </button>
-          <button
-            className="cb-btn cb-btn-iconly primary"
-            onClick={handleImport}
-            disabled={importing}
-            title="Import an existing iTunes Library.xml"
-          >
-            <Icon name="download" size={16} />
-          </button>
-          <button
-            className="cb-btn cb-btn-iconly"
-            onClick={handleImportFiles}
-            disabled={importingFiles}
-            title="Add audio files to the library"
-          >
-            <Icon name="filePlus" size={16} />
-          </button>
-          <button
-            className="cb-btn cb-btn-iconly"
-            onClick={onOpenRipDialog}
-            title="Rip an audio CD"
-          >
-            <Icon name="disc" size={16} />
-          </button>
-          <button
-            className="cb-btn cb-btn-iconly"
-            onClick={onOpenRulesPanel}
-            title="Build playlists from YAML rules"
-          >
-            <Icon name="layers" size={16} />
-          </button>
-          <button
-            className={"cb-btn cb-btn-iconly" + (libraryRoot ? " on" : "")}
-            onClick={handleSetLibraryRoot}
-            title={
-              libraryRoot
-                ? `整理先 (編集時に自動でフォルダ分け): ${libraryRoot}\nクリックで変更`
-                : "整理先フォルダを設定 (未設定だと自動整理オフ)"
-            }
-          >
-            <Icon name="folderPlus" size={16} />
-          </button>
-          <button
-            className="cb-btn cb-btn-iconly"
-            onClick={handleExport}
-            disabled={exporting || (stats?.trackCount ?? 0) === 0}
-            title="Export library to iTunes-compatible XML"
-          >
-            <Icon name="upload" size={16} />
-          </button>
-          <button
-            className={"cb-btn cb-btn-iconly" + (autoExportEnabled ? " on" : "")}
-            onClick={handleToggleAutoExport}
-            title={
-              autoExportEnabled
-                ? `自動 XML エクスポート: ON\n${autoExportPath ?? ""}\n(変更時に約30分間隔＋終了時に自動書き出し)\nクリックで OFF`
-                : "iTunes 互換 XML を自動エクスポート (変更時のみ・約30分間隔＋終了時)"
-            }
-          >
-            <Icon name="clock" size={16} />
-          </button>
-          <button
-            className={"cb-btn cb-btn-iconly" + (rightRailVisible ? " on" : "")}
-            onClick={toggleRightRail}
-            title={
-              rightRailVisible
-                ? "右ペイン (Now Playing / Crate) を隠す"
-                : "右ペイン (Now Playing / Crate) を表示"
-            }
-          >
-            <Icon name="eye" size={16} />
-          </button>
-          <button
-            className="cb-btn cb-btn-iconly"
-            onClick={onOpenSettings}
-            title="設定"
-          >
-            <Icon name="settings" size={16} />
-          </button>
+            <button
+              className="cb-btn cb-btn-iconly cb-btn-q"
+              onClick={onOpenHelp}
+              title="キーボードショートカット一覧 (?)"
+              aria-label="キーボードショートカット一覧"
+            >
+              ?
+            </button>
+            <button
+              className="cb-btn cb-btn-iconly"
+              onClick={onOpenSettings}
+              title="設定"
+            >
+              <Icon name="settings" size={16} />
+            </button>
+          </div>
         </div>
 
         {pickerOpen && <ColumnPicker onClose={() => setPickerOpen(false)} />}

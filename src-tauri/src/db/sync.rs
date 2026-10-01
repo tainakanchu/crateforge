@@ -855,15 +855,8 @@ impl Database {
             tx.rollback()?;
             return Ok(false);
         }
-        tx.execute(
-            "DELETE FROM track_analysis WHERE persistent_id = ?1",
-            [persistent_id],
-        )?;
-        tx.execute(
-            "DELETE FROM sync_track WHERE persistent_id = ?1",
-            [persistent_id],
-        )?;
-        tx.execute("DELETE FROM tracks WHERE track_id = ?1", [track_id])?;
+        // 依存行の消し漏れを防ぐため、削除は共通ヘルパー 1 箇所に集約する。
+        super::tracks::delete_track_cascade(&tx, track_id)?;
         tx.commit()?;
         Ok(true)
     }

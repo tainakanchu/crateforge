@@ -73,6 +73,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     autoExportEnabled,
     autoExportPath,
     setAutoExport,
+    autoBackupEnabled,
+    setAutoBackupEnabled,
     pendingUpdate,
     setPendingUpdate,
   } = useStore();
@@ -115,6 +117,16 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [ffStatus, setFfStatus] = useState<FfmpegStatus | null>(null);
   const [ffBusy, setFfBusy] = useState(false);
   const [ffProgress, setFfProgress] = useState<string>("");
+
+  // library.db バックアップ / 復元 / 整合性チェック / VACUUM (#167)
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [integrityBusy, setIntegrityBusy] = useState(false);
+  const [vacuumBusy, setVacuumBusy] = useState(false);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  // 復元確認待ちのバックアップファイルパス（null なら確認モーダル非表示）。
+  const [restoreConfirmPath, setRestoreConfirmPath] = useState<string | null>(null);
+  // 復元完了後、再起動するまで表示する案内。
+  const [restoreDone, setRestoreDone] = useState(false);
 
   // updates
   const [checking, setChecking] = useState(false);
@@ -429,6 +441,93 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     setAutoExport(autoExportEnabled, picked);
   }, [autoExportEnabled, autoExportPath, setAutoExport]);
 
+  // Rust 側の既定バックアップファイル名 (library-YYYYMMDD-HHMMSS.db) と揃える。
+  const defaultBackupFilename = useCallback(() => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const y = now.getFullYear();
+    const m = pad(now.getMonth() + 1);
+    const d = pad(now.getDate());
+    const hh = pad(now.getHours());
+    const mm = pad(now.getMinutes());
+    const ss = pad(now.getSeconds());
+    return `library-${y}${m}${d}-${hh}${mm}${ss}.db`;
+  }, []);
+
+  const handleBackupNow = useCallback(async () => {
+    const picked = await save({
+      filters: [{ name: "SQLite Database", extensions: ["db"] }],
+      defaultPath: defaultBackupFilename(),
+    });
+    if (!picked) return;
+    setBackupBusy(true);
+    try {
+      const path = await libraryApi.backupLibrary(picked);
+      pushToast("success", `バックアップを保存しました: ${path}`);
+    } catch (err) {
+      pushToast("error", `バックアップに失敗しました: ${err}`);
+    } finally {
+      setBackupBusy(false);
+    }
+  }, [defaultBackupFilename, pushToast]);
+
+  const handlePickRestoreFile = useCallback(async () => {
+    const picked = await openDir({
+      directory: false,
+      multiple: false,
+      filters: [{ name: "SQLite Database", extensions: ["db"] }],
+    });
+    if (!picked || Array.isArray(picked)) return;
+    setRestoreConfirmPath(picked);
+  }, []);
+
+  const handleConfirmRestore = useCallback(async () => {
+    if (!restoreConfirmPath) return;
+    setRestoreBusy(true);
+    try {
+      const restartRequired = await libraryApi.restoreLibrary(restoreConfirmPath);
+      setRestoreConfirmPath(null);
+      if (restartRequired) {
+        setRestoreDone(true);
+      } else {
+        pushToast("success", "ライブラリを復元しました");
+      }
+    } catch (err) {
+      pushToast("error", `復元に失敗しました: ${err}`);
+    } finally {
+      setRestoreBusy(false);
+    }
+  }, [restoreConfirmPath, pushToast]);
+
+  const handleCheckIntegrity = useCallback(async () => {
+    setIntegrityBusy(true);
+    try {
+      const rows = await libraryApi.checkLibraryIntegrity();
+      const healthy = rows.length === 1 && rows[0] === "ok";
+      if (healthy) {
+        pushToast("success", "整合性チェック: 問題ありませんでした");
+      } else {
+        pushToast("error", `整合性チェックで問題が見つかりました: ${rows.join("; ")}`, 8000);
+      }
+    } catch (err) {
+      pushToast("error", `整合性チェックに失敗しました: ${err}`);
+    } finally {
+      setIntegrityBusy(false);
+    }
+  }, [pushToast]);
+
+  const handleVacuum = useCallback(async () => {
+    setVacuumBusy(true);
+    try {
+      await libraryApi.vacuumLibrary();
+      pushToast("success", "ライブラリを最適化しました");
+    } catch (err) {
+      pushToast("error", `最適化に失敗しました: ${err}`);
+    } finally {
+      setVacuumBusy(false);
+    }
+  }, [pushToast]);
+
   const handleDownloadFfmpeg = useCallback(async () => {
     setFfBusy(true);
     setFfProgress("");
@@ -501,6 +600,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   };
 
   return (
+    <>
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
@@ -585,6 +685,51 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     <option value="light">軽量（かな・全半角・大小のみ）</option>
                     <option value="off">オフ（完全一致・最速）</option>
                   </select>
+                </Row>
+
+                <div className="settings-sectitle">ライブラリのバックアップ</div>
+
+                <Row
+                  title="今すぐバックアップ"
+                  desc="解析結果・スキップ数・スマートプレイリストの条件・同期状態など、XML エクスポートには含まれないデータも含めて library.db 全体を保存します。"
+                >
+                  <button className="toolbar-btn" onClick={handleBackupNow} disabled={backupBusy}>
+                    <Icon name="save" size={14} /> {backupBusy ? "保存中…" : "今すぐバックアップ"}
+                  </button>
+                </Row>
+
+                <Row
+                  title="バックアップから復元"
+                  desc="選んだバックアップファイルで現在のライブラリを置き換えます。復元前に自動で整合性チェックを行います。"
+                >
+                  <button className="toolbar-btn" onClick={handlePickRestoreFile} disabled={restoreBusy}>
+                    <Icon name="folderOpen" size={14} /> バックアップから復元…
+                  </button>
+                </Row>
+
+                <Row
+                  title="整合性チェック"
+                  desc="library.db が壊れていないか検査します（PRAGMA integrity_check）。"
+                >
+                  <button className="toolbar-btn" onClick={handleCheckIntegrity} disabled={integrityBusy}>
+                    <Icon name="checkCircle" size={14} /> {integrityBusy ? "確認中…" : "整合性チェック"}
+                  </button>
+                </Row>
+
+                <Row
+                  title="最適化 (VACUUM)"
+                  desc="削除された分のディスク領域を回収し、ファイルを再編成します。曲数が多い場合は数秒〜数十秒かかることがあります。"
+                >
+                  <button className="toolbar-btn" onClick={handleVacuum} disabled={vacuumBusy}>
+                    <Icon name="sparkle" size={14} /> {vacuumBusy ? "最適化中…" : "最適化 (VACUUM)"}
+                  </button>
+                </Row>
+
+                <Row
+                  title="自動エクスポート時にあわせてバックアップ"
+                  desc="iTunes 互換 XML の自動エクスポートが成功したとき、あわせて library.db もバックアップします（直近5件を保持、30分未満の間隔ではスキップ）。"
+                >
+                  <Toggle on={autoBackupEnabled} onClick={() => setAutoBackupEnabled(!autoBackupEnabled)} />
                 </Row>
               </>
             )}
@@ -1127,6 +1272,84 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
         </div>
       </div>
     </div>
+
+    {restoreConfirmPath && (
+      <div
+        className="modal-overlay"
+        onClick={() => !restoreBusy && setRestoreConfirmPath(null)}
+      >
+        <div className="modal restore-confirm-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <h2>
+              <Icon name="warning" size={16} /> バックアップから復元しますか？
+            </h2>
+            <button
+              className="modal-close"
+              onClick={() => setRestoreConfirmPath(null)}
+              disabled={restoreBusy}
+            >
+              <Icon name="x" size={16} />
+            </button>
+          </div>
+          <div className="modal-body">
+            <p>
+              現在のライブラリを、選択したバックアップで置き換えます。この操作は元に戻せません。
+            </p>
+            <p className="settings-path" title={restoreConfirmPath}>
+              {restoreConfirmPath}
+            </p>
+            <p className="settings-rowdesc">
+              復元の前にバックアップファイルの整合性チェックを自動で行います。壊れている場合は復元されません。
+            </p>
+          </div>
+          <div className="modal-footer">
+            <button
+              className="toolbar-btn"
+              onClick={() => setRestoreConfirmPath(null)}
+              disabled={restoreBusy}
+            >
+              キャンセル
+            </button>
+            <button
+              className="toolbar-btn danger"
+              onClick={handleConfirmRestore}
+              disabled={restoreBusy}
+            >
+              {restoreBusy ? "復元中…" : "復元する"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {restoreDone && (
+      <div className="modal-overlay">
+        <div className="modal restore-confirm-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <h2>
+              <Icon name="checkCircle" size={16} /> 復元が完了しました
+            </h2>
+          </div>
+          <div className="modal-body">
+            <p>
+              ライブラリを復元しました。一部の状態はアプリ起動時にのみ読み込まれるため、変更を完全に反映するにはアプリの再起動が必要です。
+            </p>
+          </div>
+          <div className="modal-footer">
+            <button
+              className="toolbar-btn primary"
+              onClick={() => {
+                setRestoreDone(false);
+                onClose();
+              }}
+            >
+              閉じる（手動で再起動してください）
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 

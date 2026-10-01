@@ -48,12 +48,19 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 ### 寫入（中繼資料）
 
 - `PATCH /api/tracks/{id}` — 部分更新 name / artist / album / genre / year / bpm / rating / composer / comments 等。
-  name / artist / album / genre / year / composer / comments 會寫回實際檔案的標籤，`bpm` / `rating` / `disabled` / `playCount` / `skipCount` 僅寫入 DB。
+  name / artist / album / genre / year / composer / comments 會寫回實際檔案的標籤，`rating` / `disabled` / `playCount` / `skipCount` 僅寫入 DB。
 - `PATCH /api/tracks`（`{trackIds, edit}`） — 多曲一次更新。
 - `POST /api/tracks/genre-tags/add` / `/remove` — 對類型標籤在尾端批次增減。
 
 中繼資料的寫入除了更新 DB 之外，還會 **寫回實際檔案的 ID3 / Vorbis / MP4 標籤**（不移動資料夾，僅更新標籤），
-並即時反映到 GUI。
+並即時反映到 GUI。寫回的處理與桌面 GUI 的編輯共用同一條路徑。
+
+寫回的內容也包含 **BPM** 與 **Key**（與桌面端的編輯相同）。
+
+- **BPM** — 以整數寫入 TBPM（ID3v2）/ tmpo（MP4）/ `BPM`（Vorbis Comments）。
+  優先採用曲目自身的 BPM，未設定時則採用解析結果。
+- **Key** — 將解析結果的調性寫入 **InitialKey**（ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY），
+  使用音樂記法（例如 `Am`）而非 Camelot。
 
 ### 播放清單
 
@@ -87,3 +94,8 @@ iOS 可用 **「加入主畫面」全螢幕應用程式化（PWA）**。
 遙控具備 **播放 / 暫停、前後、搜尋、音量滑桿、隨機播放 / 重複播放的切換**，
 狀態以 `GET /api/remote/state`（含 音量 / 隨機播放 / 重複播放）取得，操作以 `POST /api/remote/*`
 （`play` / `pause` / `resume` / `next` / `prev` / `seek` / `volume` / `shuffle` / `repeat` 等）進行。
+
+Web UI 也具備接近桌面本體的 **鍵盤快捷鍵**，按 `?` 可開啟一覽
+（`Space` 播放 / 暫停、`J` / `K` 上一首 / 下一首、`Shift + ←` / `Shift + →` 5 秒搜尋、`S` 隨機播放、`R` 重複播放、
+`Ctrl + ↑` / `Ctrl + ↓` 音量、`/` 與 `Ctrl + F` 搜尋、`Ctrl + L` 返回音樂庫、`↑` / `↓` 移動清單選取）。
+即使在「在此裝置播放」時，也能從 Web UI 操作隨機播放 / 重複播放 / 音量。

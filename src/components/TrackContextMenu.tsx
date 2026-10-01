@@ -17,6 +17,10 @@ interface TrackContextMenuProps {
   recentPlaylists: Playlist[];
   /** プレイリスト表示中で「このプレイリストから削除」を出すか */
   showRemoveFromPlaylist: boolean;
+  /** 「Finder / エクスプローラで表示」の対象パス。null なら項目を無効表示にする */
+  revealPath: string | null;
+  /** 「ライブラリから削除…」の対象曲数（選択件数。1 以上で項目を出す） */
+  deleteCount: number;
   onClose: () => void;
   onPlay: () => void;
   onSetRating: (stars: number) => void;
@@ -28,6 +32,8 @@ interface TrackContextMenuProps {
   onConvert: () => void;
   onGetInfo: () => void;
   onRemoveFromPlaylist: () => void;
+  onReveal: () => void;
+  onDelete: () => void;
   onAddToPlaylist: (playlistId: number) => void;
   onAddTag: () => void;
   onRemoveTag: (tag: string) => void;
@@ -51,6 +57,9 @@ function folderPath(playlists: Playlist[], p: Playlist): string {
   return names.join(" / ");
 }
 
+/** macOS は Finder、他 OS はファイルマネージャ。UI では両方を出して迷わせない。 */
+const REVEAL_LABEL = "Finder / エクスプローラで表示";
+
 const FLY_W = 240;
 const FLY_H = 360;
 
@@ -63,6 +72,8 @@ export function TrackContextMenu({
   playlists,
   recentPlaylists,
   showRemoveFromPlaylist,
+  revealPath,
+  deleteCount,
   onClose,
   onPlay,
   onSetRating,
@@ -74,6 +85,8 @@ export function TrackContextMenu({
   onConvert,
   onGetInfo,
   onRemoveFromPlaylist,
+  onReveal,
+  onDelete,
   onAddToPlaylist,
   onAddTag,
   onRemoveTag,
@@ -102,13 +115,16 @@ export function TrackContextMenu({
   // ── メニュー項目（フォーカス可能なものだけ）を上から順に id 化 ──
   const navIds = useMemo(() => {
     const ids = ["play", "rating", "crate", "playnext", "queue", "analyze", "similar", "convert", "info"];
+    // ファイルが無い曲では「表示」できないので、キーボード移動の対象からも外す。
+    if (revealPath) ids.push("reveal");
     if (showRemoveFromPlaylist) ids.push("remove");
+    if (deleteCount > 0) ids.push("delete");
     for (const p of recentPlaylists) ids.push(`recent:${p.playlistId}`);
     ids.push("playlist");
     ids.push("addtag");
     for (const t of genreTags) ids.push(`tag:${t}`);
     return ids;
-  }, [showRemoveFromPlaylist, recentPlaylists, genreTags]);
+  }, [revealPath, showRemoveFromPlaylist, deleteCount, recentPlaylists, genreTags]);
 
   const idxOf = useCallback((id: string) => navIds.indexOf(id), [navIds]);
   const activeId = navIds[activeIndex] ?? navIds[0];
@@ -167,6 +183,9 @@ export function TrackContextMenu({
       if (id === "convert") return run(onConvert)();
       if (id === "info") return run(onGetInfo)();
       if (id === "remove") return run(onRemoveFromPlaylist)();
+      if (id === "reveal") return run(onReveal)();
+      // 削除は確認モーダルを開くだけなので、メニューは閉じずに呼び出し側へ委ねる。
+      if (id === "delete") return run(onDelete)();
       if (id === "addtag") return run(onAddTag)();
       if (id.startsWith("recent:")) {
         return run(() => onAddToPlaylist(Number(id.slice(7))))();
@@ -175,7 +194,7 @@ export function TrackContextMenu({
         return run(() => onRemoveTag(id.slice(4)))();
       }
     },
-    [run, onPlay, onAddToCrate, onPlayNext, onEnqueue, onAnalyze, onFindSimilar, onConvert, onGetInfo, onRemoveFromPlaylist, onAddTag, onAddToPlaylist, onRemoveTag],
+    [run, onPlay, onAddToCrate, onPlayNext, onEnqueue, onAnalyze, onFindSimilar, onConvert, onGetInfo, onRemoveFromPlaylist, onReveal, onDelete, onAddTag, onAddToPlaylist, onRemoveTag],
   );
 
   const openSubmenu = useCallback(() => {
@@ -385,10 +404,38 @@ export function TrackContextMenu({
       <div {...itemProps("info")} onClick={run(onGetInfo)}>
         <Icon name="info" size={14} /> Get Info / Edit
       </div>
+      {/* Finder / エクスプローラで表示（単曲・ファイルがある場合のみ有効） */}
+      {revealPath ? (
+        <div {...itemProps("reveal")} onClick={run(onReveal)}>
+          <Icon name="folderOpen" size={14} /> {REVEAL_LABEL}
+        </div>
+      ) : (
+        <div className="context-menu-item disabled" title="ファイルが見つかりません">
+          <Icon name="folderOpen" size={14} /> {REVEAL_LABEL}
+        </div>
+      )}
       {showRemoveFromPlaylist && (
         <div {...itemProps("remove")} onClick={run(onRemoveFromPlaylist)}>
           <Icon name="minus" size={14} /> Remove from this playlist
         </div>
+      )}
+
+      {/* ライブラリからの削除（破壊的操作なので区切って最後に、確認モーダル付き） */}
+      {deleteCount > 0 && (
+        <>
+          <div className="context-menu-divider" />
+          <div
+            {...itemProps("delete")}
+            className={"context-menu-item danger" + (activeId === "delete" ? " active" : "")}
+            onClick={run(onDelete)}
+          >
+            <Icon name="trash" size={14} />
+            <span className="ell">
+              ライブラリから削除…
+              {deleteCount > 1 ? `（${deleteCount} 曲）` : ""}
+            </span>
+          </div>
+        </>
       )}
 
       <div className="context-menu-divider" />

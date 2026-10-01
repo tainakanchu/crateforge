@@ -48,12 +48,19 @@ It exposes a REST API for reading and writing the library, analysis data, and pl
 ### Write (metadata)
 
 - `PATCH /api/tracks/{id}` — partially update name / artist / album / genre / year / bpm / rating / composer / comments, etc.
-  name / artist / album / genre / year / composer / comments are also reflected in the actual file's tags, while `bpm` / `rating` / `disabled` / `playCount` / `skipCount` are DB-only.
+  name / artist / album / genre / year / composer / comments are also reflected in the actual file's tags, while `rating` / `disabled` / `playCount` / `skipCount` are DB-only.
 - `PATCH /api/tracks` (`{trackIds, edit}`) — bulk-update multiple tracks.
 - `POST /api/tracks/genre-tags/add` / `/remove` — add or remove genre tags at the end in bulk.
 
 Metadata writes, in addition to updating the DB, are **written back to the actual file's ID3 / Vorbis / MP4 tags** (tags only, without moving folders),
-and are reflected in the GUI immediately.
+and are reflected in the GUI immediately. The write-back path is shared with editing in the desktop GUI.
+
+**BPM** and **Key** are part of the write-back too (exactly as when editing on the desktop).
+
+- **BPM** — written as an integer to TBPM (ID3v2) / tmpo (MP4) / `BPM` (Vorbis Comments).
+  The track's own BPM takes priority, falling back to the analysis result.
+- **Key** — the analyzed key is written to **InitialKey** (ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY)
+  in musical notation (`Am`, etc.) rather than Camelot.
 
 ### Playlists
 
@@ -87,3 +94,8 @@ On iOS, you can make it a full-screen app (**PWA**) with **"Add to Home Screen."
 The remote has **play / pause, previous/next, seek, a volume slider, and shuffle / repeat toggles**,
 with state via `GET /api/remote/state` (including volume / shuffle / repeat) and operations via `POST /api/remote/*`
 (`play` / `pause` / `resume` / `next` / `prev` / `seek` / `volume` / `shuffle` / `repeat`, etc.).
+
+The web UI has **keyboard shortcuts** close to the desktop app, and `?` opens the list
+(`Space` play / pause, `J` / `K` previous / next, `Shift + ←` / `Shift + →` seek 5 seconds, `S` shuffle, `R` repeat,
+`Ctrl + ↑` / `Ctrl + ↓` volume, `/` and `Ctrl + F` search, `Ctrl + L` back to the library, `↑` / `↓` to move the list selection).
+Shuffle / repeat / volume can be controlled from the web UI while "Play on this device" is active as well.

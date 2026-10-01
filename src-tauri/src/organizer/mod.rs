@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
-use lofty::tag::{Accessor, ItemKey, Tag};
+use lofty::tag::{Accessor, ItemKey, Tag, TagType};
 
 /// Windows / iTunes が許さないパス文字。各々 `_` に置換する。
 const FORBIDDEN: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
@@ -195,6 +195,17 @@ pub fn target_path(root: &Path, meta: &TrackMeta, source: &Path) -> PathBuf {
     root.join(artist_dir).join(album_dir).join(file_name)
 }
 
+/// 整理先ルートが設定されているときだけ relocate 先パスを返す。
+///
+/// 「タグをファイルへ書き戻す」ことと「ファイルを整理先へ移動する」ことを
+/// 分離するための判定関数 (#163)。ルート未設定 (`None` / 空白のみ) は
+/// 「整理しない」を意味する `None` を返し、呼び出し側はファイルを移動せず
+/// タグ書き戻しだけを行う。
+pub fn organize_target(root: Option<&str>, meta: &TrackMeta, source: &Path) -> Option<PathBuf> {
+    let root = root.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(target_path(Path::new(root), meta, source))
+}
+
 /// 既存の別ファイルと衝突する場合 ` (2)` などを付けて回避する。
 pub(crate) fn resolve_collision(target: &Path, source: &Path) -> PathBuf {
     if !target.exists() {
@@ -278,6 +289,82 @@ pub struct TagWrite<'a> {
     pub disc_number: Option<i64>,
     pub disc_count: Option<i64>,
     pub compilation: Option<bool>,
+    /// BPM。整数へ丸めて書き込む (タグ側が整数しか持てないため)。
+    pub bpm: Option<f64>,
+    /// キー。音楽表記 ("Am" / "F#m" / "C") を `InitialKey` へ書く。
+    /// Camelot ("8A") は DJ ソフトが解釈しないので書かない。
+    /// 空文字を渡すとキーごと除去する (クリア)。
+    pub key: Option<String>,
+}
+
+/// 解析結果の `key_name` ("A minor" / "F# major") を、DJ ソフトが読む
+/// `InitialKey` の表記 ("Am" / "F#") へ変換する。解釈できなければ `None`。
+///
+/// rekordbox / Serato / Traktor は TKEY 等に入る **音楽表記** を読む。
+/// Camelot ("8A") はそのまま書いても解釈されないため、この関数は
+/// 音名で始まらない入力 (Camelot を含む) を `None` として弾く。
+pub fn key_name_to_initial_key(key_name: &str) -> Option<String> {
+    let s = key_name.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let mut parts = s.split_whitespace();
+    let tonic_raw = parts.next()?;
+    let quality_raw = parts.next();
+    // 3 語以上 ("A minor something") は解釈しない。
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let mut chars = tonic_raw.chars();
+    // 1 文字目は音名 A..G のみ。数字始まり (Camelot "8A") はここで弾かれる。
+    let letter = chars.next()?.to_ascii_uppercase();
+    if !letter.is_ascii_alphabetic() || !('A'..='G').contains(&letter) {
+        return None;
+    }
+    let rest: Vec<char> = chars.collect();
+
+    // 変化記号 (# / b、ユニコードの ♯ / ♭ も受ける)。
+    let mut idx = 0;
+    let accidental = match rest.first() {
+        Some('#' | '\u{266f}') => {
+            idx = 1;
+            "#"
+        }
+        Some('b' | '\u{266d}') => {
+            idx = 1;
+            "b"
+        }
+        _ => "",
+    };
+
+    let minor = match quality_raw {
+        // "A minor" 形式。残りは音名 + 変化記号だけのはず。
+        Some(q) => {
+            if rest.len() != idx {
+                return None;
+            }
+            match q {
+                "M" => false,
+                _ => match q.to_ascii_lowercase().as_str() {
+                    "minor" | "min" | "m" => true,
+                    "major" | "maj" => false,
+                    _ => return None,
+                },
+            }
+        }
+        // "Am" / "C" のような 1 語形式。
+        None => match rest.get(idx) {
+            None => false,
+            Some('m' | 'M') if rest.len() == idx + 1 => rest[idx] == 'm',
+            _ => return None,
+        },
+    };
+
+    Some(format!(
+        "{letter}{accidental}{}",
+        if minor { "m" } else { "" }
+    ))
 }
 
 /// lofty で実ファイルのプライマリタグを更新して保存する。
@@ -360,10 +447,60 @@ pub fn write_tags(path: &Path, w: &TagWrite) -> Result<(), String> {
         );
     }
 
+    if let Some(b) = w.bpm {
+        // BPM の ItemKey はフォーマットで分かれる。ID3v2 (TBPM) / MP4 (tmpo) は
+        // 整数の `IntegerBpm`、Vorbis Comments (FLAC/Ogg) は "BPM" に対応する `Bpm`。
+        // lofty はマッピングの無い ItemKey を黙って捨てるため、タグ種別で選ぶ。
+        let rounded = b.round();
+        if rounded >= 1.0 {
+            let key = match tag.tag_type() {
+                TagType::VorbisComments => ItemKey::Bpm,
+                _ => ItemKey::IntegerBpm,
+            };
+            tag.insert_text(key, format!("{}", rounded as i64));
+        }
+    }
+    if let Some(ref k) = w.key {
+        // rekordbox / Serato / Traktor が読む InitialKey
+        // (ID3v2 TKEY / MP4 ----:com.apple.iTunes:initialkey / Vorbis INITIALKEY)。
+        // 値は音楽表記 ("Am" 等)。空文字はキーごと除去 (クリア)。
+        if k.is_empty() {
+            tag.remove_key(&ItemKey::InitialKey);
+        } else {
+            tag.insert_text(ItemKey::InitialKey, k.clone());
+        }
+    }
+
     tagged
         .save_to_path(path, WriteOptions::default())
         .map_err(|e| format!("save tags failed: {e}"))?;
     Ok(())
+}
+
+/// DB の `location_path` が指す実ファイルへタグを書き戻す。
+///
+/// パスが無い / 空 / ファイルが存在しない場合は何もしない (= 失敗ではない)。
+/// 書き込みを試みて失敗したときだけ `true` を返す (呼び出し側は
+/// `fileWriteFailed` として利用者へ伝える)。
+///
+/// この関数は整理 (フォルダ移動) を一切行わない。移動は整理先ルートが
+/// 設定されている場合にのみ [`organize_target`] + [`relocate`] で別途行う。
+/// GUI コマンドと HTTP API の双方がこの 1 か所を呼ぶことで、
+/// 「整理先未設定だとタグが書き戻されない」差異をなくす (#163)。
+pub fn write_tags_to_location(loc: Option<&str>, w: &TagWrite) -> bool {
+    let Some(loc) = loc else { return false };
+    if loc.trim().is_empty() {
+        return false;
+    }
+    let path = Path::new(loc);
+    if !path.exists() {
+        return false;
+    }
+    if let Err(e) = write_tags(path, w) {
+        eprintln!("write_tags failed for {loc}: {e}");
+        return true;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -578,6 +715,81 @@ mod tests {
         );
         let p = target_path(root, &m, src);
         assert_eq!(p, Path::new("/lib/Compilations/Hits/03 Hit.mp3"));
+    }
+
+    #[test]
+    fn organize_target_is_none_without_root() {
+        // #163: 整理先ルート未設定なら「移動しない」。
+        // (タグ書き戻しはこの判定とは独立に常に行われる)
+        let src = Path::new("/in/x.mp3");
+        let m = meta(Some("Song"), Some("A"), None, Some("Alb"), false, Some(1));
+        assert_eq!(organize_target(None, &m, src), None);
+        assert_eq!(organize_target(Some(""), &m, src), None);
+        assert_eq!(organize_target(Some("   "), &m, src), None);
+    }
+
+    #[test]
+    fn organize_target_matches_target_path_with_root() {
+        // ルートが設定されている場合の挙動は target_path と完全に同じ。
+        let src = Path::new("/in/x.mp3");
+        let m = meta(Some("Song"), Some("A"), None, Some("Alb"), false, Some(1));
+        assert_eq!(
+            organize_target(Some("/lib"), &m, src),
+            Some(PathBuf::from("/lib/A/Alb/01 Song.mp3"))
+        );
+        // 前後の空白は落として扱う。
+        assert_eq!(
+            organize_target(Some(" /lib "), &m, src),
+            Some(target_path(Path::new("/lib"), &m, src))
+        );
+    }
+
+    #[test]
+    fn key_name_to_initial_key_converts_analyzer_output() {
+        // analyzer/features.rs の key_name は "<音名> <minor|major>" 形式。
+        assert_eq!(key_name_to_initial_key("A minor").as_deref(), Some("Am"));
+        assert_eq!(key_name_to_initial_key("C major").as_deref(), Some("C"));
+        assert_eq!(key_name_to_initial_key("F# minor").as_deref(), Some("F#m"));
+        assert_eq!(key_name_to_initial_key("D# major").as_deref(), Some("D#"));
+        assert_eq!(key_name_to_initial_key(" G  minor ").as_deref(), Some("Gm"));
+        // フラット表記も受ける。
+        assert_eq!(key_name_to_initial_key("Bb minor").as_deref(), Some("Bbm"));
+    }
+
+    #[test]
+    fn key_name_to_initial_key_accepts_compact_forms() {
+        assert_eq!(key_name_to_initial_key("Am").as_deref(), Some("Am"));
+        assert_eq!(key_name_to_initial_key("am").as_deref(), Some("Am"));
+        assert_eq!(key_name_to_initial_key("C").as_deref(), Some("C"));
+        assert_eq!(key_name_to_initial_key("f#m").as_deref(), Some("F#m"));
+        assert_eq!(key_name_to_initial_key("Bb").as_deref(), Some("Bb"));
+    }
+
+    #[test]
+    fn key_name_to_initial_key_rejects_camelot_and_garbage() {
+        // Camelot は DJ ソフトが InitialKey として解釈しないので弾く。
+        assert_eq!(key_name_to_initial_key("8A"), None);
+        assert_eq!(key_name_to_initial_key("12B"), None);
+        assert_eq!(key_name_to_initial_key(""), None);
+        assert_eq!(key_name_to_initial_key("   "), None);
+        assert_eq!(key_name_to_initial_key("Unknown"), None);
+        assert_eq!(key_name_to_initial_key("H minor"), None);
+        assert_eq!(key_name_to_initial_key("A dorian"), None);
+        assert_eq!(key_name_to_initial_key("A minor ish"), None);
+    }
+
+    #[test]
+    fn write_tags_to_location_skips_missing_paths() {
+        // パス無し / 空 / 実体無し は「書き込み失敗」ではない。
+        let w = TagWrite::default();
+        assert!(!write_tags_to_location(None, &w));
+        assert!(!write_tags_to_location(Some(""), &w));
+        assert!(!write_tags_to_location(Some("   "), &w));
+        let missing = unique_tmp_dir().join("nope.mp3");
+        assert!(!write_tags_to_location(
+            Some(&missing.to_string_lossy()),
+            &w
+        ));
     }
 
     #[test]
