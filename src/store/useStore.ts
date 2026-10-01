@@ -6,6 +6,7 @@ import type {
   Playlist,
   PlaybackState,
   ViewMode,
+  SearchScope,
   DisplayMode,
   CoverSize,
   RailTab,
@@ -20,7 +21,12 @@ import type {
   CrateSection,
   AnchorKind,
 } from "../types";
-import { DEFAULT_FIELDS, ALBUM_SORT_FIELDS, DEFAULT_SET_META } from "../types";
+import {
+  DEFAULT_FIELDS,
+  ALBUM_SORT_FIELDS,
+  ARTIST_SORT_FIELDS,
+  DEFAULT_SET_META,
+} from "../types";
 import {
   loadSetWorkspacePersist,
   saveSetWorkspacePersist,
@@ -37,6 +43,26 @@ export interface Toast {
   durationMs: number;
 }
 
+// Similar (dig) タブの絞り込み条件。セッションをまたいで保持する (#151)。
+/** BPM 許容（サーバー opts）。null = off。 */
+export type BpmTolOpt = 0.04 | 0.08 | 0.12 | null;
+export interface SimilarFilters {
+  harmonic: boolean;
+  bpmTol: BpmTolOpt;
+  energyClose: boolean;
+  excludeInCrate: boolean;
+  excludeSameArtist: boolean;
+  ratingMinOn: boolean;
+}
+export const DEFAULT_SIMILAR_FILTERS: SimilarFilters = {
+  harmonic: true,
+  bpmTol: 0.08,
+  energyClose: false,
+  excludeInCrate: true,
+  excludeSameArtist: false,
+  ratingMinOn: false,
+};
+
 // CD リッピング進捗 — セッション専用・永続化しない
 export type RipPhase = "ripping" | "done" | "error";
 export interface RipStatus {
@@ -49,6 +75,16 @@ export interface RipStatus {
   addedTracks?: number;
   error?: string;
 }
+
+// スコープ別ソート (#160)。"library" / "inbox" / "recent" / "artists" /
+// `playlist:${id}` (= ViewMode) をキーに、ビューごとに最後に選んだソートを個別に覚える。
+// "playlistOrder"（プレイリストの手動順・疑似フィールド）はここには書かない —
+// 通常プレイリストを List 表示したときの既定値として動的に導出する（defaultSortForScope）。
+export interface SortByScopeEntry {
+  field: SortField;
+  order: SortOrder;
+}
+export type SortByScope = Record<string, SortByScopeEntry>;
 
 interface PersistedSettings {
   fields: FieldKey[];
@@ -67,8 +103,7 @@ interface PersistedSettings {
   rowH: number;
   coverSize: CoverSize;
   displayMode: DisplayMode;
-  sortField: SortField;
-  sortOrder: SortOrder;
+  sortByScope: SortByScope;
   volume: number;
   shuffle: boolean;
   repeat: RepeatMode;
@@ -81,13 +116,27 @@ interface PersistedSettings {
   // iTunes 互換 XML の自動エクスポート
   autoExportEnabled: boolean;
   autoExportPath: string | null;
+  // 自動エクスポート成功時に library.db もあわせてバックアップするか (#167)。既定 true。
+  autoBackupEnabled: boolean;
   ripFormat: EncodeFormat;
   ripOutputDir: string | null;
   // サーバーから取り寄せる際に最後に選んだ保存先。
   lastSyncDestRoot: string | null;
-  // Audition モード (波形強調・ジャンプキー)。設定として永続化可。
-  auditionMode: boolean;
+  // Similar タブの絞り込み条件 (#151)。
+  similarFilters: SimilarFilters;
+  // 表示状態 (#160): 次回起動時に復元する直近のビュー / 選択プレイリスト / 絞り込みチップ。
+  viewMode: ViewMode;
+  selectedPlaylistId: number | null;
+  filterTags: string[];
+  // 右ペインの Set tools (Arc / Lint) 開閉状態 (#160)。
+  setToolsOpen: boolean;
 }
+
+/// Artists ビューでしか意味を持たないソートフィールド (#155)。
+/// 他スコープにこの値が入っていたら resolveSort が既定へ倒す。
+const ARTIST_ONLY_SORT_FIELDS: SortField[] = ARTIST_SORT_FIELDS.filter(
+  (f) => f !== "name",
+);
 
 // 「前回入れたプレイリスト」ショートカットで保持する件数
 const MAX_RECENT_PLAYLISTS = 3;
@@ -97,18 +146,50 @@ export const RIGHT_RAIL_WIDTH_DEFAULT = 348;
 export const RIGHT_RAIL_WIDTH_MIN = 280;
 export const RIGHT_RAIL_WIDTH_MAX = 560;
 
+// App シェルの他カラム幅（#146）。.app の grid-template-columns (styles.css) と対応させる。
+// サイドバー固定幅 + センター（トラック表）が潰れないための最小幅。
+export const SIDEBAR_WIDTH = 202;
+export const CENTER_MIN_WIDTH = 420;
+
 function clampRightRailWidth(w: number): number {
   if (!Number.isFinite(w)) return RIGHT_RAIL_WIDTH_DEFAULT;
   return Math.min(RIGHT_RAIL_WIDTH_MAX, Math.max(RIGHT_RAIL_WIDTH_MIN, Math.round(w)));
 }
 
+/**
+ * 右ペイン幅をウィンドウ幅に応じてクランプする（#146）。
+ * サイドバー(SIDEBAR_WIDTH) とセンター最小幅(CENTER_MIN_WIDTH) を確保した残りを
+ * 上限とし、RIGHT_RAIL_WIDTH_MIN/MAX の範囲内に収める。
+ * 常に RIGHT_RAIL_WIDTH_MIN 以上は返す（ウィンドウが極端に狭い場合はセンターが
+ * その分圧迫される）。viewportWidth 省略時は window.innerWidth を使い、
+ * window が無い環境（テスト等）では従来どおり MIN/MAX のみでクランプする。
+ */
+export function clampRailWidthToViewport(
+  w: number,
+  viewportWidth: number = typeof window !== "undefined" ? window.innerWidth : Infinity,
+): number {
+  const width = Number.isFinite(w) ? w : RIGHT_RAIL_WIDTH_DEFAULT;
+  const dynamicMax = viewportWidth - SIDEBAR_WIDTH - CENTER_MIN_WIDTH;
+  const effectiveMax = Math.max(
+    RIGHT_RAIL_WIDTH_MIN,
+    Math.min(RIGHT_RAIL_WIDTH_MAX, dynamicMax),
+  );
+  return Math.min(effectiveMax, Math.max(RIGHT_RAIL_WIDTH_MIN, Math.round(width)));
+}
+
 interface AppState extends PersistedSettings {
-  // View
-  viewMode: ViewMode;
-  selectedPlaylistId: number | null;
+  // View（viewMode / selectedPlaylistId / filterTags は PersistedSettings 側で永続化 #160）
+  /**
+   * 現在のスコープで有効なソート（sortByScope から導出されるミラー値）。
+   * 読み取りは従来どおりこの 2 フィールドで OK — 書き込みは setSort 系アクション経由で
+   * 現在スコープの sortByScope エントリを更新し、ここへ反映する。
+   */
+  sortField: SortField;
+  sortOrder: SortOrder;
   searchQuery: string;
-  // ジャンル等の絞り込みチップ（フリーテキスト検索と AND 結合、セッション内のみ）
-  filterTags: string[];
+  // 検索スコープ。プレイリスト表示中のみ意味を持ち、"playlist" ならそのプレイリストの
+  // 中だけを、"library" ならライブラリ全体を検索する（セッション内のみ）。
+  searchScope: SearchScope;
 
   // Data
   tracks: Track[];
@@ -139,6 +220,10 @@ interface AppState extends PersistedSettings {
   // 「閉じるときに更新」が予約されていれば、そのインストーラ URL とバージョン。
   pendingUpdate: { url: string; version: string } | null;
 
+  // Audition モード (波形強調・ジャンプキー) — セッション状態。
+  // 起動ごとに OFF から始める（永続化すると解除口が分からず閉じ込められる #150）。
+  auditionMode: boolean;
+
   // Audition Preview セッション — 永続化しない。
   // previewActive: 単曲プレビュー中 (Esc で復帰可能)
   // previewReturn: プレビュー開始前の曲・位置
@@ -160,10 +245,13 @@ interface AppState extends PersistedSettings {
   setViewMode: (mode: ViewMode) => void;
   setSelectedPlaylistId: (id: number | null) => void;
   setSearchQuery: (query: string) => void;
+  setSearchScope: (scope: SearchScope) => void;
   addFilterTag: (tag: string) => void;
   removeFilterTag: (tag: string) => void;
   clearFilterTags: () => void;
   setTracks: (tracks: Track[]) => void;
+  /** 選択を保ったまま表示中の tracks を差し替える（プレイリストの手動並べ替え用）。 */
+  setTracksKeepSelection: (tracks: Track[]) => void;
   appendTracks: (tracks: Track[]) => void;
   setAlbums: (albums: AlbumRow[]) => void;
   appendAlbums: (albums: AlbumRow[]) => void;
@@ -179,11 +267,16 @@ interface AppState extends PersistedSettings {
   // Crate
   setRailTab: (tab: RailTab) => void;
   addToCrate: (track: Track) => void;
+  /** 複数曲を 1 回の更新で Crate に追加する (重複は Set で O(N) 除去)。 */
+  addTracksToCrate: (tracks: Track[]) => void;
   removeFromCrate: (trackId: number) => void;
   reorderCrate: (from: number, to: number) => void;
   setCrateOrder: (ids: number[]) => void;
   clearCrate: () => void;
-  /** 永続 ID 列から crate を復元（空のときのみ App から呼ぶ想定）。 */
+  /**
+   * 永続 ID 列から crate を復元する。
+   * 既に曲がある場合は永続順を優先し、再水和中に足された曲は末尾へマージする。
+   */
   restoreCrateTracks: (tracks: Track[]) => void;
 
   // Set Workspace
@@ -214,6 +307,10 @@ interface AppState extends PersistedSettings {
   setSortField: (field: SortField) => void;
   setSortOrder: (order: SortOrder) => void;
   toggleSort: (field: SortField) => void;
+  /** 現在のスコープ（library / inbox / recent / artists / playlist:id）へ直接書き込む。 */
+  setSort: (field: SortField, order: SortOrder) => void;
+  /** 右ペインの Set tools (Arc / Lint) 開閉を切り替える (#160)。 */
+  setSetToolsOpen: (open: boolean) => void;
   setVolume: (v: number) => void;
   setShuffle: (on: boolean) => void;
   setRepeat: (mode: RepeatMode) => void;
@@ -221,6 +318,7 @@ interface AppState extends PersistedSettings {
   pushRecentPlaylist: (id: number) => void;
   toggleFolder: (id: number) => void;
   setAutoExport: (enabled: boolean, path: string | null) => void;
+  setAutoBackupEnabled: (enabled: boolean) => void;
   setRipFormat: (f: EncodeFormat) => void;
   setRipOutputDir: (dir: string | null) => void;
   setLastSyncDestRoot: (dir: string | null) => void;
@@ -233,7 +331,13 @@ interface AppState extends PersistedSettings {
   setRipStatus: (s: RipStatus | null) => void;
   appendRipLog: (line: string) => void;
   clearRipStatus: () => void;
-  setSimilarBase: (trackId: number | null) => void;
+  /**
+   * Similar の基準曲を設定する。
+   * focus: true のときだけ右ペインを Similar タブへ切り替える
+   * (コンテキストメニューの「Find similar」など明示的な操作のみ)。
+   */
+  setSimilarBase: (trackId: number | null, opts?: { focus?: boolean }) => void;
+  setSimilarFilters: (patch: Partial<SimilarFilters>) => void;
   setPendingUpdate: (v: { url: string; version: string } | null) => void;
 
   // Audition / Preview
@@ -272,18 +376,171 @@ const initialSetWorkspace = (() => {
   }
 })();
 
+// 再水和完了前は localStorage へ書かない（空 crate で trackIds を消さないため）。
+let setWorkspaceHydrationDone = false;
+// API 失敗などで restore できなかった場合に、空 crate でも以前の ids を保持する。
+let preservedCrateTrackIds: number[] | null = null;
+
+/**
+ * Set Workspace 再水和の完了を宣言する。
+ * `preservePersistedTrackIds` 時は現在の localStorage crateTrackIds を退避し、
+ * crate が空のままでも以降の persist で上書き消去しない。
+ * 完了後に現在 state を一度 flush する（ゲート中に prune された anchors 等を LS へ反映）。
+ */
+export function markSetWorkspaceHydrationDone(options?: {
+  preservePersistedTrackIds?: boolean;
+}): void {
+  if (options?.preservePersistedTrackIds) {
+    try {
+      preservedCrateTrackIds = loadSetWorkspacePersist().crateTrackIds;
+    } catch {
+      // load 失敗時は既存の preserved を触らない
+    }
+  }
+  setWorkspaceHydrationDone = true;
+  // 呼び出し時点ではモジュール初期化済み（useStore 定義後）であること。
+  persistSetWorkspaceSlice(useStore.getState());
+}
+
 function persistSetWorkspaceSlice(state: {
   crate: Track[];
   setMeta: SetMeta;
   crateAnchors: CrateAnchors;
   crateSections: CrateSection[];
 }): void {
+  let crateTrackIds: number[];
+  if (state.crate.length > 0) {
+    crateTrackIds = state.crate.map((t) => t.trackId);
+    preservedCrateTrackIds = null;
+  } else if (preservedCrateTrackIds != null) {
+    crateTrackIds = preservedCrateTrackIds;
+  } else {
+    crateTrackIds = [];
+  }
   saveSetWorkspacePersist({
-    crateTrackIds: state.crate.map((t) => t.trackId),
+    crateTrackIds,
     setMeta: state.setMeta,
     anchors: state.crateAnchors,
     sections: state.crateSections,
   });
+}
+
+// === スコープ別ソート (#160) ===
+// 1 本の sortField/sortOrder ではなく、ビュー（スコープ）ごとに最後のソートを覚える。
+// sortField/sortOrder は「現在のスコープの実効ソート」を映すミラーとして残し、
+// Toolbar/TrackTable/AlbumsView/App.tsx はほぼ無改修のまま動く。
+
+/** 現在の viewMode / selectedPlaylistId から sortByScope のキーを決める。 */
+function sortScopeKey(state: {
+  viewMode: ViewMode;
+  selectedPlaylistId: number | null;
+}): string {
+  if (state.viewMode === "playlist") {
+    return state.selectedPlaylistId != null
+      ? `playlist:${state.selectedPlaylistId}`
+      : "library";
+  }
+  return state.viewMode;
+}
+
+/**
+ * スコープに sortByScope エントリが無いときの既定値。
+ * 通常プレイリスト（スマート/フォルダでない）を List 表示しているときだけ、
+ * DB の sort_index 順を指す疑似フィールド "playlistOrder" を返す。
+ */
+function defaultSortForScope(state: {
+  viewMode: ViewMode;
+  selectedPlaylistId: number | null;
+  playlists: Playlist[];
+  displayMode: DisplayMode;
+}): SortByScopeEntry {
+  // Artists ビュー (#155) はアーティスト粒度の語彙のみ。既定はアーティスト名の昇順。
+  if (state.viewMode === "artists") {
+    return { field: "name", order: "asc" };
+  }
+  if (state.viewMode === "playlist" && state.selectedPlaylistId != null) {
+    const pl = state.playlists.find(
+      (p) => p.playlistId === state.selectedPlaylistId,
+    );
+    if (pl && !pl.isSmart && !pl.isFolder && state.displayMode === "list") {
+      return { field: "playlistOrder", order: "asc" };
+    }
+  }
+  return { field: "name", order: "asc" };
+}
+
+/**
+ * 現在のスコープで実際に使うソートを解決する。
+ * sortByScope の明示エントリ（無ければ既定値）を、表示モードの制約
+ * （Albums グリッドはアルバム粒度のみ／手動順は List 専用）で正規化する。
+ */
+function resolveSort(state: {
+  viewMode: ViewMode;
+  selectedPlaylistId: number | null;
+  playlists: Playlist[];
+  displayMode: DisplayMode;
+  sortByScope: SortByScope;
+}): SortByScopeEntry {
+  const key = sortScopeKey(state);
+  let entry = state.sortByScope[key] ?? defaultSortForScope(state);
+  // Artists ビュー (#155) は displayMode に関わらず ArtistsView を描くので、
+  // アルバム粒度ではなくアーティスト粒度 (name/trackCount/albumCount) で正規化する。
+  if (state.viewMode === "artists") {
+    if (!ARTIST_SORT_FIELDS.includes(entry.field)) entry = defaultSortForScope(state);
+    return entry;
+  }
+  // 逆に、アーティスト専用フィールドが他スコープへ漏れていたら既定へ倒す
+  // (永続値が壊れていても「効かないソート」が残らないようにする)。
+  if (ARTIST_ONLY_SORT_FIELDS.includes(entry.field)) {
+    entry = defaultSortForScope(state);
+  }
+  // Albums グリッド表示はアルバム粒度のソート語彙のみ (BPM 等トラック専用フィールドは無意味)。
+  if (state.displayMode === "albums" && !ALBUM_SORT_FIELDS.includes(entry.field)) {
+    entry = { field: "albumArtist", order: "asc" };
+  }
+  return entry;
+}
+
+/**
+ * 現在スコープの sortByScope エントリを書き換え、実効ソート（ミラー）を返す差分。
+ * "playlistOrder" は疑似フィールドなので永続化せず、そのスコープのエントリを消して
+ * 既定値（defaultSortForScope）に委ねる。
+ */
+function writeSort(
+  state: {
+    viewMode: ViewMode;
+    selectedPlaylistId: number | null;
+    playlists: Playlist[];
+    displayMode: DisplayMode;
+    sortByScope: SortByScope;
+  },
+  entry: SortByScopeEntry,
+): { sortByScope: SortByScope; sortField: SortField; sortOrder: SortOrder } {
+  const key = sortScopeKey(state);
+  const nextMap = { ...state.sortByScope };
+  if (entry.field === "playlistOrder") {
+    delete nextMap[key];
+  } else {
+    nextMap[key] = entry;
+  }
+  const resolved = resolveSort({ ...state, sortByScope: nextMap });
+  return {
+    sortByScope: nextMap,
+    sortField: resolved.field,
+    sortOrder: resolved.order,
+  };
+}
+
+/** スコープ切り替え（viewMode / selectedPlaylistId / displayMode / playlists）後に sortField/sortOrder ミラーを再計算する差分。 */
+function resyncSort(state: {
+  viewMode: ViewMode;
+  selectedPlaylistId: number | null;
+  playlists: Playlist[];
+  displayMode: DisplayMode;
+  sortByScope: SortByScope;
+}): { sortField: SortField; sortOrder: SortOrder } {
+  const resolved = resolveSort(state);
+  return { sortField: resolved.field, sortOrder: resolved.order };
 }
 
 export const useStore = create<AppState>()(
@@ -292,6 +549,7 @@ export const useStore = create<AppState>()(
       viewMode: "library",
       selectedPlaylistId: null,
       searchQuery: "",
+      searchScope: "playlist",
       filterTags: [],
       tracks: [],
       playlists: [],
@@ -305,6 +563,9 @@ export const useStore = create<AppState>()(
         currentTrackId: null,
         positionMs: 0,
         durationMs: 0,
+        shuffle: false,
+        repeat: "off",
+        volume: 1.0,
       },
       crate: [],
       railTab: "crate",
@@ -335,8 +596,12 @@ export const useStore = create<AppState>()(
       rowH: 40,
       coverSize: 20,
       displayMode: "list",
+      // sortByScope の "library" 既定 (name/asc) と同じ。実際のミラー値は
+      // ハイドレーション直後に resyncSort で現在スコープに合わせて補正される。
       sortField: "name",
       sortOrder: "asc",
+      sortByScope: {},
+      setToolsOpen: false,
       volume: 1.0,
       shuffle: false,
       repeat: "off",
@@ -345,14 +610,27 @@ export const useStore = create<AppState>()(
       collapsedFolders: [],
       autoExportEnabled: false,
       autoExportPath: null,
+      autoBackupEnabled: true,
       ripFormat: "alac",
       ripOutputDir: null,
       lastSyncDestRoot: null,
+      similarFilters: DEFAULT_SIMILAR_FILTERS,
       auditionMode: false,
 
-      setViewMode: (mode) => set({ viewMode: mode }),
-      setSelectedPlaylistId: (id) => set({ selectedPlaylistId: id }),
+      // スコープが変わるので、そのスコープの sortByScope エントリ（無ければ既定値。
+      // 通常プレイリストを List 表示していれば手動順 "playlistOrder"）へミラーを合わせる。
+      setViewMode: (mode) =>
+        set((state) => {
+          const next = { ...state, viewMode: mode };
+          return { viewMode: mode, ...resyncSort(next) };
+        }),
+      setSelectedPlaylistId: (id) =>
+        set((state) => {
+          const next = { ...state, selectedPlaylistId: id };
+          return { selectedPlaylistId: id, ...resyncSort(next) };
+        }),
       setSearchQuery: (query) => set({ searchQuery: query }),
+      setSearchScope: (scope) => set({ searchScope: scope }),
       addFilterTag: (tag) =>
         set((state) =>
           state.filterTags.includes(tag)
@@ -363,13 +641,21 @@ export const useStore = create<AppState>()(
         set((state) => ({ filterTags: state.filterTags.filter((t) => t !== tag) })),
       clearFilterTags: () => set({ filterTags: [] }),
       setTracks: (tracks) => set({ tracks, selectedTrackIds: new Set() }),
+      setTracksKeepSelection: (tracks) => set({ tracks }),
       appendTracks: (tracks) =>
         set((state) => ({ tracks: [...state.tracks, ...tracks] })),
       setAlbums: (albums) => set({ albums }),
       appendAlbums: (albums) =>
         set((state) => ({ albums: [...state.albums, ...albums] })),
       setAlbumsHasMore: (albumsHasMore) => set({ albumsHasMore }),
-      setPlaylists: (playlists) => set({ playlists }),
+      // playlists のロード完了で初めて選択中プレイリストの isSmart/isFolder が分かるので、
+      // 起動直後の永続復元 (#160) では playlists がまだ空のまま resyncSort していた
+      // ミラーをここで補正する（通常プレイリストなら手動順へ）。
+      setPlaylists: (playlists) =>
+        set((state) => {
+          const next = { ...state, playlists };
+          return { playlists, ...resyncSort(next) };
+        }),
       setIsLoading: (loading) => set({ isLoading: loading }),
       setHasMore: (hasMore) => set({ hasMore }),
       setPlayback: (playback) => set({ playback }),
@@ -387,12 +673,27 @@ export const useStore = create<AppState>()(
 
       // Crate
       setRailTab: (tab) => set({ railTab: tab }),
+      // クレート追加はタブを切り替えない (#151)。
+      // 「入った」ことは Crate タブの件数バッジで示す。
       addToCrate: (track) =>
         set((state) =>
           state.crate.some((t) => t.trackId === track.trackId)
             ? {}
-            : { crate: [...state.crate, track], railTab: "crate" },
+            : { crate: [...state.crate, track] },
         ),
+      addTracksToCrate: (tracks) =>
+        set((state) => {
+          if (tracks.length === 0) return {};
+          const seen = new Set(state.crate.map((t) => t.trackId));
+          const added: Track[] = [];
+          for (const track of tracks) {
+            if (seen.has(track.trackId)) continue;
+            seen.add(track.trackId);
+            added.push(track);
+          }
+          if (added.length === 0) return {};
+          return { crate: [...state.crate, ...added] };
+        }),
       removeFromCrate: (trackId) =>
         set((state) => {
           const nextAnchors = { ...state.crateAnchors };
@@ -428,14 +729,39 @@ export const useStore = create<AppState>()(
           }
           return { crate: next };
         }),
-      clearCrate: () =>
-        set({ crate: [], crateAnchors: {}, crateSections: [] }),
+      // ステージング set を空にする。旧 set の title/notes が空 crate に残らないよう setMeta も初期化する。
+      clearCrate: () => {
+        preservedCrateTrackIds = null;
+        set({
+          crate: [],
+          crateAnchors: {},
+          crateSections: [],
+          setMeta: { ...DEFAULT_SET_META },
+        });
+      },
       restoreCrateTracks: (tracks) =>
         set((state) => {
-          // 既に crate がある場合は上書きしない（セッション優先）
-          if (state.crate.length > 0) return {};
           if (tracks.length === 0) return {};
-          return { crate: tracks };
+          const restoredIds = new Set(tracks.map((t) => t.trackId));
+          // 永続化された順を優先。再水和中にユーザーが足した曲は末尾に残す。
+          const extras = state.crate.filter((t) => !restoredIds.has(t.trackId));
+          const merged =
+            state.crate.length === 0 ? tracks : [...tracks, ...extras];
+          const ids = new Set(merged.map((t) => t.trackId));
+          // 部分 restore 時に欠落 track の orphan anchors/sections を落とす
+          const nextAnchors: CrateAnchors = {};
+          for (const [k, v] of Object.entries(state.crateAnchors)) {
+            const id = Number(k);
+            if (ids.has(id)) nextAnchors[id] = v;
+          }
+          const nextSections = state.crateSections.filter((s) =>
+            ids.has(s.startTrackId),
+          );
+          return {
+            crate: merged,
+            crateAnchors: nextAnchors,
+            crateSections: nextSections,
+          };
         }),
 
       // Set Workspace
@@ -489,14 +815,12 @@ export const useStore = create<AppState>()(
       clearSetMeta: () => set({ setMeta: { ...DEFAULT_SET_META } }),
 
       // Persisted settings
+      // displayMode もソートの制約 (Albums はアルバム粒度のみ／手動順は List 専用) に
+      // 効くので、切り替えのたびに resyncSort でミラーを引き直す。
       setDisplayMode: (mode) =>
         set((state) => {
-          // Albums モードはアルバム粒度のソート語彙のみ。トラック専用フィールド
-          // (BPM 等) のままだと無意味に散るので albumArtist 昇順へ正規化する。
-          if (mode === "albums" && !ALBUM_SORT_FIELDS.includes(state.sortField)) {
-            return { displayMode: mode, sortField: "albumArtist", sortOrder: "asc" };
-          }
-          return { displayMode: mode };
+          const next = { ...state, displayMode: mode };
+          return { displayMode: mode, ...resyncSort(next) };
         }),
       setFields: (fields) => set({ fields }),
       toggleField: (key) =>
@@ -520,8 +844,9 @@ export const useStore = create<AppState>()(
       toggleRightRail: () =>
         set((state) => ({ rightRailVisible: !state.rightRailVisible })),
       setRightRailWidth: (width) =>
-        set({ rightRailWidth: clampRightRailWidth(width) }),
+        set({ rightRailWidth: clampRailWidthToViewport(width) }),
       setRailSplit: (railSplit) => set({ railSplit }),
+      setSetToolsOpen: (setToolsOpen) => set({ setToolsOpen }),
       setShowRemainingTime: (showRemainingTime) => set({ showRemainingTime }),
       toggleRemainingTime: () =>
         set((state) => ({ showRemainingTime: !state.showRemainingTime })),
@@ -529,14 +854,21 @@ export const useStore = create<AppState>()(
       setCoverSize: (coverSize) => set({ coverSize }),
       resetColumns: () =>
         set({ fields: DEFAULT_FIELDS, fieldWidths: {}, rowH: 40, coverSize: 20 }),
-      setSortField: (field) => set({ sortField: field }),
-      setSortOrder: (order) => set({ sortOrder: order }),
+      // 以下はすべて現在スコープの sortByScope エントリを書き換える (#160)。
+      setSortField: (field) =>
+        set((state) => writeSort(state, { field, order: state.sortOrder })),
+      setSortOrder: (order) =>
+        set((state) => writeSort(state, { field: state.sortField, order })),
       toggleSort: (field) =>
         set((state) =>
-          state.sortField === field
-            ? { sortOrder: state.sortOrder === "asc" ? "desc" : "asc" }
-            : { sortField: field, sortOrder: "asc" },
+          writeSort(
+            state,
+            state.sortField === field
+              ? { field, order: state.sortOrder === "asc" ? "desc" : "asc" }
+              : { field, order: "asc" },
+          ),
         ),
+      setSort: (field, order) => set((state) => writeSort(state, { field, order })),
       setVolume: (volume) => set({ volume }),
       setShuffle: (shuffle) => set({ shuffle }),
       setRepeat: (repeat) => set({ repeat }),
@@ -556,6 +888,7 @@ export const useStore = create<AppState>()(
         })),
       setAutoExport: (autoExportEnabled, autoExportPath) =>
         set({ autoExportEnabled, autoExportPath }),
+      setAutoBackupEnabled: (autoBackupEnabled) => set({ autoBackupEnabled }),
       setRipFormat: (ripFormat) => set({ ripFormat }),
       setRipOutputDir: (ripOutputDir) => set({ ripOutputDir }),
       setLastSyncDestRoot: (lastSyncDestRoot) => set({ lastSyncDestRoot }),
@@ -570,12 +903,18 @@ export const useStore = create<AppState>()(
           return { ripStatus: { ...state.ripStatus, log: [...state.ripStatus.log, line] } };
         }),
       clearRipStatus: () => set({ ripStatus: null }),
-      setSimilarBase: (trackId) =>
+      // 既定ではタブを切り替えない (#151)。Similar タブのインジケータで示す。
+      // focus: true は「Find similar」など、そこへ行きたいことが明らかな操作だけ。
+      setSimilarBase: (trackId, opts) =>
         set(
           trackId != null
-            ? { similarBaseTrackId: trackId, railTab: "similar" }
+            ? opts?.focus
+              ? { similarBaseTrackId: trackId, railTab: "similar" as const }
+              : { similarBaseTrackId: trackId }
             : { similarBaseTrackId: null },
         ),
+      setSimilarFilters: (patch) =>
+        set((state) => ({ similarFilters: { ...state.similarFilters, ...patch } })),
       setPendingUpdate: (pendingUpdate) => set({ pendingUpdate }),
 
       setAuditionMode: (auditionMode) => set({ auditionMode }),
@@ -605,7 +944,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 13,
+      version: 18,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -618,8 +957,7 @@ export const useStore = create<AppState>()(
           rowH: state.rowH,
           coverSize: state.coverSize,
           displayMode: state.displayMode,
-          sortField: state.sortField,
-          sortOrder: state.sortOrder,
+          sortByScope: state.sortByScope,
           volume: state.volume,
           shuffle: state.shuffle,
           repeat: state.repeat,
@@ -628,10 +966,15 @@ export const useStore = create<AppState>()(
           collapsedFolders: state.collapsedFolders,
           autoExportEnabled: state.autoExportEnabled,
           autoExportPath: state.autoExportPath,
+          autoBackupEnabled: state.autoBackupEnabled,
           ripFormat: state.ripFormat,
           ripOutputDir: state.ripOutputDir,
           lastSyncDestRoot: state.lastSyncDestRoot,
-          auditionMode: state.auditionMode,
+          similarFilters: state.similarFilters,
+          viewMode: state.viewMode,
+          selectedPlaylistId: state.selectedPlaylistId,
+          filterTags: state.filterTags,
+          setToolsOpen: state.setToolsOpen,
         }) satisfies PersistedSettings,
       // v1(visibleColumns) からの移行: 旧キーは破棄してデフォルトに倒す。
       // v3: recentPlaylistIds を追加（旧データには無いので配列で補完）。
@@ -715,9 +1058,66 @@ export const useStore = create<AppState>()(
           if (typeof p.railSplit !== "boolean") p.railSplit = false;
         }
         // v13: Audition モード設定。
-        if (version < 13 && persisted && typeof persisted === "object") {
+        // v14 で永続化をやめたため、ここでは何もしない（下の v14 で破棄する）。
+        // v14: Audition モードは永続化しない (#150)。旧データのキーを破棄して
+        // 起動ごとに OFF から始める。
+        if (version < 14 && persisted && typeof persisted === "object") {
           const p = persisted as Record<string, unknown>;
-          if (typeof p.auditionMode !== "boolean") p.auditionMode = false;
+          delete p.auditionMode;
+        }
+        // v15: Similar タブの絞り込み条件を永続化 (#151)。旧データには無いので既定で補完。
+        if (version < 15 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          const f = p.similarFilters;
+          p.similarFilters = {
+            ...DEFAULT_SIMILAR_FILTERS,
+            ...(typeof f === "object" && f !== null ? f : {}),
+          };
+        }
+        // v16: library.db の自動バックアップ (#167)。既定 true (安全側)。
+        if (version < 16 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (typeof p.autoBackupEnabled !== "boolean") p.autoBackupEnabled = true;
+        }
+        // v17 (#160): 表示状態 (viewMode / selectedPlaylistId / filterTags / Set tools 開閉) を
+        // 永続化。加えて単一の sortField/sortOrder をスコープ別の sortByScope へ移行し、
+        // 旧値は "library" スコープの既定として引き継ぐ（"playlistOrder" は疑似フィールドなので
+        // 旧データには存在しない）。
+        if (version < 17 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (typeof p.viewMode !== "string") p.viewMode = "library";
+          if (
+            p.selectedPlaylistId !== null &&
+            typeof p.selectedPlaylistId !== "number"
+          ) {
+            p.selectedPlaylistId = null;
+          }
+          if (!Array.isArray(p.filterTags)) p.filterTags = [];
+          if (typeof p.setToolsOpen !== "boolean") p.setToolsOpen = false;
+          if (typeof p.sortByScope !== "object" || p.sortByScope === null) {
+            const field =
+              typeof p.sortField === "string" ? (p.sortField as SortField) : "name";
+            const order = p.sortOrder === "desc" ? "desc" : "asc";
+            p.sortByScope = { library: { field, order } } satisfies SortByScope;
+          }
+          delete p.sortField;
+          delete p.sortOrder;
+        }
+        // v18 (#155): Artists ビュー専用のソート (trackCount / albumCount) を追加。
+        // artists 以外のスコープにこの値が入っていると、そのビューでは効かないソートに
+        // なるのでエントリごと捨てる (defaultSortForScope が既定を返す)。
+        if (version < 18 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          const map = p.sortByScope;
+          if (typeof map === "object" && map !== null) {
+            const scopes = map as Record<string, { field?: unknown } | null>;
+            for (const [key, entry] of Object.entries(scopes)) {
+              if (key === "artists") continue;
+              if (ARTIST_ONLY_SORT_FIELDS.includes(entry?.field as SortField)) {
+                delete scopes[key];
+              }
+            }
+          }
         }
         return persisted as PersistedSettings;
       },
@@ -725,8 +1125,48 @@ export const useStore = create<AppState>()(
   ),
 );
 
+// 起動時、永続復元された viewMode/selectedPlaylistId/sortByScope に合わせて
+// sortField/sortOrder ミラーを引き直す（#160）。create() 完了時点で localStorage
+// からの同期ハイドレーションは済んでいるので、ここで一度呼べば起動直後の状態になる。
+// （選択中プレイリストの isSmart/isFolder が要る場合は setPlaylists 側でも再計算する。）
+if (typeof window !== "undefined") {
+  const st = useStore.getState();
+  const resolved = resolveSort(st);
+  if (resolved.field !== st.sortField || resolved.order !== st.sortOrder) {
+    useStore.setState({ sortField: resolved.field, sortOrder: resolved.order });
+  }
+}
+
+// 右ペイン幅をウィンドウ幅でクランプする（#146）。
+// - 起動時（永続化設定のハイドレーション直後）に一度実行。
+// - window resize のたびに rAF で間引きながら再実行。
+// センターペインが極端に狭い状態で開かれる/リサイズされることを防ぐ。
+if (typeof window !== "undefined") {
+  const syncRailWidthToViewport = () => {
+    const { rightRailWidth } = useStore.getState();
+    const clamped = clampRailWidthToViewport(rightRailWidth, window.innerWidth);
+    if (clamped !== rightRailWidth) {
+      useStore.setState({ rightRailWidth: clamped });
+    }
+  };
+  // create() 完了時点で localStorage からの同期ハイドレーションは済んでいるため、
+  // ここで一度呼べば「マウント時」のクランプになる。
+  syncRailWidthToViewport();
+
+  let resizeRaf: number | null = null;
+  window.addEventListener("resize", () => {
+    if (resizeRaf != null) return;
+    resizeRaf = window.requestAnimationFrame(() => {
+      resizeRaf = null;
+      syncRailWidthToViewport();
+    });
+  });
+}
+
 // Set Workspace を localStorage へ同期（crate trackIds + meta/anchors/sections）。
 useStore.subscribe((state, prev) => {
+  // 再水和完了前は書かない（空 crate のまま persist して trackIds を消すレースを防ぐ）
+  if (!setWorkspaceHydrationDone) return;
   if (
     state.crate === prev.crate &&
     state.setMeta === prev.setMeta &&

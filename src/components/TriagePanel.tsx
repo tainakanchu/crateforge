@@ -134,16 +134,20 @@ export function TriagePanel({
       const rating = stars * 20;
       try {
         await libraryApi.setTrackRating(t.trackId, rating);
-        // フルリロードすると triage キューが崩れるのでローカル更新のみ
-        const list = tracksRef.current.map((x) =>
-          x.trackId === t.trackId ? { ...x, rating } : x,
-        );
-        setTracks(list);
+        // await 中に Done で除外された場合は再導入しない（stale tracksRef で上書きしない）
+        useStore.setState((s) => {
+          if (!s.tracks.some((x) => x.trackId === t.trackId)) return s;
+          return {
+            tracks: s.tracks.map((x) =>
+              x.trackId === t.trackId ? { ...x, rating } : x,
+            ),
+          };
+        });
       } catch (err) {
         pushToast("error", `レーティングの保存に失敗: ${err}`);
       }
     },
-    [pushToast, setTracks],
+    [pushToast],
   );
 
   const handleCrate = useCallback(() => {

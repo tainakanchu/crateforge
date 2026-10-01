@@ -569,17 +569,6 @@ export function SyncWritebackDialog({
                   )}
                 </div>
               )}
-
-              <div className="sync-actions">
-                <button className="toolbar-btn" type="button" onClick={onBack} data-autofocus>
-                  戻る
-                </button>
-                {hasApplicableChanges && (
-                  <button className="toolbar-btn primary" type="button" onClick={startApply}>
-                    <Icon name="upload" size={14} /> この内容で書き戻す
-                  </button>
-                )}
-              </div>
             </section>
           )}
 
@@ -631,11 +620,6 @@ export function SyncWritebackDialog({
                   </ul>
                 </details>
               )}
-              <div className="sync-actions">
-                <button className="toolbar-btn primary" onClick={onClose} data-autofocus>
-                  閉じる
-                </button>
-              </div>
             </section>
           )}
 
@@ -646,23 +630,45 @@ export function SyncWritebackDialog({
               <div className="sync-error" role="alert">
                 {error || "不明なエラーが発生しました。"}
               </div>
-              <div className="sync-actions">
-                <button className="toolbar-btn" onClick={onBack}>
-                  接続先に戻る
-                </button>
-                {plan ? (
-                  <button className="toolbar-btn primary" onClick={() => setStep("confirm")} data-autofocus>
-                    確認画面に戻る
-                  </button>
-                ) : (
-                  <button className="toolbar-btn primary" onClick={loadPlan} data-autofocus>
-                    再試行
-                  </button>
-                )}
-              </div>
             </section>
           )}
         </div>
+
+        {step === "confirm" && plan && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" type="button" onClick={onBack} data-autofocus>
+              戻る
+            </button>
+            {hasApplicableChanges && (
+              <button className="toolbar-btn primary" type="button" onClick={startApply}>
+                <Icon name="upload" size={14} /> この内容で書き戻す
+              </button>
+            )}
+          </div>
+        )}
+        {step === "complete" && summary && (
+          <div className="modal-footer">
+            <button className="toolbar-btn primary" onClick={onClose} data-autofocus>
+              閉じる
+            </button>
+          </div>
+        )}
+        {step === "failed" && (
+          <div className="modal-footer">
+            <button className="toolbar-btn" onClick={onBack}>
+              接続先に戻る
+            </button>
+            {plan ? (
+              <button className="toolbar-btn primary" onClick={() => setStep("confirm")} data-autofocus>
+                確認画面に戻る
+              </button>
+            ) : (
+              <button className="toolbar-btn primary" onClick={loadPlan} data-autofocus>
+                再試行
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

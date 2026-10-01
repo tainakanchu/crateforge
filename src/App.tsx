@@ -1,10 +1,10 @@
-import { useEffect, useCallback, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useCallback, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { TrackTable } from "./components/TrackTable";
 import { AlbumsView } from "./components/AlbumsView";
 import { TracksView } from "./components/TracksView";
-import { AlbumView } from "./components/AlbumView";
+import { ArtistsView } from "./components/ArtistsView";
 import { PlayerBar } from "./components/PlayerBar";
 import { RightRail } from "./components/RightRail";
 import { Toolbar } from "./components/Toolbar";
@@ -24,7 +24,7 @@ import { ShortcutHelp } from "./components/ShortcutHelp";
 import { SyncProvisionDialog } from "./components/SyncProvisionDialog";
 import { TriagePanel } from "./components/TriagePanel";
 import { SetHistoryView } from "./components/SetHistoryView";
-import { useStore } from "./store/useStore";
+import { useStore, markSetWorkspaceHydrationDone } from "./store/useStore";
 import { useDiscWatcher } from "./hooks/useDiscWatcher";
 import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
@@ -35,14 +35,51 @@ import * as ripperApi from "./api/ripper";
 import * as fontsApi from "./api/fonts";
 import * as audition from "./lib/audition";
 import {
-  filterInboxTracks,
   INBOX_FETCH_LIMIT,
   loadTriagePersist,
+  mergeInboxSources,
 } from "./lib/triage";
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
-import type { Track } from "./types";
+import type { PlaybackState, RepeatMode, SortField, SortOrder, Track } from "./types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
+
+/// Rust プレイヤー側の「フロントのストアと二重管理になっている値」。
+type RemotePlayerState = { shuffle: boolean; repeat: RepeatMode; volume: number };
+
+/// f32 で往復するので音量は誤差を許容して比較する。
+const VOLUME_EPS = 0.005;
+
+/// Rust プレイヤーの shuffle / repeat / volume をストアへ逆同期する。
+/// リモート API (/api/remote/shuffle など) や別クライアントからの変更を拾うのが目的。
+/// ローカル操作は backend 完了後にストアへ書くので基本的に食い違わないが、
+/// 念のため「2 回続けて同じ値がストアと違う」ときだけ反映して取り合いを防ぐ。
+function reconcilePlayerState(
+  state: PlaybackState,
+  lastRemoteRef: { current: RemotePlayerState | null },
+) {
+  const remote: RemotePlayerState = {
+    shuffle: state.shuffle,
+    repeat: state.repeat,
+    volume: state.volume,
+  };
+  const prev = lastRemoteRef.current;
+  lastRemoteRef.current = remote;
+  if (!prev) return;
+  const store = useStore.getState();
+  if (prev.shuffle === remote.shuffle && remote.shuffle !== store.shuffle) {
+    store.setShuffle(remote.shuffle);
+  }
+  if (prev.repeat === remote.repeat && remote.repeat !== store.repeat) {
+    store.setRepeat(remote.repeat);
+  }
+  if (
+    Math.abs(prev.volume - remote.volume) <= VOLUME_EPS &&
+    Math.abs(remote.volume - store.volume) > VOLUME_EPS
+  ) {
+    store.setVolume(remote.volume);
+  }
+}
 
 export default function App() {
   const {
@@ -50,6 +87,7 @@ export default function App() {
     selectedPlaylistId,
     playlists,
     searchQuery,
+    searchScope,
     filterTags,
     setTracks,
     appendTracks,
@@ -82,7 +120,7 @@ export default function App() {
     setRightRailVisible,
     setRailTab,
     setSimilarBase,
-    addToCrate,
+    addTracksToCrate,
     setAnalyses,
     setAnalysisActive,
     setRipStatus,
@@ -91,6 +129,7 @@ export default function App() {
     triageMode,
     enterTriage,
     exitTriage,
+    setTriageIndex,
     setInboxCount,
     inboxCount,
   } = useStore();
@@ -99,6 +138,10 @@ export default function App() {
 
   const PAGE_SIZE = 500;
   const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  // マウント時の push (永続値 → Rust) が終わるまでは逆同期しない。
+  const mountSyncedRef = useRef(false);
+  // 直前のポーリングで見えた Rust 側の shuffle / repeat / volume。
+  const lastRemoteRef = useRef<RemotePlayerState | null>(null);
   // 自動 XML エクスポート用: ライブラリに変更があったか。
   const libraryDirtyRef = useRef(false);
   // デバウンス自動保存用。
@@ -128,10 +171,21 @@ export default function App() {
     try {
       const pls = await playlistsApi.getPlaylists();
       setPlaylists(pls);
+      // 永続化された選択プレイリスト (#160) が、読み込んだ一覧に無ければ
+      // （削除された／別ライブラリの ID など）Library 表示へフォールバックする。
+      const st = useStore.getState();
+      if (
+        st.viewMode === "playlist" &&
+        st.selectedPlaylistId !== null &&
+        !pls.some((p) => p.playlistId === st.selectedPlaylistId)
+      ) {
+        setViewMode("library");
+        setSelectedPlaylistId(null);
+      }
     } catch (err) {
       console.error("Failed to load playlists:", err);
     }
-  }, [setPlaylists]);
+  }, [setPlaylists, setViewMode, setSelectedPlaylistId]);
 
   const loadTracks = useCallback(
     async (reset = true) => {
@@ -141,9 +195,23 @@ export default function App() {
         return;
       }
 
+      // Triage 中の reload でフォーカス曲を失わないよう、fetch 前に trackId を捕捉
+      const stBefore = useStore.getState();
+      const focusedTrackId =
+        stBefore.viewMode === "inbox" && stBefore.triageMode
+          ? (stBefore.tracks[stBefore.triageIndex]?.trackId ?? null)
+          : null;
+      const prevTriageIndex = stBefore.triageIndex;
+
       setIsLoading(true);
       try {
         const offset = reset ? 0 : tracks.length;
+        // "playlistOrder" は DB の playlist_tracks.sort_index 順を指す疑似ソート。
+        // バックエンドへは sortField を渡さない (= 既定の並び) ことで表現する。
+        const manualOrder = sortField === "playlistOrder";
+        // 手動順を解釈できない経路 (ライブラリ/検索/スマート) 用のフォールバック。
+        const effectiveSort: SortField = manualOrder ? "name" : sortField;
+        const effectiveOrder: SortOrder = manualOrder ? "asc" : sortOrder;
         // フリーテキスト検索 + ジャンル等の絞り込みチップを空白区切りで AND 結合。
         const combinedQuery = [searchQuery.trim(), ...filterTags]
           .filter(Boolean)
@@ -155,54 +223,81 @@ export default function App() {
           setTracks([]);
           setHasMore(false);
         } else if (viewMode === "inbox") {
-          // dateAdded desc で直近を取り、クライアントで done/later/未評価フィルタ。
+          // 直近 INBOX_FETCH_LIMIT 件 + laterIds 欠損分を getTracksByIds で合流。
+          const persist = loadTriagePersist();
           const raw = await libraryApi.getTracks(
             INBOX_FETCH_LIMIT,
             0,
             "dateAdded",
             "desc",
           );
-          result = filterInboxTracks(raw, loadTriagePersist());
+          const present = new Set(raw.map((t) => t.trackId));
+          const missingLater = persist.laterIds.filter((id) => !present.has(id));
+          const laterExtra =
+            missingLater.length > 0
+              ? await libraryApi.getTracksByIds(missingLater)
+              : [];
+          result = mergeInboxSources(raw, laterExtra, persist);
           setTracks(result);
           setHasMore(false);
           setInboxCount(result.length);
+          // triage 中ならフォーカス曲の index を復元
+          const stAfter = useStore.getState();
+          if (stAfter.triageMode && focusedTrackId != null) {
+            const idx = result.findIndex((t) => t.trackId === focusedTrackId);
+            if (idx >= 0) {
+              setTriageIndex(idx);
+            } else {
+              setTriageIndex(
+                result.length === 0
+                  ? 0
+                  : Math.min(prevTriageIndex, result.length - 1),
+              );
+            }
+          }
         } else if (viewMode === "recent") {
           result = await playbackApi.getRecentTracks(200);
           setTracks(result);
           setHasMore(false);
-        } else if (viewMode === "albums" || viewMode === "artists") {
-          // Group views need everything in-memory to group consistently.
-          result = await libraryApi.getTracks(50000, 0);
-          setTracks(result);
-          setHasMore(false);
-        } else if (combinedQuery) {
-          result = await libraryApi.searchTracks(
-            combinedQuery,
-            PAGE_SIZE,
-            offset,
-            sortField,
-            sortOrder,
-          );
-          if (reset) setTracks(result);
-          else appendTracks(result);
-          setHasMore(result.length === PAGE_SIZE);
-        } else if (viewMode === "playlist" && selectedPlaylistId !== null) {
+        } else if (
+          viewMode === "playlist" &&
+          selectedPlaylistId !== null &&
+          (!combinedQuery || searchScope === "playlist")
+        ) {
+          // プレイリスト表示中はスコープ既定が「このプレイリスト」なので、検索語があっても
+          // ライブラリ全体へ飛ばさず、同じ DSL でプレイリストの中だけを絞り込む。
+          // スコープが「ライブラリ全体」のときだけ下の検索分岐へ落とす。
           const pl = playlists.find((p) => p.playlistId === selectedPlaylistId);
+          const inPlaylistQuery = combinedQuery || undefined;
           result = pl?.isSmart
             ? await playlistsApi.getSmartPlaylistTracks(
                 selectedPlaylistId,
                 PAGE_SIZE,
                 offset,
-                sortField,
-                sortOrder,
+                effectiveSort,
+                effectiveOrder,
+                inPlaylistQuery,
               )
             : await playlistsApi.getPlaylistTracks(
                 selectedPlaylistId,
                 PAGE_SIZE,
                 offset,
-                sortField,
-                sortOrder,
+                // 手動順のときは sortField 未指定 → DB は pt.sort_index ASC を使う。
+                manualOrder ? undefined : effectiveSort,
+                manualOrder ? undefined : effectiveOrder,
+                inPlaylistQuery,
               );
+          if (reset) setTracks(result);
+          else appendTracks(result);
+          setHasMore(result.length === PAGE_SIZE);
+        } else if (combinedQuery) {
+          result = await libraryApi.searchTracks(
+            combinedQuery,
+            PAGE_SIZE,
+            offset,
+            effectiveSort,
+            effectiveOrder,
+          );
           if (reset) setTracks(result);
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
@@ -210,8 +305,8 @@ export default function App() {
           result = await libraryApi.getTracks(
             PAGE_SIZE,
             offset,
-            sortField,
-            sortOrder,
+            effectiveSort,
+            effectiveOrder,
           );
           if (reset) setTracks(result);
           else appendTracks(result);
@@ -228,6 +323,7 @@ export default function App() {
       selectedPlaylistId,
       playlists,
       searchQuery,
+      searchScope,
       filterTags,
       sortField,
       sortOrder,
@@ -237,6 +333,7 @@ export default function App() {
       setHasMore,
       setIsLoading,
       setInboxCount,
+      setTriageIndex,
     ],
   );
 
@@ -247,13 +344,20 @@ export default function App() {
       return;
     }
     try {
+      const persist = loadTriagePersist();
       const raw = await libraryApi.getTracks(
         INBOX_FETCH_LIMIT,
         0,
         "dateAdded",
         "desc",
       );
-      const inbox = filterInboxTracks(raw, loadTriagePersist());
+      const present = new Set(raw.map((t) => t.trackId));
+      const missingLater = persist.laterIds.filter((id) => !present.has(id));
+      const laterExtra =
+        missingLater.length > 0
+          ? await libraryApi.getTracksByIds(missingLater)
+          : [];
+      const inbox = mergeInboxSources(raw, laterExtra, persist);
       setInboxCount(inbox.length);
     } catch (err) {
       console.error("Failed to refresh inbox count:", err);
@@ -263,7 +367,7 @@ export default function App() {
   useEffect(() => {
     loadTracks(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, selectedPlaylistId, searchQuery, filterTags, sortField, sortOrder, reloadCount]);
+  }, [viewMode, selectedPlaylistId, searchQuery, searchScope, filterTags, sortField, sortOrder, reloadCount]);
 
   useEffect(() => {
     void refreshInboxCount();
@@ -284,7 +388,9 @@ export default function App() {
       setIsLoading(true);
       try {
         const offset = reset ? 0 : albums.length;
-        const result = await libraryApi.getAlbums(sortField, sortOrder, PAGE_SIZE, offset);
+        // Albums は手動順を持たないので、念のため通常ソートへ倒す。
+        const albumSort: SortField = sortField === "playlistOrder" ? "albumArtist" : sortField;
+        const result = await libraryApi.getAlbums(albumSort, sortOrder, PAGE_SIZE, offset);
         if (reset) setAlbums(result);
         else appendAlbums(result);
         setAlbumsHasMore(result.length === PAGE_SIZE);
@@ -314,22 +420,32 @@ export default function App() {
   }, []);
 
   // Sync persisted volume / shuffle / repeat to the Rust player on mount.
+  // 押し込みが終わるまでポーリング側の逆同期は保留する (mountSyncedRef)。
   useEffect(() => {
     if (!isTauri) return;
-    playbackApi.setVolume(volume).catch(() => {});
-    playbackApi.setShuffle(shuffle).catch(() => {});
-    playbackApi.setRepeat(repeat).catch(() => {});
-    playbackApi.setReplayGain(replayGain).catch(() => {});
+    Promise.allSettled([
+      playbackApi.setVolume(volume),
+      playbackApi.setShuffle(shuffle),
+      playbackApi.setRepeat(repeat),
+      playbackApi.setReplayGain(replayGain),
+    ]).then(() => {
+      mountSyncedRef.current = true;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Playback state poll.
+  // Rust プレイヤーが持つ shuffle / repeat / volume はリモート API (/api/remote/*) から
+  // 変わりうるので、ポーリングのたびにストアへ逆同期する。
+  // ローカル操作 (PlayerBar / S・R キー) は backend 完了後にストアを更新するため、
+  // 一過性の食い違いを掴まないよう「2 回続けて同じ値がストアと違う」ときだけ反映する。
   useEffect(() => {
     if (!isTauri) return;
     pollRef.current = setInterval(async () => {
       try {
         const state = await playbackApi.getPlaybackState();
         setPlayback(state);
+        if (mountSyncedRef.current) reconcilePlayerState(state, lastRemoteRef);
       } catch {
         // ignore
       }
@@ -428,15 +544,19 @@ export default function App() {
   }, [loadAnalyses, setAnalysisActive]);
 
   // Set Workspace (#121): 永続化した crate trackIds を再水和。
+  // 再水和完了まで store subscribe は localStorage に書かない（レースで trackIds 消失を防ぐ）。
   useEffect(() => {
-    if (!isTauri) return;
+    if (!isTauri) {
+      markSetWorkspaceHydrationDone();
+      return;
+    }
     let cancelled = false;
     (async () => {
+      let preserve = false;
       try {
         const persisted = loadSetWorkspacePersist();
         if (persisted.crateTrackIds.length === 0) return;
-        const st = useStore.getState();
-        if (st.crate.length > 0) return;
+        // crate が既にあっても fetch → merge restore する（再水和中の add レース対策）
         const resolved = await libraryApi.getTracksByIds(persisted.crateTrackIds);
         if (cancelled) return;
         const byId = new Map(resolved.map((t) => [t.trackId, t]));
@@ -448,6 +568,13 @@ export default function App() {
         }
       } catch (err) {
         console.error("Failed to restore set workspace crate:", err);
+        preserve = true;
+      } finally {
+        if (!cancelled) {
+          markSetWorkspaceHydrationDone(
+            preserve ? { preservePersistedTrackIds: true } : undefined,
+          );
+        }
       }
     })();
     return () => {
@@ -515,6 +642,25 @@ export default function App() {
     };
   }, [setPlayback]);
 
+  // プレビュー曲が終端に達したとき: ワーカーが auto-advance せず停止し preview-ended を発火する。
+  // Esc と同じく元の曲・位置へ復帰する。
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await playbackApi.onPreviewEnded(() => {
+        const { previewActive } = useStore.getState();
+        // バックエンドが先に PreviewMode を落としても、フロントの復帰先は残っている。
+        if (previewActive || useStore.getState().previewReturn != null) {
+          audition.exitPreview({ restore: true }).catch(() => {});
+        }
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   const scheduleAutoExport = useCallback(() => {
     clearTimeout(autoExportTimerRef.current);
     autoExportTimerRef.current = setTimeout(() => {
@@ -530,6 +676,17 @@ export default function App() {
     libraryDirtyRef.current = false; // optimistic クリア
     try {
       await libraryApi.exportLibrary(autoExportPath);
+      // XML の自動エクスポートに成功したタイミングで、あわせて library.db 自体も
+      // バックアップする（解析結果・スキップ数・スマプレ条件・同期状態は XML に
+      // 出ないため #167）。30分未満の直近バックアップがあればバックエンド側で
+      // スキップされるので、失敗してもエクスポート自体は成功扱いのまま続行する。
+      if (useStore.getState().autoBackupEnabled) {
+        try {
+          await libraryApi.backupLibrary();
+        } catch (e) {
+          console.error("auto-backup failed:", e);
+        }
+      }
     } catch (e) {
       libraryDirtyRef.current = true;
       console.error("auto-export failed:", e);
@@ -702,15 +859,22 @@ export default function App() {
           selectedTrackIds.size > 0 ? Array.from(selectedTrackIds)[0] : null;
         if (first != null) {
           setRightRailVisible(true);
-          setSimilarBase(first);
+          // Ctrl/Cmd+Shift+S は明示的な「似た曲を探す」操作 (#151)
+          setSimilarBase(first, { focus: true });
         }
         return;
       }
       if (cmd && e.shiftKey && e.key.toLowerCase() === "c") {
         e.preventDefault();
         if (selectedTrackIds.size === 0) return;
-        const selected = tracks.filter((t) => selectedTrackIds.has(t.trackId));
-        selected.forEach((t) => addToCrate(t));
+        // 選択 id から Map 引きで解決 (tracks 全走査の filter を避ける)
+        const byId = new Map(tracks.map((t) => [t.trackId, t]));
+        const selected: typeof tracks = [];
+        for (const id of selectedTrackIds) {
+          const t = byId.get(id);
+          if (t) selected.push(t);
+        }
+        addTracksToCrate(selected);
         setRightRailVisible(true);
         setRailTab("crate");
         return;
@@ -836,15 +1000,28 @@ export default function App() {
       } else if (e.key.toLowerCase() === "k") {
         if (isTauri) playbackApi.playNext();
       } else if (e.key.toLowerCase() === "s") {
+        // backend に反映してからストアを更新する (Up Next が古い順を読まないように)。
         const next = !shuffle;
-        setShuffle(next);
-        if (isTauri) playbackApi.setShuffle(next);
+        void (async () => {
+          try {
+            if (isTauri) await playbackApi.setShuffle(next);
+            setShuffle(next);
+          } catch {
+            useStore.getState().pushToast("error", "シャッフルを切り替えられませんでした");
+          }
+        })();
       } else if (e.key.toLowerCase() === "r") {
         const order = ["off", "all", "one"] as const;
         const i = order.indexOf(repeat);
         const next = order[(i + 1) % order.length];
-        setRepeat(next);
-        if (isTauri) playbackApi.setRepeat(next);
+        void (async () => {
+          try {
+            if (isTauri) await playbackApi.setRepeat(next);
+            setRepeat(next);
+          } catch {
+            useStore.getState().pushToast("error", "リピートを切り替えられませんでした");
+          }
+        })();
       }
       // 矢印キーは TrackTable の選択移動に使うのでここでは扱わない。
       // 音量は PlayerBar の +/- とスライダーで調整できる。
@@ -868,12 +1045,26 @@ export default function App() {
     setRightRailVisible,
     setRailTab,
     setSimilarBase,
-    addToCrate,
+    addTracksToCrate,
     enterTriage,
     exitTriage,
   ]);
 
-  const isAlbumView = viewMode === "albums" || viewMode === "artists";
+  const isArtistView = viewMode === "artists";
+
+  // 右ペイン幅の CSS 変数は React style ではなく effect で同期する。
+  // リサイズ中は RightRail が DOM を直接更新し、store は pointerup まで触らないため、
+  // ここは rightRailWidth が変わったときだけ上書きする (他の store 更新では触らない)。
+  const appRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = appRef.current;
+    if (!el) return;
+    if (rightRailVisible) {
+      el.style.setProperty("--rail-w", `${rightRailWidth}px`);
+    } else {
+      el.style.removeProperty("--rail-w");
+    }
+  }, [rightRailVisible, rightRailWidth]);
 
   const handleRemoveFromInbox = useCallback(
     (_trackId: number) => {
@@ -886,12 +1077,8 @@ export default function App() {
 
   return (
     <div
+      ref={appRef}
       className={"app" + (rightRailVisible ? "" : " no-rail")}
-      style={
-        rightRailVisible
-          ? { ["--rail-w" as string]: `${rightRailWidth}px` }
-          : undefined
-      }
       onContextMenu={(e) => {
         const t = e.target as HTMLElement;
         // 入力欄ではコピー&ペースト用のメニューを残す
@@ -911,11 +1098,13 @@ export default function App() {
           onOpenRulesPanel={() => setRulesOpen(true)}
           onOpenSyncProvision={() => setSyncProvisionOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenHelp={() => setHelpOpen(true)}
         />
         {viewMode === "inbox" && !triageMode && (
           <div className="inbox-banner">
             <span className="inbox-banner-text">
-              Inbox · {inboxCount.toLocaleString()} 曲未処理
+              Inbox · {inboxCount.toLocaleString()} 曲
+              （直近追加 {INBOX_FETCH_LIMIT.toLocaleString()} 件 + later）
             </span>
             <button
               type="button"
@@ -938,11 +1127,8 @@ export default function App() {
             tracks={tracks}
             onRemoveFromInbox={handleRemoveFromInbox}
           />
-        ) : isAlbumView ? (
-          <AlbumView
-            mode={viewMode === "albums" ? "album" : "artist"}
-            onTracksChanged={triggerReload}
-          />
+        ) : isArtistView ? (
+          <ArtistsView reloadKey={reloadCount} />
         ) : displayMode === "albums" ? (
           <AlbumsView
             onLoadMore={handleLoadMore}

@@ -1,10 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Track,
   AlbumRow,
+  ArtistRow,
   ImportResult,
   ExportResult,
   ImportFileResult,
+  ImportSummary,
   LibraryStats,
   TrackEdit,
   GenreTagCount,
@@ -22,6 +25,27 @@ export async function exportLibrary(outputPath: string): Promise<ExportResult> {
 
 export async function importFiles(paths: string[]): Promise<ImportFileResult> {
   return invoke("import_files", { paths });
+}
+
+/**
+ * フォルダ (とファイル) をまとめて取り込む。フォルダは Rust 側で再帰的に走査され、
+ * 対応拡張子のファイルだけが取り込まれる。既存パスはスキップされる。
+ */
+export async function importFolders(paths: string[]): Promise<ImportSummary> {
+  return invoke("import_folders", { paths });
+}
+
+/** フォルダ取り込みの進捗 (`import_folders` 実行中に随時飛んでくる)。 */
+export interface ImportProgress {
+  done: number;
+  total: number;
+}
+
+/** フォルダ取り込みの進捗を購読する。戻り値を呼ぶと購読解除。 */
+export async function onImportProgress(
+  handler: (p: ImportProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ImportProgress>("import-progress", (e) => handler(e.payload));
 }
 
 export async function getTracks(
@@ -142,4 +166,61 @@ export async function getAlbums(
 /// 指定アルバムの曲を disc→track 順で取得。
 export async function getAlbumTracks(albumKey: string): Promise<Track[]> {
   return invoke("get_album_tracks", { albumKey });
+}
+
+/// ライブラリ全体をアーティスト単位に集約して取得 (コンピは Various Artists に巻き上げ)。
+/// sortField は name / trackCount / albumCount のみ有効 (他はサーバ側で name に倒れる)。
+export async function getArtists(
+  sortField?: SortField,
+  sortOrder?: SortOrder,
+  limit?: number,
+  offset?: number,
+): Promise<ArtistRow[]> {
+  return invoke("get_artists", { sortField, sortOrder, limit, offset });
+}
+
+/// 指定アーティストのアルバム一覧 (年→アルバム名順)。name は getArtists が返した表示名。
+export async function getArtistAlbums(name: string): Promise<AlbumRow[]> {
+  return invoke("get_artist_albums", { name });
+}
+
+// === library.db バックアップ / 復元 / 整合性チェック / VACUUM (#167) ===
+
+/// library.db をバックアップする。`dest` 省略時はアプリのデータフォルダ配下
+/// `backups/library-YYYYMMDD-HHMMSS.db` へ書き出し、直近5件だけ残して
+/// ローテーションする（直近のバックアップが30分未満ならスキップしてそのパスを返す）。
+/// 書き出し先のパスを返す。
+export async function backupLibrary(dest?: string): Promise<string> {
+  return invoke("backup_library", { dest });
+}
+
+/// バックアップファイル (`src`) を検証してから library.db を置き換える。
+/// 戻り値 `true` はアプリの再起動が必要であることを示す。
+export async function restoreLibrary(src: string): Promise<boolean> {
+  return invoke("restore_library", { src });
+}
+
+/// 現在の library.db の整合性チェック結果を返す。`["ok"]` なら健全。
+export async function checkLibraryIntegrity(): Promise<string[]> {
+  return invoke("check_library_integrity");
+}
+
+/// 現在の library.db を VACUUM で最適化する。
+export async function vacuumLibrary(): Promise<void> {
+  return invoke("vacuum_library");
+}
+
+/// 指定トラックをライブラリから削除する。実際に消えた曲数を返す。
+/// `deleteFiles` が true のときは実ファイルも削除するが、ゴミ箱へは送れないため
+/// ライブラリルート配下のファイルに限られる (ルート外が混ざると何も消さずに失敗する)。
+export async function deleteTracks(
+  trackIds: number[],
+  deleteFiles: boolean,
+): Promise<number> {
+  return invoke("delete_tracks", { trackIds, deleteFiles });
+}
+
+/// OS のファイルマネージャ (Finder / エクスプローラ) でファイルを表示する。
+export async function revealInFileManager(path: string): Promise<void> {
+  return invoke("reveal_in_file_manager", { path });
 }

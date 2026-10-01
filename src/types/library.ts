@@ -15,6 +15,18 @@ export interface ImportFileResult {
   skipped: number;
 }
 
+/**
+ * フォルダ取り込み (`import_folders`) の結果。
+ * - imported: 新しく追加できた曲数
+ * - skipped:  既にライブラリにあるパスなので飛ばした数
+ * - failed:   読み込み/追加に失敗した数
+ */
+export interface ImportSummary {
+  imported: number;
+  skipped: number;
+  failed: number;
+}
+
 export interface LibraryStats {
   trackCount: number;
   playlistCount: number;

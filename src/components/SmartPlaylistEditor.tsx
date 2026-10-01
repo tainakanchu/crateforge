@@ -313,15 +313,14 @@ export function SmartPlaylistEditor({
           </div>
 
           {error && <div className="rip-error">{error}</div>}
-
-          <div className="rip-actions" style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button className="toolbar-btn" onClick={onClose} disabled={busy}>
-              Cancel
-            </button>
-            <button className="toolbar-btn primary" onClick={handleSave} disabled={busy}>
-              {busy ? "Saving…" : creating ? "Create" : "Save"}
-            </button>
-          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="toolbar-btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="toolbar-btn primary" onClick={handleSave} disabled={busy}>
+            {busy ? "Saving…" : creating ? "Create" : "Save"}
+          </button>
         </div>
       </div>
     </div>

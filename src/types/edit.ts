@@ -32,6 +32,9 @@ export interface QueueState {
 export type RepeatMode = "off" | "all" | "one";
 
 export type SortField =
+  // プレイリスト固有の「手動順」。DB の playlist_tracks.sort_index 順を指す
+  // 疑似フィールドで、ローダは sortField を渡さない (= DB 既定の並び) ことで表現する。
+  | "playlistOrder"
   | "name"
   | "artist"
   | "albumArtist"
@@ -44,7 +47,10 @@ export type SortField =
   | "trackNumber"
   | "totalTimeMs"
   | "dateAdded"
-  | "lastPlayed";
+  | "lastPlayed"
+  // Artists ビュー専用 (アーティスト粒度の集約値)。List / Albums では使わない。
+  | "trackCount"
+  | "albumCount";
 
 export type SortOrder = "asc" | "desc";
 
@@ -58,6 +64,10 @@ export const ALBUM_SORT_FIELDS: SortField[] = [
   "rating",
   "playCount",
 ];
+
+/// Artists ビュー (viewMode = "artists") で使えるソートフィールド集合。
+/// サーバ (db 側 artist_order_by) が受け付けるのもこの 3 つだけ。
+export const ARTIST_SORT_FIELDS: SortField[] = ["name", "trackCount", "albumCount"];
 
 // === 設定可能フィールド（List ビューの列） ===
 // Track の identity（カバー + 曲名 + アーティスト）は常時表示の先頭セルで、

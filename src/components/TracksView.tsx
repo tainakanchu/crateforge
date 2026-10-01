@@ -9,6 +9,7 @@ import * as analysisApi from "../api/analysis";
 import { Icon } from "./Icon";
 import { ArtworkImg } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
+import { DeleteTracksDialog } from "./DeleteTracksDialog";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
 import type { Track, Playlist } from "../types";
 
@@ -53,6 +54,8 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const [width, setWidth] = useState(0);
   const [contextMenu, setContextMenu] = useState<CtxMenu | null>(null);
   const [showAddTagDialog, setShowAddTagDialog] = useState(false);
+  // 削除確認モーダルの対象曲（null で非表示）。
+  const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
   const [newTag, setNewTag] = useState("");
 
   useLayoutEffect(() => {
@@ -160,7 +163,8 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleFindSimilar = useCallback(() => {
     if (!contextMenu) return;
-    setSimilarBase(contextMenu.track.trackId);
+    // 明示的な「Find similar」なので Similar タブへフォーカスする (#151)
+    setSimilarBase(contextMenu.track.trackId, { focus: true });
     closeMenu();
   }, [contextMenu, setSimilarBase, closeMenu]);
 
@@ -169,6 +173,24 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     onConvert([contextMenu.track.trackId]);
     closeMenu();
   }, [contextMenu, onConvert, closeMenu]);
+
+  // Finder / エクスプローラで表示（このビューは常に単曲）。
+  const handleReveal = useCallback(async () => {
+    const path = contextMenu?.track.locationPath;
+    if (!path) return;
+    try {
+      await libraryApi.revealInFileManager(path);
+    } catch (err) {
+      pushToast("error", `ファイルマネージャで表示できませんでした: ${err}`);
+    }
+    closeMenu();
+  }, [contextMenu, closeMenu, pushToast]);
+
+  const handleDelete = useCallback(() => {
+    if (!contextMenu) return;
+    setDeleteTargets([contextMenu.track]);
+    closeMenu();
+  }, [contextMenu, closeMenu]);
 
   const handleGetInfo = useCallback(() => {
     if (!contextMenu) return;
@@ -355,6 +377,8 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           playlists={playlists}
           recentPlaylists={recentPlaylists}
           showRemoveFromPlaylist={viewMode === "playlist"}
+          revealPath={ctxTrack.fileExists ? ctxTrack.locationPath : null}
+          deleteCount={1}
           onClose={closeMenu}
           onPlay={() => { void playTrack(contextMenu.track); closeMenu(); }}
           onSetRating={handleSetRating}
@@ -366,9 +390,19 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onConvert={handleConvert}
           onGetInfo={handleGetInfo}
           onRemoveFromPlaylist={handleRemoveFromPlaylist}
+          onReveal={() => void handleReveal()}
+          onDelete={handleDelete}
           onAddToPlaylist={handleAddToPlaylist}
           onAddTag={() => setShowAddTagDialog(true)}
           onRemoveTag={handleRemoveTag}
+        />
+      )}
+
+      {deleteTargets && (
+        <DeleteTracksDialog
+          tracks={deleteTargets}
+          onClose={() => setDeleteTargets(null)}
+          onDeleted={onTracksChanged}
         />
       )}
 

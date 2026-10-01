@@ -578,16 +578,15 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           )}
 
           {error && <div className="rip-error">{error}</div>}
-
-          <div className="rip-actions">
-            <button className="toolbar-btn" onClick={requestClose} disabled={busy}>
-              Cancel
-            </button>
-            <button className="toolbar-btn primary" onClick={handleSave} disabled={busy}>
-              {/* 保存中はスピナー相当のラベルに変更してボタンを無効化 */}
-              {busy ? "保存中…" : single ? "Save" : `${tracks.length} 曲を保存`}
-            </button>
-          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="toolbar-btn" onClick={requestClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="toolbar-btn primary" onClick={handleSave} disabled={busy}>
+            {/* 保存中はスピナー相当のラベルに変更してボタンを無効化 */}
+            {busy ? "保存中…" : single ? "Save" : `${tracks.length} 曲を保存`}
+          </button>
         </div>
       </div>
     </div>
