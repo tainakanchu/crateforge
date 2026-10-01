@@ -23,6 +23,7 @@ import { DropImportOverlay } from "./components/DropImportOverlay";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 import { SyncProvisionDialog } from "./components/SyncProvisionDialog";
 import { TriagePanel } from "./components/TriagePanel";
+import { SetHistoryView } from "./components/SetHistoryView";
 import { useStore, markSetWorkspaceHydrationDone } from "./store/useStore";
 import { useDiscWatcher } from "./hooks/useDiscWatcher";
 import * as libraryApi from "./api/library";
@@ -217,7 +218,11 @@ export default function App() {
           .join(" ");
         let result;
 
-        if (viewMode === "inbox") {
+        if (viewMode === "history") {
+          // Set History は専用ビュー。トラックテーブルは使わない。
+          setTracks([]);
+          setHasMore(false);
+        } else if (viewMode === "inbox") {
           // 直近 INBOX_FETCH_LIMIT 件 + laterIds 欠損分を getTracksByIds で合流。
           const persist = loadTriagePersist();
           const raw = await libraryApi.getTracks(
@@ -1115,7 +1120,9 @@ export default function App() {
             )}
           </div>
         )}
-        {viewMode === "inbox" && triageMode ? (
+        {viewMode === "history" ? (
+          <SetHistoryView />
+        ) : viewMode === "inbox" && triageMode ? (
           <TriagePanel
             tracks={tracks}
             onRemoveFromInbox={handleRemoveFromInbox}

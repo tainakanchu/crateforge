@@ -88,6 +88,7 @@ function anchoredPopStyle(el: HTMLElement | null, width: number): React.CSSPrope
 const VIEW_TITLE: Record<ViewMode, string> = {
   library: "All Tracks",
   inbox: "Inbox",
+  history: "Set History",
   artists: "Artists",
   recent: "Recently Played",
   playlist: "Playlist",

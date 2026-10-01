@@ -17,7 +17,8 @@ export type ViewMode =
   | "playlist"
   | "recent"
   | "artists"
-  | "inbox";
+  | "inbox"
+  | "history";
 
 /// 検索の対象範囲。プレイリスト表示中だけ意味を持ち、"playlist" はそのプレイリストの中、
 /// "library" はライブラリ全体を検索する。
