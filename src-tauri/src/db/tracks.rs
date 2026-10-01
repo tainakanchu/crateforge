@@ -375,7 +375,7 @@ fn compatible_camelot_keys(base: &str) -> Option<Vec<String>> {
 }
 
 /// 検索トークンがフィールド指定 (`bpm:` `key:` `energy:` `artist:` `album:` `albumartist:`
-/// `genre:` `year:` `rating:` `comment:` `analyzed:`) なら (SQL 句, バインド値) を返す。\n/// `key:` は `key:compat:8A` の形でハーモニック互換キー一括指定もできる。
+/// `genre:` `year:` `rating:` `comment:` `analyzed:` `tag:`) なら (SQL 句, バインド値) を返す。\n/// `key:` は `key:compat:8A` の形でハーモニック互換キー一括指定もできる。
 /// 解釈できないキー/値なら None を返し、呼び出し側でフリーテキストとして扱う。
 /// `prefix` は tracks テーブルの別名 + ドット ("tracks." / "t.")。
 /// SQL に埋め込むのは固定文字列だけで、ユーザー入力は必ずバインドする。
@@ -463,6 +463,36 @@ fn parse_field_filter(
                 ),
                 Vec::new(),
             ))
+        }
+        // tag:bridge → value 一致 (namespace 問わず)
+        // tag:mood:dreamy → namespace + value 一致 (最初の ':' 以降を再度 parse)
+        "tag" => {
+            let rest = val.trim();
+            if rest.is_empty() {
+                return None;
+            }
+            if let Some((ns, v)) = rest.split_once(':') {
+                let ns = ns.trim();
+                let v = v.trim();
+                if v.is_empty() {
+                    return None;
+                }
+                Some((
+                    format!(
+                        "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id \
+                         WHERE tt.track_id = {prefix}track_id AND g.namespace = ? AND g.value = ?)"
+                    ),
+                    vec![Value::Text(ns.to_string()), Value::Text(v.to_string())],
+                ))
+            } else {
+                Some((
+                    format!(
+                        "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id \
+                         WHERE tt.track_id = {prefix}track_id AND g.value = ?)"
+                    ),
+                    vec![Value::Text(rest.to_string())],
+                ))
+            }
         }
         _ => None,
     }
@@ -2009,6 +2039,38 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// `tag:` 検索: value のみ / namespace+value の両方。
+    #[test]
+    fn search_tracks_tag_filter() {
+        let db = Database::open_memory().unwrap();
+        for tid in [1_i64, 2, 3] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, file_exists) VALUES (?1, 't', 1)",
+                    rusqlite::params![tid],
+                )
+                .unwrap();
+        }
+        db.add_tag_to_tracks(&[1], "bridge").unwrap();
+        db.add_tag_to_tracks(&[2], "mood:dreamy").unwrap();
+        db.add_tag_to_tracks(&[3], "mood:uplifting").unwrap();
+
+        let hits = db.search_tracks("tag:bridge", 100, 0, None, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].track_id, 1);
+
+        let hits = db
+            .search_tracks("tag:mood:dreamy", 100, 0, None, None)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].track_id, 2);
+
+        // value のみは namespace を問わず一致
+        let hits = db.search_tracks("tag:dreamy", 100, 0, None, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].track_id, 2);
     }
 
     /// Rust 側 compute_search_text と SQL 側 SEARCH_TEXT_EXPR が一致すること

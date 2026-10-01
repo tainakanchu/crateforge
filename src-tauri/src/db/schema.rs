@@ -81,6 +81,19 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
             peaks TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            namespace TEXT NOT NULL DEFAULT '',
+            value TEXT NOT NULL,
+            UNIQUE(namespace, value)
+        );
+
+        CREATE TABLE IF NOT EXISTS track_tags (
+            track_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            PRIMARY KEY (track_id, tag_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_tracks_name ON tracks(name);
         CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
         CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album);
@@ -92,6 +105,8 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_analysis_track_id ON track_analysis(track_id);
         CREATE INDEX IF NOT EXISTS idx_analysis_bpm ON track_analysis(bpm);
         CREATE INDEX IF NOT EXISTS idx_analysis_key ON track_analysis(key_camelot);
+        CREATE INDEX IF NOT EXISTS idx_track_tags_tag ON track_tags(tag_id);
+        CREATE INDEX IF NOT EXISTS idx_track_tags_track ON track_tags(track_id);
         ",
     )?;
     Ok(())

@@ -599,7 +599,7 @@ export function Toolbar({
               type="text"
               placeholder={
                 'Search… artist:"daft punk"  genre:house  year:2015-2020  rating:4-5  ' +
-                "bpm:120-128  key:compat:8A  analyzed:no  (/ or Ctrl+F)"
+                "bpm:120-128  key:compat:8A  tag:mood:dreamy  analyzed:no  (/ or Ctrl+F)"
               }
               value={localSearch}
               onChange={handleSearchChange}

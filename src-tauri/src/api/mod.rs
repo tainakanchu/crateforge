@@ -185,6 +185,8 @@ fn is_sync_write(method: &axum::http::Method, path: &str) -> bool {
             path,
             "/api/tracks/genre-tags/add"
                 | "/api/tracks/genre-tags/remove"
+                | "/api/tracks/tags/add"
+                | "/api/tracks/tags/remove"
                 | "/api/tracks/upload"
                 | "/api/analysis"
                 | "/api/playlists"
@@ -460,6 +462,7 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/stats", get(handlers::get_stats))
         .route("/api/genres", get(handlers::get_genres))
+        .route("/api/tags", get(handlers::get_tags))
         .route("/api/albums", get(handlers::get_albums))
         .route("/api/artists", get(handlers::get_artists))
         .route(
@@ -487,12 +490,21 @@ pub fn router(state: ApiState) -> Router {
             "/api/playlists/{playlistId}/tracks/{trackId}",
             delete(handlers::remove_track),
         )
-        // 曲メタデータ書き込み。静的セグメント genre-tags は動的 {trackId} と
+        // 曲メタデータ書き込み。静的セグメント genre-tags / tags は動的 {trackId} と
         // 衝突しない (axum 0.8 は静的セグメントを優先解決する)。
         .route("/api/tracks/genre-tags/add", post(handlers::add_genre_tags))
         .route(
             "/api/tracks/genre-tags/remove",
             post(handlers::remove_genre_tags),
+        )
+        .route("/api/tracks/tags/add", post(handlers::add_track_tags))
+        .route(
+            "/api/tracks/tags/remove",
+            post(handlers::remove_track_tags),
+        )
+        .route(
+            "/api/tracks/{trackId}/tags",
+            get(handlers::get_track_tags),
         )
         .route("/api/tracks/upload", post(handlers::prepare_track_upload))
         .route(
