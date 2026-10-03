@@ -114,14 +114,16 @@ export function Icon({
 }
 
 interface StarsProps {
-  value?: number; // 0-5
+  value?: number; // 0-5 (0.5 刻み。3.5 = 半星)
   size?: number;
   color?: string;
   dim?: string;
   onSet?: (n: number) => void;
 }
 
-/// ★レーティング描画。onSet を渡すとインライン編集可（同じ星クリックで 0）。
+/// ★レーティング描画 (#172: 半星対応)。value の端数 0.5 は左半分だけ塗った星で描く。
+/// onSet を渡すとインライン編集可: 星の左半分クリックで n-0.5、右半分で n。
+/// 現在値と同じ位置をクリックすると 0 (クリア)。
 export function Stars({
   value = 0,
   size = 12,
@@ -129,28 +131,63 @@ export function Stars({
   dim = "rgba(255,255,255,.16)",
   onSet,
 }: StarsProps) {
+  const star = (fill: string) => (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill={fill}
+      stroke="none"
+      style={{ display: "block", flexShrink: 0 }}
+      dangerouslySetInnerHTML={{ __html: ICON_PATHS.star }}
+    />
+  );
   return (
     <span className="cb-stars" style={{ display: "inline-flex", gap: 1 }}>
-      {[1, 2, 3, 4, 5].map((n) => (
-        <svg
-          key={n}
-          width={size}
-          height={size}
-          viewBox="0 0 24 24"
-          fill={n <= value ? color : dim}
-          stroke="none"
-          style={{ display: "block", cursor: onSet ? "pointer" : undefined }}
-          onClick={
-            onSet
-              ? (e) => {
-                  e.stopPropagation();
-                  onSet(n === value ? 0 : n);
-                }
-              : undefined
-          }
-          dangerouslySetInnerHTML={{ __html: ICON_PATHS.star }}
-        />
-      ))}
+      {[1, 2, 3, 4, 5].map((n) => {
+        // この星の塗り割合 (0 / 0.5 / 1)。
+        const part = value >= n ? 1 : value >= n - 0.5 ? 0.5 : 0;
+        return (
+          <span
+            key={n}
+            style={{
+              position: "relative",
+              display: "block",
+              width: size,
+              height: size,
+              cursor: onSet ? "pointer" : undefined,
+            }}
+            onClick={
+              onSet
+                ? (e) => {
+                    e.stopPropagation();
+                    const r = e.currentTarget.getBoundingClientRect();
+                    const left = e.clientX - r.left < r.width / 2;
+                    const next = left ? n - 0.5 : n;
+                    onSet(next === value ? 0 : next);
+                  }
+                : undefined
+            }
+          >
+            {star(part === 1 ? color : dim)}
+            {part === 0.5 && (
+              <span
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  width: size / 2,
+                  height: size,
+                  overflow: "hidden",
+                  pointerEvents: "none",
+                }}
+              >
+                {star(color)}
+              </span>
+            )}
+          </span>
+        );
+      })}
     </span>
   );
 }

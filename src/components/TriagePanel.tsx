@@ -9,6 +9,7 @@ import { useStore } from "../store/useStore";
 import type { Track } from "../types";
 import { Cover } from "./Cover";
 import { Icon, Stars } from "./Icon";
+import { ratingToStars, starsToRating } from "../lib/rating";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -131,7 +132,7 @@ export function TriagePanel({
     async (stars: number) => {
       const t = tracksRef.current[indexRef.current];
       if (!t || !isTauri) return;
-      const rating = stars * 20;
+      const rating = starsToRating(stars);
       try {
         await libraryApi.setTrackRating(t.trackId, rating);
         // await 中に Done で除外された場合は再導入しない（stale tracksRef で上書きしない）
@@ -228,6 +229,10 @@ export function TriagePanel({
       } else if (key >= "1" && key <= "5" && !e.shiftKey) {
         handled = true;
         void handleRating(Number(key));
+      } else if (e.shiftKey && /^(?:Digit|Numpad)[1-5]$/.test(e.code)) {
+        // Shift+1〜5 → 0.5〜4.5 星 (#172 半星)。Shift 時の e.key は配列依存なので code で判定。
+        handled = true;
+        void handleRating(Number(e.code.slice(-1)) - 0.5);
       }
 
       if (handled) {
@@ -335,11 +340,11 @@ export function TriagePanel({
 
           <div className="triage-rating">
             <Stars
-              value={track.rating ? Math.round(track.rating / 20) : 0}
+              value={ratingToStars(track.rating)}
               size={22}
               onSet={(n) => void handleRating(n)}
             />
-            <span className="triage-hint">1–5 で評価</span>
+            <span className="triage-hint">1–5 で評価 · Shift で半星</span>
           </div>
 
           <div className="triage-actions">
@@ -408,7 +413,7 @@ export function TriagePanel({
 
       <div className="triage-cheat">
         <kbd>Space</kbd> 再生 · <kbd>J</kbd>/<kbd>↓</kbd> 次 · <kbd>K</kbd>/
-        <kbd>↑</kbd> 前 · <kbd>1</kbd>–<kbd>5</kbd> 評価 · <kbd>C</kbd> Crate ·{" "}
+        <kbd>↑</kbd> 前 · <kbd>1</kbd>–<kbd>5</kbd> 評価 (<kbd>Shift</kbd> で −0.5) · <kbd>C</kbd> Crate ·{" "}
         <kbd>D</kbd>/<kbd>Enter</kbd> 処理済み · <kbd>S</kbd> あとで ·{" "}
         <kbd>Esc</kbd> 終了
       </div>

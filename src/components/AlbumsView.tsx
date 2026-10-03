@@ -7,6 +7,7 @@ import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
 import { Icon } from "./Icon";
+import { ratingToStars, starsText, starsToRating } from "../lib/rating";
 import { ArtworkImg } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
 import { DeleteTracksDialog } from "./DeleteTracksDialog";
@@ -61,10 +62,6 @@ interface CoversCtxMenu {
   headerLabel: string;
 }
 
-function ratingToStars(rating: number | null): number {
-  if (!rating) return 0;
-  return Math.round(rating / 20);
-}
 
 function formatTime(ms: number | null): string {
   if (!ms) return "";
@@ -255,7 +252,7 @@ function sortKeyLabel(vm: AlbumVM, sortField: SortField): string | null {
       return vm.dateAdded ? `Added ${vm.dateAdded.slice(0, 10)}` : null;
     case "rating": {
       const n = ratingToStars(vm.rating);
-      return n > 0 ? "★".repeat(n) + "☆".repeat(Math.max(0, 5 - n)) : null;
+      return n > 0 ? starsText(n) : null;
     }
     case "playCount":
       return vm.playCount > 0 ? `${vm.playCount} play${vm.playCount === 1 ? "" : "s"}` : null;
@@ -486,7 +483,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleSetRating = useCallback(
     async (stars: number) => {
       if (!contextMenu) return;
-      const rating = stars * 20;
+      const rating = starsToRating(stars);
       try {
         for (const id of contextMenu.trackIds) await libraryApi.setTrackRating(id, rating);
         onTracksChanged();

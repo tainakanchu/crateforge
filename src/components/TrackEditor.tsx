@@ -4,6 +4,7 @@ import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
 import { Icon, Stars } from "./Icon";
+import { ratingToStars, starsToRating } from "../lib/rating";
 import { artworkUrl } from "./Cover";
 import { GenreTagInput } from "./GenreTagInput";
 import { artGradient, leadingGlyph } from "../lib/art";
@@ -687,9 +688,9 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           <Field label="Rating">
             <div className="track-editor-rating">
               <Stars
-                value={Math.round(form.rating / 20)}
+                value={ratingToStars(form.rating)}
                 size={18}
-                onSet={(n) => update("rating", n * 20)}
+                onSet={(n) => update("rating", starsToRating(n))}
               />
               <button
                 type="button"

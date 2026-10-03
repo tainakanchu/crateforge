@@ -521,12 +521,16 @@ function NowPlaying({
 function RatingControl({ track }: { track: Track }) {
   const setRating = useSetRating();
   // サーバ確定値（track.rating 由来）の星数。track が変わると key 再マウントで初期化される。
-  const serverStars = ratingToStars(track.rating);
-  const [stars, setStars] = useState(serverStars);
+  // rating はデスクトップの半星（10 刻み）もあり得るので 0-100 のまま持ち、表示時に整数星へ丸める。
+  const [rating, setRatingValue] = useState(track.rating ?? 0);
+  const stars = ratingToStars(rating);
 
-  const handleChange = (next: number) => {
-    const prev = stars;
-    setStars(next); // 楽観的更新
+  const handleChange = (tapped: number) => {
+    const prev = rating;
+    // RatingStars は「表示中の星を再タップ → 0」を返す。半星（例: 70 → 表示 4）で 4 をタップした場合は
+    // クリアではなく 4 ちょうどに揃える意図とみなす。
+    const next = tapped === 0 && rating % 20 !== 0 ? stars : tapped;
+    setRatingValue(next * 20); // 楽観的更新
     setRating.mutate(
       {
         trackId: track.id,
@@ -535,7 +539,7 @@ function RatingControl({ track }: { track: Track }) {
         trackName: track.name,
       },
       {
-        onError: () => setStars(prev), // 失敗したら元に戻す
+        onError: () => setRatingValue(prev), // 失敗したら元に戻す
       },
     );
   };
