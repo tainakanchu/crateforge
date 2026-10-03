@@ -686,27 +686,35 @@ function SeekBar({ progress, durationMs, onSeek }: SeekBarProps) {
 /** 現在曲の類似曲を直接 client.similar で取得して表示する自己完結セクション。 */
 function SimilarSection({ trackId }: { trackId: number }) {
   const client = useConnection((s) => s.client);
-  const [hits, setHits] = useState<SimilarHit[] | null>(null);
-  const [error, setError] = useState(false);
+  // 結果は取得元 (client / trackId) と一緒に保持し、現在の入力と一致しないものは
+  // 「読み込み中」として扱う。effect 内で同期 setState せずに再取得時のリセットを表現する。
+  const [result, setResult] = useState<{
+    client: typeof client;
+    trackId: number;
+    hits: SimilarHit[] | null;
+    error: boolean;
+  } | null>(null);
   const setQueue = usePlayer((s) => s.setQueue);
 
   useEffect(() => {
     if (!client) return;
     let alive = true;
-    setHits(null);
-    setError(false);
     client
       .similar(trackId, { limit: 20 })
       .then((res) => {
-        if (alive) setHits(res);
+        if (alive) setResult({ client, trackId, hits: res, error: false });
       })
       .catch(() => {
-        if (alive) setError(true);
+        if (alive) setResult({ client, trackId, hits: null, error: true });
       });
     return () => {
       alive = false;
     };
   }, [client, trackId]);
+
+  const current = result && result.client === client && result.trackId === trackId ? result : null;
+  const hits = current?.hits ?? null;
+  const error = current?.error ?? false;
 
   if (error) {
     return <Text style={styles.similarNote}>類似曲を取得できませんでした</Text>;
