@@ -91,6 +91,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [showLicenses, setShowLicenses] = useState(false);
   // CJK 字体ゆれ吸収レベル（off / light / standard）
   const [foldLevel, setFoldLevel] = useState<string>("standard");
+  // 出力デバイス (#170)
+  const [outputState, setOutputState] = useState<playbackApi.OutputDevicesState | null>(null);
+  const [outputBusy, setOutputBusy] = useState(false);
 
   // API サーバー
   const [apiStatus, setApiStatus] = useState<ApiServerStatus | null>(null);
@@ -371,6 +374,38 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       setTimeout(() => setCopiedUrl((prev) => (prev === url ? null : prev)), 2000);
     }).catch(() => {});
   }, []);
+
+  // 出力デバイス一覧の再取得 (デバイスを抜き差ししたあとに「更新」で呼ぶ)。
+  const refreshOutputDevices = useCallback(
+    async (silent = false) => {
+      try {
+        setOutputState(await playbackApi.listOutputDevices());
+      } catch (err) {
+        if (!silent) pushToast("error", `出力デバイスの取得に失敗しました: ${err}`);
+      }
+    },
+    [pushToast],
+  );
+
+  useEffect(() => {
+    refreshOutputDevices(true);
+  }, [refreshOutputDevices]);
+
+  // 出力デバイスの切替。"" = システム既定。失敗したら現在の状態を取り直す。
+  const handleChangeOutputDevice = useCallback(
+    async (v: string) => {
+      setOutputBusy(true);
+      try {
+        await playbackApi.setOutputDevice(v === "" ? null : v);
+      } catch (err) {
+        pushToast("error", `出力デバイスを切り替えられませんでした: ${err}`);
+      } finally {
+        await refreshOutputDevices(true);
+        setOutputBusy(false);
+      }
+    },
+    [pushToast, refreshOutputDevices],
+  );
 
   // CJK 字体ゆれ吸収レベルの変更。失敗時はアラートを表示して現在値に戻す。
   const handleChangeFoldLevel = useCallback(async (v: string) => {
@@ -690,6 +725,52 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 >
                   <Toggle on={replayGain} onClick={handleToggleReplayGain} />
                 </Row>
+
+                <Row
+                  title="出力デバイス"
+                  desc="再生に使うオーディオ出力。切り替えても再生中の曲・位置・キューはそのまま引き継がれます。「システム既定」は OS の既定出力に追従します。"
+                >
+                  <div className="settings-pathrow">
+                    <select
+                      value={outputState?.selected ?? ""}
+                      disabled={outputBusy || !outputState}
+                      onChange={(e) => handleChangeOutputDevice(e.target.value)}
+                      title={outputState?.active ? `現在の出力: ${outputState.active}` : undefined}
+                    >
+                      <option value="">
+                        システム既定
+                        {(() => {
+                          const def = outputState?.devices.find((d) => d.isDefault);
+                          return def ? `（${def.name}）` : "";
+                        })()}
+                      </option>
+                      {outputState?.devices.map((d) => (
+                        <option key={d.name} value={d.name}>
+                          {d.name}
+                        </option>
+                      ))}
+                      {outputState?.selected &&
+                        !outputState.devices.some((d) => d.name === outputState.selected) && (
+                          <option value={outputState.selected}>
+                            {outputState.selected}（未接続）
+                          </option>
+                        )}
+                    </select>
+                    <button
+                      className="toolbar-btn"
+                      onClick={() => refreshOutputDevices()}
+                      disabled={outputBusy}
+                      title="接続中の出力デバイスを取り直します"
+                    >
+                      <Icon name="history" size={14} /> 更新
+                    </button>
+                  </div>
+                </Row>
+                {outputState && outputState.devices.length === 0 && (
+                  <div className="settings-subrow">
+                    <span className="settings-path">出力デバイスが見つかりません</span>
+                  </div>
+                )}
 
                 <Row
                   title="Key 表記"

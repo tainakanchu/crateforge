@@ -133,3 +133,47 @@ export async function onPlaybackAdvanced(
 export async function onPreviewEnded(cb: () => void): Promise<UnlistenFn> {
   return listen("preview-ended", () => cb());
 }
+
+// ===== 出力デバイス (#170) =====
+
+export interface OutputDeviceInfo {
+  /// 表示名。選択・永続化のキーでもある (cpal の ID は環境によって安定しないため)。
+  name: string;
+  /// OS の既定出力デバイスか。
+  isDefault: boolean;
+}
+
+export interface OutputDevicesState {
+  devices: OutputDeviceInfo[];
+  /// ユーザーの選択。null = システム既定 (OS の既定出力に追従)。
+  selected: string | null;
+  /// 実際に鳴っているデバイス (不明なら null)。
+  active: string | null;
+}
+
+export interface OutputDeviceNotice {
+  /// missing: 起動時に保存済みデバイスが見つからなかった / lost: 再生中に抜かれた。
+  kind: "missing" | "lost";
+  device: string | null;
+  active: string | null;
+}
+
+export async function listOutputDevices(): Promise<OutputDevicesState> {
+  return invoke("list_output_devices");
+}
+
+/// 出力デバイスを切り替える (null = システム既定)。再生中の曲・位置・一時停止状態は維持される。
+/// 戻り値は実際に開いたデバイス名。
+export async function setOutputDevice(name: string | null): Promise<string | null> {
+  return invoke("set_output_device", { name });
+}
+
+/// バックエンドに積まれた未読の出力デバイス通知を取り出す。
+export async function takeOutputDeviceNotices(): Promise<OutputDeviceNotice[]> {
+  return invoke("take_output_device_notices");
+}
+
+/// 出力デバイス通知が積まれたときに発火する (中身は takeOutputDeviceNotices で取る)。
+export async function onOutputDeviceNotice(cb: () => void): Promise<UnlistenFn> {
+  return listen("output-device-notice", () => cb());
+}
