@@ -70,7 +70,7 @@ To include spaces in a value, wrap it in double quotes, as in `artist:"daft punk
 | `year:2018` / `year:2015-2020` | Release year (single / range) |
 | `rating:5` / `rating:4-5` / `rating:0` | Stars 0–5 (`rating:0` is unrated) |
 | `bpm:128` / `bpm:120-128` | BPM (a single value means ±2; analysis values take priority) |
-| `key:8A` | Exact match on the Camelot key (uses the manual override if set) |
+| `key:8A` / `key:1m` / `key:Am` | Exact match on the key; Camelot, Open Key and Classic (`F#m`, `Db`; enharmonics like `G#m` = `Abm`) are all accepted, case-insensitive (uses the manual override if set) |
 | `key:compat:8A` | Keys that mix harmonically with 8A (8A / 8B / 7A / 9A) |
 | `energy:60-100` | Energy (0–1 or 0–100 both accepted) |
 | `analyzed:yes` / `analyzed:no` | Analyzed / not analyzed |

@@ -120,7 +120,7 @@ pnpm tauri build
 | `year:2018` / `year:2015-2020` | 発売年 (単一 / 範囲) |
 | `rating:5` / `rating:4-5` / `rating:0` | 星 0〜5 (0 = 未評価) |
 | `bpm:128` / `bpm:120-128` | BPM (単一は ±2、解析値優先) |
-| `key:8A` | Camelot キー完全一致 |
+| `key:8A` / `key:1m` / `key:Am` | キー完全一致 (Camelot / Open Key / Classic、異名同音・大文字小文字は不問) |
 | `key:compat:8A` | 8A とハーモニックに繋がるキー (8A / 8B / 7A / 9A) |
 | `energy:60-100` | エネルギー (0〜1 でも 0〜100 でも可) |
 | `analyzed:yes` / `analyzed:no` | 解析済み / 未解析 |
