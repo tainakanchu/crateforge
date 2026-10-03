@@ -92,7 +92,9 @@ impl Database {
                     t.total_time_ms, t.date_added, t.date_modified, t.bpm, t.comments,
                     t.location_raw, t.location_path, t.track_type, t.disabled, t.compilation,
                     t.disc_number, t.disc_count, t.track_number, t.track_count, t.file_exists,
-                    t.last_played
+                    t.last_played, t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels,
+                    t.file_size_bytes, t.codec,
+                    t.key_camelot_user
              FROM tracks t
              WHERE t.file_exists = 1
                AND t.location_path IS NOT NULL
@@ -1065,6 +1067,13 @@ mod tests {
             track_count: Some(10),
             file_exists: true,
             last_played: Some("2026-01-03T00:00:00Z".to_string()),
+            bitrate_kbps: None,
+            sample_rate_hz: None,
+            bit_depth: None,
+            channels: None,
+            file_size_bytes: None,
+            codec: None,
+            key_camelot_user: None,
         }
     }
 

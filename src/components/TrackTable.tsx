@@ -12,6 +12,7 @@ import { TrackContextMenu } from "./TrackContextMenu";
 import { DeleteTracksDialog } from "./DeleteTracksDialog";
 import { GenreTagInput } from "./GenreTagInput";
 import { bpmColor } from "../lib/art";
+import { formatChannels, formatFileSize, formatSampleRate } from "../lib/techMeta";
 import {
   anchorsForDrop,
   moveIdsWithin,
@@ -19,6 +20,7 @@ import {
 } from "../lib/trackDrag";
 import { FIELD_DEFS } from "../types";
 import type { Track, FieldKey, Playlist } from "../types";
+import { describeKey, effectiveKeyCamelot, formatKey, isKeyOverridden } from "../lib/keyNotation";
 
 function formatTime(ms: number | null): string {
   if (!ms) return "";
@@ -87,6 +89,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     recentPlaylistIds,
     pushRecentPlaylist,
     analysisByTrack,
+    keyNotation,
     setSimilarBase,
     nameColWidth,
     setNameColWidth,
@@ -917,17 +920,38 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         return <span className="cb-fmono cb-dim">{(t.dateAdded ?? "").slice(0, 10)}</span>;
       case "lastPlayed":
         return <span className="cb-fmono cb-dim">{(t.lastPlayed ?? "").slice(0, 10)}</span>;
+      // 技術メタデータ (#171)。未取得 (null) は空欄。
+      case "codec":
+        return <span className="cb-fmono cb-dim">{t.codec ?? ""}</span>;
+      case "bitrate":
+        return (
+          <span className="cb-fmono cb-dim">{t.bitrateKbps != null ? `${t.bitrateKbps} kbps` : ""}</span>
+        );
+      case "sampleRate":
+        return <span className="cb-fmono cb-dim">{formatSampleRate(t.sampleRateHz)}</span>;
+      case "bitDepth":
+        return <span className="cb-fmono cb-dim">{t.bitDepth != null ? `${t.bitDepth}-bit` : ""}</span>;
+      case "channels":
+        return <span className="cb-fmono cb-dim">{formatChannels(t.channels)}</span>;
+      case "fileSize":
+        return <span className="cb-fmono cb-dim">{formatFileSize(t.fileSizeBytes)}</span>;
       case "key": {
+        // 実効キー (手動上書き ?? 解析値) を設定の表記で出す (#172)。
         const a = analysisByTrack.get(t.trackId);
-        return a?.keyCamelot ? (
+        const k = effectiveKeyCamelot(t, a);
+        if (!k) return null;
+        const overridden = isKeyOverridden(t, a);
+        const desc = describeKey(k) ?? k;
+        return (
           <span
             className="cb-fmono"
             style={{ color: "var(--ac)", fontWeight: 600 }}
-            title={a.keyName ?? undefined}
+            title={overridden ? `${desc}（手動設定）` : desc}
           >
-            {a.keyCamelot}
+            {formatKey(k, keyNotation)}
+            {overridden && "*"}
           </span>
-        ) : null;
+        );
       }
       case "energy": {
         const a = analysisByTrack.get(t.trackId);

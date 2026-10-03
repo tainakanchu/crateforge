@@ -89,6 +89,7 @@ export function GigReadinessDialog({
     selectedPlaylistId,
     playlists,
     pushToast,
+    keyNotation,
   } = useStore();
 
   const selectedPlaylist = useMemo(
@@ -184,12 +185,14 @@ export function GigReadinessDialog({
       autoExportEnabled,
       autoExportPath,
       includeLint: source === "crate",
+      keyNotation,
     });
   }, [
     source,
     loadingPl,
     activeTracks,
     analysisByTrack,
+    keyNotation,
     setMeta,
     crateAnchors,
     autoExportEnabled,

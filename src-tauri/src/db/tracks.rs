@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use super::Database;
 use crate::itunes_xml::parser::RawTrack;
+use crate::metadata::tech::TechMeta;
 use crate::models::{AlbumRow, ArtistRow, GenreTagCount, Track, TrackEdit};
 
 /// `/api/albums` で返す、ライブラリ内の distinct なアルバム 1 件分の情報。
@@ -130,6 +131,13 @@ fn sort_field_to_column(sort_field: &str) -> Option<(&'static str, bool)> {
         "totalTimeMs" => Some(("total_time_ms", false)),
         "dateAdded" => Some(("date_added", true)),
         "lastPlayed" => Some(("last_played", true)),
+        // 技術メタデータ (#171)。
+        "bitrate" => Some(("bitrate_kbps", false)),
+        "sampleRate" => Some(("sample_rate_hz", false)),
+        "bitDepth" => Some(("bit_depth", false)),
+        "channels" => Some(("channels", false)),
+        "fileSize" => Some(("file_size_bytes", false)),
+        "codec" => Some(("codec", true)),
         _ => None,
     }
 }
@@ -322,6 +330,27 @@ fn text_like_clause(
     }
 }
 
+/// テキスト列 1 本に対する完全一致句 (`tag:` 用)。`text_like_clause` と同じ fold
+/// レベルで両辺を畳むので大文字小文字を区別しない (Off 時は SQLite の NOCASE)。
+/// `col` は固定文字列のみ。値は必ずバインドする。
+fn text_eq_clause(
+    col: &str,
+    value: &str,
+    level: crate::text_fold::FoldLevel,
+) -> (String, rusqlite::types::Value) {
+    use rusqlite::types::Value;
+    match level {
+        crate::text_fold::FoldLevel::Off => (
+            format!("{col} = ? COLLATE NOCASE"),
+            Value::Text(value.to_string()),
+        ),
+        _ => (
+            format!("fold({col}, {}) = ?", level.as_i64()),
+            Value::Text(crate::text_fold::fold(value, level)),
+        ),
+    }
+}
+
 /// "2015-2020" → (2015,2020)、"2018" → (2018,2018)。整数の単一値/範囲。
 fn parse_int_range(s: &str) -> Option<(i64, i64)> {
     let s = s.trim();
@@ -411,25 +440,23 @@ fn parse_field_filter(
             if k.is_empty() {
                 return None;
             }
+            // 実効キー = 手動上書き (tracks.key_camelot_user) ?? 解析値 (#172)。
+            // 上書きは未解析の曲にも付けられるので、解析行が無くても拾えるよう相関サブクエリで引く。
+            let effective = format!(
+                "UPPER(COALESCE({prefix}key_camelot_user, \
+                 (SELECT key_camelot FROM track_analysis WHERE track_id = {prefix}track_id)))"
+            );
             // `key:compat:8A` — 8A とハーモニックに繋がるキー全部 (同キー / 平行調 /
             // ホイール ±1) を IN (...) で並べる。
             if let Some(base) = k.strip_prefix("COMPAT:") {
                 let keys = compatible_camelot_keys(base)?;
                 let holes = vec!["?"; keys.len()].join(",");
                 return Some((
-                    format!(
-                        "{prefix}track_id IN (SELECT track_id FROM track_analysis \
-                         WHERE UPPER(key_camelot) IN ({holes}))"
-                    ),
+                    format!("({effective} IN ({holes}))"),
                     keys.into_iter().map(Value::Text).collect(),
                 ));
             }
-            Some((
-                format!(
-                    "{prefix}track_id IN (SELECT track_id FROM track_analysis WHERE UPPER(key_camelot) = ?)"
-                ),
-                vec![Value::Text(k)],
-            ))
+            Some((format!("({effective} = ?)"), vec![Value::Text(k)]))
         }
         "energy" => {
             let (lo, hi) = parse_energy_range(val)?;
@@ -471,28 +498,30 @@ fn parse_field_filter(
             if rest.is_empty() {
                 return None;
             }
-            if let Some((ns, v)) = rest.split_once(':') {
-                let ns = ns.trim();
-                let v = v.trim();
-                if v.is_empty() {
-                    return None;
-                }
-                Some((
-                    format!(
-                        "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id \
-                         WHERE tt.track_id = {prefix}track_id AND g.namespace = ? AND g.value = ?)"
-                    ),
-                    vec![Value::Text(ns.to_string()), Value::Text(v.to_string())],
-                ))
-            } else {
-                Some((
-                    format!(
-                        "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id \
-                         WHERE tt.track_id = {prefix}track_id AND g.value = ?)"
-                    ),
-                    vec![Value::Text(rest.to_string())],
-                ))
+            let (ns_part, val_part) = match rest.split_once(':') {
+                Some((ns, v)) => (Some(ns.trim()), v.trim()),
+                None => (None, rest),
+            };
+            if val_part.is_empty() {
+                return None;
             }
+            let mut conds = String::new();
+            let mut binds = Vec::new();
+            if let Some(ns) = ns_part {
+                let (c, b) = text_eq_clause("g.namespace", ns, level);
+                conds.push_str(&format!(" AND {c}"));
+                binds.push(b);
+            }
+            let (c, b) = text_eq_clause("g.value", val_part, level);
+            conds.push_str(&format!(" AND {c}"));
+            binds.push(b);
+            Some((
+                format!(
+                    "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id \
+                     WHERE tt.track_id = {prefix}track_id{conds})"
+                ),
+                binds,
+            ))
         }
         _ => None,
     }
@@ -735,6 +764,15 @@ impl Database {
             raw.get_str("Comments"),
         ]);
 
+        // iTunes XML の技術情報 (#171)。0 以下は欠損扱い。Kind はコーデック名へ寄せる。
+        let positive = |key: &str| raw.get_int(key).filter(|&n| n > 0);
+        let xml_bitrate = positive("Bit Rate");
+        let xml_sample_rate = positive("Sample Rate");
+        let xml_size = positive("Size");
+        let xml_codec = raw
+            .get_str("Kind")
+            .and_then(crate::metadata::tech::codec_from_itunes_kind);
+
         if let Some((track_id, local_modified, local_path)) = matched {
             claimed_track_ids.insert(track_id);
             let xml_modified = raw
@@ -785,6 +823,18 @@ impl Database {
                     ],
                 )?;
             }
+
+            // 技術メタデータ (#171) は未取得 (NULL) の列だけ XML の値で埋める。
+            // 実ファイルから読んだ値の方が正確なので上書きはしない。
+            self.conn.execute(
+                "UPDATE tracks SET
+                     bitrate_kbps = COALESCE(bitrate_kbps, ?1),
+                     sample_rate_hz = COALESCE(sample_rate_hz, ?2),
+                     file_size_bytes = COALESCE(file_size_bytes, ?3),
+                     codec = COALESCE(codec, ?4)
+                 WHERE track_id = ?5",
+                params![xml_bitrate, xml_sample_rate, xml_size, xml_codec, track_id],
+            )?;
 
             // 整理済みのローカルファイルが現在も存在する場合だけ、アプリ側の場所を正とする。
             let local_file_exists = local_path
@@ -839,8 +889,9 @@ impl Database {
                  album, genre, year, rating, play_count, skip_count, total_time_ms,
                  date_added, date_modified, bpm, comments, location_raw, location_path,
                  track_type, disabled, compilation, disc_number, disc_count,
-                 track_number, track_count, file_exists, last_played, search_text)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)",
+                 track_number, track_count, file_exists, last_played, search_text,
+                 bitrate_kbps, sample_rate_hz, file_size_bytes, codec)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33)",
                 params![
                     track_id,
                     persistent_id,
@@ -871,6 +922,10 @@ impl Database {
                     file_exists as i32,
                     raw.get_date("Play Date UTC"),
                     search_text,
+                    xml_bitrate,
+                    xml_sample_rate,
+                    xml_size,
+                    xml_codec,
                 ],
             ) {
                 Ok(_) => {
@@ -1067,7 +1122,9 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
+                    key_camelot_user
              FROM tracks ORDER BY {} LIMIT ?1 OFFSET ?2",
             order_by
         );
@@ -1118,7 +1175,9 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
+                    key_camelot_user
              FROM tracks
              WHERE {}
              ORDER BY {} LIMIT ? OFFSET ?",
@@ -1159,7 +1218,9 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
+                    key_camelot_user
              FROM tracks WHERE track_id = ?1",
         )?;
 
@@ -1191,7 +1252,9 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
+                    key_camelot_user
              FROM tracks WHERE persistent_id = ?1",
         )?;
         let mut out = Vec::with_capacity(persistent_ids.len());
@@ -1212,7 +1275,9 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
+                    key_camelot_user
              FROM tracks ORDER BY track_id ASC",
         )?;
         let rows = stmt.query_map([], row_to_track)?;
@@ -1295,6 +1360,25 @@ impl Database {
             values.push(rusqlite::types::Value::Integer(if v { 1 } else { 0 }));
         }
 
+        // Key の手動上書き (#172)。アプリ管轄フィールドなので rating と同様に
+        // XML メタデータの LWW 時計 (date_modified) は進めず、別 UPDATE で確定させる。
+        if let Some(opt) = &edits.key_camelot_user {
+            let value = match opt.as_deref().map(str::trim) {
+                None | Some("") => None,
+                Some(raw) => Some(
+                    crate::analyzer::similarity::normalize_camelot(raw).ok_or_else(|| {
+                        rusqlite::Error::ToSqlConversionFailure(
+                            format!("invalid Camelot key: {raw}").into(),
+                        )
+                    })?,
+                ),
+            };
+            self.conn.execute(
+                "UPDATE tracks SET key_camelot_user = ?1 WHERE track_id = ?2",
+                params![value, track_id],
+            )?;
+        }
+
         if sets.is_empty() {
             return Ok(());
         }
@@ -1368,6 +1452,46 @@ impl Database {
             params![bpm, track_id],
         )?;
         Ok(())
+    }
+
+    /// 技術メタデータ列 (#171) だけを更新する。ユーザー編集の対象列 (曲名等) には触れない。
+    /// ファイルから読めなかった項目 (None) は既存値を残す (`COALESCE(新, 旧)`)。
+    /// 1 行も一致しなければ false。
+    pub fn set_track_tech_meta(&self, track_id: i64, meta: &TechMeta) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE tracks SET
+                 bitrate_kbps = COALESCE(?1, bitrate_kbps),
+                 sample_rate_hz = COALESCE(?2, sample_rate_hz),
+                 bit_depth = COALESCE(?3, bit_depth),
+                 channels = COALESCE(?4, channels),
+                 file_size_bytes = COALESCE(?5, file_size_bytes),
+                 codec = COALESCE(?6, codec)
+             WHERE track_id = ?7",
+            params![
+                meta.bitrate_kbps,
+                meta.sample_rate_hz,
+                meta.bit_depth,
+                meta.channels,
+                meta.file_size_bytes,
+                meta.codec,
+                track_id,
+            ],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// 技術メタデータが未取得の、実ファイルがある曲 `(track_id, location_path)` を返す。
+    /// bit_depth は MP3/AAC 等で常に NULL なので判定に含めない (毎回再読み取りしないため)。
+    pub fn tracks_missing_tech_meta(&self) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT track_id, location_path FROM tracks
+             WHERE location_path IS NOT NULL AND location_path <> ''
+               AND (bitrate_kbps IS NULL OR sample_rate_hz IS NULL OR channels IS NULL
+                    OR file_size_bytes IS NULL OR codec IS NULL)
+             ORDER BY track_id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
     }
 
     /// genre を空白区切りタグ集合として扱い、tag を追加。重複は無視。
@@ -1505,7 +1629,9 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
+                    key_camelot_user
              FROM (
                SELECT *, ({key}) AS album_key FROM tracks
              ) WHERE album_key = ?1
@@ -1629,7 +1755,10 @@ impl Database {
                     t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count, t.total_time_ms,
                     t.date_added, t.date_modified, t.bpm, t.comments, t.location_raw, t.location_path,
                     t.track_type, t.disabled, t.compilation, t.disc_number, t.disc_count,
-                    t.track_number, t.track_count, t.file_exists, t.last_played
+                    t.track_number, t.track_count, t.file_exists, t.last_played,
+                    t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes,
+                    t.codec,
+                    t.key_camelot_user
              FROM tracks t
              INNER JOIN recent_tracks rt ON t.track_id = rt.track_id
              ORDER BY rt.played_at DESC
@@ -1741,6 +1870,10 @@ pub fn delete_track_cascade(conn: &Connection, track_id: i64) -> Result<bool> {
         "DELETE FROM recent_tracks WHERE track_id = ?1",
         params![track_id],
     )?;
+    conn.execute(
+        "DELETE FROM track_tags WHERE track_id = ?1",
+        params![track_id],
+    )?;
     // 旧スキーマ (track_analysis の PK が track_id だった頃) 由来で persistent_id が
     // 一致しない行が残っていても掃除できるよう、track_id でも消しておく。
     conn.execute(
@@ -1794,6 +1927,16 @@ pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
         track_count: row.get(26)?,
         file_exists: row.get::<_, i32>(27)? != 0,
         last_played: row.get(28)?,
+        // 技術メタデータ列 (#171) は列名で引く。`SELECT *` (search_text が 29 番目に来る)
+        // でも明示列リストでも同じように読めるようにするため。
+        bitrate_kbps: row.get("bitrate_kbps")?,
+        sample_rate_hz: row.get("sample_rate_hz")?,
+        bit_depth: row.get("bit_depth")?,
+        channels: row.get("channels")?,
+        file_size_bytes: row.get("file_size_bytes")?,
+        codec: row.get("codec")?,
+        // SELECT * 経由 (列順がスキーマ順) でも引けるよう列名で取る。
+        key_camelot_user: row.get("key_camelot_user")?,
     })
 }
 
@@ -1977,6 +2120,36 @@ mod tests {
         );
     }
 
+    /// 曲を削除すると track_tags の行も消え、他の曲のタグ付けと tags 行は残ること。
+    #[test]
+    fn delete_tracks_removes_track_tags() {
+        let db = Database::open_memory().unwrap();
+        for tid in [1_i64, 2] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, file_exists) VALUES (?1, 't', 1)",
+                    params![tid],
+                )
+                .unwrap();
+        }
+        db.add_tag_to_tracks(&[1, 2], "bridge").unwrap();
+        db.add_tag_to_tracks(&[1], "mood:dreamy").unwrap();
+
+        assert_eq!(db.delete_tracks(&[1]).unwrap(), 1);
+
+        let count = |sql: &str| -> i64 { db.conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(
+            count("SELECT COUNT(*) FROM track_tags WHERE track_id = 1"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM track_tags WHERE track_id = 2"),
+            1
+        );
+        // タグ行自体は残す (remove_tag_from_tracks と同じ方針)。
+        assert_eq!(count("SELECT COUNT(*) FROM tags"), 2);
+    }
+
     /// persistent_id が無い曲 (ローカル追加直後など) でも削除できること。
     #[test]
     fn delete_tracks_handles_missing_persistent_id() {
@@ -2071,6 +2244,33 @@ mod tests {
         let hits = db.search_tracks("tag:dreamy", 100, 0, None, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].track_id, 2);
+    }
+
+    /// `tag:` は artist:/genre: と同様に大文字小文字を区別しない。
+    #[test]
+    fn search_tracks_tag_filter_is_case_insensitive() {
+        let db = Database::open_memory().unwrap();
+        for tid in [1_i64, 2] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, file_exists) VALUES (?1, 't', 1)",
+                    rusqlite::params![tid],
+                )
+                .unwrap();
+        }
+        db.add_tag_to_tracks(&[1], "Bridge").unwrap();
+        db.add_tag_to_tracks(&[2], "Mood:Dreamy").unwrap();
+
+        for q in ["tag:bridge", "tag:BRIDGE", "tag:Bridge"] {
+            let hits = db.search_tracks(q, 100, 0, None, None).unwrap();
+            assert_eq!(hits.len(), 1, "{q}");
+            assert_eq!(hits[0].track_id, 1);
+        }
+        for q in ["tag:mood:dreamy", "tag:MOOD:DREAMY", "tag:dreamy"] {
+            let hits = db.search_tracks(q, 100, 0, None, None).unwrap();
+            assert_eq!(hits.len(), 1, "{q}");
+            assert_eq!(hits[0].track_id, 2);
+        }
     }
 
     /// Rust 側 compute_search_text と SQL 側 SEARCH_TEXT_EXPR が一致すること
@@ -2231,6 +2431,81 @@ mod tests {
         assert_eq!(ids(&db, "key:8A"), vec![1]);
         // 解釈できない Camelot はフィールド指定にならずフリーテキスト扱い → 0 件。
         assert!(ids(&db, "key:compat:99Z").is_empty());
+    }
+
+    /// Key の手動上書き (#172): 検索・解析読み出しは実効キー (上書き ?? 解析値) を使い、
+    /// 再解析の upsert でも上書きが消えないこと。date_modified (XML LWW 時計) は進めない。
+    #[test]
+    fn key_override_is_effective_and_survives_reanalysis() {
+        use crate::models::TrackEdit;
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks (track_id, persistent_id, name, file_exists, date_modified) VALUES
+                   (1,'P1','analyzed 8A',1,'2020-01-01T00:00:00Z'), (2,'P2','unanalyzed',1,NULL);
+                 INSERT INTO track_analysis (persistent_id, track_id, version, key_camelot, key_name)
+                   VALUES ('P1',1,1,'8A','A minor');",
+            )
+            .unwrap();
+        let set = |id: i64, v: Option<&str>| {
+            db.update_track(
+                id,
+                &TrackEdit {
+                    key_camelot_user: Some(v.map(str::to_string)),
+                    ..Default::default()
+                },
+            )
+        };
+        // 小文字・空白は正規化して保存。不正値はエラーで何も書かない。
+        set(1, Some(" 3b ")).unwrap();
+        set(2, Some("8A")).unwrap();
+        assert!(set(2, Some("Am")).is_err());
+        let t1 = db.get_track_by_track_id(1).unwrap().unwrap();
+        assert_eq!(t1.key_camelot_user.as_deref(), Some("3B"));
+        assert_eq!(t1.date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+        assert_eq!(
+            db.get_track_by_track_id(2)
+                .unwrap()
+                .unwrap()
+                .key_camelot_user
+                .as_deref(),
+            Some("8A")
+        );
+
+        // 検索は実効キー。解析行の無い曲 (2) も上書きで拾える。
+        assert_eq!(ids(&db, "key:8A"), vec![2]);
+        assert_eq!(ids(&db, "key:3b"), vec![1]);
+        assert_eq!(ids(&db, "key:compat:8A"), vec![2]);
+
+        // 解析読み出しには上書きが合成され、key_camelot は解析値のまま。
+        let a = db.get_analysis(1).unwrap().unwrap();
+        assert_eq!(a.key_camelot.as_deref(), Some("8A"));
+        assert_eq!(a.effective_key_camelot(), Some("3B"));
+        assert_eq!(a.effective_key_name().as_deref(), Some("C# major"));
+        assert_eq!(
+            db.get_all_analysis().unwrap()[0]
+                .key_camelot_user
+                .as_deref(),
+            Some("3B")
+        );
+
+        // 再解析 (upsert) しても上書きは残る。
+        let mut re = a.clone();
+        re.key_camelot = Some("9A".into());
+        re.key_name = Some("E minor".into());
+        re.key_camelot_user = None;
+        db.upsert_analysis("P1", &re).unwrap();
+        let a = db.get_analysis(1).unwrap().unwrap();
+        assert_eq!(a.key_camelot.as_deref(), Some("9A"));
+        assert_eq!(a.effective_key_camelot(), Some("3B"));
+
+        // 解除すると解析値へ戻る。
+        set(1, None).unwrap();
+        assert_eq!(ids(&db, "key:9A"), vec![1]);
+        assert_eq!(
+            db.get_analysis(1).unwrap().unwrap().effective_key_camelot(),
+            Some("9A")
+        );
     }
 
     /// 互換キー集合そのものの単体確認 (SQL を介さない)。
@@ -2690,5 +2965,84 @@ mod tests {
         assert_eq!(tracks[1].track_id, 503); // disc1 track2
         assert_eq!(tracks[2].track_id, 500); // disc2 track1
         assert_eq!(tracks[3].track_id, 501); // disc2 track2
+    }
+
+    /// #171: 技術メタデータの書き込み (None は既存値を残す)・列名マッピング・ソート。
+    #[test]
+    fn tech_meta_set_read_and_sort() {
+        use crate::metadata::tech::TechMeta;
+        let db = Database::open_memory().unwrap();
+        for (id, name) in [(1, "A"), (2, "B"), (3, "C")] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, file_exists) VALUES (?1, ?2, 1)",
+                    params![id, name],
+                )
+                .unwrap();
+        }
+        let flac = TechMeta {
+            bitrate_kbps: Some(900),
+            sample_rate_hz: Some(44_100),
+            bit_depth: Some(16),
+            channels: Some(2),
+            file_size_bytes: Some(30_000_000),
+            codec: Some("FLAC".to_string()),
+        };
+        assert!(db.set_track_tech_meta(1, &flac).unwrap());
+        let mp3 = TechMeta {
+            bitrate_kbps: Some(128),
+            codec: Some("MP3".to_string()),
+            ..Default::default()
+        };
+        assert!(db.set_track_tech_meta(2, &mp3).unwrap());
+        assert!(!db.set_track_tech_meta(99, &mp3).unwrap());
+
+        // None の項目は既存値を消さない。
+        db.conn
+            .execute(
+                "UPDATE tracks SET sample_rate_hz = 48000 WHERE track_id = 2",
+                [],
+            )
+            .unwrap();
+        db.set_track_tech_meta(2, &mp3).unwrap();
+        let t2 = db.get_track_by_track_id(2).unwrap().unwrap();
+        assert_eq!(t2.sample_rate_hz, Some(48_000));
+        assert_eq!(t2.bitrate_kbps, Some(128));
+        assert_eq!(t2.codec.as_deref(), Some("MP3"));
+
+        // 昇順でも降順でも NULL (曲 3) は末尾。
+        let asc: Vec<i64> = db
+            .get_tracks(10, 0, Some("bitrate"), Some("asc"))
+            .unwrap()
+            .iter()
+            .map(|t| t.track_id)
+            .collect();
+        assert_eq!(asc, vec![2, 1, 3]);
+        let desc: Vec<i64> = db
+            .get_tracks(10, 0, Some("fileSize"), Some("desc"))
+            .unwrap()
+            .iter()
+            .map(|t| t.track_id)
+            .collect();
+        assert_eq!(desc, vec![1, 2, 3]);
+        let by_codec: Vec<i64> = db
+            .search_tracks("", 10, 0, Some("codec"), Some("asc"))
+            .unwrap()
+            .iter()
+            .map(|t| t.track_id)
+            .collect();
+        assert_eq!(by_codec, vec![1, 2, 3]);
+
+        // SELECT * (search_text が間に挟まる列順) でも列名で正しく読める。
+        let t1 = db
+            .conn
+            .query_row(
+                "SELECT * FROM tracks WHERE track_id = 1",
+                [],
+                super::row_to_track,
+            )
+            .unwrap();
+        assert_eq!(t1.bit_depth, Some(16));
+        assert_eq!(t1.file_size_bytes, Some(30_000_000));
     }
 }

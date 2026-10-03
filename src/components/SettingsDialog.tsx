@@ -15,6 +15,7 @@ import * as fontsApi from "../api/fonts";
 import type { CjkFontStatus } from "../api/fonts";
 import { Icon } from "./Icon";
 import { LicenseList } from "./LicenseList";
+import { KEY_NOTATIONS, KEY_NOTATION_LABELS, isKeyNotation } from "../lib/keyNotation";
 
 const REPO_URL = "https://github.com/tainakanchu/crateforge";
 
@@ -70,6 +71,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const {
     replayGain,
     setReplayGain,
+    keyNotation,
+    setKeyNotation,
     autoExportEnabled,
     autoExportPath,
     setAutoExport,
@@ -127,6 +130,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [restoreConfirmPath, setRestoreConfirmPath] = useState<string | null>(null);
   // 復元完了後、再起動するまで表示する案内。
   const [restoreDone, setRestoreDone] = useState(false);
+  // 技術情報 (bitrate / sample rate / size / codec) の一括再読み取り (#171)。
+  const [techBusy, setTechBusy] = useState(false);
+  const [techProgress, setTechProgress] = useState<string>("");
 
   // updates
   const [checking, setChecking] = useState(false);
@@ -528,6 +534,35 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     }
   }, [pushToast]);
 
+  const handleRefreshTechMeta = useCallback(async () => {
+    setTechBusy(true);
+    setTechProgress("");
+    const unlisten = await libraryApi.onTechMetaProgress(({ done, total }) => {
+      setTechProgress(total > 0 ? `${done} / ${total}` : "");
+    });
+    try {
+      const r = await libraryApi.refreshTechMetadata();
+      if (r.total === 0) {
+        pushToast("success", "技術情報: 未取得の曲はありませんでした");
+      } else {
+        const extra: string[] = [];
+        if (r.missing > 0) extra.push(`ファイルなし ${r.missing} 曲`);
+        if (r.failed > 0) extra.push(`読み取り失敗 ${r.failed} 曲`);
+        pushToast(
+          extra.length > 0 ? "info" : "success",
+          `技術情報を ${r.updated} 曲で更新しました` +
+            (extra.length > 0 ? `（${extra.join(" / ")}）` : ""),
+        );
+      }
+    } catch (err) {
+      pushToast("error", `技術情報の再読み取りに失敗しました: ${err}`);
+    } finally {
+      unlisten();
+      setTechBusy(false);
+      setTechProgress("");
+    }
+  }, [pushToast]);
+
   const handleDownloadFfmpeg = useCallback(async () => {
     setFfBusy(true);
     setFfProgress("");
@@ -657,6 +692,24 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 </Row>
 
                 <Row
+                  title="Key 表記"
+                  desc="曲のキーの表示形式。保存値（Camelot）や互換判定・検索（key:8A）は変わりません。"
+                >
+                  <select
+                    value={keyNotation}
+                    onChange={(e) => {
+                      if (isKeyNotation(e.target.value)) setKeyNotation(e.target.value);
+                    }}
+                  >
+                    {KEY_NOTATIONS.map((n) => (
+                      <option key={n} value={n}>
+                        {KEY_NOTATION_LABELS[n]}
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+
+                <Row
                   title="iTunes 互換 XML の自動エクスポート"
                   desc="変更があったときだけ、約30分間隔＋アプリ終了時に Library XML を自動で書き出します。"
                 >
@@ -722,6 +775,16 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 >
                   <button className="toolbar-btn" onClick={handleVacuum} disabled={vacuumBusy}>
                     <Icon name="sparkle" size={14} /> {vacuumBusy ? "最適化中…" : "最適化 (VACUUM)"}
+                  </button>
+                </Row>
+
+                <Row
+                  title="技術情報を再読み取り"
+                  desc="ビットレート・サンプルレート・ファイルサイズ・コーデックが未取得の曲だけを、ファイルから読み直します。曲名などの編集内容は変更しません。"
+                >
+                  <button className="toolbar-btn" onClick={handleRefreshTechMeta} disabled={techBusy}>
+                    <Icon name="waveform" size={14} />{" "}
+                    {techBusy ? `読み取り中…${techProgress ? ` ${techProgress}` : ""}` : "技術情報を再読み取り"}
                   </button>
                 </Row>
 

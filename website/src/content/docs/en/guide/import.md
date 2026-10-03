@@ -66,6 +66,7 @@ The write-back includes the following as well.
   The track's own BPM takes priority, falling back to the [analysis](../dj-analysis/) result.
 - **Key** — written to **InitialKey** (ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY) in musical notation
   (`Am` / `F#m` / `C`), not Camelot, because that is what rekordbox / Serato / Traktor read.
+  A [manually overridden](../dj-analysis/) key takes precedence; otherwise the analyzed key is used.
 
 :::note
 Key is not written to the iTunes-compatible XML (Apple's plist schema has no standard element for it).

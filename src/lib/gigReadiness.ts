@@ -8,6 +8,8 @@ import type {
   GigSeverity,
 } from "../types/gig";
 import { lintSet } from "./setLint";
+import { isLossless, isLowBitrate, LOW_BITRATE_KBPS } from "./techMeta";
+import type { KeyNotation } from "./keyNotation";
 import { DEFAULT_SET_META } from "../types/setWorkspace";
 
 export interface GigReadinessInput {
@@ -20,6 +22,8 @@ export interface GigReadinessInput {
   autoExportPath?: string | null;
   /** include setLint composition warnings (default true) */
   includeLint?: boolean;
+  /** Key の表示表記 (lint メッセージ用, #172)。既定 camelot。 */
+  keyNotation?: KeyNotation;
 }
 
 function isUnanalyzed(
@@ -139,6 +143,32 @@ export function runGigReadiness(input: GigReadinessInput): GigReadinessResult {
     });
   }
 
+  // 3b. Warning: low bitrate (#171)。ロッシーでしきい値未満の曲。ロスレスは対象外。
+  // ビットレート未取得の曲は判定できないので警告にはせず、件数だけ情報として出す。
+  const lowBitrate = tracks.filter((t) => isLowBitrate(t));
+  if (lowBitrate.length > 0) {
+    const minKbps = Math.min(...lowBitrate.map((t) => t.bitrateKbps ?? 0));
+    items.push({
+      id: "low-bitrate",
+      severity: "warning",
+      title: `${lowBitrate.length} 曲が低ビットレートです`,
+      detail: `${LOW_BITRATE_KBPS} kbps 未満のロッシー音源 (最低 ${minKbps} kbps)。大音量の現場では劣化が目立つため、高音質版への差し替えを検討してください。`,
+      trackIds: lowBitrate.map((t) => t.trackId),
+    });
+  }
+  const unknownBitrate = tracks.filter(
+    (t) => t.fileExists && !isLossless(t) && (t.bitrateKbps == null || t.bitrateKbps <= 0),
+  );
+  if (unknownBitrate.length > 0) {
+    items.push({
+      id: "bitrate-unknown",
+      severity: "ready",
+      title: `${unknownBitrate.length} 曲のビットレートが未取得`,
+      detail: "低ビットレート判定の対象外です。設定 → 一般 の「技術情報を再読み取り」で取得できます。",
+      trackIds: unknownBitrate.map((t) => t.trackId),
+    });
+  }
+
   // 4. Warning: target duration ±10%
   const meta = setMeta ?? DEFAULT_SET_META;
   if (meta.targetDurationMin != null && meta.targetDurationMin > 0) {
@@ -158,7 +188,7 @@ export function runGigReadiness(input: GigReadinessInput): GigReadinessResult {
 
   // 5. Warning: setLint high-severity (warn), excluding overlaps with above
   if (includeLint && tracks.length > 0) {
-    const lintItems = lintSet(tracks, analysisByTrack, meta, anchors);
+    const lintItems = lintSet(tracks, analysisByTrack, meta, anchors, input.keyNotation);
     const overlapPrefix = [
       "missing-",
       "unanalyzed-",

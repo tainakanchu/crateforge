@@ -44,6 +44,10 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "trackNumber", label: "Track #" },
   { field: "dateAdded", label: "Date Added" },
   { field: "lastPlayed", label: "Last Played" },
+  { field: "codec", label: "Codec" },
+  { field: "bitrate", label: "Bitrate" },
+  { field: "sampleRate", label: "Sample Rate" },
+  { field: "fileSize", label: "Size" },
 ];
 
 /// Artists ビュー専用のソート候補。アーティスト粒度で意味を持つのは

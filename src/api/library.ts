@@ -15,6 +15,7 @@ import type {
   TagCount,
   SortField,
   SortOrder,
+  TechMetaRefreshSummary,
 } from "../types";
 
 export async function importLibrary(xmlPath: string): Promise<ImportResult> {
@@ -48,6 +49,22 @@ export async function onImportProgress(
   handler: (p: ImportProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<ImportProgress>("import-progress", (e) => handler(e.payload));
+}
+
+/**
+ * 技術メタデータ (bitrate / sample rate / size / codec 等, #171) が未取得の曲だけを
+ * ファイルから読み直す。タグ由来のユーザー編集列には触れない。
+ * Rust 側はワーカースレッドで実行し、進捗を `tech-meta-progress` で通知する。
+ */
+export async function refreshTechMetadata(): Promise<TechMetaRefreshSummary> {
+  return invoke("refresh_tech_metadata");
+}
+
+/** 技術情報再読み取りの進捗を購読する。戻り値を呼ぶと購読解除。 */
+export async function onTechMetaProgress(
+  handler: (p: ImportProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ImportProgress>("tech-meta-progress", (e) => handler(e.payload));
 }
 
 export async function getTracks(

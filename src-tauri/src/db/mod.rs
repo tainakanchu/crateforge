@@ -108,11 +108,38 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "playlists", "smart_criteria")? {
         conn.execute_batch("ALTER TABLE playlists ADD COLUMN smart_criteria TEXT;")?;
     }
+    // Key の手動上書き (Camelot 表記)。解析値 (track_analysis.key_camelot) とは別に
+    // tracks 側へ持つことで、再解析・解析行の作り直しで消えないようにする (#172)。
+    if !column_exists(conn, "tracks", "key_camelot_user")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN key_camelot_user TEXT;")?;
+    }
     migrate_persistent_ids(conn)?;
     migrate_track_analysis(conn)?;
     migrate_search_text(conn)?;
     migrate_sync_tables(conn)?;
     migrate_tags(conn)?;
+    migrate_tech_meta(conn)?;
+    Ok(())
+}
+
+/// 技術メタデータ列 (#171)。すべて NULL 許容で、未取得の既存行は NULL のまま残し
+/// 「技術情報を再読み取り」で後から埋める。
+pub(crate) const TECH_META_COLUMNS: [(&str, &str); 6] = [
+    ("bitrate_kbps", "INTEGER"),
+    ("sample_rate_hz", "INTEGER"),
+    ("bit_depth", "INTEGER"),
+    ("channels", "INTEGER"),
+    ("file_size_bytes", "INTEGER"),
+    ("codec", "TEXT"),
+];
+
+fn migrate_tech_meta(conn: &Connection) -> Result<()> {
+    for (col, ty) in TECH_META_COLUMNS {
+        if !column_exists(conn, "tracks", col)? {
+            // 列名・型はコード内リテラルのみなので format! で安全。
+            conn.execute_batch(&format!("ALTER TABLE tracks ADD COLUMN {col} {ty};"))?;
+        }
+    }
     Ok(())
 }
 
@@ -561,6 +588,7 @@ mod tests {
             bpm: Some(bpm),
             key_camelot: Some("8A".to_string()),
             key_name: Some("A minor".to_string()),
+            key_camelot_user: None,
             energy: Some(0.75),
             loudness_lufs: Some(-9.5),
             replaygain_db: Some(-4.5),
@@ -1720,5 +1748,77 @@ mod tests {
             )
             .unwrap();
         assert_eq!(first_playlist, "1234567890ABCDEF");
+    }
+
+    /// #171: 技術メタデータ列が無い旧 DB に冪等に列を足し、既存行は NULL のまま残すこと。
+    #[test]
+    fn tech_meta_migration_adds_nullable_columns_idempotently() {
+        let conn = legacy_connection();
+        // 列追加前の旧 DB を模すため、現行スキーマから技術列を落とす。
+        for (col, _) in TECH_META_COLUMNS {
+            conn.execute_batch(&format!("ALTER TABLE tracks DROP COLUMN {col};"))
+                .unwrap();
+            assert!(!column_exists(&conn, "tracks", col).unwrap());
+        }
+        conn.execute(
+            "INSERT INTO tracks (track_id, persistent_id, name) VALUES (1, 'AAAABBBBCCCCDDDD', 'Old')",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // 2 回目も失敗しない
+        for (col, _) in TECH_META_COLUMNS {
+            assert!(
+                column_exists(&conn, "tracks", col).unwrap(),
+                "{col} missing"
+            );
+        }
+        let (bitrate, codec): (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT bitrate_kbps, codec FROM tracks WHERE track_id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(bitrate, None);
+        assert_eq!(codec, None);
+    }
+
+    /// #171: iTunes XML の Bit Rate / Sample Rate / Size / Kind を新規行に取り込み、
+    /// 既存行では NULL の列だけを埋める (ファイル由来の値は上書きしない)。
+    #[test]
+    fn xml_import_populates_tech_meta() {
+        let db = Database::open_memory().unwrap();
+        let mut raw = named_track(1, "1111222233334444", "Song", "2026-01-01T00:00:00Z");
+        raw.fields
+            .insert("Bit Rate".to_string(), PlistValue::Int(320));
+        raw.fields
+            .insert("Sample Rate".to_string(), PlistValue::Int(44_100));
+        raw.fields
+            .insert("Size".to_string(), PlistValue::Int(9_876_543));
+        raw.fields.insert(
+            "Kind".to_string(),
+            PlistValue::Str("MPEG audio file".to_string()),
+        );
+        merge_tracks(&db, std::slice::from_ref(&raw));
+
+        let t = db.get_track_by_track_id(1).unwrap().unwrap();
+        assert_eq!(t.bitrate_kbps, Some(320));
+        assert_eq!(t.sample_rate_hz, Some(44_100));
+        assert_eq!(t.file_size_bytes, Some(9_876_543));
+        assert_eq!(t.codec.as_deref(), Some("MP3"));
+        assert_eq!(t.bit_depth, None);
+
+        // 既存行: ファイル由来で bitrate が入っている状態で再インポートしても上書きしない。
+        db.conn
+            .execute(
+                "UPDATE tracks SET bitrate_kbps = 256, sample_rate_hz = NULL WHERE track_id = 1",
+                [],
+            )
+            .unwrap();
+        merge_tracks(&db, std::slice::from_ref(&raw));
+        let t = db.get_track_by_track_id(1).unwrap().unwrap();
+        assert_eq!(t.bitrate_kbps, Some(256));
+        assert_eq!(t.sample_rate_hz, Some(44_100));
     }
 }

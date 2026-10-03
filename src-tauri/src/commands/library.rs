@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -11,7 +12,7 @@ use crate::importer;
 use crate::itunes_xml::{parser, writer};
 use crate::models::{
     AlbumRow, ArtistRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult,
-    ImportSummary, LibraryStats, Tag, TagCount, Track, TrackEdit,
+    ImportSummary, LibraryStats, Tag, TagCount, TechMetaRefreshSummary, Track, TrackEdit,
 };
 use crate::organizer;
 
@@ -67,6 +68,48 @@ pub fn import_folders(app: AppHandle, paths: Vec<String>) -> Result<ImportSummar
             );
         }
     });
+    Ok(summary)
+}
+
+/// 技術メタデータ一括再読み取りの多重起動ガード (#171)。
+static TECH_META_REFRESH_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// 実行中フラグを確実に戻すための RAII ガード (panic 時も解除する)。
+struct RunningGuard;
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        TECH_META_REFRESH_RUNNING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// 既存ライブラリの技術メタデータ (bitrate / sample rate / size / codec 等, #171) のうち
+/// 未取得 (NULL) の曲だけをファイルから読み直す。タグ由来のユーザー編集列には触れない。
+/// ファイル I/O が重いのでワーカースレッドで実行し、進捗は `tech-meta-progress`
+/// イベント (`{done, total}`) で通知する。完了後は `library-changed` を送る。
+#[tauri::command]
+pub async fn refresh_tech_metadata(app: AppHandle) -> Result<TechMetaRefreshSummary, String> {
+    if TECH_META_REFRESH_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("技術情報の再読み取りは既に実行中です".to_string());
+    }
+    let worker_app = app.clone();
+    let summary = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = RunningGuard;
+        let db = get_db(&worker_app)?;
+        let event_app = worker_app.clone();
+        importer::refresh_missing_tech_meta(&db, move |done, total| {
+            if done == 0 || done == total || done % 25 == 0 {
+                let _ = event_app.emit(
+                    "tech-meta-progress",
+                    serde_json::json!({ "done": done, "total": total }),
+                );
+            }
+        })
+    })
+    .await
+    .map_err(|e| format!("tech meta task panicked: {}", e))??;
+    if summary.updated > 0 {
+        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    }
     Ok(summary)
 }
 
@@ -167,16 +210,22 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
 
     // BPM / Key もファイルタグへ書く (#164)。
     // BPM はトラック自身の値 (ユーザーが編集した可能性がある) を優先し、
-    // 未設定なら解析結果へフォールバックする。Key は解析結果の key_name のみ。
+    // 未設定なら解析結果へフォールバックする。Key は実効キー
+    // (手動上書き ?? 解析結果, #172)。上書きは DB 側で正規化済みの値を読み直す。
     let analysis = db.get_analysis(track_id).ok().flatten();
     let bpm = resolve_int(&edits.bpm, before.bpm)
         .filter(|n| *n > 0)
         .map(|n| n as f64)
         .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
-    let key = analysis
-        .as_ref()
-        .and_then(|a| a.key_name.as_deref())
-        .and_then(organizer::key_name_to_initial_key);
+    let key_user = if edits.key_camelot_user.is_some() {
+        db.get_track_by_track_id(track_id)
+            .ok()
+            .flatten()
+            .and_then(|t| t.key_camelot_user)
+    } else {
+        before.key_camelot_user.clone()
+    };
+    let key = organizer::effective_initial_key(key_user.as_deref(), analysis.as_ref());
 
     // 5. 実ファイルのタグを書き戻す (他アプリでも編集内容が見えるように)。
     //    #163: これは整理先フォルダの設定とは無関係に常に行う。

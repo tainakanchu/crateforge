@@ -45,6 +45,13 @@ export default function DownloadButton({
   // バッチ（tracks[]/album）の進行状態はローカルに持つ。
   const [batchBusy, setBatchBusy] = useState(false);
 
+  // バッチモード用の集計。フックは条件分岐の前で常に呼ぶ必要があるのでここに置く。
+  const list = useMemo(() => tracks ?? [], [tracks]);
+  const doneCount = useMemo(
+    () => list.reduce((n, t) => n + (entries[t.trackId] != null ? 1 : 0), 0),
+    [list, entries],
+  );
+
   // ---- 単曲モード ----
   if (track) {
     const id = track.trackId;
@@ -74,12 +81,7 @@ export default function DownloadButton({
   }
 
   // ---- バッチモード（tracks[] / albumName）----
-  const list = tracks ?? [];
   const total = list.length;
-  const doneCount = useMemo(
-    () => list.reduce((n, t) => n + (entries[t.trackId] != null ? 1 : 0), 0),
-    [list, entries],
-  );
   const allDone = total > 0 && doneCount === total;
 
   const onPress = async () => {

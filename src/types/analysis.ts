@@ -8,6 +8,11 @@ export interface TrackAnalysis {
   bpm: number | null;
   keyCamelot: string | null;
   keyName: string | null;
+  /**
+   * ユーザーの手動 Key 上書き (Camelot)。tracks 側の値を読み出し時に合成したもの。
+   * 未設定ならフィールド自体が無い。表示・判定は lib/keyNotation の effectiveKeyCamelot を使う。
+   */
+  keyCamelotUser?: string | null;
   energy: number | null;
   loudnessLufs: number | null;
   replaygainDb: number | null;

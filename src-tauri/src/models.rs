@@ -37,6 +37,31 @@ pub struct Track {
     pub file_exists: bool,
     /// アプリ内で最後に再生した時刻 (ISO8601 UTC)。未再生なら None。
     pub last_played: Option<String>,
+    // --- 技術メタデータ (#171)。ファイル由来で、未取得なら None。
+    // 旧サーバー/クライアントの JSON に無くても読めるよう `default` を付ける (追加のみの互換)。
+    /// 音声ビットレート (kbps)。
+    #[serde(default)]
+    pub bitrate_kbps: Option<i64>,
+    /// サンプルレート (Hz)。
+    #[serde(default)]
+    pub sample_rate_hz: Option<i64>,
+    /// ビット深度 (ロスレス / PCM 系のみ)。
+    #[serde(default)]
+    pub bit_depth: Option<i64>,
+    /// チャンネル数。
+    #[serde(default)]
+    pub channels: Option<i64>,
+    /// ファイルサイズ (bytes)。
+    #[serde(default)]
+    pub file_size_bytes: Option<i64>,
+    /// コーデック表示名 ("FLAC" / "MP3" / "AAC" / "ALAC" …)。
+    #[serde(default)]
+    pub codec: Option<String>,
+    /// ユーザーが手動で上書きした Key (Camelot 表記, 例 "8A")。未設定なら None。
+    /// 解析値 (`track_analysis.key_camelot`) とは別に持ち、再解析で消えない。
+    /// 実効キーは「上書き ?? 解析値」。同期ワイヤ互換のため欠落時は None。
+    #[serde(default)]
+    pub key_camelot_user: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +164,10 @@ pub struct TrackEdit {
     /// スキップ回数。`Some(Some(v))` で設定、`Some(None)` で NULL、`None` で変更なし。DB のみ。
     #[serde(default, deserialize_with = "double_option")]
     pub skip_count: Option<Option<i64>>,
+    /// Key の手動上書き (Camelot 表記)。`Some(Some(v))` で設定、`Some(None)` で解除
+    /// (解析値へ戻す)、`None` で変更なし。DB のみ (XML の LWW 時計 date_modified は進めない)。
+    #[serde(default, deserialize_with = "double_option")]
+    pub key_camelot_user: Option<Option<String>>,
 }
 
 /// `null` を「明示的にクリア」と扱うために、二重 Option を必要とする。
@@ -226,6 +255,11 @@ pub struct TrackAnalysis {
     pub key_camelot: Option<String>,
     /// 人間可読のキー名 (例 "A minor")。
     pub key_name: Option<String>,
+    /// ユーザーの手動 Key 上書き (Camelot 表記)。`tracks.key_camelot_user` を読み出し時に
+    /// 合成する (track_analysis には保存しない)。`key_camelot` は常に解析値のまま。
+    /// 実効キーは [`TrackAnalysis::effective_key_camelot`] を使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_camelot_user: Option<String>,
     /// エネルギー (0..1)。体感の激しさ・推進力の近似。
     pub energy: Option<f64>,
     /// EBU R128 統合ラウドネス (LUFS)。
@@ -237,6 +271,33 @@ pub struct TrackAnalysis {
     /// 波形オーバービュー (0..1 のピーク列)。一覧取得では空 (get_analysis でのみ充填)。
     #[serde(default)]
     pub peaks: Vec<f32>,
+}
+
+impl TrackAnalysis {
+    /// 実効キー (Camelot)。手動上書き ?? 解析値。
+    pub fn effective_key_camelot(&self) -> Option<&str> {
+        self.key_camelot_user
+            .as_deref()
+            .or(self.key_camelot.as_deref())
+    }
+
+    /// `key_camelot` / `key_name` を実効キーで置き換えた版を返す。
+    /// 上書きフィールドを知らない外部クライアント (LAN API) へ渡す用。
+    pub fn into_effective_key(mut self) -> Self {
+        if self.key_camelot_user.is_some() {
+            self.key_name = self.effective_key_name();
+            self.key_camelot = self.key_camelot_user.clone();
+        }
+        self
+    }
+
+    /// 実効キーの人間可読名 ("A minor" 等)。上書き時は Camelot から導出する。
+    pub fn effective_key_name(&self) -> Option<String> {
+        match self.key_camelot_user.as_deref() {
+            Some(k) => crate::analyzer::similarity::camelot_to_key_name(k),
+            None => self.key_name.clone(),
+        }
+    }
 }
 
 /// 解析進捗イベント (`analysis-progress`)。RipProgress と同じノリのタグ付き enum。
@@ -395,6 +456,20 @@ pub struct ImportFileResult {
 pub struct ImportSummary {
     pub imported: usize,
     pub skipped: usize,
+    pub failed: usize,
+}
+
+/// 技術メタデータ一括再読み取り (#171) の結果。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TechMetaRefreshSummary {
+    /// 対象 (未取得列がある曲) の総数。
+    pub total: usize,
+    /// ファイルから読み直して更新できた曲数。
+    pub updated: usize,
+    /// ファイルが見つからなかった曲数。
+    pub missing: usize,
+    /// ファイルはあるが読めなかった曲数 (非対応形式・破損など)。
     pub failed: usize,
 }
 

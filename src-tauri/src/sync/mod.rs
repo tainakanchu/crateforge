@@ -164,6 +164,7 @@ impl AnalysisItem {
             bpm: self.bpm,
             key_camelot: self.key_camelot,
             key_name: self.key_name,
+            key_camelot_user: None,
             energy: self.energy,
             loudness_lufs: self.loudness_lufs,
             replaygain_db: self.replaygain_db,
@@ -732,6 +733,9 @@ where
             }
             None => match db.upsert_synced_track(track, &landed, source.id) {
                 Ok(Some(track_id)) => {
+                    // 技術メタデータ (#171) は着地した実ファイルから読む (変換取得もあるため
+                    // master の値は使わない)。失敗しても同期は続行。
+                    let _ = crate::importer::refresh_tech_meta_from_file(&db, track_id, &landed);
                     if let Some(analysis) = analyses.remove(pid) {
                         db.upsert_analysis(pid, &analysis)?;
                     }
@@ -1018,6 +1022,13 @@ mod tests {
             track_count: None,
             file_exists: true,
             last_played: None,
+            bitrate_kbps: None,
+            sample_rate_hz: None,
+            bit_depth: None,
+            channels: None,
+            file_size_bytes: None,
+            codec: None,
+            key_camelot_user: None,
         }
     }
 
@@ -1166,6 +1177,7 @@ mod tests {
                         bpm: Some(128.0),
                         key_camelot: Some("8A".to_string()),
                         key_name: Some("A minor".to_string()),
+                        key_camelot_user: None,
                         energy: Some(0.75),
                         loudness_lufs: Some(-9.0),
                         replaygain_db: Some(-5.0),

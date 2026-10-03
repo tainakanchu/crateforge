@@ -59,7 +59,7 @@ and are reflected in the GUI immediately. The write-back path is shared with edi
 
 - **BPM** — written as an integer to TBPM (ID3v2) / tmpo (MP4) / `BPM` (Vorbis Comments).
   The track's own BPM takes priority, falling back to the analysis result.
-- **Key** — the analyzed key is written to **InitialKey** (ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY)
+- **Key** — the effective key (the manual override if set, otherwise the analyzed key) is written to **InitialKey** (ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY)
   in musical notation (`Am`, etc.) rather than Camelot.
 
 ### Playlists

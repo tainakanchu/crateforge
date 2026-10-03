@@ -14,6 +14,8 @@ export interface TrackEdit {
   discNumber?: number | null;
   discCount?: number | null;
   compilation?: boolean;
+  /** Key の手動上書き (Camelot)。文字列で設定、null で解除 (解析値へ戻す)。 */
+  keyCamelotUser?: string | null;
 }
 
 export interface GenreTagCount {
@@ -68,6 +70,13 @@ export type SortField =
   | "totalTimeMs"
   | "dateAdded"
   | "lastPlayed"
+  // 技術メタデータ (#171)。DB 側 sort_field_to_column と揃える。
+  | "bitrate"
+  | "sampleRate"
+  | "bitDepth"
+  | "channels"
+  | "fileSize"
+  | "codec"
   // Artists ビュー専用 (アーティスト粒度の集約値)。List / Albums では使わない。
   | "trackCount"
   | "albumCount";
@@ -106,7 +115,13 @@ export type FieldKey =
   | "albumArtist"
   | "trackNumber"
   | "dateAdded"
-  | "lastPlayed";
+  | "lastPlayed"
+  | "codec"
+  | "bitrate"
+  | "sampleRate"
+  | "bitDepth"
+  | "channels"
+  | "fileSize";
 
 export interface FieldDef {
   key: FieldKey;
@@ -135,6 +150,13 @@ export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
   trackNumber: { key: "trackNumber", label: "Track #", width: 64, sortField: "trackNumber" },
   dateAdded: { key: "dateAdded", label: "Date Added", width: 104, sortField: "dateAdded" },
   lastPlayed: { key: "lastPlayed", label: "Last Played", width: 104, sortField: "lastPlayed" },
+  // 技術メタデータ (#171)。未取得の曲は空欄 (設定 → 技術情報を再読み取り で埋まる)。
+  codec: { key: "codec", label: "Codec", width: 64, sortField: "codec" },
+  bitrate: { key: "bitrate", label: "Bitrate", width: 76, sortField: "bitrate" },
+  sampleRate: { key: "sampleRate", label: "Sample Rate", width: 88, sortField: "sampleRate" },
+  bitDepth: { key: "bitDepth", label: "Bit Depth", width: 72, sortField: "bitDepth" },
+  channels: { key: "channels", label: "Channels", width: 72, sortField: "channels" },
+  fileSize: { key: "fileSize", label: "Size", width: 80, sortField: "fileSize" },
 };
 
 /// ColumnPicker の "Available" 列挙順。
@@ -153,6 +175,12 @@ export const ALL_FIELDS: FieldKey[] = [
   "trackNumber",
   "dateAdded",
   "lastPlayed",
+  "codec",
+  "bitrate",
+  "sampleRate",
+  "bitDepth",
+  "channels",
+  "fileSize",
 ];
 
 /// 既定の表示列（順序 = 表示順）。

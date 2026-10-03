@@ -33,7 +33,13 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
             track_count INTEGER,
             file_exists INTEGER DEFAULT 1,
             last_played TEXT,
-            search_text TEXT
+            search_text TEXT,
+            bitrate_kbps INTEGER,
+            sample_rate_hz INTEGER,
+            bit_depth INTEGER,
+            channels INTEGER,
+            file_size_bytes INTEGER,
+            codec TEXT
         );
 
         CREATE TABLE IF NOT EXISTS playlists (

@@ -31,13 +31,18 @@ fn row_to_analysis(row: &rusqlite::Row) -> rusqlite::Result<TrackAnalysis> {
         loudness_lufs: row.get(7)?,
         replaygain_db: row.get(8)?,
         vector,
+        key_camelot_user: row.get(10)?,
         // peaks は一覧クエリでは読まない (重いため)。get_analysis で個別に充填する。
         peaks: Vec::new(),
     })
 }
 
+/// 末尾の key_camelot_user は tracks 側の手動 Key 上書き (track_analysis には保存しない。
+/// 再解析の upsert で消えないよう、解析行とは別テーブルに置いている)。
 const SELECT_COLS: &str = "track_id, version, analyzed_at, bpm, key_camelot, key_name, \
-                           energy, loudness_lufs, replaygain_db, vector";
+                           energy, loudness_lufs, replaygain_db, vector, \
+                           (SELECT key_camelot_user FROM tracks \
+                            WHERE tracks.track_id = track_analysis.track_id)";
 
 impl Database {
     /// 解析結果を挿入 / 更新する (永続 ID を主キーに upsert)。
@@ -131,7 +136,7 @@ impl Database {
             let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
                 let persistent_id: String = row.get(0)?;
                 let vector_json: Option<String> = row.get(10)?;
-                let peaks_json: Option<String> = row.get(11)?;
+                let peaks_json: Option<String> = row.get(12)?;
                 Ok((
                     persistent_id,
                     TrackAnalysis {
@@ -147,6 +152,7 @@ impl Database {
                         vector: vector_json
                             .and_then(|value| serde_json::from_str(&value).ok())
                             .unwrap_or_default(),
+                        key_camelot_user: row.get(11)?,
                         peaks: peaks_json
                             .and_then(|value| serde_json::from_str(&value).ok())
                             .unwrap_or_default(),

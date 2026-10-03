@@ -46,8 +46,18 @@ fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
         "trackNumber" => on(t.track_number),
         "dateAdded" => os(&t.date_added),
         "lastPlayed" => os(&t.last_played),
-        "key" | "keyCamelot" => a
-            .and_then(|x| x.key_camelot.clone())
+        // 技術メタデータ (#171)。
+        "bitrate" => on(t.bitrate_kbps),
+        "sampleRate" => on(t.sample_rate_hz),
+        "bitDepth" => on(t.bit_depth),
+        "channels" => on(t.channels),
+        "fileSize" => on(t.file_size_bytes),
+        "codec" => os(&t.codec),
+        // 実効キー: 手動上書き (tracks.key_camelot_user) ?? 解析値。
+        "key" | "keyCamelot" => t
+            .key_camelot_user
+            .clone()
+            .or_else(|| a.and_then(|x| x.key_camelot.clone()))
             .map(FieldVal::Str)
             .unwrap_or(FieldVal::None),
         "energy" => a
@@ -153,6 +163,12 @@ pub fn sort_tracks(tracks: &mut [Track], field: &str, desc: bool) {
             "trackNumber" => a.track_number.cmp(&b.track_number),
             "dateAdded" => a.date_added.cmp(&b.date_added),
             "lastPlayed" => a.last_played.cmp(&b.last_played),
+            "bitrate" => a.bitrate_kbps.cmp(&b.bitrate_kbps),
+            "sampleRate" => a.sample_rate_hz.cmp(&b.sample_rate_hz),
+            "bitDepth" => a.bit_depth.cmp(&b.bit_depth),
+            "channels" => a.channels.cmp(&b.channels),
+            "fileSize" => a.file_size_bytes.cmp(&b.file_size_bytes),
+            "codec" => lower(&a.codec).cmp(&lower(&b.codec)),
             _ => lower(&a.name).cmp(&lower(&b.name)),
         };
         let ord = if ord == Ordering::Equal {
@@ -203,6 +219,13 @@ mod tests {
             track_count: None,
             file_exists: true,
             last_played: None,
+            bitrate_kbps: None,
+            sample_rate_hz: None,
+            bit_depth: None,
+            channels: None,
+            file_size_bytes: None,
+            codec: None,
+            key_camelot_user: None,
         }
     }
 

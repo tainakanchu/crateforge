@@ -7,7 +7,8 @@ use lofty::tag::{Accessor, ItemKey, Tag};
 
 use crate::db::Database;
 use crate::itunes_xml::writer::path_to_file_url;
-use crate::models::{ImportFileResult, ImportSummary};
+use crate::metadata::tech;
+use crate::models::{ImportFileResult, ImportSummary, TechMetaRefreshSummary};
 use crate::organizer;
 
 /// 取り込み対象とするオーディオ拡張子 (小文字)。
@@ -190,6 +191,10 @@ fn read_and_insert(db: &Database, path: &Path, library_root: Option<&Path>) -> R
 
     let properties = tagged.properties();
     let total_time_ms = Some(properties.duration().as_millis() as i64);
+    // 技術メタデータ (#171)。読み取り済みのプロパティから組み立て、再 probe はしない。
+    // ファイルサイズは元ファイルのもの (整理 ON のコピー先も同一内容)。
+    let file_size = std::fs::metadata(path).ok().map(|m| m.len());
+    let tech = tech::from_properties(&tagged.file_type(), properties, file_size);
 
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
 
@@ -286,8 +291,58 @@ fn read_and_insert(db: &Database, path: &Path, library_root: Option<&Path>) -> R
     if let Some(b) = bpm {
         let _ = db.set_track_bpm(track_id, b);
     }
+    if let Err(e) = db.set_track_tech_meta(track_id, &tech) {
+        eprintln!("import: tech meta update failed for {} ({})", track_id, e);
+    }
 
     Ok(track_id)
+}
+
+/// 1 曲分の技術メタデータ (#171) をファイルから読み直して DB に書く。
+/// タグ由来の列 (曲名・アーティスト等) には触れない。
+pub fn refresh_tech_meta_from_file(
+    db: &Database,
+    track_id: i64,
+    path: &Path,
+) -> Result<(), String> {
+    let meta = tech::read_tech_meta(path)?;
+    db.set_track_tech_meta(track_id, &meta)
+        .map_err(|e| format!("db update failed: {e}"))?;
+    Ok(())
+}
+
+/// 技術メタデータが未取得 (NULL) の曲だけを対象に、ファイルから一括で読み直す (#171)。
+/// ファイルが無い / 読めない曲は `failed` に数え、処理は止めない。
+/// `on_progress(done, total)` は `import_folders` と同じく最初に `0/total` を 1 回通知する。
+pub fn refresh_missing_tech_meta(
+    db: &Database,
+    mut on_progress: impl FnMut(usize, usize),
+) -> Result<TechMetaRefreshSummary, String> {
+    let targets = db
+        .tracks_missing_tech_meta()
+        .map_err(|e| format!("query failed: {e}"))?;
+    let total = targets.len();
+    let mut summary = TechMetaRefreshSummary {
+        total,
+        ..Default::default()
+    };
+    on_progress(0, total);
+    for (i, (track_id, location_path)) in targets.iter().enumerate() {
+        let path = Path::new(location_path);
+        if !path.is_file() {
+            summary.missing += 1;
+        } else {
+            match refresh_tech_meta_from_file(db, *track_id, path) {
+                Ok(()) => summary.updated += 1,
+                Err(e) => {
+                    eprintln!("refresh_tech_meta: failed {} ({})", location_path, e);
+                    summary.failed += 1;
+                }
+            }
+        }
+        on_progress(i + 1, total);
+    }
+    Ok(summary)
 }
 
 /// タグから BPM を読む。TBPM/tmpo (IntegerBpm) を優先し、無ければ Vorbis "BPM"。
@@ -408,5 +463,68 @@ mod tests {
         assert!(is_audio_file(Path::new("/m/a.mp3")));
         assert!(!is_audio_file(Path::new("/m/a.txt")));
         assert!(!is_audio_file(Path::new("/m/noext")));
+    }
+
+    /// #171: NULL の技術列だけを持つ曲をファイルから埋め、タグ由来列は変えない。
+    /// ファイルが無い曲は missing に数え、読めないファイルは failed に数える。
+    #[test]
+    fn refresh_missing_tech_meta_fills_only_technical_columns() {
+        let tmp = TempDir::new().unwrap();
+        let wav = tmp.path().join("a.wav");
+        crate::metadata::tech::write_test_wav(&wav);
+        let junk = tmp.path().join("b.mp3");
+        fs::write(&junk, b"not audio").unwrap();
+        let gone = tmp.path().join("gone.flac");
+
+        let db = Database::open_memory().unwrap();
+        let mut ids = Vec::new();
+        for (name, p) in [("Edited", &wav), ("Junk", &junk), ("Gone", &gone)] {
+            let path = p.to_string_lossy().to_string();
+            ids.push(
+                db.add_imported_track(
+                    Some(name),
+                    Some("Artist"),
+                    None,
+                    None,
+                    Some("House"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &path,
+                    &path_to_file_url(&path),
+                )
+                .unwrap(),
+            );
+        }
+
+        let mut last = (0, 0);
+        let summary = refresh_missing_tech_meta(&db, |d, t| last = (d, t)).unwrap();
+        assert_eq!(summary.total, 3);
+        assert_eq!(summary.updated, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.missing, 1);
+        assert_eq!(last, (3, 3));
+
+        let t = db.get_track_by_track_id(ids[0]).unwrap().unwrap();
+        assert_eq!(t.codec.as_deref(), Some("WAV"));
+        assert_eq!(t.sample_rate_hz, Some(44_100));
+        assert_eq!(t.bit_depth, Some(16));
+        assert_eq!(t.channels, Some(2));
+        assert!(t.file_size_bytes.unwrap() > 0);
+        // ユーザー編集の対象列はそのまま。
+        assert_eq!(t.name.as_deref(), Some("Edited"));
+        assert_eq!(t.genre.as_deref(), Some("House"));
+
+        // 埋まった曲は次回の対象外。
+        let remaining: Vec<i64> = db
+            .tracks_missing_tech_meta()
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(remaining, vec![ids[1], ids[2]]);
     }
 }
