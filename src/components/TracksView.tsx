@@ -11,6 +11,7 @@ import { ArtworkImg } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
 import { DeleteTracksDialog } from "./DeleteTracksDialog";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
+import { ratingToStars, starsToRating } from "../lib/rating";
 import type { Track, Playlist } from "../types";
 
 type Row = { tracks: Track[] };
@@ -126,7 +127,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     if (!contextMenu) return;
     const id = contextMenu.track.trackId;
     try {
-      await libraryApi.setTrackRating(id, stars * 20);
+      await libraryApi.setTrackRating(id, starsToRating(stars));
       onTracksChanged();
     } catch (err) {
       console.error("Failed to set rating:", err);
@@ -372,7 +373,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           x={contextMenu.x}
           y={contextMenu.y}
           headerLabel={ctxTrack.name || "(unknown)"}
-          ratingStars={ctxTrack.rating ? Math.round(ctxTrack.rating / 20) : 0}
+          ratingStars={ratingToStars(ctxTrack.rating)}
           genreTags={ctxGenreTags}
           playlists={playlists}
           recentPlaylists={recentPlaylists}

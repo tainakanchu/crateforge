@@ -50,7 +50,7 @@ const GROUPS: Group[] = [
       {
         keys: ["検索"],
         label:
-          "artist: album: albumartist: genre: comment: year:2015-2020 rating:4-5 bpm:120-128 key:8A key:compat:8A energy:60-100 analyzed:yes（値は \"…\" で囲める・空白区切りは AND）",
+          "artist: album: albumartist: genre: comment: year:2015-2020 rating:4-5 rating:>=3.5 bpm:120-128 key:8A key:compat:8A energy:60-100 analyzed:yes（値は \"…\" で囲める・空白区切りは AND）",
       },
       {
         keys: ["スコープ"],
@@ -78,6 +78,11 @@ const GROUPS: Group[] = [
         label: "行をドラッグ: プレイリスト内で並べ替え / サイドバーのプレイリスト・Crate へ追加",
       },
       { keys: ["≣"], label: "コンテキストメニュー（アプリケーションキー）" },
+      {
+        keys: ["0", "…", "5"],
+        label:
+          "コンテキストメニューでレーティング設定（Shift+1〜5 で 0.5〜4.5、Rating 行で ←/→ は 0.5 星ずつ）",
+      },
     ],
   },
   {
@@ -104,6 +109,7 @@ const GROUPS: Group[] = [
       { keys: ["J", "↓"], label: "次の曲 (Triage 中)" },
       { keys: ["K", "↑"], label: "前の曲 (Triage 中)" },
       { keys: ["1", "…", "5"], label: "レーティング (Triage 中)" },
+      { keys: ["Shift", "1", "…", "5"], label: "半星レーティング 0.5〜4.5 (Triage 中)" },
       { keys: ["C"], label: "Crate に追加 (Triage 中)" },
       { keys: ["D", "Enter"], label: "処理済みにして次へ (Triage 中)" },
       { keys: ["S"], label: "あとで（スキップ） (Triage 中)" },

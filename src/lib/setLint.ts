@@ -1,6 +1,7 @@
 // Set Lint (#121) — 非破壊のセット構成警告（純関数）。
 
 import type { Track, TrackAnalysis } from "../types";
+import { ratingToStars } from "./rating";
 import type { CrateAnchors, SetMeta } from "../types/setWorkspace";
 import {
   camelotCompatible,
@@ -157,7 +158,7 @@ export function lintSet(
       items.push({
         key: `low-rating-${t.trackId}`,
         severity: "info",
-        message: `低レーティング (${Math.round(t.rating / 20)}★): ${t.name || `#${t.trackId}`}`,
+        message: `低レーティング (${ratingToStars(t.rating)}★): ${t.name || `#${t.trackId}`}`,
         trackIds: [t.trackId],
       });
     }

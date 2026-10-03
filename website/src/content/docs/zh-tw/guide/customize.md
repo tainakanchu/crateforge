@@ -67,7 +67,8 @@ description: 欄的新增 / 排序 / 寬度，列高、封面、右側欄的調�
 | `genre:house` | 類型的部分比對 |
 | `comment:classic` | 註解的部分比對 |
 | `year:2018` / `year:2015-2020` | 發行年（單一 / 範圍） |
-| `rating:5` / `rating:4-5` / `rating:0` | 星等 0〜5（`rating:0` 為未評分） |
+| `rating:5` / `rating:4-5` / `rating:0` | 星等 0〜5（`rating:0` 為未評分；整數 `n` 包含 n〜n.5 星） |
+| `rating:3.5` / `rating:3.5-5` / `rating:>=3.5` / `rating:<3` | 半星（0.5 為單位）與比較運算子 `>=` `>` `<=` `<` |
 | `bpm:128` / `bpm:120-128` | BPM（單一值為 ±2；優先採用解析值） |
 | `key:8A` | Camelot 鍵的完全比對（有手動覆寫時以覆寫值判定） |
 | `key:compat:8A` | 與 8A 和聲相容的鍵（8A / 8B / 7A / 9A） |
@@ -170,6 +171,7 @@ description: 欄的新增 / 排序 / 寬度，列高、封面、右側欄的調�
 | `J` / `↓` | 下一首（Triage 中） |
 | `K` / `↑` | 上一首（Triage 中） |
 | `1`〜`5` | 評分（Triage 中） |
+| `Shift`+`1`〜`5` | 半星評分 0.5〜4.5（Triage 中） |
 | `C` | 加入 Crate（Triage 中） |
 | `D` / `Enter` | 標記為已處理並前往下一首（Triage 中） |
 | `S` | 稍後（略過）（Triage 中） |

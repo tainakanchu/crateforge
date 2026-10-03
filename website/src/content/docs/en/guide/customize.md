@@ -68,7 +68,8 @@ To include spaces in a value, wrap it in double quotes, as in `artist:"daft punk
 | `genre:house` | Partial match on the genre |
 | `comment:classic` | Partial match on the comments |
 | `year:2018` / `year:2015-2020` | Release year (single / range) |
-| `rating:5` / `rating:4-5` / `rating:0` | Stars 0–5 (`rating:0` is unrated) |
+| `rating:5` / `rating:4-5` / `rating:0` | Stars 0–5 (`rating:0` is unrated; a whole number `n` covers n to n.5 stars) |
+| `rating:3.5` / `rating:3.5-5` / `rating:>=3.5` / `rating:<3` | Half stars (0.5 steps) and the comparison operators `>=` `>` `<=` `<` |
 | `bpm:128` / `bpm:120-128` | BPM (a single value means ±2; analysis values take priority) |
 | `key:8A` | Exact match on the Camelot key (uses the manual override if set) |
 | `key:compat:8A` | Keys that mix harmonically with 8A (8A / 8B / 7A / 9A) |
@@ -172,6 +173,7 @@ Press `?` (or the `?` button in the toolbar) to show the shortcut list overlay.
 | `J` / `↓` | Next track (in Triage) |
 | `K` / `↑` | Previous track (in Triage) |
 | `1`–`5` | Rating (in Triage) |
+| `Shift`+`1`–`5` | Half-star rating 0.5–4.5 (in Triage) |
 | `C` | Add to the Crate (in Triage) |
 | `D` / `Enter` | Mark done and go to the next (in Triage) |
 | `S` | Later (skip) (in Triage) |

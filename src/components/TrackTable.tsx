@@ -7,6 +7,7 @@ import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
 import * as audition from "../lib/audition";
 import { Icon, Stars } from "./Icon";
+import { ratingToStars, starsToRating } from "../lib/rating";
 import { Cover } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
 import { DeleteTracksDialog } from "./DeleteTracksDialog";
@@ -30,10 +31,6 @@ function formatTime(ms: number | null): string {
   return `${min}:${sec.toString().padStart(2, "0")}`;
 }
 
-function ratingToStars(rating: number | null): number {
-  if (!rating) return 0;
-  return Math.round(rating / 20);
-}
 
 /// 並べ替えコミット時に「プレイリストの全曲順」を取り直すときの上限。
 /// reorder_playlist_tracks は渡した ID 列で playlist_tracks を全置換するため、
@@ -532,7 +529,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleSetRating = useCallback(
     async (track: Track, stars: number) => {
-      const newRating = stars * 20;
+      const newRating = starsToRating(stars);
       try {
         await libraryApi.setTrackRating(track.trackId, newRating);
         onTracksChanged();
@@ -548,7 +545,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     async (stars: number) => {
       const ids = ctxIds();
       if (ids.length === 0) return;
-      const newRating = stars * 20;
+      const newRating = starsToRating(stars);
       try {
         for (const id of ids) await libraryApi.setTrackRating(id, newRating);
         onTracksChanged();

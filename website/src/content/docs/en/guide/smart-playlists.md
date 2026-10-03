@@ -25,7 +25,7 @@ In the editor, you define rules with the following combination.
 The fields available for rules include **analysis values** in addition to basic metadata.
 
 - **BPM** / **Key (Camelot)** / **Energy**
-- **Play count** / **skip count** / **rating** / **last played**
+- **Play count** / **skip count** / **rating** (stars 0–5, in 0.5 steps) / **last played**
 - name / artist / album / album artist / genre / year, etc.
 
 ### Input assistance

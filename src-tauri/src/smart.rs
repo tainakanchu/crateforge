@@ -27,6 +27,11 @@ fn on(v: Option<i64>) -> FieldVal {
     }
 }
 
+/// 0-100 の rating を 0..5 の星 (0.5 刻み) に丸める。フロントの `ratingToStars` と同じ式。
+fn rating_to_stars(r: i64) -> f64 {
+    (r.clamp(0, 100) as f64 / 10.0).round() / 2.0
+}
+
 /// 条件で使えるフィールド (フロントの選択肢と一致させる)。
 fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
     match field {
@@ -39,8 +44,12 @@ fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
         "comments" => os(&t.comments),
         "year" => on(t.year),
         "bpm" => on(t.bpm),
-        // rating はスター数 (0-5) で扱う (DB は 0-100)。
-        "rating" => on(t.rating.map(|r| r / 20)),
+        // rating はスター数 (0-5, 0.5 刻み) で扱う (DB は 0-100)。#172 半星:
+        // 70 → 3.5。10 の倍数でない値 (例 65) は最寄りの半星に丸める (UI 表示と同じ)。
+        "rating" => t
+            .rating
+            .map(|r| FieldVal::Num(rating_to_stars(r)))
+            .unwrap_or(FieldVal::None),
         "playCount" => on(t.play_count),
         "skipCount" => on(t.skip_count),
         "trackNumber" => on(t.track_number),
@@ -235,6 +244,69 @@ mod tests {
             op,
             value: value.to_string(),
         }
+    }
+
+    /// #172 半星: rating 70 は 3.5 星として比較される。65 は最寄りの半星 3.5 に丸める。
+    #[test]
+    fn rating_half_stars() {
+        let crit = |op, v: &str| SmartCriteria {
+            match_all: true,
+            rules: vec![rule("rating", op, v)],
+            limit: None,
+            sort_by: None,
+            sort_desc: false,
+        };
+        let half = track(1, "A", None, Some(70));
+        assert!(track_matches(
+            &half,
+            None,
+            &crit(SmartOp::Is, "3.5"),
+            FoldLevel::Standard
+        ));
+        assert!(track_matches(
+            &half,
+            None,
+            &crit(SmartOp::Gte, "3.5"),
+            FoldLevel::Standard
+        ));
+        assert!(track_matches(
+            &half,
+            None,
+            &crit(SmartOp::Gt, "3"),
+            FoldLevel::Standard
+        ));
+        assert!(!track_matches(
+            &half,
+            None,
+            &crit(SmartOp::Gte, "4"),
+            FoldLevel::Standard
+        ));
+        assert!(!track_matches(
+            &half,
+            None,
+            &crit(SmartOp::Is, "3"),
+            FoldLevel::Standard
+        ));
+        let odd = track(2, "A", None, Some(65));
+        assert!(track_matches(
+            &odd,
+            None,
+            &crit(SmartOp::Is, "3.5"),
+            FoldLevel::Standard
+        ));
+        let full = track(3, "A", None, Some(60));
+        assert!(track_matches(
+            &full,
+            None,
+            &crit(SmartOp::Is, "3"),
+            FoldLevel::Standard
+        ));
+        assert!(track_matches(
+            &full,
+            None,
+            &crit(SmartOp::Lt, "3.5"),
+            FoldLevel::Standard
+        ));
     }
 
     #[test]

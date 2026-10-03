@@ -1723,6 +1723,31 @@ mod tests {
         assert_eq!(track["rating"], 80);
     }
 
+    /// 半星 (#172): 10 刻みの値 (70 = 3.5 星) はそのまま保存され、範囲外は 0-100 に丸める。
+    #[tokio::test]
+    async fn case_set_rating_half_star() {
+        let (_dir, app) = setup();
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/1/rating",
+            Some(json!({ "rating": 70 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, track) = req(app.clone(), "GET", "/api/tracks/1", None).await;
+        assert_eq!(track["rating"], 70);
+        let (_, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/1/rating",
+            Some(json!({ "rating": 150 })),
+        )
+        .await;
+        let (_, track) = req(app, "GET", "/api/tracks/1", None).await;
+        assert_eq!(track["rating"], 100);
+    }
+
     #[test]
     fn is_rating_path_matches_only_rating_subpath() {
         assert!(is_rating_path("/api/tracks/1/rating"));

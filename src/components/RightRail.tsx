@@ -20,6 +20,7 @@ import {
 import { lintSet } from "../lib/setLint";
 import { TRACK_IDS_MIME, parseTrackIds } from "../lib/trackDrag";
 import { Icon, Stars } from "./Icon";
+import { ratingToStars } from "../lib/rating";
 import { Cover, ArtworkImg } from "./Cover";
 import { SetArc } from "./SetArc";
 import { GigReadinessDialog } from "./GigReadinessDialog";
@@ -55,10 +56,6 @@ function applyRailWidthCss(width: number) {
   if (app) app.style.setProperty("--rail-w", `${width}px`);
 }
 
-function ratingToStars(rating: number | null): number {
-  if (!rating) return 0;
-  return Math.round(rating / 20);
-}
 
 function fmtTotal(tracks: Track[]): string {
   const ms = tracks.reduce((s, t) => s + (t.totalTimeMs ?? 0), 0);
