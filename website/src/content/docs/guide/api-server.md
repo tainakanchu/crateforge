@@ -59,7 +59,7 @@ GUI に即時反映します。書き戻しの処理はデスクトップ GUI �
 
 - **BPM** — TBPM（ID3v2）/ tmpo（MP4）/ `BPM`（Vorbis Comments）へ整数で書きます。
   曲自身の BPM を優先し、未設定なら解析結果を使います。
-- **Key** — 解析結果のキーを **InitialKey**（ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY）へ、
+- **Key** — 実効キー（手動上書きがあればそれ、無ければ解析結果）を **InitialKey**（ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY）へ、
   Camelot ではなく音楽表記（`Am` など）で書きます。
 
 ### プレイリスト

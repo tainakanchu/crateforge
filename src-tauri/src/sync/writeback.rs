@@ -1193,6 +1193,7 @@ mod tests {
             channels: None,
             file_size_bytes: None,
             codec: None,
+            key_camelot_user: None,
         }
     }
 

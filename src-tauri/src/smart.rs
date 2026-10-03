@@ -53,8 +53,11 @@ fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
         "channels" => on(t.channels),
         "fileSize" => on(t.file_size_bytes),
         "codec" => os(&t.codec),
-        "key" | "keyCamelot" => a
-            .and_then(|x| x.key_camelot.clone())
+        // 実効キー: 手動上書き (tracks.key_camelot_user) ?? 解析値。
+        "key" | "keyCamelot" => t
+            .key_camelot_user
+            .clone()
+            .or_else(|| a.and_then(|x| x.key_camelot.clone()))
             .map(FieldVal::Str)
             .unwrap_or(FieldVal::None),
         "energy" => a
@@ -222,6 +225,7 @@ mod tests {
             channels: None,
             file_size_bytes: None,
             codec: None,
+            key_camelot_user: None,
         }
     }
 

@@ -2,7 +2,12 @@
 
 import type { Track, TrackAnalysis } from "../types";
 import type { CrateAnchors, SetMeta } from "../types/setWorkspace";
-import { camelotCompatible } from "./similarReasons";
+import {
+  camelotCompatible,
+  effectiveKeyCamelot,
+  formatKey,
+  type KeyNotation,
+} from "./keyNotation";
 
 export type LintSeverity = "warn" | "info";
 
@@ -25,12 +30,14 @@ function nameArtistKey(t: Track): string {
 /**
  * Staging crate の構成を検査し、警告リストを返す。
  * 並べ替えや削除は行わない（UI 表示専用）。
+ * Key は実効キー (手動上書き ?? 解析値) で判定し、メッセージは notation で表示する (#172)。
  */
 export function lintSet(
   crate: Track[],
   analysis: Map<number, TrackAnalysis> | ReadonlyMap<number, TrackAnalysis>,
   meta: SetMeta,
   anchors: CrateAnchors,
+  notation: KeyNotation = "camelot",
 ): LintItem[] {
   const items: LintItem[] = [];
   if (crate.length === 0) return items;
@@ -116,13 +123,13 @@ export function lintSet(
       }
     }
 
-    const keyA = aa?.keyCamelot?.trim();
-    const keyB = ba?.keyCamelot?.trim();
+    const keyA = effectiveKeyCamelot(a, aa);
+    const keyB = effectiveKeyCamelot(b, ba);
     if (keyA && keyB && !camelotCompatible(keyA, keyB)) {
       items.push({
         key: `key-incompat-${a.trackId}-${b.trackId}`,
         severity: "warn",
-        message: `ハーモニック非互換: ${keyA} → ${keyB}`,
+        message: `ハーモニック非互換: ${formatKey(keyA, notation)} → ${formatKey(keyB, notation)}`,
         trackIds: [a.trackId, b.trackId],
       });
     }

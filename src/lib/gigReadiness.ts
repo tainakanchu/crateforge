@@ -9,6 +9,7 @@ import type {
 } from "../types/gig";
 import { lintSet } from "./setLint";
 import { isLossless, isLowBitrate, LOW_BITRATE_KBPS } from "./techMeta";
+import type { KeyNotation } from "./keyNotation";
 import { DEFAULT_SET_META } from "../types/setWorkspace";
 
 export interface GigReadinessInput {
@@ -21,6 +22,8 @@ export interface GigReadinessInput {
   autoExportPath?: string | null;
   /** include setLint composition warnings (default true) */
   includeLint?: boolean;
+  /** Key の表示表記 (lint メッセージ用, #172)。既定 camelot。 */
+  keyNotation?: KeyNotation;
 }
 
 function isUnanalyzed(
@@ -185,7 +188,7 @@ export function runGigReadiness(input: GigReadinessInput): GigReadinessResult {
 
   // 5. Warning: setLint high-severity (warn), excluding overlaps with above
   if (includeLint && tracks.length > 0) {
-    const lintItems = lintSet(tracks, analysisByTrack, meta, anchors);
+    const lintItems = lintSet(tracks, analysisByTrack, meta, anchors, input.keyNotation);
     const overlapPrefix = [
       "missing-",
       "unanalyzed-",

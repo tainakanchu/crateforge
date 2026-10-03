@@ -11,6 +11,7 @@ import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
 import * as audition from "../lib/audition";
 import { buildSimilarReasons } from "../lib/similarReasons";
+import { effectiveKeyCamelot, formatKey } from "../lib/keyNotation";
 import {
   buildConstrainedSmoothOrder,
   hasAnyAnchor,
@@ -142,6 +143,7 @@ export function RightRail({
     // Set Workspace (#121) の Set tools (Arc / Lint) 開閉。次回起動でも保持する (#160)。
     setToolsOpen,
     setSetToolsOpen,
+    keyNotation,
   } = useStore();
 
   const [queueTracks, setQueueTracks] = useState<QueueItem[]>([]);
@@ -244,6 +246,8 @@ export function RightRail({
   const baseAnalysis = similarBaseId != null
     ? analysisByTrack.get(similarBaseId) ?? null
     : null;
+  // Similar 基準曲の実効キー (手動上書き ?? 解析値, #172)。
+  const baseKey = effectiveKeyCamelot(similarBase, baseAnalysis);
   const showRichMeta = rightRailWidth >= 420;
 
   // 分割表示: Crate/Similar タブ時に railSplit が ON なら両方を同時表示。
@@ -703,13 +707,14 @@ export function RightRail({
 
   const lintItems = useMemo(() => {
     if (!setToolsOpen || crate.length === 0) return [];
-    return lintSet(crate, analysisByTrack, setMeta, crateAnchors).filter(
+    return lintSet(crate, analysisByTrack, setMeta, crateAnchors, keyNotation).filter(
       (item) => !dismissedLints.has(item.key),
     );
   }, [
     setToolsOpen,
     crate,
     analysisByTrack,
+    keyNotation,
     setMeta,
     crateAnchors,
     dismissedLints,
@@ -1162,6 +1167,7 @@ export function RightRail({
         ) : (
           crate.map((t, i) => {
             const a = analysisByTrack.get(t.trackId);
+            const keyLabel = formatKey(effectiveKeyCamelot(t, a), keyNotation);
             const rowSec = rowSections[i];
             const anchor = crateAnchors[t.trackId] ?? null;
             const sectionAt = crateSections.find(
@@ -1301,8 +1307,8 @@ export function RightRail({
                     {t.bpm != null && (
                       <b style={{ color: bpmColor(t.bpm) }}>{t.bpm}</b>
                     )}
-                    {showRichMeta && a?.keyCamelot && (
-                      <b style={{ color: "var(--ac)" }}>{a.keyCamelot}</b>
+                    {showRichMeta && keyLabel && (
+                      <b style={{ color: "var(--ac)" }}>{keyLabel}</b>
                     )}
                     {showRichMeta && a?.energy != null && (
                       <span>{Math.round(a.energy * 100)}%</span>
@@ -1566,9 +1572,7 @@ export function RightRail({
               <div className="la ell">
                 {similarBaseTrackId != null ? "Pin" : "Now Playing"}
                 {similarBase.artist ? ` · ${similarBase.artist}` : ""}
-                {baseAnalysis?.keyCamelot
-                  ? ` · ${baseAnalysis.keyCamelot}`
-                  : ""}
+                {baseKey ? ` · ${formatKey(baseKey, keyNotation)}` : ""}
                 {baseAnalysis?.bpm != null
                   ? ` · ${Math.round(baseAnalysis.bpm)} BPM`
                   : ""}
@@ -1700,20 +1704,22 @@ export function RightRail({
             const t = h.track;
             const a = analysisByTrack.get(t.trackId);
             const aBpm = a?.bpm;
+            const hitKey = effectiveKeyCamelot(t, a);
             const inCrate = crate.some((c) => c.trackId === t.trackId);
             const reasons = buildSimilarReasons(
               {
                 bpm: baseAnalysis?.bpm,
-                keyCamelot: baseAnalysis?.keyCamelot,
+                keyCamelot: baseKey,
                 energy: baseAnalysis?.energy,
               },
               {
                 bpm: a?.bpm,
-                keyCamelot: a?.keyCamelot,
+                keyCamelot: hitKey,
                 energy: a?.energy,
               },
               h.distance,
               3,
+              keyNotation,
             );
             return (
               <div
@@ -1735,8 +1741,8 @@ export function RightRail({
                 <div className="cb-cmetawrap">
                   <div className="cj">{t.name || "(unknown)"}</div>
                   <div className="la">
-                    {a?.keyCamelot && (
-                      <b style={{ color: "var(--ac)" }}>{a.keyCamelot}</b>
+                    {hitKey && (
+                      <b style={{ color: "var(--ac)" }}>{formatKey(hitKey, keyNotation)}</b>
                     )}
                     {aBpm != null && (
                       <span style={{ color: bpmColor(aBpm) }}>{Math.round(aBpm)}</span>
@@ -1964,15 +1970,14 @@ export function RightRail({
         <div className="cb-cratelist">
           {now ? (() => {
             const na = now.trackId != null ? analysisByTrack.get(now.trackId) : null;
+            const nowKey = formatKey(effectiveKeyCamelot(now, na), keyNotation);
             return (
               <div style={{ padding: "4px 6px", display: "flex", flexDirection: "column", gap: 8 }}>
                 <NowRow label="Album" value={now.album} />
                 <NowRow label="Artist" value={now.artist} />
                 <NowRow label="Genre" value={now.genre} />
                 <NowRow label="BPM" value={now.bpm != null ? String(now.bpm) : null} />
-                {na?.keyCamelot != null && (
-                  <NowRow label="Key" value={na.keyCamelot} />
-                )}
+                {nowKey != null && <NowRow label="Key" value={nowKey} />}
                 {na?.energy != null && (
                   <NowRow label="Energy" value={String(Math.round(na.energy * 100)) + "%"} />
                 )}

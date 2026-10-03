@@ -1,5 +1,10 @@
 // Similar 候補の「なぜ似ているか」表示用ヘルパー（純関数）。
 
+import { camelotCompatible, formatKey, type KeyNotation } from "./keyNotation";
+
+// Camelot のパース / 互換判定は lib/keyNotation に集約 (#172)。既存 import 互換のため再輸出。
+export { camelotCompatible, parseCamelot } from "./keyNotation";
+
 export type SimilarFeatureSlice = {
   bpm?: number | null;
   keyCamelot?: string | null;
@@ -19,37 +24,6 @@ export type SimilarReasonChip = {
   kind: SimilarReasonKind;
 };
 
-/** Camelot コード ("8A" 等) を (番号 1..=12, isMinor=A 面) に分解する。 */
-export function parseCamelot(s: string): { num: number; isMinor: boolean } | null {
-  const t = s.trim();
-  if (t.length < 2) return null;
-  const letter = t.slice(-1);
-  const isMinor =
-    letter === "A" || letter === "a"
-      ? true
-      : letter === "B" || letter === "b"
-        ? false
-        : null;
-  if (isMinor == null) return null;
-  const num = Number(t.slice(0, -1));
-  if (!Number.isInteger(num) || num < 1 || num > 12) return null;
-  return { num, isMinor };
-}
-
-/** Camelot ミキシング互換: 同番号 (同キー or 平行調) か、隣接番号 (±1 環状) で同種。 */
-export function camelotCompatible(a: string, b: string): boolean {
-  const pa = parseCamelot(a);
-  const pb = parseCamelot(b);
-  if (!pa || !pb) return false;
-  if (pa.num === pb.num) return true;
-  if (pa.isMinor === pb.isMinor) {
-    const d = Math.abs(pa.num - pb.num);
-    const ring = Math.min(d, 12 - d);
-    return ring === 1;
-  }
-  return false;
-}
-
 function fmtSigned(n: number, digits: number): string {
   const sign = n > 0 ? "+" : n < 0 ? "−" : "±";
   const abs = Math.abs(n).toFixed(digits);
@@ -62,29 +36,32 @@ function fmtSigned(n: number, digits: number): string {
 /**
  * base と hit の解析差分から表示用チップを最大 maxChips 個返す。
  * 優先度: Key → BPM → Energy → Harmonic → Distance。
+ * keyCamelot には実効キー (手動上書き ?? 解析値) を渡す。Key チップは notation で表示する。
  */
 export function buildSimilarReasons(
   base: SimilarFeatureSlice,
   hit: SimilarFeatureSlice,
   distance: number,
   maxChips = 3,
+  notation: KeyNotation = "camelot",
 ): SimilarReasonChip[] {
   const out: SimilarReasonChip[] = [];
 
   const bk = base.keyCamelot?.trim() || null;
   const hk = hit.keyCamelot?.trim() || null;
+  const fk = (k: string) => formatKey(k, notation) ?? k.toUpperCase();
   if (bk && hk) {
     if (bk.toUpperCase() === hk.toUpperCase()) {
-      out.push({ key: "key", label: bk.toUpperCase(), kind: "key" });
+      out.push({ key: "key", label: fk(bk), kind: "key" });
     } else {
       out.push({
         key: "key",
-        label: `${bk.toUpperCase()} → ${hk.toUpperCase()}`,
+        label: `${fk(bk)} → ${fk(hk)}`,
         kind: "key",
       });
     }
   } else if (hk) {
-    out.push({ key: "key", label: hk.toUpperCase(), kind: "key" });
+    out.push({ key: "key", label: fk(hk), kind: "key" });
   }
 
   if (base.bpm != null && hit.bpm != null && base.bpm > 0) {

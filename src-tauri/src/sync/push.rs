@@ -598,6 +598,7 @@ mod tests {
                     bpm: Some(126.5),
                     key_camelot: Some("7A".to_string()),
                     key_name: Some("D minor".to_string()),
+                    key_camelot_user: None,
                     energy: Some(0.8),
                     loudness_lufs: Some(-8.5),
                     replaygain_db: Some(-5.5),

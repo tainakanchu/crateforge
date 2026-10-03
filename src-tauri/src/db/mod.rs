@@ -108,6 +108,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "playlists", "smart_criteria")? {
         conn.execute_batch("ALTER TABLE playlists ADD COLUMN smart_criteria TEXT;")?;
     }
+    // Key の手動上書き (Camelot 表記)。解析値 (track_analysis.key_camelot) とは別に
+    // tracks 側へ持つことで、再解析・解析行の作り直しで消えないようにする (#172)。
+    if !column_exists(conn, "tracks", "key_camelot_user")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN key_camelot_user TEXT;")?;
+    }
     migrate_persistent_ids(conn)?;
     migrate_track_analysis(conn)?;
     migrate_search_text(conn)?;
@@ -583,6 +588,7 @@ mod tests {
             bpm: Some(bpm),
             key_camelot: Some("8A".to_string()),
             key_name: Some("A minor".to_string()),
+            key_camelot_user: None,
             energy: Some(0.75),
             loudness_lufs: Some(-9.5),
             replaygain_db: Some(-4.5),

@@ -297,6 +297,19 @@ pub struct TagWrite<'a> {
     pub key: Option<String>,
 }
 
+/// 実効キー (手動上書き Camelot ?? 解析結果の key_name) を `InitialKey` 表記へ変換する。
+/// 上書きは Camelot ("8A") で保存されているので、キー名へ戻してから変換する。
+pub fn effective_initial_key(
+    key_camelot_user: Option<&str>,
+    analysis: Option<&crate::models::TrackAnalysis>,
+) -> Option<String> {
+    let name = match key_camelot_user {
+        Some(k) => crate::analyzer::similarity::camelot_to_key_name(k),
+        None => analysis.and_then(|a| a.key_name.clone()),
+    };
+    name.as_deref().and_then(key_name_to_initial_key)
+}
+
 /// 解析結果の `key_name` ("A minor" / "F# major") を、DJ ソフトが読む
 /// `InitialKey` の表記 ("Am" / "F#") へ変換する。解釈できなければ `None`。
 ///
@@ -742,6 +755,37 @@ mod tests {
             organize_target(Some(" /lib "), &m, src),
             Some(target_path(Path::new("/lib"), &m, src))
         );
+    }
+
+    #[test]
+    fn effective_initial_key_prefers_user_override() {
+        let analysis = crate::models::TrackAnalysis {
+            track_id: 1,
+            version: 1,
+            analyzed_at: String::new(),
+            bpm: None,
+            key_camelot: Some("8A".into()),
+            key_name: Some("A minor".into()),
+            key_camelot_user: None,
+            energy: None,
+            loudness_lufs: None,
+            replaygain_db: None,
+            vector: Vec::new(),
+            peaks: Vec::new(),
+        };
+        assert_eq!(
+            effective_initial_key(None, Some(&analysis)).as_deref(),
+            Some("Am")
+        );
+        assert_eq!(
+            effective_initial_key(Some("11A"), Some(&analysis)).as_deref(),
+            Some("F#m")
+        );
+        assert_eq!(
+            effective_initial_key(Some("8B"), None).as_deref(),
+            Some("C")
+        );
+        assert_eq!(effective_initial_key(None, None), None);
     }
 
     #[test]

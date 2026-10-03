@@ -1126,7 +1126,11 @@ pub async fn get_track_analysis(
     Path(track_id): Path<i64>,
 ) -> Result<Json<Option<TrackAnalysis>>, ApiError> {
     let db = state.db()?;
-    let analysis = db.get_analysis(track_id)?;
+    // keyCamelot / keyName は実効キー (手動上書き ?? 解析値) で返す。
+    // モバイル等は上書きを意識せずそのまま表示できる。
+    let analysis = db
+        .get_analysis(track_id)?
+        .map(TrackAnalysis::into_effective_key);
     Ok(Json(analysis))
 }
 
@@ -2477,18 +2481,18 @@ fn apply_track_edit(
         None => return Ok(None),
     };
     // BPM / Key もファイルタグへ書く (#164)。BPM はトラック自身の値を優先し、
-    // 未設定なら解析結果へフォールバックする。Key は解析結果の key_name から
-    // DJ ソフトが読む音楽表記 ("Am" 等) に変換して InitialKey へ書く。
+    // 未設定なら解析結果へフォールバックする。Key は実効キー (手動上書き ?? 解析値, #172)
+    // を DJ ソフトが読む音楽表記 ("Am" 等) に変換して InitialKey へ書く。
     let analysis = db.get_analysis(track_id).ok().flatten();
     let bpm = track
         .bpm
         .filter(|n| *n > 0)
         .map(|n| n as f64)
         .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
-    let key = analysis
-        .as_ref()
-        .and_then(|a| a.key_name.as_deref())
-        .and_then(crate::organizer::key_name_to_initial_key);
+    let key = crate::organizer::effective_initial_key(
+        track.key_camelot_user.as_deref(),
+        analysis.as_ref(),
+    );
 
     // 現在の DB 値を実ファイルのタグへ書き戻す (GUI の update_track と同様、他アプリにも反映)。
     let file_failed = {

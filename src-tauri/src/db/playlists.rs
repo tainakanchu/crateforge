@@ -302,7 +302,8 @@ impl Database {
                     t.track_type, t.disabled, t.compilation, t.disc_number, t.disc_count,
                     t.track_number, t.track_count, t.file_exists, t.last_played,
                     t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes,
-                    t.codec
+                    t.codec,
+                    t.key_camelot_user
              FROM tracks t
              INNER JOIN playlist_tracks pt ON t.track_id = pt.track_id
              WHERE pt.playlist_id = ?{}

@@ -64,6 +64,7 @@ description: iTunes / Music 的 Library.xml 匯入、資料夾與檔案匯入、
   優先採用曲目自身的 BPM，未設定時則採用[解析](../dj-analysis/)結果。
 - **Key** — 寫入 **InitialKey**（ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY），
   使用的是音樂記法（`Am` / `F#m` / `C` 等）而非 Camelot，因為 rekordbox / Serato / Traktor 讀的正是這種記法。
+  若有[手動覆寫](../dj-analysis/)的 Key 則優先使用，否則使用解析結果。
 
 :::note
 iTunes 相容 XML 不會寫出 Key（Apple 的 plist schema 沒有代表調性的標準元素）。
