@@ -688,6 +688,42 @@ export default function App() {
     };
   }, []);
 
+  // 出力デバイスの通知 (#170): 起動時に保存済みデバイスが見つからなかった / 再生中に
+  // 抜かれてシステム既定へ切り替えた、をトーストで知らせる (非ブロッキング)。
+  // 起動直後の通知はイベントより先に積まれているので、マウント時にも取り出す。
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    const drain = async () => {
+      try {
+        const notices = await playbackApi.takeOutputDeviceNotices();
+        for (const n of notices) {
+          const to = n.active ? `「${n.active}」` : "システム既定";
+          const msg =
+            n.kind === "missing"
+              ? `出力デバイス「${n.device ?? ""}」が見つからないため、${to}で再生します。`
+              : `出力デバイス「${n.device ?? ""}」が切断されたため、${to}に切り替えました。`;
+          useStore.getState().pushToast("info", msg, 6000);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    (async () => {
+      const u = await playbackApi.onOutputDeviceNotice(() => {
+        void drain();
+      });
+      if (cancelled) u();
+      else unlisten = u;
+      void drain();
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   const scheduleAutoExport = useCallback(() => {
     clearTimeout(autoExportTimerRef.current);
     autoExportTimerRef.current = setTimeout(() => {
