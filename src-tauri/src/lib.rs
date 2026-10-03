@@ -123,6 +123,7 @@ pub fn run() {
         .manage(commands::sync::SyncRuntime::default())
         .manage(commands::playback::PreviewMode::default())
         .manage(commands::playback_persist::PlaybackPersister::default())
+        .manage(commands::output_device::OutputDeviceNotices::default())
         .setup(|app| {
             // クラッシュ痕跡を残すためのファイルロガー + panic フックを最初に仕込む
             // (GUI 起動で stderr が残らない。panic=abort でも abort 前にフックが走る)。
@@ -145,7 +146,14 @@ pub fn run() {
             // 前回終了時の再生キュー / 再生状態を復元する (#159)。曲は一時停止状態で
             // 保存位置に読み込むだけで自動再生はしない。永続化ワーカーは復元の後に起動する
             // (先に動くと空のキューで保存済みの状態を上書きしてしまうため)。
+            // 保存済みの出力デバイス (#170) を先に開き、復元した曲がそのデバイスに載るようにする。
+            commands::output_device::apply_saved(app.handle());
             commands::playback_persist::restore(app.handle());
+            // 出力デバイスの抜去監視 / システム既定への追従。
+            let output_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                commands::output_device::watch_worker(output_handle);
+            });
             let persist_handle = app.handle().clone();
             std::thread::spawn(move || {
                 commands::playback_persist::persist_worker(persist_handle);
@@ -269,6 +277,9 @@ pub fn run() {
             commands::playback::set_preview_mode,
             commands::playback::get_preview_mode,
             commands::playback_persist::get_playback_restored,
+            commands::output_device::list_output_devices,
+            commands::output_device::set_output_device,
+            commands::output_device::take_output_device_notices,
             // ripping
             commands::ripping::detect_disc,
             commands::ripping::lookup_release_by_disc_id,

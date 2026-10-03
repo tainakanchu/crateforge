@@ -4,11 +4,16 @@ use std::io::BufReader;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use rodio::stream::MixerDeviceSink;
-use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
+use rodio::{Decoder, Player, Source};
 use serde::{Deserialize, Serialize};
 
 use crate::models::PlaybackState;
+
+pub mod output;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -37,8 +42,17 @@ pub struct AudioPlayer {
     /// rodio 0.22 では `OutputStream` + `OutputStreamHandle` の 2 つではなく、
     /// `MixerDeviceSink` 1 つから `mixer()` を取り出して `Player` を都度生成する。
     _device: Option<MixerDeviceSink>,
+    /// ユーザーが選んだ出力デバイス名 (#170)。None = システム既定。
+    /// 抜去で既定へフォールバックしてもこの値は保持する (戻ってきたら再選択できるよう)。
+    output_device: Option<String>,
+    /// いま実際に開いている出力デバイスの名前 (分からなければ None)。
+    active_device: Option<String>,
+    /// 現在のストリームの「デバイス喪失」フラグ (cpal エラーコールバックが立てる)。
+    device_lost: Arc<AtomicBool>,
     sink: Option<Player>,
     current_track_id: Option<i64>,
+    /// 読み込み中の曲のファイルパス。出力デバイス切替時に同じ曲を開き直すのに使う。
+    current_path: Option<String>,
     duration_ms: u64,
     play_started_at: Option<Instant>,
     accumulated_position_ms: u64,
@@ -78,18 +92,18 @@ unsafe impl Sync for AudioPlayer {}
 impl AudioPlayer {
     pub fn new() -> Self {
         // デバイスが無ければ None で継続 (再生不可だがアプリは動く)。
-        let device = match DeviceSinkBuilder::open_default_sink() {
-            Ok(mut d) => {
-                // drop 時に stderr へ "Dropping DeviceSink..." を吐くのを抑止する。
-                d.log_on_drop(false);
-                Some(d)
-            }
-            Err(_) => None,
+        let (device, active_device, device_lost) = match output::open_default() {
+            Ok(o) => (Some(o.sink), o.name, o.lost),
+            Err(_) => (None, None, Arc::new(AtomicBool::new(false))),
         };
         AudioPlayer {
             _device: device,
+            output_device: None,
+            active_device,
+            device_lost,
             sink: None,
             current_track_id: None,
+            current_path: None,
             duration_ms: 0,
             play_started_at: None,
             accumulated_position_ms: 0,
@@ -232,6 +246,7 @@ impl AudioPlayer {
 
         self.sink = Some(sink);
         self.current_track_id = Some(track_id);
+        self.current_path = Some(file_path.to_string());
         self.duration_ms = actual_duration.unwrap_or(duration_ms);
         self.play_started_at = if start_paused {
             None
@@ -291,6 +306,7 @@ impl AudioPlayer {
             sink.stop();
         }
         self.current_track_id = None;
+        self.current_path = None;
         self.duration_ms = 0;
         self.play_started_at = None;
         self.accumulated_position_ms = 0;
@@ -374,6 +390,78 @@ impl AudioPlayer {
             shuffle: self.shuffle,
             repeat: self.repeat,
             volume: self.volume,
+        }
+    }
+
+    // ===== Output device (#170) =====
+
+    /// ユーザーが選んだ出力デバイス名 (None = システム既定)。
+    pub fn output_device(&self) -> Option<&str> {
+        self.output_device.as_deref()
+    }
+
+    /// いま実際に開いている出力デバイス名。
+    pub fn active_device(&self) -> Option<&str> {
+        self.active_device.as_deref()
+    }
+
+    /// 出力デバイスの希望だけを記録する (起動時に保存済みデバイスが見つからず
+    /// 既定で開いたまま、希望は保持しておく場合)。
+    pub fn set_output_preference(&mut self, requested: Option<String>) {
+        self.output_device = requested;
+    }
+
+    /// 現在のストリームでデバイス喪失が起きたか (読むとクリアされる)。
+    pub fn take_device_lost(&self) -> bool {
+        self.device_lost.swap(false, Ordering::Relaxed)
+    }
+
+    /// 出力ストリームを `opened` に差し替える。読み込み中の曲・位置・再生/一時停止・
+    /// ReplayGain ゲイン・preview フラグはそのまま引き継ぐ (キュー / 音量 / shuffle /
+    /// repeat は `AudioPlayer` 自身が持っているので触らない)。
+    /// `requested` はユーザーの選択 (None = システム既定) として保持する。
+    ///
+    /// 曲の開き直しに失敗した場合 (ファイルが消えた等) でもデバイス切替自体は有効で、
+    /// 曲は停止扱いになる。
+    pub fn replace_output(&mut self, opened: output::OpenedSink, requested: Option<String>) {
+        // 再生中 / 一時停止中で、まだ鳴り終わっていない曲だけを引き継ぐ。
+        // 鳴り終わった (empty) 曲は advance_worker の自動送りに任せる。
+        let carry = match (&self.sink, self.current_track_id, self.current_path.clone()) {
+            (Some(sink), Some(tid), Some(path)) if !sink.empty() => Some((
+                path,
+                tid,
+                self.duration_ms,
+                self.current_gain_db,
+                self.current_preview,
+                self.get_state().position_ms,
+                !sink.is_paused(),
+            )),
+            _ => None,
+        };
+        if carry.is_some() {
+            if let Some(sink) = self.sink.take() {
+                sink.stop();
+            }
+        }
+        // 旧ストリームはここで drop される。
+        self._device = Some(opened.sink);
+        self.active_device = opened.name;
+        self.device_lost = opened.lost;
+        self.output_device = requested;
+
+        let Some((path, tid, duration, gain_db, preview, position_ms, playing)) = carry else {
+            return;
+        };
+        // 同じ曲なので差し替えの PlayReport は捨てる (統計を二重計上しない)。
+        if let Err(e) = self.play_inner(&path, tid, duration, gain_db, preview, true) {
+            crate::logging::write_line("warn", &format!("output switch: reload failed: {}", e));
+            return;
+        }
+        if position_ms > 0 {
+            self.seek(position_ms);
+        }
+        if playing {
+            self.resume();
         }
     }
 

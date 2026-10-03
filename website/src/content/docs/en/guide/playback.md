@@ -31,6 +31,17 @@ Changes to `shuffle` / `repeat` / `volume` made from [mobile or the remote](../m
 
 You can toggle ReplayGain (per-track volume normalization, −18 LUFS reference) in settings.
 
+### Output device
+
+Under **Settings → General → Output device** you can choose the audio output used for playback (booth output, laptop speakers, a USB audio interface, and so on).
+
+- **System default** follows the OS default output (when you change the default in the OS, Crateforge follows within a few seconds).
+- Switching while playing keeps **the current track, position, play / pause state, queue, volume and ReplayGain** as they are.
+- After plugging or unplugging a device, press **Refresh** to re-read the list.
+- The chosen device is **saved by name** and selected automatically on the next launch (before the queue is restored).
+  If it is not found, playback uses the **system default** and a toast tells you so (the choice is kept, so reconnecting the device and restarting brings it back).
+- If the chosen device is disconnected during playback, Crateforge switches to the system default automatically and notifies you.
+
 ## Audition / Preview
 
 Press `A` to enter **Audition mode**: the waveform gets taller, 25 / 50 / 75% markers appear, and you can move around inside a track quickly.
