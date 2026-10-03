@@ -1187,6 +1187,12 @@ mod tests {
             track_count: Some(10),
             file_exists: true,
             last_played: None,
+            bitrate_kbps: None,
+            sample_rate_hz: None,
+            bit_depth: None,
+            channels: None,
+            file_size_bytes: None,
+            codec: None,
         }
     }
 

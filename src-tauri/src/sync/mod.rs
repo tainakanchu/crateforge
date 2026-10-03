@@ -732,6 +732,9 @@ where
             }
             None => match db.upsert_synced_track(track, &landed, source.id) {
                 Ok(Some(track_id)) => {
+                    // 技術メタデータ (#171) は着地した実ファイルから読む (変換取得もあるため
+                    // master の値は使わない)。失敗しても同期は続行。
+                    let _ = crate::importer::refresh_tech_meta_from_file(&db, track_id, &landed);
                     if let Some(analysis) = analyses.remove(pid) {
                         db.upsert_analysis(pid, &analysis)?;
                     }
@@ -1018,6 +1021,12 @@ mod tests {
             track_count: None,
             file_exists: true,
             last_played: None,
+            bitrate_kbps: None,
+            sample_rate_hz: None,
+            bit_depth: None,
+            channels: None,
+            file_size_bytes: None,
+            codec: None,
         }
     }
 

@@ -975,6 +975,10 @@ pub async fn upload_track_body(
             return Err(ApiError::from(error));
         }
     };
+    // 技術メタデータ (#171) は受け取った実ファイルから読む (失敗してもアップロードは成功扱い)。
+    if let Err(e) = crate::importer::refresh_tech_meta_from_file(&db, track_id, &target) {
+        eprintln!("upload: tech meta read failed ({e})");
+    }
     let track = db.get_track_by_track_id(track_id)?.ok_or_else(|| {
         ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "inserted track missing")
     })?;

@@ -37,6 +37,26 @@ pub struct Track {
     pub file_exists: bool,
     /// アプリ内で最後に再生した時刻 (ISO8601 UTC)。未再生なら None。
     pub last_played: Option<String>,
+    // --- 技術メタデータ (#171)。ファイル由来で、未取得なら None。
+    // 旧サーバー/クライアントの JSON に無くても読めるよう `default` を付ける (追加のみの互換)。
+    /// 音声ビットレート (kbps)。
+    #[serde(default)]
+    pub bitrate_kbps: Option<i64>,
+    /// サンプルレート (Hz)。
+    #[serde(default)]
+    pub sample_rate_hz: Option<i64>,
+    /// ビット深度 (ロスレス / PCM 系のみ)。
+    #[serde(default)]
+    pub bit_depth: Option<i64>,
+    /// チャンネル数。
+    #[serde(default)]
+    pub channels: Option<i64>,
+    /// ファイルサイズ (bytes)。
+    #[serde(default)]
+    pub file_size_bytes: Option<i64>,
+    /// コーデック表示名 ("FLAC" / "MP3" / "AAC" / "ALAC" …)。
+    #[serde(default)]
+    pub codec: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -395,6 +415,20 @@ pub struct ImportFileResult {
 pub struct ImportSummary {
     pub imported: usize,
     pub skipped: usize,
+    pub failed: usize,
+}
+
+/// 技術メタデータ一括再読み取り (#171) の結果。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TechMetaRefreshSummary {
+    /// 対象 (未取得列がある曲) の総数。
+    pub total: usize,
+    /// ファイルから読み直して更新できた曲数。
+    pub updated: usize,
+    /// ファイルが見つからなかった曲数。
+    pub missing: usize,
+    /// ファイルはあるが読めなかった曲数 (非対応形式・破損など)。
     pub failed: usize,
 }
 

@@ -164,6 +164,23 @@ fn write_track(buf: &mut String, t: &Track, indent: usize) {
     if let Some(n) = t.total_time_ms {
         push_kv_int(buf, inner, "Total Time", n);
     }
+    // 技術メタデータ (#171)。iTunes XML の標準キーなので rekordbox 等もそのまま読める。
+    if let Some(kind) = t
+        .codec
+        .as_deref()
+        .and_then(crate::metadata::tech::itunes_kind_for_codec)
+    {
+        push_kv_str(buf, inner, "Kind", kind);
+    }
+    if let Some(n) = t.file_size_bytes {
+        push_kv_int(buf, inner, "Size", n);
+    }
+    if let Some(n) = t.bitrate_kbps {
+        push_kv_int(buf, inner, "Bit Rate", n);
+    }
+    if let Some(n) = t.sample_rate_hz {
+        push_kv_int(buf, inner, "Sample Rate", n);
+    }
     if let Some(ref s) = t.date_added {
         push_kv_date(buf, inner, "Date Added", s);
     }
