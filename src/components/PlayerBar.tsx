@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import * as analysisApi from "../api/analysis";
+import * as libraryApi from "../api/library";
+import type { Track } from "../types";
 import { Icon } from "./Icon";
 import { Cover } from "./Cover";
 import { bpmColor } from "../lib/art";
@@ -53,9 +55,30 @@ export function PlayerBar() {
   // ミュート前の音量を保持（復帰用）。
   const lastVolumeRef = useRef(volume > 0 ? volume : 1);
 
-  const currentTrack = playback.currentTrackId
-    ? tracks.find((t) => t.trackId === playback.currentTrackId)
+  // 再生中の曲が表示中の一覧 (tracks) に無いとき (起動時に復元した曲 #159 / 別ビューの曲) は
+  // ID で取り直して表示する。
+  const [fetchedTrack, setFetchedTrack] = useState<Track | null>(null);
+  const listedTrack = playback.currentTrackId
+    ? tracks.find((t) => t.trackId === playback.currentTrackId) ?? null
     : null;
+  useEffect(() => {
+    const id = playback.currentTrackId;
+    if (id == null || listedTrack || !isTauri) return;
+    if (fetchedTrack?.trackId === id) return;
+    let alive = true;
+    libraryApi
+      .getTracksByIds([id])
+      .then((r) => {
+        if (alive) setFetchedTrack(r[0] ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [playback.currentTrackId, listedTrack, fetchedTrack]);
+  const currentTrack =
+    listedTrack ??
+    (fetchedTrack && fetchedTrack.trackId === playback.currentTrackId ? fetchedTrack : null);
 
   // フォールバック用の決定的な波形バー（解析前/未解析時）。
   const waveHeights = useMemo(

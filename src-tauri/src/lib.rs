@@ -122,6 +122,7 @@ pub fn run() {
         .manage(valid_tokens)
         .manage(commands::sync::SyncRuntime::default())
         .manage(commands::playback::PreviewMode::default())
+        .manage(commands::playback_persist::PlaybackPersister::default())
         .setup(|app| {
             // クラッシュ痕跡を残すためのファイルロガー + panic フックを最初に仕込む
             // (GUI 起動で stderr が残らない。panic=abort でも abort 前にフックが走る)。
@@ -139,6 +140,15 @@ pub fn run() {
             let advance_handle = app.handle().clone();
             std::thread::spawn(move || {
                 commands::playback::advance_worker(advance_handle);
+            });
+
+            // 前回終了時の再生キュー / 再生状態を復元する (#159)。曲は一時停止状態で
+            // 保存位置に読み込むだけで自動再生はしない。永続化ワーカーは復元の後に起動する
+            // (先に動くと空のキューで保存済みの状態を上書きしてしまうため)。
+            commands::playback_persist::restore(app.handle());
+            let persist_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                commands::playback_persist::persist_worker(persist_handle);
             });
 
             // SMTC is best-effort: failure here shouldn't block app launch.
@@ -258,6 +268,7 @@ pub fn run() {
             commands::playback::set_replaygain,
             commands::playback::set_preview_mode,
             commands::playback::get_preview_mode,
+            commands::playback_persist::get_playback_restored,
             // ripping
             commands::ripping::detect_disc,
             commands::ripping::lookup_release_by_disc_id,
@@ -326,6 +337,12 @@ pub fn run() {
             commands::fonts::cjk_font_status,
             commands::fonts::download_cjk_font,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // 終了時に再生キュー / 再生位置を即時保存する (#159)。
+            if let tauri::RunEvent::Exit = event {
+                commands::playback_persist::flush(app);
+            }
+        });
 }

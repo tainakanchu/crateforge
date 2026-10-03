@@ -106,6 +106,12 @@ export async function getPreviewMode(): Promise<boolean> {
   return invoke("get_preview_mode");
 }
 
+/// 起動時に前回の再生キュー / 再生状態を DB から復元したか (#159)。
+/// true ならバックエンドの shuffle / repeat / volume が正。
+export async function getPlaybackRestored(): Promise<boolean> {
+  return invoke("get_playback_restored");
+}
+
 /// Preview モードを ON にして単曲再生する (キューは置き換えない)。
 export async function previewTrack(trackId: number): Promise<void> {
   await setPreviewMode(true);

@@ -8,6 +8,7 @@ pub mod fonts;
 pub mod library;
 pub mod pairing;
 pub mod playback;
+pub mod playback_persist;
 pub mod playlists;
 pub mod ripping;
 pub mod rules;

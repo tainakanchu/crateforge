@@ -267,13 +267,13 @@ export function TrackContextMenu({
             openSubmenu();
           } else if (activeId === "rating") {
             e.preventDefault();
-            applyRating(Math.min(5, ratingValue + 1));
+            applyRating(Math.min(5, ratingValue + 0.5));
           }
           return;
         case "ArrowLeft":
           if (activeId === "rating") {
             e.preventDefault();
-            applyRating(Math.max(0, ratingValue - 1));
+            applyRating(Math.max(0, ratingValue - 0.5));
           }
           return;
         case "Enter":
@@ -291,6 +291,14 @@ export function TrackContextMenu({
             e.preventDefault();
             applyRating(Number(e.key));
             onClose();
+          } else if (e.shiftKey) {
+            // Shift+1〜5 → 0.5〜4.5 星 (#172 半星)。Shift 時の e.key は配列依存なので code で判定。
+            const m = /^(?:Digit|Numpad)([1-5])$/.exec(e.code);
+            if (m) {
+              e.preventDefault();
+              applyRating(Number(m[1]) - 0.5);
+              onClose();
+            }
           }
       }
     },

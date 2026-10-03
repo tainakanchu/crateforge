@@ -120,6 +120,40 @@ impl AudioPlayer {
         gain_db: Option<f64>,
         preview: bool,
     ) -> Result<Option<PlayReport>, String> {
+        self.play_inner(file_path, track_id, duration_ms, gain_db, preview, false)
+    }
+
+    /// 起動時の復元用 (#159): 曲を **一時停止状態で** 読み込み、`position_ms` へシークする。
+    /// 自動再生はしない (ユーザーが再生ボタンを押すと `resume` でその位置から鳴る)。
+    /// 直前の曲があれば止めるが、復元はアプリ起動直後に 1 回だけ呼ぶ想定なので
+    /// 再生実績 (PlayReport) は返さない。
+    pub fn load_paused(
+        &mut self,
+        file_path: &str,
+        track_id: i64,
+        duration_ms: u64,
+        gain_db: Option<f64>,
+        position_ms: u64,
+    ) -> Result<(), String> {
+        self.play_inner(file_path, track_id, duration_ms, gain_db, false, true)?;
+        // 終端付近 (または超過) の位置は頭出しに倒す: 復元直後に「即終了 → 次曲へ自動送り」
+        // にならないようにする。
+        let near_end = self.duration_ms > 0 && position_ms + 1_000 >= self.duration_ms;
+        if position_ms > 0 && !near_end {
+            self.seek(position_ms);
+        }
+        Ok(())
+    }
+
+    fn play_inner(
+        &mut self,
+        file_path: &str,
+        track_id: i64,
+        duration_ms: u64,
+        gain_db: Option<f64>,
+        preview: bool,
+        start_paused: bool,
+    ) -> Result<Option<PlayReport>, String> {
         let report = self.stop_internal();
 
         let device = self._device.as_ref().ok_or("No audio output available")?;
@@ -168,6 +202,10 @@ impl AudioPlayer {
             let actual_duration = source.total_duration().map(|d| d.as_millis() as u64);
             let sink = Player::connect_new(device.mixer());
             sink.set_volume(volume);
+            // 復元時は append 前に止めておき、一瞬でも音が出ないようにする。
+            if start_paused {
+                sink.pause();
+            }
             sink.append(source);
             Ok::<(Player, Option<u64>), String>((sink, actual_duration))
         }));
@@ -195,7 +233,11 @@ impl AudioPlayer {
         self.sink = Some(sink);
         self.current_track_id = Some(track_id);
         self.duration_ms = actual_duration.unwrap_or(duration_ms);
-        self.play_started_at = Some(Instant::now());
+        self.play_started_at = if start_paused {
+            None
+        } else {
+            Some(Instant::now())
+        };
         self.accumulated_position_ms = 0;
         self.finished_for_advance = false;
         self.current_preview = preview;
@@ -457,36 +499,11 @@ impl AudioPlayer {
             return current_removed;
         }
 
-        // 旧 queue インデックス → 新 queue インデックス (削除対象は None)。
-        let mut remap: Vec<Option<usize>> = Vec::with_capacity(self.queue.len());
-        let mut new_queue: Vec<i64> = Vec::with_capacity(self.queue.len());
-        for &tid in &self.queue {
-            if track_ids.contains(&tid) {
-                remap.push(None);
-            } else {
-                remap.push(Some(new_queue.len()));
-                new_queue.push(tid);
-            }
-        }
-
-        let old_pos = self.order_pos.unwrap_or(0);
-        let mut new_order: Vec<usize> = Vec::with_capacity(new_queue.len());
-        let mut new_pos = 0usize;
-        for (order_index, &qi) in self.order.iter().enumerate() {
-            let Some(new_qi) = remap[qi] else { continue };
-            if order_index < old_pos {
-                new_pos += 1;
-            }
-            new_order.push(new_qi);
-        }
-
-        self.queue = new_queue;
-        self.order = new_order;
-        self.order_pos = if self.order.is_empty() {
-            None
-        } else {
-            Some(new_pos.min(self.order.len() - 1))
-        };
+        let (queue, order, order_pos) =
+            prune_queue(&self.queue, &self.order, self.order_pos, track_ids);
+        self.queue = queue;
+        self.order = order;
+        self.order_pos = order_pos;
         current_removed
     }
 
@@ -598,6 +615,55 @@ impl AudioPlayer {
             .and_then(|qi| self.queue.get(qi).copied())
     }
 
+    /// 永続化用のスナップショット (#159)。キュー (順列と位置込み) と再生状態を写し取る。
+    pub fn snapshot(&self) -> PlayerSnapshot {
+        let st = self.get_state();
+        PlayerSnapshot {
+            queue: self.queue.clone(),
+            order: self.order.clone(),
+            order_pos: self.order_pos,
+            track_id: st.current_track_id,
+            position_ms: if st.current_track_id.is_some() {
+                st.position_ms
+            } else {
+                0
+            },
+            shuffle: self.shuffle,
+            repeat: self.repeat,
+            volume: self.volume,
+            preview: self.current_preview,
+        }
+    }
+
+    /// 永続化しておいたキューと shuffle / repeat を復元する (#159)。
+    /// `set_shuffle` を経由しないので順列は再シャッフルされず、保存時の並びがそのまま戻る。
+    /// 渡された値が不変条件 (order が `0..queue.len()` の順列) を満たさない場合は
+    /// 通常順 + 先頭位置にフォールバックする。
+    pub fn restore_queue(
+        &mut self,
+        queue: Vec<i64>,
+        order: Vec<usize>,
+        order_pos: Option<usize>,
+        shuffle: bool,
+        repeat: RepeatMode,
+    ) {
+        self.shuffle = shuffle;
+        self.repeat = repeat;
+        self.queue = queue;
+        if self.queue.is_empty() {
+            self.order.clear();
+            self.order_pos = None;
+            return;
+        }
+        if is_permutation(&order, self.queue.len()) {
+            self.order = order;
+            self.order_pos = Some(order_pos.unwrap_or(0).min(self.order.len() - 1));
+        } else {
+            self.order = (0..self.queue.len()).collect();
+            self.order_pos = Some(0);
+        }
+    }
+
     /// 次に再生すべき track_id を返し、再生順の現在位置を進める。
     /// - repeat One: 現在の曲
     /// - 末尾 + repeat All: 先頭へ (shuffle 時は次の一巡を再シャッフル)
@@ -677,6 +743,82 @@ impl AudioPlayer {
     }
 }
 
+/// 永続化用に `AudioPlayer` から写し取った状態 (#159)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerSnapshot {
+    pub queue: Vec<i64>,
+    pub order: Vec<usize>,
+    pub order_pos: Option<usize>,
+    /// 読み込み中 (再生中 / 一時停止中) の曲。停止中は None。
+    pub track_id: Option<i64>,
+    pub position_ms: u64,
+    pub shuffle: bool,
+    pub repeat: RepeatMode,
+    pub volume: f32,
+    /// いまの曲が preview (Audition) で再生開始されたか。
+    pub preview: bool,
+}
+
+/// `order` が `0..n` の順列か。
+pub(crate) fn is_permutation(order: &[usize], n: usize) -> bool {
+    if order.len() != n {
+        return false;
+    }
+    let mut seen = vec![false; n];
+    for &qi in order {
+        if qi >= n || seen[qi] {
+            return false;
+        }
+        seen[qi] = true;
+    }
+    true
+}
+
+/// queue / order / order_pos から `track_ids` に含まれる曲を全て取り除いた結果を返す。
+/// (`AudioPlayer::remove_tracks` と起動時復元の削除済み曲スキップで共用する。)
+///
+/// - `order` は残った queue 要素へ張り替えるので `0..queue.len()` の順列のまま。
+/// - `order_pos` は「元の位置より前に残った要素数」= 元の曲が残っていればその新位置、
+///   消えていれば直後に残る曲の位置になる。末尾が消えた場合は末尾へクランプする。
+pub(crate) fn prune_queue(
+    queue: &[i64],
+    order: &[usize],
+    order_pos: Option<usize>,
+    track_ids: &HashSet<i64>,
+) -> (Vec<i64>, Vec<usize>, Option<usize>) {
+    // 旧 queue インデックス → 新 queue インデックス (削除対象は None)。
+    let mut remap: Vec<Option<usize>> = Vec::with_capacity(queue.len());
+    let mut new_queue: Vec<i64> = Vec::with_capacity(queue.len());
+    for &tid in queue {
+        if track_ids.contains(&tid) {
+            remap.push(None);
+        } else {
+            remap.push(Some(new_queue.len()));
+            new_queue.push(tid);
+        }
+    }
+
+    let old_pos = order_pos.unwrap_or(0);
+    let mut new_order: Vec<usize> = Vec::with_capacity(new_queue.len());
+    let mut new_pos = 0usize;
+    for (order_index, &qi) in order.iter().enumerate() {
+        let Some(new_qi) = remap.get(qi).copied().flatten() else {
+            continue;
+        };
+        if order_index < old_pos {
+            new_pos += 1;
+        }
+        new_order.push(new_qi);
+    }
+
+    let pos = if new_order.is_empty() {
+        None
+    } else {
+        Some(new_pos.min(new_order.len() - 1))
+    };
+    (new_queue, new_order, pos)
+}
+
 /// dB ゲインを線形倍率へ。
 fn db_to_linear(db: f64) -> f32 {
     10f32.powf((db as f32) / 20.0)
@@ -741,6 +883,41 @@ mod tests {
         let mut p = AudioPlayer::new();
         p.set_queue(ids, start);
         p
+    }
+
+    /// 永続化した順列・位置・shuffle をそのまま戻し、スナップショットと往復できる (#159)。
+    #[test]
+    fn restore_queue_roundtrips_snapshot() {
+        let mut p = AudioPlayer::new();
+        p.restore_queue(
+            vec![10, 20, 30],
+            vec![2, 0, 1],
+            Some(1),
+            true,
+            RepeatMode::All,
+        );
+        assert_order_is_permutation(&p);
+        assert_eq!(p.ordered_track_ids(), vec![30, 10, 20]);
+        assert_eq!(p.current_track_id_in_order(), Some(10));
+        let snap = p.snapshot();
+        assert_eq!(snap.order, vec![2, 0, 1]);
+        assert_eq!(snap.order_pos, Some(1));
+        assert!(snap.shuffle);
+        assert_eq!(snap.repeat, RepeatMode::All);
+        assert_eq!(snap.track_id, None);
+        // 自動遷移は復元した順列に沿って進む。
+        assert_eq!(p.advance_next(true), Some(20));
+
+        // 順列でない入力は通常順 + 先頭へフォールバック。
+        let mut p = AudioPlayer::new();
+        p.restore_queue(vec![10, 20], vec![0, 0], Some(5), false, RepeatMode::Off);
+        assert_order_is_permutation(&p);
+        assert_eq!(p.order_pos, Some(0));
+
+        // 範囲外の order_pos は末尾へクランプ。
+        let mut p = AudioPlayer::new();
+        p.restore_queue(vec![10, 20], vec![1, 0], Some(9), false, RepeatMode::Off);
+        assert_eq!(p.order_pos, Some(1));
     }
 
     #[test]
