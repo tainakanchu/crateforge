@@ -1187,6 +1187,7 @@ mod tests {
             track_count: Some(10),
             file_exists: true,
             last_played: None,
+            key_camelot_user: None,
         }
     }
 

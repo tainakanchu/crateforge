@@ -164,6 +164,7 @@ impl AnalysisItem {
             bpm: self.bpm,
             key_camelot: self.key_camelot,
             key_name: self.key_name,
+            key_camelot_user: None,
             energy: self.energy,
             loudness_lufs: self.loudness_lufs,
             replaygain_db: self.replaygain_db,
@@ -1018,6 +1019,7 @@ mod tests {
             track_count: None,
             file_exists: true,
             last_played: None,
+            key_camelot_user: None,
         }
     }
 
@@ -1166,6 +1168,7 @@ mod tests {
                         bpm: Some(128.0),
                         key_camelot: Some("8A".to_string()),
                         key_name: Some("A minor".to_string()),
+                        key_camelot_user: None,
                         energy: Some(0.75),
                         loudness_lufs: Some(-9.0),
                         replaygain_db: Some(-5.0),

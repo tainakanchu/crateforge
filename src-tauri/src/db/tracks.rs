@@ -411,25 +411,23 @@ fn parse_field_filter(
             if k.is_empty() {
                 return None;
             }
+            // 実効キー = 手動上書き (tracks.key_camelot_user) ?? 解析値 (#172)。
+            // 上書きは未解析の曲にも付けられるので、解析行が無くても拾えるよう相関サブクエリで引く。
+            let effective = format!(
+                "UPPER(COALESCE({prefix}key_camelot_user, \
+                 (SELECT key_camelot FROM track_analysis WHERE track_id = {prefix}track_id)))"
+            );
             // `key:compat:8A` — 8A とハーモニックに繋がるキー全部 (同キー / 平行調 /
             // ホイール ±1) を IN (...) で並べる。
             if let Some(base) = k.strip_prefix("COMPAT:") {
                 let keys = compatible_camelot_keys(base)?;
                 let holes = vec!["?"; keys.len()].join(",");
                 return Some((
-                    format!(
-                        "{prefix}track_id IN (SELECT track_id FROM track_analysis \
-                         WHERE UPPER(key_camelot) IN ({holes}))"
-                    ),
+                    format!("({effective} IN ({holes}))"),
                     keys.into_iter().map(Value::Text).collect(),
                 ));
             }
-            Some((
-                format!(
-                    "{prefix}track_id IN (SELECT track_id FROM track_analysis WHERE UPPER(key_camelot) = ?)"
-                ),
-                vec![Value::Text(k)],
-            ))
+            Some((format!("({effective} = ?)"), vec![Value::Text(k)]))
         }
         "energy" => {
             let (lo, hi) = parse_energy_range(val)?;
@@ -1067,7 +1065,7 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played, key_camelot_user
              FROM tracks ORDER BY {} LIMIT ?1 OFFSET ?2",
             order_by
         );
@@ -1118,7 +1116,7 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played, key_camelot_user
              FROM tracks
              WHERE {}
              ORDER BY {} LIMIT ? OFFSET ?",
@@ -1159,7 +1157,7 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played, key_camelot_user
              FROM tracks WHERE track_id = ?1",
         )?;
 
@@ -1191,7 +1189,7 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played, key_camelot_user
              FROM tracks WHERE persistent_id = ?1",
         )?;
         let mut out = Vec::with_capacity(persistent_ids.len());
@@ -1212,7 +1210,7 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played, key_camelot_user
              FROM tracks ORDER BY track_id ASC",
         )?;
         let rows = stmt.query_map([], row_to_track)?;
@@ -1293,6 +1291,25 @@ impl Database {
         if let Some(v) = edits.disabled {
             sets.push("disabled = ?");
             values.push(rusqlite::types::Value::Integer(if v { 1 } else { 0 }));
+        }
+
+        // Key の手動上書き (#172)。アプリ管轄フィールドなので rating と同様に
+        // XML メタデータの LWW 時計 (date_modified) は進めず、別 UPDATE で確定させる。
+        if let Some(opt) = &edits.key_camelot_user {
+            let value = match opt.as_deref().map(str::trim) {
+                None | Some("") => None,
+                Some(raw) => Some(
+                    crate::analyzer::similarity::normalize_camelot(raw).ok_or_else(|| {
+                        rusqlite::Error::ToSqlConversionFailure(
+                            format!("invalid Camelot key: {raw}").into(),
+                        )
+                    })?,
+                ),
+            };
+            self.conn.execute(
+                "UPDATE tracks SET key_camelot_user = ?1 WHERE track_id = ?2",
+                params![value, track_id],
+            )?;
         }
 
         if sets.is_empty() {
@@ -1505,7 +1522,7 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played, key_camelot_user
              FROM (
                SELECT *, ({key}) AS album_key FROM tracks
              ) WHERE album_key = ?1
@@ -1629,7 +1646,7 @@ impl Database {
                     t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count, t.total_time_ms,
                     t.date_added, t.date_modified, t.bpm, t.comments, t.location_raw, t.location_path,
                     t.track_type, t.disabled, t.compilation, t.disc_number, t.disc_count,
-                    t.track_number, t.track_count, t.file_exists, t.last_played
+                    t.track_number, t.track_count, t.file_exists, t.last_played, t.key_camelot_user
              FROM tracks t
              INNER JOIN recent_tracks rt ON t.track_id = rt.track_id
              ORDER BY rt.played_at DESC
@@ -1794,6 +1811,8 @@ pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
         track_count: row.get(26)?,
         file_exists: row.get::<_, i32>(27)? != 0,
         last_played: row.get(28)?,
+        // SELECT * 経由 (列順がスキーマ順) でも引けるよう列名で取る。
+        key_camelot_user: row.get("key_camelot_user")?,
     })
 }
 
@@ -2231,6 +2250,81 @@ mod tests {
         assert_eq!(ids(&db, "key:8A"), vec![1]);
         // 解釈できない Camelot はフィールド指定にならずフリーテキスト扱い → 0 件。
         assert!(ids(&db, "key:compat:99Z").is_empty());
+    }
+
+    /// Key の手動上書き (#172): 検索・解析読み出しは実効キー (上書き ?? 解析値) を使い、
+    /// 再解析の upsert でも上書きが消えないこと。date_modified (XML LWW 時計) は進めない。
+    #[test]
+    fn key_override_is_effective_and_survives_reanalysis() {
+        use crate::models::TrackEdit;
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks (track_id, persistent_id, name, file_exists, date_modified) VALUES
+                   (1,'P1','analyzed 8A',1,'2020-01-01T00:00:00Z'), (2,'P2','unanalyzed',1,NULL);
+                 INSERT INTO track_analysis (persistent_id, track_id, version, key_camelot, key_name)
+                   VALUES ('P1',1,1,'8A','A minor');",
+            )
+            .unwrap();
+        let set = |id: i64, v: Option<&str>| {
+            db.update_track(
+                id,
+                &TrackEdit {
+                    key_camelot_user: Some(v.map(str::to_string)),
+                    ..Default::default()
+                },
+            )
+        };
+        // 小文字・空白は正規化して保存。不正値はエラーで何も書かない。
+        set(1, Some(" 3b ")).unwrap();
+        set(2, Some("8A")).unwrap();
+        assert!(set(2, Some("Am")).is_err());
+        let t1 = db.get_track_by_track_id(1).unwrap().unwrap();
+        assert_eq!(t1.key_camelot_user.as_deref(), Some("3B"));
+        assert_eq!(t1.date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+        assert_eq!(
+            db.get_track_by_track_id(2)
+                .unwrap()
+                .unwrap()
+                .key_camelot_user
+                .as_deref(),
+            Some("8A")
+        );
+
+        // 検索は実効キー。解析行の無い曲 (2) も上書きで拾える。
+        assert_eq!(ids(&db, "key:8A"), vec![2]);
+        assert_eq!(ids(&db, "key:3b"), vec![1]);
+        assert_eq!(ids(&db, "key:compat:8A"), vec![2]);
+
+        // 解析読み出しには上書きが合成され、key_camelot は解析値のまま。
+        let a = db.get_analysis(1).unwrap().unwrap();
+        assert_eq!(a.key_camelot.as_deref(), Some("8A"));
+        assert_eq!(a.effective_key_camelot(), Some("3B"));
+        assert_eq!(a.effective_key_name().as_deref(), Some("C# major"));
+        assert_eq!(
+            db.get_all_analysis().unwrap()[0]
+                .key_camelot_user
+                .as_deref(),
+            Some("3B")
+        );
+
+        // 再解析 (upsert) しても上書きは残る。
+        let mut re = a.clone();
+        re.key_camelot = Some("9A".into());
+        re.key_name = Some("E minor".into());
+        re.key_camelot_user = None;
+        db.upsert_analysis("P1", &re).unwrap();
+        let a = db.get_analysis(1).unwrap().unwrap();
+        assert_eq!(a.key_camelot.as_deref(), Some("9A"));
+        assert_eq!(a.effective_key_camelot(), Some("3B"));
+
+        // 解除すると解析値へ戻る。
+        set(1, None).unwrap();
+        assert_eq!(ids(&db, "key:9A"), vec![1]);
+        assert_eq!(
+            db.get_analysis(1).unwrap().unwrap().effective_key_camelot(),
+            Some("9A")
+        );
     }
 
     /// 互換キー集合そのものの単体確認 (SQL を介さない)。

@@ -842,6 +842,7 @@ mod tests {
             track_count: None,
             file_exists: true,
             last_played: None,
+            key_camelot_user: None,
         }
     }
 
@@ -1321,6 +1322,7 @@ mod tests {
                     bpm: Some(120.0),
                     key_camelot: Some("8A".to_string()),
                     key_name: Some("A minor".to_string()),
+                    key_camelot_user: None,
                     energy: Some(0.5),
                     loudness_lufs: Some(-10.0),
                     replaygain_db: Some(-3.0),
@@ -1477,6 +1479,7 @@ mod tests {
                     bpm: Some(126.0),
                     key_camelot: Some("9A".to_string()),
                     key_name: Some("E minor".to_string()),
+                    key_camelot_user: None,
                     energy: Some(0.8),
                     loudness_lufs: Some(-8.0),
                     replaygain_db: Some(-4.0),

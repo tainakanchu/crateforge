@@ -42,6 +42,32 @@ pub fn parse_camelot(s: &str) -> Option<(u8, bool)> {
     }
 }
 
+/// Camelot コードを正規化する ("8a" / " 08A " → "8A")。不正なら None。
+/// 手動 Key 上書きの保存・検索で表記ゆれを吸収するために使う。
+pub fn normalize_camelot(s: &str) -> Option<String> {
+    let (num, is_minor) = parse_camelot(s)?;
+    Some(format!("{num}{}", if is_minor { 'A' } else { 'B' }))
+}
+
+/// Camelot コード → 解析器と同じ形式のキー名 ("8A" → "A minor", "8B" → "C major")。
+/// 音名はシャープ表記 (analyzer/features.rs の key_name と一致)。
+pub fn camelot_to_key_name(s: &str) -> Option<String> {
+    // Camelot 番号 (1..=12) ごとのトニック。features.rs の camelot_code の逆写像。
+    const MINOR: [&str; 12] = [
+        "G#", "D#", "A#", "F", "C", "G", "D", "A", "E", "B", "F#", "C#",
+    ];
+    const MAJOR: [&str; 12] = [
+        "B", "F#", "C#", "G#", "D#", "A#", "F", "C", "G", "D", "A", "E",
+    ];
+    let (num, is_minor) = parse_camelot(s)?;
+    let idx = (num - 1) as usize;
+    Some(if is_minor {
+        format!("{} minor", MINOR[idx])
+    } else {
+        format!("{} major", MAJOR[idx])
+    })
+}
+
 /// Camelot ミキシング互換: 同番号 (同キー or 平行調 A↔B) か、隣接番号 (±1, 環状) で同種。
 pub fn camelot_compatible(a: &str, b: &str) -> bool {
     match (parse_camelot(a), parse_camelot(b)) {
@@ -78,7 +104,8 @@ fn passes(base: &TrackAnalysis, c: &TrackAnalysis, opts: &SimilarOpts) -> bool {
         }
     }
     if opts.key_compatible {
-        if let (Some(bk), Some(ck)) = (&base.key_camelot, &c.key_camelot) {
+        // 手動上書きがあればそれを優先する (実効キー)。
+        if let (Some(bk), Some(ck)) = (base.effective_key_camelot(), c.effective_key_camelot()) {
             if !camelot_compatible(bk, ck) {
                 return false;
             }
@@ -152,6 +179,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalize_camelot_and_key_name() {
+        assert_eq!(normalize_camelot(" 8a ").as_deref(), Some("8A"));
+        assert_eq!(normalize_camelot("08B").as_deref(), Some("8B"));
+        assert_eq!(normalize_camelot("13A"), None);
+        assert_eq!(normalize_camelot("Am"), None);
+        assert_eq!(camelot_to_key_name("8A").as_deref(), Some("A minor"));
+        assert_eq!(camelot_to_key_name("8B").as_deref(), Some("C major"));
+        assert_eq!(camelot_to_key_name("1A").as_deref(), Some("G# minor"));
+        assert_eq!(camelot_to_key_name("11A").as_deref(), Some("F# minor"));
+        assert_eq!(camelot_to_key_name("12B").as_deref(), Some("E major"));
+        assert_eq!(camelot_to_key_name("x"), None);
+    }
+
+    #[test]
     fn parse_camelot_works() {
         assert_eq!(parse_camelot("8A"), Some((8, true)));
         assert_eq!(parse_camelot("12B"), Some((12, false)));
@@ -209,6 +250,7 @@ mod tests {
             bpm: Some(bpm),
             key_camelot: Some(key.to_string()),
             key_name: None,
+            key_camelot_user: None,
             energy: Some(0.5),
             loudness_lufs: None,
             replaygain_db: None,

@@ -29,6 +29,7 @@ pub fn analyze_path(path: &str, track_id: i64) -> Result<TrackAnalysis, String> 
         bpm: f.bpm,
         key_camelot: f.key_camelot,
         key_name: f.key_name,
+        key_camelot_user: None,
         energy: f.energy,
         loudness_lufs: f.loudness_lufs,
         replaygain_db: f.replaygain_db,
