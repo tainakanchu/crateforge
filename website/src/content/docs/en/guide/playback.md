@@ -56,6 +56,9 @@ The **Up Next** in the right rail is the queue of what will be played next.
 - The header shows the **count, total time, and a shuffle badge**.
 - Shuffle precomputes the actual play order (a permutation), so Up Next reflects exactly what will play next.
   Toggling shuffle updates Up Next to the new order immediately.
+- The queue (including the shuffle order), the current track and position, and shuffle / repeat / volume are saved
+  automatically and restored **paused** on the next launch (nothing starts playing on its own). Tracks deleted from
+  the library are dropped from the queue. Tracks auditioned with Audition / Preview are never saved as the current track.
 
 ## The right rail (curation workbench)
 

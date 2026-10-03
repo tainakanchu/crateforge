@@ -419,18 +419,43 @@ export default function App() {
     fontsApi.initFonts().catch(() => {});
   }, []);
 
-  // Sync persisted volume / shuffle / repeat to the Rust player on mount.
-  // 押し込みが終わるまでポーリング側の逆同期は保留する (mountSyncedRef)。
+  // マウント時に volume / shuffle / repeat を Rust プレイヤーと揃える。
+  // - バックエンドが起動時に DB から再生状態を復元済み (#159) なら、そちらが正。
+  //   ストアの値を押し込むと shuffle の順列を作り直してしまうので、逆にストアへ取り込む。
+  // - 未保存 (初回起動) ならストアの永続値をプレイヤーへ押し込む。
+  // ReplayGain は再生状態に含まれないので常にストアから押し込む。
+  // 同期が終わるまでポーリング側の逆同期は保留する (mountSyncedRef)。
   useEffect(() => {
     if (!isTauri) return;
-    Promise.allSettled([
-      playbackApi.setVolume(volume),
-      playbackApi.setShuffle(shuffle),
-      playbackApi.setRepeat(repeat),
-      playbackApi.setReplayGain(replayGain),
-    ]).then(() => {
+    (async () => {
+      let restored = false;
+      try {
+        restored = await playbackApi.getPlaybackRestored();
+      } catch {
+        restored = false;
+      }
+      if (restored) {
+        try {
+          const state = await playbackApi.getPlaybackState();
+          const store = useStore.getState();
+          store.setVolume(state.volume);
+          store.setShuffle(state.shuffle);
+          store.setRepeat(state.repeat);
+          store.setPlayback(state);
+        } catch {
+          // ignore
+        }
+        await Promise.allSettled([playbackApi.setReplayGain(replayGain)]);
+      } else {
+        await Promise.allSettled([
+          playbackApi.setVolume(volume),
+          playbackApi.setShuffle(shuffle),
+          playbackApi.setRepeat(repeat),
+          playbackApi.setReplayGain(replayGain),
+        ]);
+      }
       mountSyncedRef.current = true;
-    });
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -607,7 +632,9 @@ export default function App() {
         if (pending) {
           setInstalling(true);
           try {
-            await playbackApi.stop().catch(() => {});
+            // stop ではなく pause: 停止すると永続化される再生状態から曲が消え、
+            // 更新後の起動で復元できなくなる (#159)。
+            await playbackApi.pause().catch(() => {});
             await systemApi.downloadAndRunUpdate(pending.url);
           } catch (e) {
             console.error("update on close failed:", e);
