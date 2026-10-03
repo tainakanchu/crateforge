@@ -24,7 +24,7 @@ const FIELDS: { value: string; label: string; type: FieldType }[] = [
   { value: "key", label: "Key (Camelot)", type: "str" },
   { value: "year", label: "Year", type: "num" },
   { value: "bpm", label: "BPM", type: "num" },
-  { value: "rating", label: "Rating (0–5)", type: "num" },
+  { value: "rating", label: "Rating (0–5, 0.5 刻み)", type: "num" },
   { value: "energy", label: "Energy (0–1)", type: "num" },
   { value: "playCount", label: "Plays", type: "num" },
   { value: "skipCount", label: "Skips", type: "num" },

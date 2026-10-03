@@ -68,7 +68,8 @@ description: 列の追加 / 並べ替え / 幅、行高・カバー・右ペイ�
 | `genre:house` | ジャンルの部分一致 |
 | `comment:classic` | コメントの部分一致 |
 | `year:2018` / `year:2015-2020` | 発売年（単一 / 範囲） |
-| `rating:5` / `rating:4-5` / `rating:0` | 星 0〜5（`rating:0` は未評価） |
+| `rating:5` / `rating:4-5` / `rating:0` | 星 0〜5（`rating:0` は未評価。整数 `n` は n〜n.5 星を含む） |
+| `rating:3.5` / `rating:3.5-5` / `rating:>=3.5` / `rating:<3` | 半星（0.5 刻み）と比較演算子 `>=` `>` `<=` `<` |
 | `bpm:128` / `bpm:120-128` | BPM（単一値は ±2。解析値を優先） |
 | `key:8A` / `key:1m` / `key:Am` | キーの完全一致。Camelot / Open Key / Classic（`F#m`・`Db`、`G#m` = `Abm` のような異名同音も可）のどれでも書け、大文字小文字は不問（手動上書きがあればそれで判定） |
 | `key:compat:8A` | 8A とハーモニックに繋がるキー（8A / 8B / 7A / 9A） |
@@ -172,6 +173,7 @@ description: 列の追加 / 並べ替え / 幅、行高・カバー・右ペイ�
 | `J` / `↓` | 次の曲（Triage 中） |
 | `K` / `↑` | 前の曲（Triage 中） |
 | `1`〜`5` | レーティング（Triage 中） |
+| `Shift`+`1`〜`5` | 半星レーティング 0.5〜4.5（Triage 中） |
 | `C` | Crate に追加（Triage 中） |
 | `D` / `Enter` | 処理済みにして次へ（Triage 中） |
 | `S` | あとで（スキップ）（Triage 中） |

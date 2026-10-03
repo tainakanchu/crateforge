@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod backup;
+pub mod playback;
 pub mod playlists;
 pub mod schema;
 pub mod stats;
@@ -119,6 +120,8 @@ fn migrate(conn: &Connection) -> Result<()> {
     migrate_sync_tables(conn)?;
     migrate_tags(conn)?;
     migrate_tech_meta(conn)?;
+    // 再生キュー / 再生状態の永続化 (#159)。
+    playback::migrate_playback_tables(conn)?;
     Ok(())
 }
 
