@@ -322,6 +322,27 @@ fn text_like_clause(
     }
 }
 
+/// テキスト列 1 本に対する完全一致句 (`tag:` 用)。`text_like_clause` と同じ fold
+/// レベルで両辺を畳むので大文字小文字を区別しない (Off 時は SQLite の NOCASE)。
+/// `col` は固定文字列のみ。値は必ずバインドする。
+fn text_eq_clause(
+    col: &str,
+    value: &str,
+    level: crate::text_fold::FoldLevel,
+) -> (String, rusqlite::types::Value) {
+    use rusqlite::types::Value;
+    match level {
+        crate::text_fold::FoldLevel::Off => (
+            format!("{col} = ? COLLATE NOCASE"),
+            Value::Text(value.to_string()),
+        ),
+        _ => (
+            format!("fold({col}, {}) = ?", level.as_i64()),
+            Value::Text(crate::text_fold::fold(value, level)),
+        ),
+    }
+}
+
 /// "2015-2020" → (2015,2020)、"2018" → (2018,2018)。整数の単一値/範囲。
 fn parse_int_range(s: &str) -> Option<(i64, i64)> {
     let s = s.trim();
@@ -471,28 +492,30 @@ fn parse_field_filter(
             if rest.is_empty() {
                 return None;
             }
-            if let Some((ns, v)) = rest.split_once(':') {
-                let ns = ns.trim();
-                let v = v.trim();
-                if v.is_empty() {
-                    return None;
-                }
-                Some((
-                    format!(
-                        "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id \
-                         WHERE tt.track_id = {prefix}track_id AND g.namespace = ? AND g.value = ?)"
-                    ),
-                    vec![Value::Text(ns.to_string()), Value::Text(v.to_string())],
-                ))
-            } else {
-                Some((
-                    format!(
-                        "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id \
-                         WHERE tt.track_id = {prefix}track_id AND g.value = ?)"
-                    ),
-                    vec![Value::Text(rest.to_string())],
-                ))
+            let (ns_part, val_part) = match rest.split_once(':') {
+                Some((ns, v)) => (Some(ns.trim()), v.trim()),
+                None => (None, rest),
+            };
+            if val_part.is_empty() {
+                return None;
             }
+            let mut conds = String::new();
+            let mut binds = Vec::new();
+            if let Some(ns) = ns_part {
+                let (c, b) = text_eq_clause("g.namespace", ns, level);
+                conds.push_str(&format!(" AND {c}"));
+                binds.push(b);
+            }
+            let (c, b) = text_eq_clause("g.value", val_part, level);
+            conds.push_str(&format!(" AND {c}"));
+            binds.push(b);
+            Some((
+                format!(
+                    "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id \
+                     WHERE tt.track_id = {prefix}track_id{conds})"
+                ),
+                binds,
+            ))
         }
         _ => None,
     }
@@ -1741,6 +1764,10 @@ pub fn delete_track_cascade(conn: &Connection, track_id: i64) -> Result<bool> {
         "DELETE FROM recent_tracks WHERE track_id = ?1",
         params![track_id],
     )?;
+    conn.execute(
+        "DELETE FROM track_tags WHERE track_id = ?1",
+        params![track_id],
+    )?;
     // 旧スキーマ (track_analysis の PK が track_id だった頃) 由来で persistent_id が
     // 一致しない行が残っていても掃除できるよう、track_id でも消しておく。
     conn.execute(
@@ -1977,6 +2004,36 @@ mod tests {
         );
     }
 
+    /// 曲を削除すると track_tags の行も消え、他の曲のタグ付けと tags 行は残ること。
+    #[test]
+    fn delete_tracks_removes_track_tags() {
+        let db = Database::open_memory().unwrap();
+        for tid in [1_i64, 2] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, file_exists) VALUES (?1, 't', 1)",
+                    params![tid],
+                )
+                .unwrap();
+        }
+        db.add_tag_to_tracks(&[1, 2], "bridge").unwrap();
+        db.add_tag_to_tracks(&[1], "mood:dreamy").unwrap();
+
+        assert_eq!(db.delete_tracks(&[1]).unwrap(), 1);
+
+        let count = |sql: &str| -> i64 { db.conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(
+            count("SELECT COUNT(*) FROM track_tags WHERE track_id = 1"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM track_tags WHERE track_id = 2"),
+            1
+        );
+        // タグ行自体は残す (remove_tag_from_tracks と同じ方針)。
+        assert_eq!(count("SELECT COUNT(*) FROM tags"), 2);
+    }
+
     /// persistent_id が無い曲 (ローカル追加直後など) でも削除できること。
     #[test]
     fn delete_tracks_handles_missing_persistent_id() {
@@ -2071,6 +2128,33 @@ mod tests {
         let hits = db.search_tracks("tag:dreamy", 100, 0, None, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].track_id, 2);
+    }
+
+    /// `tag:` は artist:/genre: と同様に大文字小文字を区別しない。
+    #[test]
+    fn search_tracks_tag_filter_is_case_insensitive() {
+        let db = Database::open_memory().unwrap();
+        for tid in [1_i64, 2] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, file_exists) VALUES (?1, 't', 1)",
+                    rusqlite::params![tid],
+                )
+                .unwrap();
+        }
+        db.add_tag_to_tracks(&[1], "Bridge").unwrap();
+        db.add_tag_to_tracks(&[2], "Mood:Dreamy").unwrap();
+
+        for q in ["tag:bridge", "tag:BRIDGE", "tag:Bridge"] {
+            let hits = db.search_tracks(q, 100, 0, None, None).unwrap();
+            assert_eq!(hits.len(), 1, "{q}");
+            assert_eq!(hits[0].track_id, 1);
+        }
+        for q in ["tag:mood:dreamy", "tag:MOOD:DREAMY", "tag:dreamy"] {
+            let hits = db.search_tracks(q, 100, 0, None, None).unwrap();
+            assert_eq!(hits.len(), 1, "{q}");
+            assert_eq!(hits[0].track_id, 2);
+        }
     }
 
     /// Rust 側 compute_search_text と SQL 側 SEARCH_TEXT_EXPR が一致すること
