@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import * as libraryApi from "../api/library";
+import * as analysisApi from "../api/analysis";
 import { Icon, Stars } from "./Icon";
 import { artworkUrl } from "./Cover";
 import { GenreTagInput } from "./GenreTagInput";
@@ -9,6 +10,7 @@ import { artGradient, leadingGlyph } from "../lib/art";
 import { useStore } from "../store/useStore";
 import type { Track, TrackEdit } from "../types";
 import { formatTagStr } from "../types";
+import { ALL_CAMELOT_KEYS, describeKey, formatKey } from "../lib/keyNotation";
 
 function formatDuration(ms: number | null | undefined): string {
   if (!ms || ms <= 0) return "—";
@@ -62,6 +64,9 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
   const trackIds = useMemo(() => tracks.map((t) => t.trackId), [tracks]);
   const pushToast = useStore((s) => s.pushToast);
   const bumpArtworkEpoch = useStore((s) => s.bumpArtworkEpoch);
+  const analysisByTrack = useStore((s) => s.analysisByTrack);
+  const setAnalyses = useStore((s) => s.setAnalyses);
+  const keyNotation = useStore((s) => s.keyNotation);
   // 最初のテキスト入力への ref（初期フォーカス用）
   const firstInputRef = useRef<HTMLInputElement>(null);
 
@@ -78,6 +83,11 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
       return { value: same ? vals[0] : "", mixed: !same };
     };
     const ratingVals = tracks.map((t) => t.rating ?? 0);
+    // Key の手動上書き (#172)。解析行があればそちら (tracks から合成済みで最新) を優先。
+    const keyUserVals = tracks.map((t) => {
+      const a = analysisByTrack.get(t.trackId);
+      return (a ? a.keyCamelotUser : t.keyCamelotUser)?.trim() || "";
+    });
     const compVals = tracks.map((t) => t.compilation);
     return {
       compilation: {
@@ -101,7 +111,13 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
         value: ratingVals.every((v) => v === ratingVals[0]) ? ratingVals[0] : 0,
         mixed: !ratingVals.every((v) => v === ratingVals[0]),
       },
+      keyUser: {
+        value: keyUserVals.every((v) => v === keyUserVals[0]) ? keyUserVals[0] : "",
+        mixed: !keyUserVals.every((v) => v === keyUserVals[0]),
+      },
     };
+    // analysisByTrack は開いた時点の値で初期化すれば十分 (編集中の再解析で form を揺らさない)。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tracks]);
 
   const [form, setForm] = useState(() => ({
@@ -120,6 +136,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
     discCount: initial.discCount.value,
     rating: initial.rating.value,
     compilation: initial.compilation.value,
+    keyUser: initial.keyUser.value,
   }));
   const [dirty, setDirty] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -290,6 +307,8 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
       if (dirty.has("discCount")) e.discCount = parseInt2(form.discCount);
       if (dirty.has("rating")) e.rating = form.rating;
       if (dirty.has("compilation")) e.compilation = form.compilation;
+      // 空 = 上書き解除 (解析値へ戻す)。
+      if (dirty.has("keyUser")) e.keyCamelotUser = form.keyUser || null;
 
       for (const id of trackIds) {
         await libraryApi.updateTrack(id, e);
@@ -313,6 +332,14 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
         for (const tag of added) await libraryApi.addTrackTags(trackIds, tag);
         for (const tag of removed) await libraryApi.removeTrackTags(trackIds, tag);
       }
+      // Key 上書きは解析結果マップ (表示・Lint・Similar の実効キー) に合成されるので引き直す。
+      if (dirty.has("keyUser")) {
+        try {
+          setAnalyses(await analysisApi.getAllAnalyses());
+        } catch (err) {
+          console.error("Failed to reload analyses:", err);
+        }
+      }
       pushToast("success", "保存しました");
       onSaved();
       onClose();
@@ -335,6 +362,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
     onSaved,
     onClose,
     pushToast,
+    setAnalyses,
   ]);
 
   // ref を最新の handleSave に追従させる（keydown リスナー用）。
@@ -412,6 +440,10 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
     ? `${baseArt}${baseArt.includes("?") ? "&" : "?"}v=${artVersion}`
     : null;
   const seed = single ? tracks[0].album : "multi";
+  // 単曲時に Key 欄の横へ出す解析値 (上書きとは別に常に見せる)。
+  const analyzedKey = single
+    ? (analysisByTrack.get(tracks[0].trackId)?.keyCamelot ?? null)
+    : null;
   const glyph = single ? tracks[0].name : `${tracks.length}`;
 
   return (
@@ -577,6 +609,41 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               />
             </Field>
           </div>
+
+          <Field label="Key">
+            <div className="track-editor-rating">
+              <select
+                className="rip-input"
+                value={
+                  initial.keyUser.mixed && !dirty.has("keyUser") ? "__mixed__" : form.keyUser
+                }
+                onChange={(e) => update("keyUser", e.target.value)}
+              >
+                {initial.keyUser.mixed && !dirty.has("keyUser") && (
+                  <option value="__mixed__" disabled>
+                    — 複数の値 —
+                  </option>
+                )}
+                <option value="">解析値を使う（上書きなし）</option>
+                {ALL_CAMELOT_KEYS.map((k) => {
+                  const label = formatKey(k, keyNotation) ?? k;
+                  return (
+                    <option key={k} value={k}>
+                      {keyNotation === "camelot" ? label : `${label} (${k})`}
+                    </option>
+                  );
+                })}
+              </select>
+              {single && (
+                <span
+                  style={{ fontSize: 12, color: "var(--mut)", whiteSpace: "nowrap" }}
+                  title={describeKey(analyzedKey) ?? undefined}
+                >
+                  解析値: {formatKey(analyzedKey, keyNotation) ?? "—"}
+                </span>
+              )}
+            </div>
+          </Field>
 
           <div className="track-editor-row">
             <Field label="Track #">

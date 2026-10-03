@@ -15,6 +15,7 @@ import * as fontsApi from "../api/fonts";
 import type { CjkFontStatus } from "../api/fonts";
 import { Icon } from "./Icon";
 import { LicenseList } from "./LicenseList";
+import { KEY_NOTATIONS, KEY_NOTATION_LABELS, isKeyNotation } from "../lib/keyNotation";
 
 const REPO_URL = "https://github.com/tainakanchu/crateforge";
 
@@ -70,6 +71,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const {
     replayGain,
     setReplayGain,
+    keyNotation,
+    setKeyNotation,
     autoExportEnabled,
     autoExportPath,
     setAutoExport,
@@ -654,6 +657,24 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   desc="曲ごとの音量差をならして再生します（解析済みの曲に適用）。"
                 >
                   <Toggle on={replayGain} onClick={handleToggleReplayGain} />
+                </Row>
+
+                <Row
+                  title="Key 表記"
+                  desc="曲のキーの表示形式。保存値（Camelot）や互換判定・検索（key:8A）は変わりません。"
+                >
+                  <select
+                    value={keyNotation}
+                    onChange={(e) => {
+                      if (isKeyNotation(e.target.value)) setKeyNotation(e.target.value);
+                    }}
+                  >
+                    {KEY_NOTATIONS.map((n) => (
+                      <option key={n} value={n}>
+                        {KEY_NOTATION_LABELS[n]}
+                      </option>
+                    ))}
+                  </select>
                 </Row>
 
                 <Row

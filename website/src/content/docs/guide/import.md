@@ -65,6 +65,7 @@ Crateforge へのライブラリ取り込みは、**iTunes / Music の `Library.
   曲自身の BPM を優先し、未設定なら[解析](../dj-analysis/)結果を使います。
 - **Key** — **InitialKey**（ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY）へ、
   Camelot ではなく音楽表記（`Am` / `F#m` / `C` など）で書きます。rekordbox / Serato / Traktor が読むのはこの表記です。
+  [手動で上書き](../dj-analysis/)した Key があればそれを優先し、無ければ解析結果を使います。
 
 :::note
 iTunes 互換 XML には Key を書き出しません（Apple の plist スキーマにキーを表す標準要素が無いため）。

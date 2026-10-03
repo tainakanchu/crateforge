@@ -28,6 +28,8 @@ export interface Track {
   trackCount: number | null;
   fileExists: boolean;
   lastPlayed: string | null;
+  /** Key の手動上書き (Camelot, 例 "8A")。未設定なら null/undefined。実効キーは上書き ?? 解析値 (#172)。 */
+  keyCamelotUser?: string | null;
 }
 
 export interface AlbumRow {

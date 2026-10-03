@@ -20,6 +20,17 @@ Without depending on external tools, it estimates **BPM / Key (Camelot) / Energy
 
 Of the analysis results, **Key / Energy** can be shown as columns in the track table and are also shown in Now Playing.
 
+### Key notation and manual override
+
+- **Notation** — In **Settings → "一般" (General) → "Key 表記" (Key notation)**, choose how keys are displayed:
+  **Camelot** (`8A`) / **Open Key** (`1m`) / **Classic** (`Am` / `F#m`).
+  Only the display changes; stored values, compatibility checks and search (`key:8A`) stay in Camelot.
+- **Manual override** — If the analyzed key is wrong, pick the correct one in the **Key** field of the track editor (Get Info / `Ctrl + I`).
+  The override is stored separately from the analyzed value and **survives re-analysis**. Choose "解析値を使う" (use analyzed value) to clear it.
+  Overridden keys are shown with a `*` in the track table.
+- When a track has an override, the **override** is used everywhere: display, search (`key:` / `key:compat:`), smart playlists,
+  Similar, Set Lint and the file-tag (InitialKey) write-back.
+
 ## When analysis runs
 
 Analysis runs in the background only for "the tracks you use often." It is triggered by either of the following.

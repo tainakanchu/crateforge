@@ -14,6 +14,8 @@ export interface TrackEdit {
   discNumber?: number | null;
   discCount?: number | null;
   compilation?: boolean;
+  /** Key の手動上書き (Camelot)。文字列で設定、null で解除 (解析値へ戻す)。 */
+  keyCamelotUser?: string | null;
 }
 
 export interface GenreTagCount {

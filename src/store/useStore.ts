@@ -32,6 +32,7 @@ import {
   saveSetWorkspacePersist,
   newSectionId,
 } from "../lib/setWorkspacePersist";
+import { isKeyNotation, type KeyNotation } from "../lib/keyNotation";
 
 // グローバルトースト（成功/失敗/情報の一時通知）。永続化しない。
 export type ToastKind = "success" | "error" | "info";
@@ -130,6 +131,8 @@ interface PersistedSettings {
   filterTags: string[];
   // 右ペインの Set tools (Arc / Lint) 開閉状態 (#160)。
   setToolsOpen: boolean;
+  // Key の表示表記 (#172)。保存値は Camelot のまま、表示だけ切り替える。
+  keyNotation: KeyNotation;
 }
 
 /// Artists ビューでしか意味を持たないソートフィールド (#155)。
@@ -301,6 +304,7 @@ interface AppState extends PersistedSettings {
   setRailSplit: (split: boolean) => void;
   setShowRemainingTime: (show: boolean) => void;
   toggleRemainingTime: () => void;
+  setKeyNotation: (notation: KeyNotation) => void;
   setRowH: (h: number) => void;
   setCoverSize: (s: CoverSize) => void;
   resetColumns: () => void;
@@ -593,6 +597,7 @@ export const useStore = create<AppState>()(
       rightRailWidth: RIGHT_RAIL_WIDTH_DEFAULT,
       railSplit: false,
       showRemainingTime: false,
+      keyNotation: "camelot",
       rowH: 40,
       coverSize: 20,
       displayMode: "list",
@@ -848,6 +853,7 @@ export const useStore = create<AppState>()(
       setRailSplit: (railSplit) => set({ railSplit }),
       setSetToolsOpen: (setToolsOpen) => set({ setToolsOpen }),
       setShowRemainingTime: (showRemainingTime) => set({ showRemainingTime }),
+      setKeyNotation: (keyNotation) => set({ keyNotation }),
       toggleRemainingTime: () =>
         set((state) => ({ showRemainingTime: !state.showRemainingTime })),
       setRowH: (rowH) => set({ rowH }),
@@ -944,7 +950,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 18,
+      version: 19,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -975,6 +981,7 @@ export const useStore = create<AppState>()(
           selectedPlaylistId: state.selectedPlaylistId,
           filterTags: state.filterTags,
           setToolsOpen: state.setToolsOpen,
+          keyNotation: state.keyNotation,
         }) satisfies PersistedSettings,
       // v1(visibleColumns) からの移行: 旧キーは破棄してデフォルトに倒す。
       // v3: recentPlaylistIds を追加（旧データには無いので配列で補完）。
@@ -1118,6 +1125,11 @@ export const useStore = create<AppState>()(
               }
             }
           }
+        }
+        // v19 (#172): Key 表示表記。旧データには無いので従来どおり Camelot で補完。
+        if (version < 19 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (!isKeyNotation(p.keyNotation)) p.keyNotation = "camelot";
         }
         return persisted as PersistedSettings;
       },

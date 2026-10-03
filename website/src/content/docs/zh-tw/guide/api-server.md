@@ -59,7 +59,7 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 
 - **BPM** — 以整數寫入 TBPM（ID3v2）/ tmpo（MP4）/ `BPM`（Vorbis Comments）。
   優先採用曲目自身的 BPM，未設定時則採用解析結果。
-- **Key** — 將解析結果的調性寫入 **InitialKey**（ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY），
+- **Key** — 將實際採用的調性（有手動覆寫則用覆寫值，否則用解析結果）寫入 **InitialKey**（ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY），
   使用音樂記法（例如 `Am`）而非 Camelot。
 
 ### 播放清單
