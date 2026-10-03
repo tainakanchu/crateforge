@@ -49,6 +49,68 @@ pub fn normalize_camelot(s: &str) -> Option<String> {
     Some(format!("{num}{}", if is_minor { 'A' } else { 'B' }))
 }
 
+/// 検索用に Key 表記を Camelot へ正規化する (大文字小文字は無視)。
+/// - Camelot: "8A" / "08b"
+/// - Open Key: "1m" (短調) / "1d" (長調)。1m = 8A, 1d = 8B
+/// - Classic: "Am" "F#m" "Abm" "C" "Db" など。異名同音 ("G#m" = "Abm", "A#" = "Bb") も同一視する。
+///
+/// どれにも当てはまらなければ None。
+pub fn normalize_key_to_camelot(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if let Some(c) = normalize_camelot(t) {
+        return Some(c);
+    }
+    let lower = t.to_ascii_lowercase();
+    // Open Key: 数字 + m/d。
+    if let Some(num_part) = lower.strip_suffix('m').or_else(|| lower.strip_suffix('d')) {
+        if !num_part.is_empty() && num_part.bytes().all(|b| b.is_ascii_digit()) {
+            let n: u8 = num_part.parse().ok()?;
+            if !(1..=12).contains(&n) {
+                return None;
+            }
+            let minor = lower.ends_with('m');
+            let camelot = (n + 6) % 12 + 1;
+            return Some(format!("{camelot}{}", if minor { 'A' } else { 'B' }));
+        }
+    }
+    // Classic: 音名 (A-G) + 任意の #/b + 任意の m (短調)。
+    let mut chars = lower.chars();
+    let base: i32 = match chars.next()? {
+        'c' => 0,
+        'd' => 2,
+        'e' => 4,
+        'f' => 5,
+        'g' => 7,
+        'a' => 9,
+        'b' => 11,
+        _ => return None,
+    };
+    let rest = chars.as_str();
+    let (accidental, rest) = match rest.chars().next() {
+        Some('#') => (1, &rest[1..]),
+        Some('b') => (-1, &rest[1..]),
+        _ => (0, rest),
+    };
+    let minor = match rest {
+        "" => false,
+        "m" => true,
+        _ => return None,
+    };
+    let pc = (base + accidental).rem_euclid(12);
+    // 短調は平行調 (長調 +3 半音) の Camelot 番号を使う。
+    let major_pc = if minor { (pc + 3) % 12 } else { pc };
+    // 長調トニックの pitch class (C=0 ...) → Camelot 番号。
+    const NUM: [u8; 12] = [8, 3, 10, 5, 12, 7, 2, 9, 4, 11, 6, 1];
+    Some(format!(
+        "{}{}",
+        NUM[major_pc as usize],
+        if minor { 'A' } else { 'B' }
+    ))
+}
+
 /// Camelot コード → 解析器と同じ形式のキー名 ("8A" → "A minor", "8B" → "C major")。
 /// 音名はシャープ表記 (analyzer/features.rs の key_name と一致)。
 pub fn camelot_to_key_name(s: &str) -> Option<String> {
@@ -177,6 +239,55 @@ pub fn rank_similar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_key_to_camelot_all_notations() {
+        let n = |s: &str| normalize_key_to_camelot(s);
+        assert_eq!(n("8a").as_deref(), Some("8A"));
+        assert_eq!(n("1m").as_deref(), Some("8A"));
+        assert_eq!(n("1D").as_deref(), Some("8B"));
+        assert_eq!(n("6m").as_deref(), Some("1A"));
+        assert_eq!(n("12d").as_deref(), Some("7B"));
+        assert_eq!(n("Am").as_deref(), Some("8A"));
+        assert_eq!(n("F#m").as_deref(), Some("11A"));
+        assert_eq!(n("abm").as_deref(), Some("1A"));
+        assert_eq!(n("G#m").as_deref(), Some("1A"));
+        assert_eq!(n("C").as_deref(), Some("8B"));
+        assert_eq!(n("db").as_deref(), Some("3B"));
+        assert_eq!(n("C#").as_deref(), Some("3B"));
+        assert_eq!(n("A#").as_deref(), Some("6B"));
+        assert_eq!(n("Bb").as_deref(), Some("6B"));
+        assert_eq!(n("B").as_deref(), Some("1B"));
+        assert_eq!(n("Bbm").as_deref(), Some("3A"));
+        assert_eq!(n("Fb").as_deref(), Some("12B"));
+        assert_eq!(n("13m"), None);
+        assert_eq!(n("0d"), None);
+        assert_eq!(n("H"), None);
+        assert_eq!(n("Amm"), None);
+        assert_eq!(n(""), None);
+    }
+
+    /// Classic 表記が解析器の key_name / Camelot 逆写像と全 24 キーで一致すること。
+    #[test]
+    fn normalize_key_to_camelot_round_trips_all_keys() {
+        for n in 1..=12u8 {
+            for l in ["A", "B"] {
+                let c = format!("{n}{l}");
+                let name = camelot_to_key_name(&c).unwrap();
+                let (tonic, mode) = name.split_once(' ').unwrap();
+                let classic = if mode == "minor" {
+                    format!("{tonic}m")
+                } else {
+                    tonic.to_string()
+                };
+                assert_eq!(
+                    normalize_key_to_camelot(&classic).as_deref(),
+                    Some(c.as_str()),
+                    "{classic}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn normalize_camelot_and_key_name() {

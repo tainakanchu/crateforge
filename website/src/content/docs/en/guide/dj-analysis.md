@@ -24,7 +24,7 @@ Of the analysis results, **Key / Energy** can be shown as columns in the track t
 
 - **Notation** — In **Settings → "一般" (General) → "Key 表記" (Key notation)**, choose how keys are displayed:
   **Camelot** (`8A`) / **Open Key** (`1m`) / **Classic** (`Am` / `F#m`).
-  Only the display changes; stored values, compatibility checks and search (`key:8A`) stay in Camelot.
+  Only the display changes; stored values, compatibility checks and search stay in Camelot. Search accepts any notation: `key:8A`, `key:1m` and `key:Am` all match the same keys.
 - **Manual override** — If the analyzed key is wrong, pick the correct one in the **Key** field of the track editor (Get Info / `Ctrl + I`).
   The override is stored separately from the analyzed value and **survives re-analysis**. Choose "解析値を使う" (use analyzed value) to clear it.
   Overridden keys are shown with a `*` in the track table.
@@ -98,7 +98,7 @@ analyzed:no
 
 - A single `bpm:` value matches ±2 and prefers the analyzed value (falling back to the track's BPM tag).
 - `key:compat:8A` narrows to **every key that mixes harmonically with 8A** (8A / 8B / 7A / 9A).
-  It uses the same logic as the Similar tab, so the two never disagree.
+  The base key can be written in any notation (`key:compat:1m` / `key:compat:Am`). It uses the same logic as the Similar tab, so the two never disagree.
 - `energy:` accepts either 0–1 or 0–100.
 - `analyzed:yes` / `analyzed:no` separates analyzed from not-yet-analyzed tracks.
 

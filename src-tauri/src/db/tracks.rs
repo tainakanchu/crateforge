@@ -390,7 +390,8 @@ fn parse_bool(s: &str) -> Option<bool> {
 /// `base` が Camelot として解釈できなければ None。
 fn compatible_camelot_keys(base: &str) -> Option<Vec<String>> {
     use crate::analyzer::similarity::{camelot_compatible, parse_camelot};
-    let base = base.trim().to_uppercase();
+    // Camelot / Open Key / Classic のいずれの表記でも受け付ける。
+    let base = crate::analyzer::similarity::normalize_key_to_camelot(base)?;
     parse_camelot(&base)?;
     let keys: Vec<String> = (1..=12u8)
         .flat_map(|n| ["A", "B"].map(move |m| format!("{n}{m}")))
@@ -404,7 +405,9 @@ fn compatible_camelot_keys(base: &str) -> Option<Vec<String>> {
 }
 
 /// 検索トークンがフィールド指定 (`bpm:` `key:` `energy:` `artist:` `album:` `albumartist:`
-/// `genre:` `year:` `rating:` `comment:` `analyzed:` `tag:`) なら (SQL 句, バインド値) を返す。\n/// `key:` は `key:compat:8A` の形でハーモニック互換キー一括指定もできる。
+/// `genre:` `year:` `rating:` `comment:` `analyzed:` `tag:`) なら (SQL 句, バインド値) を返す。
+/// `key:` は Camelot (8A) / Open Key (1m) / Classic (Am, F#m, Db) のどれでも指定でき、
+/// `key:compat:8A` の形でハーモニック互換キー一括指定もできる。
 /// 解釈できないキー/値なら None を返し、呼び出し側でフリーテキストとして扱う。
 /// `prefix` は tracks テーブルの別名 + ドット ("tracks." / "t.")。
 /// SQL に埋め込むのは固定文字列だけで、ユーザー入力は必ずバインドする。
@@ -436,8 +439,8 @@ fn parse_field_filter(
             ))
         }
         "key" => {
-            let k = val.trim().to_uppercase();
-            if k.is_empty() {
+            let raw_key = val.trim();
+            if raw_key.is_empty() {
                 return None;
             }
             // 実効キー = 手動上書き (tracks.key_camelot_user) ?? 解析値 (#172)。
@@ -448,14 +451,18 @@ fn parse_field_filter(
             );
             // `key:compat:8A` — 8A とハーモニックに繋がるキー全部 (同キー / 平行調 /
             // ホイール ±1) を IN (...) で並べる。
-            if let Some(base) = k.strip_prefix("COMPAT:") {
-                let keys = compatible_camelot_keys(base)?;
+            if raw_key.len() >= 7 && raw_key[..7].eq_ignore_ascii_case("compat:") {
+                let keys = compatible_camelot_keys(&raw_key[7..])?;
                 let holes = vec!["?"; keys.len()].join(",");
                 return Some((
                     format!("({effective} IN ({holes}))"),
                     keys.into_iter().map(Value::Text).collect(),
                 ));
             }
+            // Camelot / Open Key / Classic を Camelot に正規化。解釈できない値は
+            // 従来どおり大文字化した生値で比較する (何にも一致しない)。
+            let k = crate::analyzer::similarity::normalize_key_to_camelot(raw_key)
+                .unwrap_or_else(|| raw_key.to_uppercase());
             Some((format!("({effective} = ?)"), vec![Value::Text(k)]))
         }
         "energy" => {
@@ -2387,7 +2394,7 @@ mod tests {
         assert_eq!(ids(&db, "rating:4-5"), vec![1, 2]);
         assert_eq!(ids(&db, "rating:2"), vec![4]);
         assert_eq!(ids(&db, "rating:0"), vec![3]); // 未評価 (NULL)
-        // 範囲外の星はフィールド指定として扱わない → フリーテキスト扱いで 0 件。
+                                                   // 範囲外の星はフィールド指定として扱わない → フリーテキスト扱いで 0 件。
         assert!(ids(&db, "rating:9").is_empty());
     }
 
@@ -2429,6 +2436,15 @@ mod tests {
         assert_eq!(ids(&db, "key:compat:1A"), vec![5, 7]);
         // 単一キー指定 (従来) は互換キーへ広がらない。
         assert_eq!(ids(&db, "key:8A"), vec![1]);
+        // Open Key / Classic 表記 (大文字小文字不問) でも同じ結果。
+        assert_eq!(ids(&db, "key:1m"), vec![1]);
+        assert_eq!(ids(&db, "key:1D"), vec![2]);
+        assert_eq!(ids(&db, "key:Am"), vec![1]);
+        assert_eq!(ids(&db, "key:C"), vec![2]);
+        assert_eq!(ids(&db, "key:compat:1m"), vec![1, 2, 3, 4]);
+        assert_eq!(ids(&db, "key:compat:am"), vec![1, 2, 3, 4]);
+        assert_eq!(ids(&db, "key:compat:Abm"), vec![5, 7]);
+        assert_eq!(ids(&db, "key:compat:G#m"), vec![5, 7]);
         // 解釈できない Camelot はフィールド指定にならずフリーテキスト扱い → 0 件。
         assert!(ids(&db, "key:compat:99Z").is_empty());
     }
@@ -2518,6 +2534,13 @@ mod tests {
         let mut k = compatible_camelot_keys("12b").unwrap();
         k.sort();
         assert_eq!(k, vec!["11B", "12A", "12B", "1B"]);
+        // Open Key / Classic 表記でも同じ集合になる。
+        let mut k = compatible_camelot_keys("1m").unwrap();
+        k.sort();
+        assert_eq!(k, vec!["7A", "8A", "8B", "9A"]);
+        let mut k = compatible_camelot_keys("am").unwrap();
+        k.sort();
+        assert_eq!(k, vec!["7A", "8A", "8B", "9A"]);
         assert!(compatible_camelot_keys("13A").is_none());
         assert!(compatible_camelot_keys("").is_none());
     }
@@ -2542,7 +2565,10 @@ mod tests {
         );
         assert_eq!(tokenize_query("  a   b  "), vec!["a", "b"]);
         // 閉じ引用符が無い場合は行末までを 1 トークンにする。
-        assert_eq!(tokenize_query("artist:\"daft punk"), vec!["artist:daft punk"]);
+        assert_eq!(
+            tokenize_query("artist:\"daft punk"),
+            vec!["artist:daft punk"]
+        );
     }
 
     /// prefix 無しの search_text_expr が定数 SEARCH_TEXT_EXPR と完全一致すること
