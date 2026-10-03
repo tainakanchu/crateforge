@@ -69,7 +69,7 @@ description: 欄的新增 / 排序 / 寬度，列高、封面、右側欄的調�
 | `year:2018` / `year:2015-2020` | 發行年（單一 / 範圍） |
 | `rating:5` / `rating:4-5` / `rating:0` | 星等 0〜5（`rating:0` 為未評分） |
 | `bpm:128` / `bpm:120-128` | BPM（單一值為 ±2；優先採用解析值） |
-| `key:8A` | Camelot 鍵的完全比對（有手動覆寫時以覆寫值判定） |
+| `key:8A` / `key:1m` / `key:Am` | 鍵的完全比對；Camelot、Open Key、Classic（`F#m`、`Db`，`G#m` = `Abm` 等同音異名也可）皆可，不分大小寫（有手動覆寫時以覆寫值判定） |
 | `key:compat:8A` | 與 8A 和聲相容的鍵（8A / 8B / 7A / 9A） |
 | `energy:60-100` | 能量（0〜1 或 0〜100 皆可） |
 | `analyzed:yes` / `analyzed:no` | 已解析 / 未解析 |

@@ -50,7 +50,7 @@ const GROUPS: Group[] = [
       {
         keys: ["検索"],
         label:
-          "artist: album: albumartist: genre: comment: year:2015-2020 rating:4-5 bpm:120-128 key:8A key:compat:8A energy:60-100 analyzed:yes（値は \"…\" で囲める・空白区切りは AND）",
+          "artist: album: albumartist: genre: comment: year:2015-2020 rating:4-5 bpm:120-128 key:8A（1m / Am も可） key:compat:8A energy:60-100 analyzed:yes（値は \"…\" で囲める・空白区切りは AND）",
       },
       {
         keys: ["スコープ"],
