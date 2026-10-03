@@ -28,6 +28,11 @@ const FIELDS: { value: string; label: string; type: FieldType }[] = [
   { value: "energy", label: "Energy (0–1)", type: "num" },
   { value: "playCount", label: "Plays", type: "num" },
   { value: "skipCount", label: "Skips", type: "num" },
+  // 技術メタデータ (#171)。codec は "MP3" / "AAC" / "ALAC" / "FLAC" などの表示名。
+  { value: "bitrate", label: "Bitrate (kbps)", type: "num" },
+  { value: "sampleRate", label: "Sample Rate (Hz)", type: "num" },
+  { value: "bitDepth", label: "Bit Depth", type: "num" },
+  { value: "codec", label: "Codec", type: "str" },
   { value: "dateAdded", label: "Date Added", type: "date" },
   { value: "lastPlayed", label: "Last Played", type: "date" },
 ];
@@ -58,6 +63,7 @@ const SORTS = [
   ["playCount", "Plays"],
   ["rating", "Rating"],
   ["bpm", "BPM"],
+  ["bitrate", "Bitrate"],
   ["artist", "Artist"],
   ["album", "Album"],
   ["name", "Name"],

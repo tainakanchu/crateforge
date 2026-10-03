@@ -135,6 +135,7 @@ fn sort_field_to_column(sort_field: &str) -> Option<(&'static str, bool)> {
         "bitrate" => Some(("bitrate_kbps", false)),
         "sampleRate" => Some(("sample_rate_hz", false)),
         "bitDepth" => Some(("bit_depth", false)),
+        "channels" => Some(("channels", false)),
         "fileSize" => Some(("file_size_bytes", false)),
         "codec" => Some(("codec", true)),
         _ => None,

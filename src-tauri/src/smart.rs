@@ -50,6 +50,7 @@ fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
         "bitrate" => on(t.bitrate_kbps),
         "sampleRate" => on(t.sample_rate_hz),
         "bitDepth" => on(t.bit_depth),
+        "channels" => on(t.channels),
         "fileSize" => on(t.file_size_bytes),
         "codec" => os(&t.codec),
         "key" | "keyCamelot" => a
@@ -162,6 +163,7 @@ pub fn sort_tracks(tracks: &mut [Track], field: &str, desc: bool) {
             "bitrate" => a.bitrate_kbps.cmp(&b.bitrate_kbps),
             "sampleRate" => a.sample_rate_hz.cmp(&b.sample_rate_hz),
             "bitDepth" => a.bit_depth.cmp(&b.bit_depth),
+            "channels" => a.channels.cmp(&b.channels),
             "fileSize" => a.file_size_bytes.cmp(&b.file_size_bytes),
             "codec" => lower(&a.codec).cmp(&lower(&b.codec)),
             _ => lower(&a.name).cmp(&lower(&b.name)),
