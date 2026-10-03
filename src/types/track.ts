@@ -28,6 +28,20 @@ export interface Track {
   trackCount: number | null;
   fileExists: boolean;
   lastPlayed: string | null;
+  // --- 技術メタデータ (#171)。ファイル由来で、未取得なら null。
+  // 旧バージョンのサーバー (LAN API) からは欠ける可能性があるので optional にする。
+  /** 音声ビットレート (kbps)。 */
+  bitrateKbps?: number | null;
+  /** サンプルレート (Hz)。 */
+  sampleRateHz?: number | null;
+  /** ビット深度 (ロスレス / PCM 系のみ)。 */
+  bitDepth?: number | null;
+  /** チャンネル数。 */
+  channels?: number | null;
+  /** ファイルサイズ (bytes)。 */
+  fileSizeBytes?: number | null;
+  /** コーデック表示名 ("FLAC" / "MP3" / "AAC" / "ALAC" …)。 */
+  codec?: string | null;
 }
 
 export interface AlbumRow {

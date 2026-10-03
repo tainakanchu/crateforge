@@ -35,6 +35,13 @@ export interface Track {
   fileExists: boolean;
   /** アプリ内で最後に再生した時刻（ISO8601 UTC）。未再生なら null。 */
   lastPlayed: string | null;
+  // 技術メタデータ (#171)。旧デスクトップ版のサーバーからは欠けるので optional。
+  bitrateKbps?: number | null;
+  sampleRateHz?: number | null;
+  bitDepth?: number | null;
+  channels?: number | null;
+  fileSizeBytes?: number | null;
+  codec?: string | null;
 }
 
 /** プレイリスト（フォルダ含む）。 */

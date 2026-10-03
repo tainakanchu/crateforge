@@ -78,6 +78,8 @@ The library itself (`library.db`), which holds all of that, is managed under
 - **整合性チェック (Integrity check)** — checks `library.db` for corruption (`PRAGMA integrity_check`).
 - **最適化 (VACUUM) (Optimize)** — reclaims space from deleted rows and reorganizes the file.
   With many tracks this can take a few seconds to a few tens of seconds.
+- **技術情報を再読み取り (Re-read technical info)** — re-reads bitrate, sample rate, file size and codec from the
+  files, only for tracks that don't have them yet (e.g. imported by an older version). Your edited metadata is not changed.
 - **自動エクスポート時にあわせてバックアップ (Back up alongside auto-export)** (on by default) — backs up
   `library.db` whenever the iTunes-compatible XML [auto-export](../import/) succeeds.
   Automatic backups keep the **5 most recent** and are skipped if the last one is less than 30 minutes old.

@@ -187,6 +187,7 @@ pub fn run() {
             commands::library::export_library,
             commands::library::import_files,
             commands::library::import_folders,
+            commands::library::refresh_tech_metadata,
             commands::library::get_tracks,
             commands::library::get_tracks_by_ids,
             commands::library::search_tracks,

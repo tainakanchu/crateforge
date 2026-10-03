@@ -27,6 +27,18 @@ export interface ImportSummary {
   failed: number;
 }
 
+/** 技術メタデータ一括再読み取り (#171) の結果 (Rust: TechMetaRefreshSummary)。 */
+export interface TechMetaRefreshSummary {
+  /** 対象 (未取得列がある曲) の総数 */
+  total: number;
+  /** 読み直して更新できた曲数 */
+  updated: number;
+  /** ファイルが見つからなかった曲数 */
+  missing: number;
+  /** ファイルはあるが読めなかった曲数 (非対応形式・破損など) */
+  failed: number;
+}
+
 export interface LibraryStats {
   trackCount: number;
   playlistCount: number;

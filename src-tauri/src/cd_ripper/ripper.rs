@@ -210,22 +210,31 @@ pub fn rip_cd(
                 .and_then(|d| d.split('-').next())
                 .and_then(|y| y.parse::<i64>().ok());
 
-            db.add_imported_track(
-                title,
-                track_artist,
-                album_artist,
-                album,
-                None,
-                year,
-                Some(track_num as i64),
-                req.release.as_ref().map(|r| r.track_count as i64),
-                Some(1),
-                Some(1),
-                length_ms,
-                &final_path_str,
-                &location_url,
-            )
-            .map_err(|e| format!("DB insert failed: {}", e))?;
+            let new_track_id = db
+                .add_imported_track(
+                    title,
+                    track_artist,
+                    album_artist,
+                    album,
+                    None,
+                    year,
+                    Some(track_num as i64),
+                    req.release.as_ref().map(|r| r.track_count as i64),
+                    Some(1),
+                    Some(1),
+                    length_ms,
+                    &final_path_str,
+                    &location_url,
+                )
+                .map_err(|e| format!("DB insert failed: {}", e))?;
+            // 技術メタデータ (#171) はエンコード後のファイルから読む (失敗しても取り込みは続行)。
+            if let Err(e) = crate::importer::refresh_tech_meta_from_file(
+                db,
+                new_track_id,
+                std::path::Path::new(&final_path_str),
+            ) {
+                eprintln!("rip: tech meta read failed ({})", e);
+            }
             added_tracks += 1;
         }
 

@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use super::Database;
 use crate::itunes_xml::parser::RawTrack;
+use crate::metadata::tech::TechMeta;
 use crate::models::{AlbumRow, ArtistRow, GenreTagCount, Track, TrackEdit};
 
 /// `/api/albums` で返す、ライブラリ内の distinct なアルバム 1 件分の情報。
@@ -130,6 +131,13 @@ fn sort_field_to_column(sort_field: &str) -> Option<(&'static str, bool)> {
         "totalTimeMs" => Some(("total_time_ms", false)),
         "dateAdded" => Some(("date_added", true)),
         "lastPlayed" => Some(("last_played", true)),
+        // 技術メタデータ (#171)。
+        "bitrate" => Some(("bitrate_kbps", false)),
+        "sampleRate" => Some(("sample_rate_hz", false)),
+        "bitDepth" => Some(("bit_depth", false)),
+        "channels" => Some(("channels", false)),
+        "fileSize" => Some(("file_size_bytes", false)),
+        "codec" => Some(("codec", true)),
         _ => None,
     }
 }
@@ -758,6 +766,15 @@ impl Database {
             raw.get_str("Comments"),
         ]);
 
+        // iTunes XML の技術情報 (#171)。0 以下は欠損扱い。Kind はコーデック名へ寄せる。
+        let positive = |key: &str| raw.get_int(key).filter(|&n| n > 0);
+        let xml_bitrate = positive("Bit Rate");
+        let xml_sample_rate = positive("Sample Rate");
+        let xml_size = positive("Size");
+        let xml_codec = raw
+            .get_str("Kind")
+            .and_then(crate::metadata::tech::codec_from_itunes_kind);
+
         if let Some((track_id, local_modified, local_path)) = matched {
             claimed_track_ids.insert(track_id);
             let xml_modified = raw
@@ -808,6 +825,18 @@ impl Database {
                     ],
                 )?;
             }
+
+            // 技術メタデータ (#171) は未取得 (NULL) の列だけ XML の値で埋める。
+            // 実ファイルから読んだ値の方が正確なので上書きはしない。
+            self.conn.execute(
+                "UPDATE tracks SET
+                     bitrate_kbps = COALESCE(bitrate_kbps, ?1),
+                     sample_rate_hz = COALESCE(sample_rate_hz, ?2),
+                     file_size_bytes = COALESCE(file_size_bytes, ?3),
+                     codec = COALESCE(codec, ?4)
+                 WHERE track_id = ?5",
+                params![xml_bitrate, xml_sample_rate, xml_size, xml_codec, track_id],
+            )?;
 
             // 整理済みのローカルファイルが現在も存在する場合だけ、アプリ側の場所を正とする。
             let local_file_exists = local_path
@@ -862,8 +891,9 @@ impl Database {
                  album, genre, year, rating, play_count, skip_count, total_time_ms,
                  date_added, date_modified, bpm, comments, location_raw, location_path,
                  track_type, disabled, compilation, disc_number, disc_count,
-                 track_number, track_count, file_exists, last_played, search_text)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)",
+                 track_number, track_count, file_exists, last_played, search_text,
+                 bitrate_kbps, sample_rate_hz, file_size_bytes, codec)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33)",
                 params![
                     track_id,
                     persistent_id,
@@ -894,6 +924,10 @@ impl Database {
                     file_exists as i32,
                     raw.get_date("Play Date UTC"),
                     search_text,
+                    xml_bitrate,
+                    xml_sample_rate,
+                    xml_size,
+                    xml_codec,
                 ],
             ) {
                 Ok(_) => {
@@ -1090,7 +1124,8 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec
              FROM tracks ORDER BY {} LIMIT ?1 OFFSET ?2",
             order_by
         );
@@ -1141,7 +1176,8 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec
              FROM tracks
              WHERE {}
              ORDER BY {} LIMIT ? OFFSET ?",
@@ -1182,7 +1218,8 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec
              FROM tracks WHERE track_id = ?1",
         )?;
 
@@ -1214,7 +1251,8 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec
              FROM tracks WHERE persistent_id = ?1",
         )?;
         let mut out = Vec::with_capacity(persistent_ids.len());
@@ -1235,7 +1273,8 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec
              FROM tracks ORDER BY track_id ASC",
         )?;
         let rows = stmt.query_map([], row_to_track)?;
@@ -1393,6 +1432,46 @@ impl Database {
         Ok(())
     }
 
+    /// 技術メタデータ列 (#171) だけを更新する。ユーザー編集の対象列 (曲名等) には触れない。
+    /// ファイルから読めなかった項目 (None) は既存値を残す (`COALESCE(新, 旧)`)。
+    /// 1 行も一致しなければ false。
+    pub fn set_track_tech_meta(&self, track_id: i64, meta: &TechMeta) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE tracks SET
+                 bitrate_kbps = COALESCE(?1, bitrate_kbps),
+                 sample_rate_hz = COALESCE(?2, sample_rate_hz),
+                 bit_depth = COALESCE(?3, bit_depth),
+                 channels = COALESCE(?4, channels),
+                 file_size_bytes = COALESCE(?5, file_size_bytes),
+                 codec = COALESCE(?6, codec)
+             WHERE track_id = ?7",
+            params![
+                meta.bitrate_kbps,
+                meta.sample_rate_hz,
+                meta.bit_depth,
+                meta.channels,
+                meta.file_size_bytes,
+                meta.codec,
+                track_id,
+            ],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// 技術メタデータが未取得の、実ファイルがある曲 `(track_id, location_path)` を返す。
+    /// bit_depth は MP3/AAC 等で常に NULL なので判定に含めない (毎回再読み取りしないため)。
+    pub fn tracks_missing_tech_meta(&self) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT track_id, location_path FROM tracks
+             WHERE location_path IS NOT NULL AND location_path <> ''
+               AND (bitrate_kbps IS NULL OR sample_rate_hz IS NULL OR channels IS NULL
+                    OR file_size_bytes IS NULL OR codec IS NULL)
+             ORDER BY track_id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
     /// genre を空白区切りタグ集合として扱い、tag を追加。重複は無視。
     pub fn add_genre_tag(&self, track_id: i64, tag: &str) -> Result<()> {
         let current: Option<String> = self
@@ -1528,7 +1607,8 @@ impl Database {
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
                     date_added, date_modified, bpm, comments, location_raw, location_path,
                     track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec
              FROM (
                SELECT *, ({key}) AS album_key FROM tracks
              ) WHERE album_key = ?1
@@ -1652,7 +1732,9 @@ impl Database {
                     t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count, t.total_time_ms,
                     t.date_added, t.date_modified, t.bpm, t.comments, t.location_raw, t.location_path,
                     t.track_type, t.disabled, t.compilation, t.disc_number, t.disc_count,
-                    t.track_number, t.track_count, t.file_exists, t.last_played
+                    t.track_number, t.track_count, t.file_exists, t.last_played,
+                    t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes,
+                    t.codec
              FROM tracks t
              INNER JOIN recent_tracks rt ON t.track_id = rt.track_id
              ORDER BY rt.played_at DESC
@@ -1821,6 +1903,14 @@ pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
         track_count: row.get(26)?,
         file_exists: row.get::<_, i32>(27)? != 0,
         last_played: row.get(28)?,
+        // 技術メタデータ列 (#171) は列名で引く。`SELECT *` (search_text が 29 番目に来る)
+        // でも明示列リストでも同じように読めるようにするため。
+        bitrate_kbps: row.get("bitrate_kbps")?,
+        sample_rate_hz: row.get("sample_rate_hz")?,
+        bit_depth: row.get("bit_depth")?,
+        channels: row.get("channels")?,
+        file_size_bytes: row.get("file_size_bytes")?,
+        codec: row.get("codec")?,
     })
 }
 
@@ -2774,5 +2864,84 @@ mod tests {
         assert_eq!(tracks[1].track_id, 503); // disc1 track2
         assert_eq!(tracks[2].track_id, 500); // disc2 track1
         assert_eq!(tracks[3].track_id, 501); // disc2 track2
+    }
+
+    /// #171: 技術メタデータの書き込み (None は既存値を残す)・列名マッピング・ソート。
+    #[test]
+    fn tech_meta_set_read_and_sort() {
+        use crate::metadata::tech::TechMeta;
+        let db = Database::open_memory().unwrap();
+        for (id, name) in [(1, "A"), (2, "B"), (3, "C")] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, file_exists) VALUES (?1, ?2, 1)",
+                    params![id, name],
+                )
+                .unwrap();
+        }
+        let flac = TechMeta {
+            bitrate_kbps: Some(900),
+            sample_rate_hz: Some(44_100),
+            bit_depth: Some(16),
+            channels: Some(2),
+            file_size_bytes: Some(30_000_000),
+            codec: Some("FLAC".to_string()),
+        };
+        assert!(db.set_track_tech_meta(1, &flac).unwrap());
+        let mp3 = TechMeta {
+            bitrate_kbps: Some(128),
+            codec: Some("MP3".to_string()),
+            ..Default::default()
+        };
+        assert!(db.set_track_tech_meta(2, &mp3).unwrap());
+        assert!(!db.set_track_tech_meta(99, &mp3).unwrap());
+
+        // None の項目は既存値を消さない。
+        db.conn
+            .execute(
+                "UPDATE tracks SET sample_rate_hz = 48000 WHERE track_id = 2",
+                [],
+            )
+            .unwrap();
+        db.set_track_tech_meta(2, &mp3).unwrap();
+        let t2 = db.get_track_by_track_id(2).unwrap().unwrap();
+        assert_eq!(t2.sample_rate_hz, Some(48_000));
+        assert_eq!(t2.bitrate_kbps, Some(128));
+        assert_eq!(t2.codec.as_deref(), Some("MP3"));
+
+        // 昇順でも降順でも NULL (曲 3) は末尾。
+        let asc: Vec<i64> = db
+            .get_tracks(10, 0, Some("bitrate"), Some("asc"))
+            .unwrap()
+            .iter()
+            .map(|t| t.track_id)
+            .collect();
+        assert_eq!(asc, vec![2, 1, 3]);
+        let desc: Vec<i64> = db
+            .get_tracks(10, 0, Some("fileSize"), Some("desc"))
+            .unwrap()
+            .iter()
+            .map(|t| t.track_id)
+            .collect();
+        assert_eq!(desc, vec![1, 2, 3]);
+        let by_codec: Vec<i64> = db
+            .search_tracks("", 10, 0, Some("codec"), Some("asc"))
+            .unwrap()
+            .iter()
+            .map(|t| t.track_id)
+            .collect();
+        assert_eq!(by_codec, vec![1, 2, 3]);
+
+        // SELECT * (search_text が間に挟まる列順) でも列名で正しく読める。
+        let t1 = db
+            .conn
+            .query_row(
+                "SELECT * FROM tracks WHERE track_id = 1",
+                [],
+                super::row_to_track,
+            )
+            .unwrap();
+        assert_eq!(t1.bit_depth, Some(16));
+        assert_eq!(t1.file_size_bytes, Some(30_000_000));
     }
 }

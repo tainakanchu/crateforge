@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -11,7 +12,7 @@ use crate::importer;
 use crate::itunes_xml::{parser, writer};
 use crate::models::{
     AlbumRow, ArtistRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult,
-    ImportSummary, LibraryStats, Tag, TagCount, Track, TrackEdit,
+    ImportSummary, LibraryStats, Tag, TagCount, TechMetaRefreshSummary, Track, TrackEdit,
 };
 use crate::organizer;
 
@@ -67,6 +68,48 @@ pub fn import_folders(app: AppHandle, paths: Vec<String>) -> Result<ImportSummar
             );
         }
     });
+    Ok(summary)
+}
+
+/// 技術メタデータ一括再読み取りの多重起動ガード (#171)。
+static TECH_META_REFRESH_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// 実行中フラグを確実に戻すための RAII ガード (panic 時も解除する)。
+struct RunningGuard;
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        TECH_META_REFRESH_RUNNING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// 既存ライブラリの技術メタデータ (bitrate / sample rate / size / codec 等, #171) のうち
+/// 未取得 (NULL) の曲だけをファイルから読み直す。タグ由来のユーザー編集列には触れない。
+/// ファイル I/O が重いのでワーカースレッドで実行し、進捗は `tech-meta-progress`
+/// イベント (`{done, total}`) で通知する。完了後は `library-changed` を送る。
+#[tauri::command]
+pub async fn refresh_tech_metadata(app: AppHandle) -> Result<TechMetaRefreshSummary, String> {
+    if TECH_META_REFRESH_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("技術情報の再読み取りは既に実行中です".to_string());
+    }
+    let worker_app = app.clone();
+    let summary = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = RunningGuard;
+        let db = get_db(&worker_app)?;
+        let event_app = worker_app.clone();
+        importer::refresh_missing_tech_meta(&db, move |done, total| {
+            if done == 0 || done == total || done % 25 == 0 {
+                let _ = event_app.emit(
+                    "tech-meta-progress",
+                    serde_json::json!({ "done": done, "total": total }),
+                );
+            }
+        })
+    })
+    .await
+    .map_err(|e| format!("tech meta task panicked: {}", e))??;
+    if summary.updated > 0 {
+        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    }
     Ok(summary)
 }
 

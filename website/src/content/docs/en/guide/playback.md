@@ -97,7 +97,7 @@ The Crate doubles as a **design surface for a set** (nothing is written to the d
 **"Ready?"** in the Crate header checks the readiness of the Crate or the currently shown playlist on one screen.
 
 - **Blockers**: no tracks / tracks whose files are missing
-- **Warnings**: unanalyzed tracks / duplicates / over or under the target duration / Set Lint findings / auto-export status
+- **Warnings**: unanalyzed tracks / duplicates / low bitrate (lossy files under 256 kbps; lossless files are excluded) / over or under the target duration / Set Lint findings / auto-export status
 - **Snapshot** — save the set contents and the verdict at that moment and review them later (up to 20 kept).
 - **Prepare** opens the [sync dialog](../api-server/) to continue preparing tracks to take with you.
 
