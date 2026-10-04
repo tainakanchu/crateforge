@@ -2465,15 +2465,25 @@ pub async fn remote_repeat(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `apply_track_edit` の結果。
+struct TrackEditResult {
+    /// 更新後 (整理による移動後) の Track。
+    track: Track,
+    /// タグの書き込みを試みて失敗したか。
+    file_failed: bool,
+    /// 整理 (フォルダ移動 + リネーム) を試みて失敗したか。
+    relocate_failed: bool,
+}
+
 /// 1 曲に編集を適用するコア処理 (PATCH 単体・一括の両方から呼ぶ)。
-/// DB を更新し、更新後の現在値を実ファイルのタグへ書き戻す。
-/// 戻り値は `Some((更新後 Track, ファイル書き込み失敗か))`。
+/// DB を更新し、更新後の現在値を実ファイルのタグへ書き戻したうえで、
+/// 整理先ルートが設定されていれば GUI の update_track と同じ規則で移動 + リネームする。
 /// 対象が存在しない場合 (0 行更新) は `None`。
 fn apply_track_edit(
     db: &crate::db::Database,
     track_id: i64,
     edit: &crate::models::TrackEdit,
-) -> Result<Option<(Track, bool)>, ApiError> {
+) -> Result<Option<TrackEditResult>, ApiError> {
     db.update_track(track_id, edit)?;
     // 更新後の Track を取得。存在しない id は 0 行更新なので空 → None。
     let track: Track = match db.get_tracks_by_ids(&[track_id])?.into_iter().next() {
@@ -2515,28 +2525,63 @@ fn apply_track_edit(
         };
         writeback(track.location_path.as_deref(), &w)
     };
-    Ok(Some((track, file_failed)))
+
+    // 整理 (フォルダ分け + iTunes 準拠リネーム) と DB location の追従。
+    // GUI の update_track と共通の関数を使う (整理先未設定 / 無効なら移動しない)。
+    // 移動失敗は編集自体の失敗にはせず relocateFailed で知らせる。
+    let meta = crate::organizer::TrackMeta {
+        title: track.name.as_deref(),
+        artist: track.artist.as_deref(),
+        album_artist: track.album_artist.as_deref(),
+        album: track.album.as_deref(),
+        compilation: track.compilation,
+        track_number: track.track_number,
+        disc_number: track.disc_number,
+        disc_count: track.disc_count,
+    };
+    let outcome = crate::organizer::relocate_after_edit(
+        db,
+        track_id,
+        track.location_path.as_deref(),
+        &meta,
+    )?;
+    let relocate_failed = outcome == crate::organizer::RelocateOutcome::Failed;
+    // 移動した場合はレスポンスの locationPath / locationRaw を DB に書いた新パスへ揃える。
+    let mut track = track;
+    if let crate::organizer::RelocateOutcome::Moved { path, url } = outcome {
+        track.location_path = Some(path);
+        track.location_raw = Some(url);
+    }
+    Ok(Some(TrackEditResult {
+        track,
+        file_failed,
+        relocate_failed,
+    }))
 }
 
 /// `PATCH /api/tracks/:trackId` — 指定フィールドを置換 (未指定は据え置き)、
-/// 更新後の現在値を実ファイルのタグへも書き戻す。対象が存在しなければ 404。
-/// 返り値 `{ "track": Track, "fileWriteFailed": bool }`。
+/// 更新後の現在値を実ファイルのタグへも書き戻し、整理先ルートが設定されていれば
+/// GUI の編集と同じくフォルダ移動 + リネームする。対象が存在しなければ 404。
+/// 返り値 `{ "track": Track, "fileWriteFailed": bool, "relocateFailed": bool }`
+/// (`track` は移動後の locationPath / locationRaw を反映)。
 pub async fn patch_track(
     State(state): State<ApiState>,
     Path(track_id): Path<i64>,
     ExtractJson(edit): ExtractJson<crate::models::TrackEdit>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
-    let (track, file_failed) = match apply_track_edit(&db, track_id, &edit)? {
+    let r = match apply_track_edit(&db, track_id, &edit)? {
         Some(r) => r,
         None => return Err(ApiError::not_found("track not found")),
     };
-    let track_val = serde_json::to_value(&track)
+    let track_val = serde_json::to_value(&r.track)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state.notify_library_changed(None);
-    Ok(Json(
-        json!({ "track": track_val, "fileWriteFailed": file_failed }),
-    ))
+    Ok(Json(json!({
+        "track": track_val,
+        "fileWriteFailed": r.file_failed,
+        "relocateFailed": r.relocate_failed,
+    })))
 }
 
 /// `POST /api/tracks/{trackId}/rating` のボディ。
@@ -2572,8 +2617,9 @@ pub struct BulkTrackEdit {
 }
 
 /// `PATCH /api/tracks` — 複数曲に同一の編集を一括適用する。
-/// 各 trackId に対し `patch_track` と同一のロジック (DB 更新＋ファイル書き戻し) を適用。
-/// 返り値 `{ "updated": n, "fileWriteFailed": [trackId,...], "notFound": [trackId,...] }`。
+/// 各 trackId に対し `patch_track` と同一のロジック (DB 更新＋ファイル書き戻し＋整理) を適用。
+/// 返り値 `{ "updated": n, "fileWriteFailed": [trackId,...], "relocateFailed": [trackId,...],
+/// "notFound": [trackId,...] }`。
 pub async fn patch_tracks_bulk(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<BulkTrackEdit>,
@@ -2581,13 +2627,17 @@ pub async fn patch_tracks_bulk(
     let db = state.db()?;
     let mut updated = 0_i64;
     let mut file_write_failed: Vec<i64> = Vec::new();
+    let mut relocate_failed: Vec<i64> = Vec::new();
     let mut not_found: Vec<i64> = Vec::new();
     for &id in &body.track_ids {
         match apply_track_edit(&db, id, &body.edit)? {
-            Some((_, file_failed)) => {
+            Some(r) => {
                 updated += 1;
-                if file_failed {
+                if r.file_failed {
                     file_write_failed.push(id);
+                }
+                if r.relocate_failed {
+                    relocate_failed.push(id);
                 }
             }
             None => not_found.push(id),
@@ -2599,6 +2649,7 @@ pub async fn patch_tracks_bulk(
     Ok(Json(json!({
         "updated": updated,
         "fileWriteFailed": file_write_failed,
+        "relocateFailed": relocate_failed,
         "notFound": not_found,
     })))
 }

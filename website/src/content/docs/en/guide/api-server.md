@@ -52,8 +52,10 @@ It exposes a REST API for reading and writing the library, analysis data, and pl
 - `PATCH /api/tracks` (`{trackIds, edit}`) — bulk-update multiple tracks.
 - `POST /api/tracks/genre-tags/add` / `/remove` — add or remove genre tags at the end in bulk.
 
-Metadata writes, in addition to updating the DB, are **written back to the actual file's ID3 / Vorbis / MP4 tags** (tags only, without moving folders),
+Metadata writes, in addition to updating the DB, are **written back to the actual file's ID3 / Vorbis / MP4 tags**,
 and are reflected in the GUI immediately. The write-back path is shared with editing in the desktop GUI.
+When an organize folder (auto-organize) is configured, the file is also **moved and renamed** according to the edited metadata, just like editing in the GUI,
+and `locationPath` in the response points to the new path (a failed move does not fail the edit; it is reported via `relocateFailed`).
 
 **BPM** and **Key** are part of the write-back too (exactly as when editing on the desktop).
 

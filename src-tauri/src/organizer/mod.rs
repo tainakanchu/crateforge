@@ -13,8 +13,12 @@
 //!   例: `God knows...` → `God knows.._`、`e.p.` → `e.p_`。
 //!
 //! このモジュールは tauri / DB に依存しないため単体テスト可能。
+//! (例外: 編集後の移動 + DB location 追従をまとめた `edit` サブモジュールのみ DB に依存する。)
 
 use std::path::{Path, PathBuf};
+
+mod edit;
+pub use edit::{relocate_after_edit, RelocateOutcome};
 
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};

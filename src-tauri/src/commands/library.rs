@@ -250,12 +250,8 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
     organizer::write_tags_to_location(loc.as_deref(), &w);
 
     // 6. 整理 (フォルダ分け + iTunes 準拠リネーム) は整理先ルートが設定されている
-    //    ときだけ行う。未設定なら移動せずここで終了 (タグは 5 で書き戻し済み)。
-    let Some(loc) = loc else { return Ok(()) };
-    let src = Path::new(&loc);
-    if !src.exists() {
-        return Ok(());
-    }
+    //    ときだけ行う。未設定なら移動しない (タグは 5 で書き戻し済み)。
+    //    移動 + DB location 追従は HTTP API の PATCH と共通の関数で行う。
     let meta = organizer::TrackMeta {
         title: name.as_deref(),
         artist: artist.as_deref(),
@@ -266,20 +262,8 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
         disc_number,
         disc_count,
     };
-    let Some(target) = organizer::organize_target(db.organize_root().as_deref(), &meta, src) else {
-        return Ok(());
-    };
-    // 7. 新ターゲットへ移動し、DB の location を追従させる。
-    match organizer::relocate(src, &target, organizer::Mode::Move) {
-        Ok(dest) if dest != src => {
-            let dest_str = dest.to_string_lossy().to_string();
-            let url = writer::path_to_file_url(&dest_str);
-            db.set_track_location(track_id, &dest_str, &url)
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(_) => {}
-        Err(e) => eprintln!("relocate failed for {}: {}", loc, e),
-    }
+    organizer::relocate_after_edit(&db, track_id, loc.as_deref(), &meta)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
