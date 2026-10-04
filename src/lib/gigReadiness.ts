@@ -1,6 +1,7 @@
 // Gig Readiness (#122) — pure check logic for Playlist / Staging Crate.
 
 import type { Track, TrackAnalysis } from "../types";
+import { hasAnalysisVector } from "../types/analysis";
 import type { CrateAnchors, SetMeta } from "../types/setWorkspace";
 import type {
   GigCheckItem,
@@ -32,7 +33,7 @@ function isUnanalyzed(
 ): boolean {
   const a = analysis.get(track.trackId);
   if (!a) return true;
-  const emptyVector = !a.vector || a.vector.length === 0;
+  const emptyVector = !hasAnalysisVector(a);
   const noBpm = a.bpm == null || a.bpm <= 0;
   // 解析行はあるが実質未解析（vector も bpm も無い）
   if (emptyVector && noBpm) return true;

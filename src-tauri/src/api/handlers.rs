@@ -24,7 +24,7 @@ use tauri::Manager;
 
 use super::error::ApiError;
 use super::ApiState;
-use crate::analyzer::similarity::{rank_similar, SimilarOpts};
+use crate::analyzer::similarity::SimilarOpts;
 use crate::db::tracks::{AlbumInfo, ArtistInfo};
 use crate::models::{
     GenreTagCount, LibraryStats, Playlist, SimilarHit, Tag, TagCount, Track, TrackAnalysis,
@@ -1155,26 +1155,13 @@ pub async fn get_similar_tracks(
     Query(q): Query<SimilarQuery>,
 ) -> Result<Json<Vec<SimilarHit>>, ApiError> {
     let db = state.db()?;
-    // 基準曲が未解析 / ベクトル空なら類似なし。
-    let base = match db.get_analysis(track_id)? {
-        Some(b) if !b.vector.is_empty() => b,
-        _ => return Ok(Json(Vec::new())),
-    };
-    let all = db.get_all_analysis()?;
+    // 基準曲が未解析 / ベクトル空なら類似なし (similar_hits 内で判定)。
     let opts = SimilarOpts {
         bpm_tol: q.bpm_tol,
         key_compatible: q.key_compatible.unwrap_or(false),
         energy_tol: q.energy_tol,
     };
-    let ranked = rank_similar(&base, &all, &opts, q.limit.unwrap_or(25));
-
-    let mut hits = Vec::with_capacity(ranked.len());
-    for (tid, distance) in ranked {
-        if let Ok(Some(track)) = db.get_track_by_track_id(tid) {
-            hits.push(SimilarHit { track, distance });
-        }
-    }
-    Ok(Json(hits))
+    Ok(Json(db.similar_hits(track_id, &opts, q.limit.unwrap_or(25))?))
 }
 
 /// `GET /api/stats` — ライブラリ統計。

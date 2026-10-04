@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use rusqlite::{params, OptionalExtension, Result};
 
+use super::generation::{self, GenCache, GenKey};
 use super::tracks::row_to_track;
 use super::Database;
 use crate::itunes_xml::parser::RawPlaylist;
@@ -712,13 +714,6 @@ impl Database {
             );
         };
 
-        let all = self.get_all_tracks()?;
-        let amap: HashMap<i64, TrackAnalysis> = self
-            .get_all_analysis()?
-            .into_iter()
-            .map(|a| (a.track_id, a))
-            .collect();
-
         // テキスト比較の字体ゆれ吸収レベル (検索と同じ設定を共有)。
         let level = crate::text_fold::FoldLevel::from_state(
             self.get_state("search_fold_level")
@@ -726,11 +721,6 @@ impl Database {
                 .flatten()
                 .as_deref(),
         );
-
-        let mut matched: Vec<Track> = all
-            .into_iter()
-            .filter(|t| crate::smart::track_matches(t, amap.get(&t.track_id), &criteria, level))
-            .collect();
 
         // 並び替え: UI のソート優先、無ければ criteria のソート、無ければ name 昇順。
         let (field, desc) = match sort_field {
@@ -743,26 +733,100 @@ impl Database {
                 criteria.sort_desc,
             ),
         };
-        crate::smart::sort_tracks(&mut matched, &field, desc);
 
-        if let Some(lim) = criteria.limit {
-            matched.truncate(lim);
-        }
+        // 条件一致 + 並び替え + criteria.limit 適用後の track_id 列 (キャッシュ可)。
+        let ordered = self.smart_ordered_ids(playlist_id, &criteria, level, &field, desc)?;
 
         // プレイリスト内検索: 同じ DSL の結果 (track_id 集合) と積を取る。
-        if let Some(q) = query.map(str::trim).filter(|q| !q.is_empty()) {
-            let hits = self.search_track_ids(q)?;
-            matched.retain(|t| hits.contains(&t.track_id));
-        }
+        let filtered: Vec<i64>;
+        let ids: &[i64] = match query.map(str::trim).filter(|q| !q.is_empty()) {
+            Some(q) => {
+                let hits = self.search_track_ids(q)?;
+                filtered = ordered
+                    .iter()
+                    .copied()
+                    .filter(|id| hits.contains(id))
+                    .collect();
+                &filtered
+            }
+            None => &ordered,
+        };
 
         let start = offset.max(0) as usize;
-        if start >= matched.len() {
+        if start >= ids.len() {
             return Ok(Vec::new());
         }
-        let end = (start + limit.max(0) as usize).min(matched.len());
-        Ok(matched[start..end].to_vec())
+        let end = (start + limit.max(0) as usize).min(ids.len());
+        // ページ分だけ曲を引く (入力順を保つ)。
+        self.get_tracks_by_ids(&ids[start..end])
+    }
+
+    /// スマートプレイリストの「条件一致 → 並び替え → criteria.limit」後の track_id 列。
+    ///
+    /// 毎ページ全曲 + 全解析を読み直して評価していたのを、世代キー付きでキャッシュする (#213)。
+    /// キーは (DB uid, エポック, `library` 世代, criteria の JSON, 並び替え, 字体ゆれレベル)。
+    /// `library` 世代は tracks / track_analysis へのどの経路の書き込みでも SQLite トリガで
+    /// 進むので、メンバーや並び順が変わりうる変更の後は必ず再評価になる。
+    /// criteria (playlists 側) と字体ゆれ設定 (app_state) は毎回読んでキーに含める。
+    fn smart_ordered_ids(
+        &self,
+        playlist_id: i64,
+        criteria: &SmartCriteria,
+        level: crate::text_fold::FoldLevel,
+        field: &str,
+        desc: bool,
+    ) -> Result<Arc<Vec<i64>>> {
+        let compute = || -> Result<Vec<i64>> {
+            let all = self.get_all_tracks()?;
+            let analyses = self.get_all_analysis_cached()?;
+            // 同じ track_id の解析行が複数あれば後勝ち (従来の HashMap::collect と同じ)。
+            let amap: HashMap<i64, &TrackAnalysis> =
+                analyses.iter().map(|a| (a.track_id, a)).collect();
+
+            let mut matched: Vec<Track> = all
+                .into_iter()
+                .filter(|t| {
+                    crate::smart::track_matches(
+                        t,
+                        amap.get(&t.track_id).copied(),
+                        criteria,
+                        level,
+                    )
+                })
+                .collect();
+            crate::smart::sort_tracks(&mut matched, field, desc);
+            if let Some(lim) = criteria.limit {
+                matched.truncate(lim);
+            }
+            Ok(matched.into_iter().map(|t| t.track_id).collect())
+        };
+
+        let Some(gen) = generation::current(&self.conn, "library") else {
+            return Ok(Arc::new(compute()?));
+        };
+        let key = SmartCacheKey {
+            gen,
+            criteria_json: serde_json::to_string(criteria).unwrap_or_default(),
+            field: field.to_string(),
+            desc,
+            level,
+        };
+        SMART_IDS_CACHE.get_or_try_insert((gen.uid, playlist_id), key, compute)
     }
 }
+
+/// [`Database::smart_ordered_ids`] のキャッシュの有効性キー。
+#[derive(PartialEq)]
+struct SmartCacheKey {
+    gen: GenKey,
+    criteria_json: String,
+    field: String,
+    desc: bool,
+    level: crate::text_fold::FoldLevel,
+}
+
+/// スロットは (DB uid, playlist_id)。開いているスマートプレイリストのページングが主用途なので小さめ。
+static SMART_IDS_CACHE: GenCache<(i64, i64), SmartCacheKey, Vec<i64>> = GenCache::new(16);
 
 #[cfg(test)]
 mod tests {
@@ -891,5 +955,190 @@ mod tests {
             db.search_tracks("Song", 100, 0, None, None).unwrap().len(),
             1
         );
+    }
+
+    /// 旧実装 (毎回 全曲 + 全解析 を読んで評価) の参照版。キャッシュ版と結果を突き合わせる。
+    fn smart_reference(
+        db: &Database,
+        playlist_id: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Vec<i64> {
+        let criteria = db.get_smart_criteria(playlist_id).unwrap().unwrap();
+        let all = db.get_all_tracks().unwrap();
+        let amap: HashMap<i64, TrackAnalysis> = db
+            .get_all_analysis()
+            .unwrap()
+            .into_iter()
+            .map(|a| (a.track_id, a))
+            .collect();
+        let level = crate::text_fold::FoldLevel::from_state(
+            db.get_state("search_fold_level").ok().flatten().as_deref(),
+        );
+        let mut matched: Vec<Track> = all
+            .into_iter()
+            .filter(|t| crate::smart::track_matches(t, amap.get(&t.track_id), &criteria, level))
+            .collect();
+        let (field, desc) = match sort_field {
+            Some(f) => (f.to_string(), matches!(sort_order, Some("desc"))),
+            None => (
+                criteria.sort_by.clone().unwrap_or_else(|| "name".to_string()),
+                criteria.sort_desc,
+            ),
+        };
+        crate::smart::sort_tracks(&mut matched, &field, desc);
+        if let Some(lim) = criteria.limit {
+            matched.truncate(lim);
+        }
+        matched.into_iter().map(|t| t.track_id).collect()
+    }
+
+    /// キャッシュ版をページ単位で全部読み、連結した track_id 列。
+    fn smart_paged(
+        db: &Database,
+        playlist_id: i64,
+        page: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Vec<i64> {
+        let mut out = Vec::new();
+        let mut offset = 0;
+        loop {
+            let got = db
+                .get_smart_playlist_tracks_filtered(
+                    playlist_id,
+                    None,
+                    page,
+                    offset,
+                    sort_field,
+                    sort_order,
+                )
+                .unwrap();
+            if got.is_empty() {
+                break;
+            }
+            offset += got.len() as i64;
+            out.extend(got.into_iter().map(|t| t.track_id));
+        }
+        out
+    }
+
+    /// スマートプレイリストのキャッシュ (#213): ページングの連結結果が旧実装と一致し、
+    /// メンバー / 並び順が変わる書き込み (曲の編集・解析の更新・Key 上書き・削除・追加・
+    /// criteria の変更・字体ゆれ設定の変更) の後は必ず再評価されること。
+    #[test]
+    fn smart_playlist_cache_matches_reference_and_invalidates() {
+        use crate::models::{SmartCriteria, SmartOp, SmartRule};
+        let db = playlist_search_db();
+        db.conn
+            .execute_batch(
+                "UPDATE tracks SET persistent_id = 'P' || track_id;
+                 INSERT INTO tracks (track_id, persistent_id, name, artist, genre, rating, file_exists)
+                 VALUES (5,'P5','Around The World','Daft Punk','House',40,1),
+                        (6,'P6','Xtal','Aphex Twin','Ambient',100,1);
+                 INSERT INTO track_analysis (persistent_id, track_id, version, energy, key_camelot)
+                 VALUES ('P1',1,2,0.9,'8A'), ('P3',3,2,0.2,'9A'), ('P5',5,2,0.7,'8A');",
+            )
+            .unwrap();
+        let rule = |field: &str, op: SmartOp, value: &str| SmartRule {
+            field: field.to_string(),
+            op,
+            value: value.to_string(),
+        };
+        let mut criteria = SmartCriteria {
+            match_all: false,
+            rules: vec![
+                rule("genre", SmartOp::Is, "House"),
+                rule("energy", SmartOp::Gte, "0.5"),
+            ],
+            limit: None,
+            sort_by: Some("rating".to_string()),
+            sort_desc: true,
+        };
+        db.set_smart_criteria(10, &criteria).unwrap();
+
+        let check = |db: &Database| {
+            for (f, o) in [(None, None), (Some("name"), Some("asc")), (Some("artist"), Some("desc"))] {
+                let want = smart_reference(db, 10, f, o);
+                for page in [1, 2, 100] {
+                    assert_eq!(smart_paged(db, 10, page, f, o), want, "page={page} sort={f:?}");
+                }
+            }
+            smart_reference(db, 10, None, None)
+        };
+        let members = |db: &Database| {
+            let mut v = check(db);
+            v.sort_unstable();
+            v
+        };
+
+        assert_eq!(members(&db), vec![1, 3, 4, 5]);
+
+        // 曲の編集でメンバーが変わる (genre を外す → energy 条件も無いので消える)。
+        db.conn
+            .execute("UPDATE tracks SET genre = 'Techno' WHERE track_id = 4", [])
+            .unwrap();
+        assert_eq!(members(&db), vec![1, 3, 5]);
+
+        // 並び順に効く列 (rating) の更新。
+        db.conn
+            .execute("UPDATE tracks SET rating = 100 WHERE track_id = 5", [])
+            .unwrap();
+        check(&db);
+
+        // 解析の更新 (energy) でメンバーが増える: Aphex Twin (2) が energy で入る。
+        db.upsert_analysis(
+            "P2",
+            &TrackAnalysis {
+                track_id: 2,
+                version: 2,
+                analyzed_at: "2026-01-01".into(),
+                bpm: None,
+                key_camelot: None,
+                key_name: None,
+                key_camelot_user: None,
+                energy: Some(0.8),
+                loudness_lufs: None,
+                replaygain_db: None,
+                vector: vec![],
+                peaks: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(members(&db), vec![1, 2, 3, 5]);
+
+        // criteria の変更 (playlists 側の書き込み) も反映される。
+        criteria.rules.push(rule("key", SmartOp::Is, "8A"));
+        criteria.match_all = true;
+        criteria.rules.remove(1);
+        db.set_smart_criteria(10, &criteria).unwrap();
+        assert_eq!(members(&db), vec![1, 5]);
+
+        // Key 上書き (tracks.key_camelot_user) で実効キーが変わる。
+        db.conn
+            .execute("UPDATE tracks SET key_camelot_user = '8A' WHERE track_id = 3", [])
+            .unwrap();
+        assert_eq!(members(&db), vec![1, 3, 5]);
+
+        // 削除 / 追加。
+        super::super::tracks::delete_track_cascade(&db.conn, 5).unwrap();
+        assert_eq!(members(&db), vec![1, 3]);
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, persistent_id, name, genre, key_camelot_user, file_exists)
+                 VALUES (7,'P7','New','House','8A',1)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(members(&db), vec![1, 3, 7]);
+
+        // limit 付き (並び替え後に切る)。
+        criteria.limit = Some(2);
+        db.set_smart_criteria(10, &criteria).unwrap();
+        assert_eq!(check(&db).len(), 2);
+
+        // 字体ゆれ設定 (app_state) の変更もキーに入っている。
+        db.set_state("search_fold_level", "0").unwrap();
+        check(&db);
     }
 }
