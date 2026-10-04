@@ -52,8 +52,10 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 - `PATCH /api/tracks`（`{trackIds, edit}`） — 多曲一次更新。
 - `POST /api/tracks/genre-tags/add` / `/remove` — 對類型標籤在尾端批次增減。
 
-中繼資料的寫入除了更新 DB 之外，還會 **寫回實際檔案的 ID3 / Vorbis / MP4 標籤**（不移動資料夾，僅更新標籤），
+中繼資料的寫入除了更新 DB 之外，還會 **寫回實際檔案的 ID3 / Vorbis / MP4 標籤**，
 並即時反映到 GUI。寫回的處理與桌面 GUI 的編輯共用同一條路徑。
+若已設定整理目標資料夾（自動整理），會與 GUI 編輯相同，依編輯後的中繼資料 **移動資料夾並重新命名**，
+回應中的 `locationPath` 即為移動後的路徑（移動失敗時編輯本身仍視為成功，並以 `relocateFailed` 告知）。
 
 寫回的內容也包含 **BPM** 與 **Key**（與桌面端的編輯相同）。
 

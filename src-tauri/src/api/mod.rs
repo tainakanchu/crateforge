@@ -1692,6 +1692,66 @@ mod tests {
         assert_eq!(track["genre"], "Disco Funk");
     }
 
+    // ===== メタデータ書き込み: 整理先が設定されていれば PATCH でも移動 + リネーム =====
+    // GUI の update_track と同じく、編集後のメタデータで整理先へ移動し、
+    // レスポンスの locationPath / locationRaw も新パスになる。単体・一括の両方を確認する。
+    #[tokio::test]
+    async fn case_patch_relocates_when_organize_root_set() {
+        let (dir, app) = setup();
+        let root = dir.path().join("Music");
+        let src_dir = root.join("Unknown Artist").join("Unknown Album");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src1 = src_dir.join("01 Track 01.mp3");
+        let src2 = src_dir.join("02 Track 02.mp3");
+        std::fs::write(&src1, b"dummy").unwrap();
+        std::fs::write(&src2, b"dummy").unwrap();
+        {
+            let db = crate::db::Database::open(dir.path()).unwrap();
+            db.set_state("library_root", &root.to_string_lossy()).unwrap();
+            for (id, p) in [(1, &src1), (2, &src2)] {
+                let p = p.to_string_lossy().to_string();
+                let url = crate::itunes_xml::writer::path_to_file_url(&p);
+                db.set_track_location(id, &p, &url).unwrap();
+            }
+        }
+
+        // 単体 PATCH。
+        let edit = json!({
+            "name": "Song",
+            "albumArtist": "Artist",
+            "album": "Album",
+            "trackNumber": 3
+        });
+        let (status, patched) = req(app.clone(), "PATCH", "/api/tracks/1", Some(edit)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(patched["relocateFailed"], false);
+        let expected1 = root.join("Artist").join("Album").join("03 Song.mp3");
+        assert!(expected1.exists());
+        assert!(!src1.exists());
+        assert_eq!(
+            patched["track"]["locationPath"],
+            expected1.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            patched["track"]["locationRaw"],
+            crate::itunes_xml::writer::path_to_file_url(&expected1.to_string_lossy())
+        );
+
+        // 一括 PATCH。
+        let (status, body) = req(
+            app,
+            "PATCH",
+            "/api/tracks",
+            Some(json!({ "trackIds": [2], "edit": { "albumArtist": "Artist", "album": "Album" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["relocateFailed"], json!([]));
+        // name は seed の "Midnight"、トラック番号なし。
+        assert!(root.join("Artist").join("Album").join("Midnight.mp3").exists());
+        assert!(!src2.exists());
+    }
+
     // ===== メタデータ書き込み: PATCH で rating 置換 (#39-7) =====
     #[tokio::test]
     async fn case_patch_rating() {
