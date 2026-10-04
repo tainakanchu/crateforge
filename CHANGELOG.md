@@ -10,6 +10,35 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.13.0] - 2026-10-05
+
+### 日本語
+
+#### デスクトップ
+- **技術メタ情報の列**: ビットレート / サンプルレート / ビット深度 / チャンネル数 / ファイルサイズ / コーデック（m4a は ALAC / AAC を判別）を取り込み時に記録し、トラック一覧の列・ソート・Smart Playlist の条件に使えるように。Gig Readiness で低ビットレート（非可逆 256kbps 未満）を警告。既存の曲は設定のバックアップ欄から空欄だけをまとめて読み取れる。iTunes XML エクスポートにも出力。(#194)
+- **Key の表記切替と手動上書き**: 設定 → 一般で Key の表記を Camelot / Open Key / Classic から選べるように。Track Info で Key を手動で上書きでき（再解析しても消えない）、検索・Smart Playlist・Similar・Set Lint・ファイルタグの書き戻しに反映される。検索の `key:` / `key:compat:` は `1m` や `F#m` のような Open Key / Classic 表記でも指定できる。(#194, #198)
+- **半星レーティング**: ★ を 0.5 刻みで付けられるように（星の左半分クリック、Triage や右クリックメニューでは `Shift+1–5`）。検索 `rating:3.5` や `rating:>=3.5` にも対応。Smart Playlist の rating 条件は半星で比較するようになり、「rating is 3」は 3.5★ に一致しなくなった。(#200)
+- **再生キューと再生位置を記憶**: 終了時の再生キュー・曲・再生位置・シャッフル / リピート / 音量を保存し、次回起動時に一時停止状態で復元するように。(#200)
+- **出力デバイスの選択**: 設定 → 一般で再生に使うオーディオデバイスを選べるように。再生中に切り替えても曲と位置はそのまま。デバイスが外れたときはシステム既定に切り替えて通知し、「システム既定」選択時は OS の既定デバイスの変更に追従する。(#202)
+- **CD 取り込みの進捗表示と完了音**: 取り込み中は画面右下に進捗カード（全体の進捗バー・何曲目か・曲名・読み取り中 / エンコード中）を表示し、右ペインを閉じていても見えるように。完了・失敗時に通知音を鳴らす（設定 → 一般でオフにできる）。(#206)
+- **API で編集した曲も整理先へ移動するように**: LAN API（`PATCH /api/tracks`）でメタデータを編集したとき、アプリでの編集と同じく整理先フォルダへの移動とリネームを行うように。CD 取り込みで曲名が無かった曲を API から直すと `Unknown Artist/Unknown Album` に残ったままになる問題を修正。(#204)
+- **整理先フォルダの自動検出を修正**: ライブラリに Podcasts などの曲が少しあるだけで、整理先が `iTunes Media\Music` ではなく一つ上の `iTunes Media` と推定され、編集・取り込みした曲がそこへ置かれてしまう問題を修正。(#205)
+- **その他の修正**: 曲を削除したときにタグの紐付けも消えるように。`tag:` 検索で大文字・小文字を区別しないように。(#194)
+
+### English
+
+#### Desktop
+- **Technical metadata columns**: bitrate / sample rate / bit depth / channels / file size / codec (m4a is identified as ALAC or AAC) are recorded on import and can be used as track list columns, for sorting, and in Smart Playlist conditions. Gig Readiness warns about low bitrate (lossy below 256 kbps). For existing tracks, a button in the Settings backup section reads only the blank fields in bulk. Also written to the iTunes XML export. (#194)
+- **Key notation switch and manual override**: choose Camelot / Open Key / Classic for Key notation in Settings → General. Key can be overridden manually in Track Info (and survives re-analysis), and the override is reflected in search, Smart Playlists, Similar, Set Lint, and file tag write-back. Search `key:` / `key:compat:` also accept Open Key / Classic notation such as `1m` or `F#m`. (#194, #198)
+- **Half-star ratings**: ratings can be set in 0.5 steps (click the left half of a star; `Shift+1–5` in Triage and the context menu). Search supports `rating:3.5` and `rating:>=3.5`. Smart Playlist rating conditions now compare in half stars, so "rating is 3" no longer matches 3.5★. (#200)
+- **Remember the play queue and position**: the play queue, current track, playback position, and shuffle / repeat / volume are saved on exit and restored in a paused state on the next launch. (#200)
+- **Output device selection**: choose the audio device used for playback in Settings → General. Switching during playback keeps the current track and position. If a device is unplugged, playback falls back to the system default with a notification, and with "System default" selected it follows changes to the OS default device. (#202)
+- **CD import progress and completion sound**: while importing, a progress card at the bottom right (overall progress bar, track number, title, reading / encoding) stays visible even when the right pane is closed. A sound plays on completion or failure (can be turned off in Settings → General). (#206)
+- **Tracks edited via the API are moved to the organize folder too**: when metadata is edited through the LAN API (`PATCH /api/tracks`), tracks are now moved and renamed into the organize folder just like edits in the app. Fixes tracks imported from CD without titles staying in `Unknown Artist/Unknown Album` after being fixed via the API. (#204)
+- **Fixed automatic detection of the organize folder**: a library with only a few tracks such as Podcasts caused the organize folder to be guessed as the parent `iTunes Media` instead of `iTunes Media\Music`, so edited and imported tracks were placed there. (#205)
+- **Other fixes**: deleting a track now also removes its tag associations. `tag:` search is now case-insensitive. (#194)
+
+
 ## [v0.12.0] - 2026-10-01
 
 <!-- [installer-required] -->
