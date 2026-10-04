@@ -79,7 +79,7 @@ fn seconds_since_modified(path: &Path) -> Option<u64> {
 /// 書き出し、直近 [`DEFAULT_KEEP`] 件だけ残してローテーションする。ただし
 /// 直近のバックアップが [`AUTO_BACKUP_MIN_INTERVAL_SECS`] 未満しか経っていなければ
 /// 何もせず、その既存バックアップのパスを返す (自動バックアップを軽く保つため)。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn backup_library(app: AppHandle, dest: Option<String>) -> Result<String, String> {
     let db = get_db(&app)?;
     match dest {
@@ -164,18 +164,22 @@ pub fn restore_library(app: AppHandle, src: String) -> Result<bool, String> {
     let _ = std::fs::remove_file(app_dir.join("library.db-wal"));
     let _ = std::fs::remove_file(app_dir.join("library.db-shm"));
 
+    // 5. 復元した DB は古いスキーマかもしれないので、次の open で
+    //    マイグレーションをやり直させる (open はプロセス内で 1 パス 1 回しか migrate しない)。
+    crate::db::forget_migrated(&app_dir);
+
     Ok(true)
 }
 
 /// 現在の `library.db` の整合性チェック結果を返す。`["ok"]` なら健全。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn check_library_integrity(app: AppHandle) -> Result<Vec<String>, String> {
     let db = get_db(&app)?;
     db.integrity_check().map_err(|e| e.to_string())
 }
 
 /// 現在の `library.db` を VACUUM で最適化する。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn vacuum_library(app: AppHandle) -> Result<(), String> {
     let db = get_db(&app)?;
     db.vacuum().map_err(|e| e.to_string())

@@ -8,14 +8,38 @@ pub mod sync;
 pub mod tags;
 pub mod tracks;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, Result};
 
 static PERSISTENT_ID_NONCE: AtomicU64 = AtomicU64::new(0);
 pub(crate) const MAX_CONSTRAINT_ATTEMPTS: usize = 8;
+
+/// このプロセス内でスキーマ作成 + マイグレーション済みの DB ファイルパス。
+/// 各コマンドが都度 `Database::open` する設計なので、毎回 migrate すると
+/// 全件スキャンを含む確認処理がリクエストごとに走ってしまう (#213)。
+/// 1 パスにつき初回の open だけ migrate し、以降は省く。
+/// ロックは migrate 中も保持し、初回 open が並行しても二重に migrate しないようにする。
+static MIGRATED_PATHS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn migrated_paths() -> &'static Mutex<HashSet<String>> {
+    MIGRATED_PATHS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// `app_dir` の DB を「未マイグレーション」扱いに戻す。DB ファイルを
+/// 差し替えた (バックアップからの復元など) 後に呼び、次の open で
+/// 古いスキーマにもマイグレーションが走るようにする。
+pub fn forget_migrated(app_dir: &Path) {
+    let key = app_dir.join("library.db").to_string_lossy().to_string();
+    migrated_paths()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&key);
+}
 
 pub struct Database {
     pub(crate) conn: Connection,
@@ -31,17 +55,37 @@ impl Database {
         let conn = Connection::open(&db_path)?;
         // busy_timeout: バックグラウンド解析ワーカと UI コマンドが別コネクションで
         // 同時アクセスしても SQLITE_BUSY で即失敗しないように待つ。
+        // temp_store / cache_size: ソートや一時テーブルをメモリ上で行い、ページキャッシュを
+        // 約 32MB (負値は KiB 指定) に広げる。いずれもコネクション単位の設定。
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;",
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; \
+             PRAGMA temp_store=MEMORY; PRAGMA cache_size=-32000;",
         )?;
         let db = Database {
             conn,
             path: path_str,
         };
         register_functions(&db.conn)?;
-        schema::create_tables(&db.conn)?;
-        migrate(&db.conn)?;
+        {
+            let mut done = migrated_paths().lock().unwrap_or_else(|e| e.into_inner());
+            if !done.contains(&db.path) {
+                schema::create_tables(&db.conn)?;
+                migrate(&db.conn)?;
+                // 失敗時は `?` で抜けるので記録されず、次の open で再試行される。
+                done.insert(db.path.clone());
+            }
+        }
         Ok(db)
+    }
+
+    /// テスト用: このパスがマイグレーション済みとして記録されているか。
+    #[cfg(test)]
+    fn is_marked_migrated(app_dir: &Path) -> bool {
+        let key = app_dir.join("library.db").to_string_lossy().to_string();
+        migrated_paths()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&key)
     }
 
     /// エクスポート用の読み取りスナップショットトランザクションを開始する。
@@ -1823,5 +1867,42 @@ mod tests {
         let t = db.get_track_by_track_id(1).unwrap().unwrap();
         assert_eq!(t.bitrate_kbps, Some(256));
         assert_eq!(t.sample_rate_hz, Some(44_100));
+    }
+
+    fn table_exists(db: &Database, name: &str) -> bool {
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        count > 0
+    }
+
+    #[test]
+    fn open_migrates_once_per_path_until_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // 初回 open でスキーマ作成 + マイグレーションされ、記録される。
+        let db = Database::open(dir.path()).unwrap();
+        assert!(Database::is_marked_migrated(dir.path()));
+        assert!(table_exists(&db, "recent_tracks"));
+
+        // 2 回目以降の open では create_tables / migrate を省くので、
+        // 外から消したテーブルは再作成されない。
+        db.conn.execute_batch("DROP TABLE recent_tracks;").unwrap();
+        drop(db);
+        let db = Database::open(dir.path()).unwrap();
+        assert!(!table_exists(&db, "recent_tracks"));
+        drop(db);
+
+        // 復元などで forget_migrated した後の open では再びマイグレーションが走る。
+        forget_migrated(dir.path());
+        assert!(!Database::is_marked_migrated(dir.path()));
+        let db = Database::open(dir.path()).unwrap();
+        assert!(Database::is_marked_migrated(dir.path()));
+        assert!(table_exists(&db, "recent_tracks"));
     }
 }

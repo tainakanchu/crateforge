@@ -558,9 +558,25 @@ function resyncSort(state: {
   return { sortField: resolved.field, sortOrder: resolved.order };
 }
 
+/**
+ * 再生状態ポーリング (250ms) で値が変わっていなければ set を省くための比較。
+ * PlaybackState はプリミティブのみなのでフィールド単位で比較すれば十分。
+ */
+function samePlayback(a: PlaybackState, b: PlaybackState): boolean {
+  return (
+    a.isPlaying === b.isPlaying &&
+    a.currentTrackId === b.currentTrackId &&
+    a.positionMs === b.positionMs &&
+    a.durationMs === b.durationMs &&
+    a.shuffle === b.shuffle &&
+    a.repeat === b.repeat &&
+    a.volume === b.volume
+  );
+}
+
 export const useStore = create<AppState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       viewMode: "library",
       selectedPlaylistId: null,
       searchQuery: "",
@@ -676,7 +692,12 @@ export const useStore = create<AppState>()(
         }),
       setIsLoading: (loading) => set({ isLoading: loading }),
       setHasMore: (hasMore) => set({ hasMore }),
-      setPlayback: (playback) => set({ playback }),
+      // 一時停止・停止中は毎回同じ値が返るので、変化がなければ set しない
+      // （全体再レンダーと persist の書き込みを避ける）。
+      setPlayback: (playback) => {
+        if (samePlayback(get().playback, playback)) return;
+        set({ playback });
+      },
       setSelectedTrackIds: (ids) => set({ selectedTrackIds: ids }),
       toggleTrackSelection: (id, additive) =>
         set((state) => {

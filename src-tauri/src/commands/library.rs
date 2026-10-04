@@ -39,7 +39,7 @@ pub fn import_library(app: AppHandle, xml_path: String) -> Result<ImportResult, 
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_library(app: AppHandle, output_path: String) -> Result<ExportResult, String> {
     let db = get_db(&app)?;
     writer::export_library(&db, &output_path)
@@ -113,7 +113,7 @@ pub async fn refresh_tech_metadata(app: AppHandle) -> Result<TechMetaRefreshSumm
     Ok(summary)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_tracks(
     app: AppHandle,
     limit: Option<i64>,
@@ -131,7 +131,7 @@ pub fn get_tracks(
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_tracks(
     app: AppHandle,
     query: String,
@@ -153,13 +153,13 @@ pub fn search_tracks(
 
 /// track_id 列を入力順のまま Track へ解決する。見つからない ID はスキップ。
 /// Up Next がフロントのロード済みページ (500件) を超える曲も表示できるようにするためのもの。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_tracks_by_ids(app: AppHandle, track_ids: Vec<i64>) -> Result<Vec<Track>, String> {
     let db = get_db(&app)?;
     db.get_tracks_by_ids(&track_ids).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_library_stats(app: AppHandle) -> Result<LibraryStats, String> {
     let db = get_db(&app)?;
     db.library_stats().map_err(|e| e.to_string())

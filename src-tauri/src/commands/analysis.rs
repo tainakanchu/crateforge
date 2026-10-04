@@ -33,7 +33,7 @@ pub fn get_analysis_status(app: AppHandle) -> Result<AnalysisStatus, String> {
 }
 
 /// 解析済みの全曲を返す (フロントが key/energy 列をまとめて引く / 類似度の母集合)。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_all_analyses(app: AppHandle) -> Result<Vec<TrackAnalysis>, String> {
     let db = open_db(&app)?;
     db.get_all_analysis().map_err(|e| e.to_string())
@@ -42,7 +42,7 @@ pub fn get_all_analyses(app: AppHandle) -> Result<Vec<TrackAnalysis>, String> {
 /// `track_id` に似た曲を距離昇順で返す。
 /// `bpm_tol` (base 比の割合) / `key_compatible` (Camelot 互換) / `energy_tol` で絞り込み可能。
 /// 基準曲が未解析なら空を返す。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_similar(
     app: AppHandle,
     track_id: i64,
