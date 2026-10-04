@@ -1830,8 +1830,9 @@ impl Database {
     }
 
     /// 既存トラックの `location_path` から共通の親フォルダ(= ライブラリルート)を推定する。
-    /// 実在ファイルのみ対象。曲数が十分にあれば、各アーティスト/アルバムで分岐するため
-    /// 共通プレフィックスは音楽ルート(例 `…/iTunes Media/Music`)に収束する。
+    /// 実在ファイルのみ対象。全パスの厳密な共通プレフィックスではなく、大半(95%)が属する
+    /// 支配的ディレクトリを採用するので、`Podcasts` などの少数の外れ値があっても
+    /// 音楽ルート(例 `…/iTunes Media/Music`)に収束する。詳細は `common_dir_prefix`。
     /// 推定できない(曲が少ない/共通部が短すぎる)場合は `None`。
     pub fn detect_library_root(&self) -> Result<Option<String>> {
         let mut stmt = self.conn.prepare(
@@ -1860,28 +1861,70 @@ impl Database {
     }
 }
 
-/// パス群の最長共通文字プレフィックスを取り、最後のパス区切り(`/` か `\`)で切って
-/// 共通ディレクトリを返す。2件未満・共通ディレクトリが短すぎ(<3)・区切り無しは `None`。
-/// Windows(`\`)/Unix(`/`) 双方を扱える。
+/// ライブラリルート推定で、ディレクトリを 1 段深く降りるために必要な「支配的な子」の
+/// 最低占有率(%)。全パスのうちこの割合以上が同じ子ディレクトリに属すれば降りる。
+const ROOT_DOMINANT_PERCENT: usize = 98;
+
+/// パス群からライブラリルート(ディレクトリ)を推定する。`/` と `\` の双方を区切りとして扱う。
+///
+/// ルートから 1 階層ずつ降りていき、全パスの `ROOT_DOMINANT_PERCENT`% 以上が同じ子
+/// ディレクトリに属する間だけ降りる。
+///
+/// 厳密な最長共通プレフィックスだと、`iTunes Media\Music` 配下 36,507 曲に対し
+/// `iTunes Media\Podcasts` や誤配置のアーティストフォルダが少数あるだけで `iTunes Media` に
+/// 後退してしまう。支配率で判定することで、こうした少数の外れ値を無視できる。
+///
+/// 既知の限界: 1 アーティストがライブラリ全体の 98% 以上を占めるような極端なライブラリでは、
+/// そのアーティストフォルダまで降りてしまう(許容)。
+///
+/// 2件未満・推定ディレクトリが短すぎ(<3)・区切り無しは `None`。
 fn common_dir_prefix(paths: &[String]) -> Option<String> {
     let paths: Vec<&String> = paths.iter().filter(|p| !p.is_empty()).collect();
     if paths.len() < 2 {
         return None;
     }
-    let mut prefix: String = paths[0].clone();
-    for p in &paths[1..] {
-        let n = prefix
-            .chars()
-            .zip(p.chars())
-            .take_while(|(a, b)| a == b)
-            .count();
-        prefix = prefix.chars().take(n).collect();
-        if prefix.is_empty() {
-            return None;
+    // 各パスをディレクトリ成分に分解 (最後のファイル名成分は除く)。
+    let dirs: Vec<Vec<&str>> = paths
+        .iter()
+        .map(|p| {
+            let mut comps: Vec<&str> = p.split(['/', '\\']).collect();
+            comps.pop();
+            comps
+        })
+        .collect();
+    let total = dirs.len();
+
+    // 現在のディレクトリ(深さ depth)まで一致している「支配グループ」のインデックス。
+    let mut cur: Vec<usize> = (0..total).collect();
+    let mut depth = 0usize;
+    loop {
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for &i in &cur {
+            if let Some(c) = dirs[i].get(depth) {
+                *counts.entry(*c).or_insert(0) += 1;
+            }
         }
+        // 同数のときも結果が一定になるよう、占有数→名前の順で最大を選ぶ。
+        let Some((&top, &top_n)) = counts
+            .iter()
+            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+        else {
+            break;
+        };
+        if top_n * 100 < ROOT_DOMINANT_PERCENT * total {
+            break;
+        }
+        cur.retain(|&i| dirs[i].get(depth) == Some(&top));
+        depth += 1;
     }
-    let cut = prefix.rfind(['/', '\\'])?;
-    let dir = &prefix[..cut];
+    if depth == 0 {
+        return None;
+    }
+    // 支配グループの先頭パスから、depth 個目の成分の終端までを元の区切り文字ごと切り出す
+    // (区切りは 1 バイトなので、成分長の和 + 区切り数で終端位置が決まる)。
+    let first = paths[cur[0]];
+    let end: usize = dirs[cur[0]][..depth].iter().map(|c| c.len()).sum::<usize>() + (depth - 1);
+    let dir = &first[..end];
     if dir.len() < 3 {
         return None;
     }
@@ -2918,6 +2961,86 @@ mod tests {
         assert_eq!(
             common_dir_prefix(&paths).as_deref(),
             Some(r"C:\Users\me\Music\iTunes\iTunes Media\Music")
+        );
+    }
+
+    #[test]
+    fn outlier_podcasts_does_not_pull_root_up() {
+        let mut paths = Vec::new();
+        for i in 0..400 {
+            paths.push(format!(
+                r"C:\Users\me\Music\iTunes\iTunes Media\Music\Artist{}\Album\01.mp3",
+                i % 40
+            ));
+        }
+        for i in 0..5 {
+            paths.push(format!(
+                r"C:\Users\me\Music\iTunes\iTunes Media\Podcasts\Show\ep{i}.mp3"
+            ));
+        }
+        assert_eq!(
+            common_dir_prefix(&paths).as_deref(),
+            Some(r"C:\Users\me\Music\iTunes\iTunes Media\Music")
+        );
+    }
+
+    #[test]
+    fn all_in_one_root_and_mixed_separators() {
+        // 全曲が 1 ルート配下 (Unix)。
+        let p: Vec<String> = (0..30)
+            .map(|i| format!("/m/lib/A{}/B/1.mp3", i % 10))
+            .collect();
+        assert_eq!(common_dir_prefix(&p).as_deref(), Some("/m/lib"));
+        // 区切り文字が混在していても成分で比較する。
+        let p = vec![
+            r"C:\Music/Alpha\a.mp3".to_string(),
+            r"C:\Music\Beta/b.mp3".to_string(),
+        ];
+        assert_eq!(common_dir_prefix(&p).as_deref(), Some(r"C:\Music"));
+    }
+
+    #[test]
+    fn small_libraries_use_strict_prefix() {
+        // 小規模では 1 件の外れ値も 5% を超えるので厳密な共通プレフィックスと同じ。
+        let p = vec![
+            "/lib/Music/A/1.mp3".to_string(),
+            "/lib/Music/B/2.mp3".to_string(),
+            "/lib/Podcasts/C/3.mp3".to_string(),
+        ];
+        assert_eq!(common_dir_prefix(&p).as_deref(), Some("/lib"));
+    }
+
+    #[test]
+    fn dominant_artist_does_not_descend_into_artist_dir() {
+        // 1 アーティストが多数派でも 98% 未満 (100/105 = 95.2%) ならアーティストフォルダには降りない。
+        let mut p: Vec<String> = (0..100)
+            .map(|i| format!("/lib/Music/Big/Album{}/{i}.mp3", i % 5))
+            .collect();
+        for a in ["A", "B", "C", "D", "E"] {
+            p.push(format!("/lib/Music/{a}/Al/1.mp3"));
+        }
+        assert_eq!(common_dir_prefix(&p).as_deref(), Some("/lib/Music"));
+    }
+
+    #[test]
+    fn misplaced_artist_dirs_and_podcasts_are_ignored() {
+        // 実ライブラリ相当: Music 配下が大半で、iTunes Media 直下に誤配置のアーティスト
+        // フォルダ 6 個 (各 3 曲) と Podcasts 5 曲がある。
+        let base = r"C:\Users\me\Music\iTunes\iTunes Media";
+        let mut paths: Vec<String> = (0..2000)
+            .map(|i| format!(r"{base}\Music\Artist{}\Album\{i}.mp3", i % 100))
+            .collect();
+        for a in 0..6 {
+            for t in 0..3 {
+                paths.push(format!(r"{base}\Stray{a}\Album\{t}.mp3"));
+            }
+        }
+        for i in 0..5 {
+            paths.push(format!(r"{base}\Podcasts\Show\ep{i}.mp3"));
+        }
+        assert_eq!(
+            common_dir_prefix(&paths).as_deref(),
+            Some(format!(r"{base}\Music").as_str())
         );
     }
 
