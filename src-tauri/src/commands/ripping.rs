@@ -5,10 +5,31 @@ use crate::commands::library::open_db;
 use crate::metadata::{disc_id::calculate_musicbrainz_id, musicbrainz};
 use crate::models::{DiscToc, ReleaseCandidate, RipRequest};
 
+// TOC 読み取りやドライブ列挙はドライブの回転待ちで数秒ブロックし得るので、
+// メインスレッドを塞がないよう async コマンド + spawn_blocking で実行する。
 #[tauri::command]
-pub fn detect_disc(device: Option<String>) -> Result<DiscToc, String> {
+pub async fn detect_disc(device: Option<String>) -> Result<DiscToc, String> {
     let dev = device.unwrap_or_else(default_device);
-    cd_ripper::detect_disc(&dev)
+    tauri::async_runtime::spawn_blocking(move || cd_ripper::detect_disc(&dev))
+        .await
+        .map_err(|e| format!("detect task panicked: {}", e))?
+}
+
+/// ディスクが入っているかの軽量チェック (ポーリング用)。失敗時は false。
+#[tauri::command]
+pub async fn disc_present(device: Option<String>) -> bool {
+    let dev = device.unwrap_or_else(default_device);
+    tauri::async_runtime::spawn_blocking(move || cd_ripper::disc_present(&dev))
+        .await
+        .unwrap_or(false)
+}
+
+/// 接続されている CD ドライブの一覧 (Windows: `["E:"]` など)。失敗時は空。
+#[tauri::command]
+pub async fn list_cd_drives() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(cd_ripper::list_cd_drives)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]

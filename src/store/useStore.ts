@@ -126,6 +126,8 @@ interface PersistedSettings {
   autoBackupEnabled: boolean;
   ripFormat: EncodeFormat;
   ripOutputDir: string | null;
+  // 最後に使った CD ドライブ (例: "E:")。null なら自動検出に任せる。
+  ripDevice: string | null;
   // サーバーから取り寄せる際に最後に選んだ保存先。
   lastSyncDestRoot: string | null;
   // Similar タブの絞り込み条件 (#151)。
@@ -333,6 +335,7 @@ interface AppState extends PersistedSettings {
   setRipSoundEnabled: (enabled: boolean) => void;
   setRipFormat: (f: EncodeFormat) => void;
   setRipOutputDir: (dir: string | null) => void;
+  setRipDevice: (device: string | null) => void;
   setLastSyncDestRoot: (dir: string | null) => void;
 
   // Analysis
@@ -627,6 +630,7 @@ export const useStore = create<AppState>()(
       ripSoundEnabled: true,
       ripFormat: "alac",
       ripOutputDir: null,
+      ripDevice: null,
       lastSyncDestRoot: null,
       similarFilters: DEFAULT_SIMILAR_FILTERS,
       auditionMode: false,
@@ -907,6 +911,7 @@ export const useStore = create<AppState>()(
       setRipSoundEnabled: (ripSoundEnabled) => set({ ripSoundEnabled }),
       setRipFormat: (ripFormat) => set({ ripFormat }),
       setRipOutputDir: (ripOutputDir) => set({ ripOutputDir }),
+      setRipDevice: (ripDevice) => set({ ripDevice }),
       setLastSyncDestRoot: (lastSyncDestRoot) => set({ lastSyncDestRoot }),
 
       setAnalyses: (list) =>
@@ -960,7 +965,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 20,
+      version: 21,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -985,6 +990,7 @@ export const useStore = create<AppState>()(
           autoBackupEnabled: state.autoBackupEnabled,
           ripFormat: state.ripFormat,
           ripOutputDir: state.ripOutputDir,
+          ripDevice: state.ripDevice,
           lastSyncDestRoot: state.lastSyncDestRoot,
           similarFilters: state.similarFilters,
           viewMode: state.viewMode,
@@ -1146,6 +1152,11 @@ export const useStore = create<AppState>()(
         if (version < 20 && persisted && typeof persisted === "object") {
           const p = persisted as Record<string, unknown>;
           if (typeof p.ripSoundEnabled !== "boolean") p.ripSoundEnabled = true;
+        }
+        // v21: 最後に使った CD ドライブ。旧データには無いので null (自動検出) で補完。
+        if (version < 21 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (typeof p.ripDevice !== "string") p.ripDevice = null;
         }
         return persisted as PersistedSettings;
       },

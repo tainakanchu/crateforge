@@ -243,6 +243,55 @@ pub fn open_drive(device: &str) -> Result<Drive, String> {
     Ok(Drive { handle })
 }
 
+// メディア有無の軽量チェック用。
+// FILE_READ_ATTRIBUTES だけで開けば排他アクセス不要 (GENERIC_READ 不要)。
+const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+// CTL_CODE(IOCTL_STORAGE_BASE=0x2D, 0x0200, METHOD_BUFFERED, FILE_ANY_ACCESS)
+const IOCTL_STORAGE_CHECK_VERIFY2: u32 = 0x002D_0800;
+
+/// ドライブにメディアが入っているかを TOC を読まずに確認する (ディスクを回し続けない)。
+/// 成功 → true、ERROR_NOT_READY などあらゆるエラー → false。panic しない。
+pub fn media_present(device: &str) -> bool {
+    let letter = match device.chars().find(|c| c.is_ascii_alphabetic()) {
+        Some(c) => c.to_ascii_uppercase(),
+        None => return false,
+    };
+    let path = format!(r"\\.\{}:", letter);
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: wide は NUL 終端済みで呼び出し中は生存。その他はヌルポインタ/定数。
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle as isize == INVALID_HANDLE_VALUE || handle.is_null() {
+        return false;
+    }
+    // Drop で CloseHandle させる
+    let drive = Drive { handle };
+    let mut returned: u32 = 0;
+    // SAFETY: 入出力バッファなしの IOCTL。returned は有効な u32 へのポインタ。
+    let ok = unsafe {
+        DeviceIoControl(
+            drive.handle,
+            IOCTL_STORAGE_CHECK_VERIFY2,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    ok != 0
+}
+
 /// 16bit LE / stereo / 44100Hz の生 PCM を WAV ファイルとして書き出す。
 pub fn write_wav(path: &Path, pcm: &[u8]) -> Result<(), String> {
     use std::io::Write;

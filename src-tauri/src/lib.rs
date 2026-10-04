@@ -282,6 +282,8 @@ pub fn run() {
             commands::output_device::take_output_device_notices,
             // ripping
             commands::ripping::detect_disc,
+            commands::ripping::list_cd_drives,
+            commands::ripping::disc_present,
             commands::ripping::lookup_release_by_disc_id,
             commands::ripping::lookup_release_by_toc,
             commands::ripping::compute_disc_id,
