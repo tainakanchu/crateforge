@@ -157,8 +157,20 @@ pub fn get_recent_tracks(app: AppHandle, limit: Option<i64>) -> Result<Vec<Track
 
 // ===== Queue / next / prev / shuffle / repeat / volume =====
 
+/// キュー (再生順 / 現在位置) が変わったことをフロントへ通知する Tauri イベント名。
+/// Up Next はこれと `playback-advanced` を購読して取り直す (1 秒ポーリングの代替)。
+pub(crate) const QUEUE_CHANGED_EVENT: &str = "queue-changed";
+
+/// `queue-changed` を emit する (payload なし)。emit 失敗は無視。
+/// キューを変更するコマンド / リモート API ハンドラから、変更が確定した後に呼ぶ。
+pub(crate) fn emit_queue_changed(app: &AppHandle) {
+    use tauri::Emitter;
+    let _ = app.emit(QUEUE_CHANGED_EVENT, ());
+}
+
 #[tauri::command]
 pub fn set_queue(
+    app: AppHandle,
     player: tauri::State<'_, Mutex<AudioPlayer>>,
     track_ids: Vec<i64>,
     start_index: Option<usize>,
@@ -167,21 +179,25 @@ pub fn set_queue(
         .lock()
         .map_err(|e| e.to_string())?
         .set_queue(track_ids, start_index.unwrap_or(0));
+    emit_queue_changed(&app);
     Ok(())
 }
 
 #[tauri::command]
 pub fn enqueue_track(
+    app: AppHandle,
     player: tauri::State<'_, Mutex<AudioPlayer>>,
     track_id: i64,
 ) -> Result<(), String> {
     player.lock().map_err(|e| e.to_string())?.enqueue(track_id);
+    emit_queue_changed(&app);
     Ok(())
 }
 
 /// 「次に再生」: 現在再生中の曲の直後に track_id を割り込ませる。
 #[tauri::command]
 pub fn enqueue_track_next(
+    app: AppHandle,
     player: tauri::State<'_, Mutex<AudioPlayer>>,
     track_id: i64,
 ) -> Result<(), String> {
@@ -189,6 +205,7 @@ pub fn enqueue_track_next(
         .lock()
         .map_err(|e| e.to_string())?
         .enqueue_next(track_id);
+    emit_queue_changed(&app);
     Ok(())
 }
 
@@ -196,32 +213,46 @@ pub fn enqueue_track_next(
 /// 再生中の曲 (現在位置) は取り除けず false を返す。
 #[tauri::command]
 pub fn remove_queue_at(
+    app: AppHandle,
     player: tauri::State<'_, Mutex<AudioPlayer>>,
     order_index: usize,
 ) -> Result<bool, String> {
-    Ok(player
+    let removed = player
         .lock()
         .map_err(|e| e.to_string())?
-        .remove_at(order_index))
+        .remove_at(order_index);
+    if removed {
+        emit_queue_changed(&app);
+    }
+    Ok(removed)
 }
 
 /// Up Next (再生順) 上の曲を並び替える。from・to とも現在位置より後ろのみ許可。
 /// 不可な場合は false を返す。
 #[tauri::command]
 pub fn move_queue_item(
+    app: AppHandle,
     player: tauri::State<'_, Mutex<AudioPlayer>>,
     from_order_index: usize,
     to_order_index: usize,
 ) -> Result<bool, String> {
-    Ok(player
+    let moved = player
         .lock()
         .map_err(|e| e.to_string())?
-        .move_order(from_order_index, to_order_index))
+        .move_order(from_order_index, to_order_index);
+    if moved {
+        emit_queue_changed(&app);
+    }
+    Ok(moved)
 }
 
 #[tauri::command]
-pub fn clear_queue(player: tauri::State<'_, Mutex<AudioPlayer>>) -> Result<(), String> {
+pub fn clear_queue(
+    app: AppHandle,
+    player: tauri::State<'_, Mutex<AudioPlayer>>,
+) -> Result<(), String> {
     player.lock().map_err(|e| e.to_string())?.clear_queue();
+    emit_queue_changed(&app);
     Ok(())
 }
 
@@ -290,6 +321,8 @@ pub fn play_queue_at(
         .map_err(|e| e.to_string())?
         .jump_to(order_index);
     if let Some(tid) = tid {
+        // 位置は jump_to の時点で動いているので、再生失敗でも先に通知する。
+        emit_queue_changed(&app);
         play_track_by_id(&app, tid)?;
         Ok(Some(tid))
     } else {
@@ -306,6 +339,8 @@ pub fn play_next(
         .lock()
         .map_err(|e| e.to_string())?
         .advance_next(false);
+    // advance_next は末尾でも位置を動かしうるので、結果によらず通知する。
+    emit_queue_changed(&app);
     if let Some(tid) = next_id {
         play_track_by_id(&app, tid)?;
         Ok(Some(tid))
@@ -339,6 +374,7 @@ pub fn play_prev(
         return Ok(Some(tid));
     }
     let prev_id = player.lock().map_err(|e| e.to_string())?.advance_prev();
+    emit_queue_changed(&app);
     if let Some(tid) = prev_id {
         play_track_by_id(&app, tid)?;
         Ok(Some(tid))
@@ -348,8 +384,14 @@ pub fn play_prev(
 }
 
 #[tauri::command]
-pub fn set_shuffle(player: tauri::State<'_, Mutex<AudioPlayer>>, on: bool) -> Result<(), String> {
+pub fn set_shuffle(
+    app: AppHandle,
+    player: tauri::State<'_, Mutex<AudioPlayer>>,
+    on: bool,
+) -> Result<(), String> {
     player.lock().map_err(|e| e.to_string())?.set_shuffle(on);
+    // shuffle の切り替えで再生順 (order) が組み直される。
+    emit_queue_changed(&app);
     Ok(())
 }
 

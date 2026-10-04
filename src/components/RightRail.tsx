@@ -42,6 +42,14 @@ interface RightRailProps {
   onOpenSettings?: () => void;
 }
 
+/// Up Next で解決・描画する曲数の上限。キュー全体 (数千曲) を毎回 IPC で
+/// 解決・描画しないよう先頭だけを扱い、残りは「+N more」として件数だけ出す (#213)。
+const UP_NEXT_LIMIT = 100;
+
+/// 表示中の Up Next の自己修復用フォールバック間隔。通常はイベント駆動
+/// (queue-changed / playback-advanced) で即時更新されるので、取りこぼし対策のみ。
+const UP_NEXT_FALLBACK_POLL_MS = 10_000;
+
 /// Up Next の 1 行。order(再生順) 上の絶対位置を併せ持つ。
 interface QueueItem {
   track: Track;
@@ -144,6 +152,8 @@ export function RightRail({
   } = useStore();
 
   const [queueTracks, setQueueTracks] = useState<QueueItem[]>([]);
+  /** UP_NEXT_LIMIT を超えて表示していない後続曲の数。 */
+  const [queueMore, setQueueMore] = useState(0);
   const dragIdx = useRef<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
   const [crateExternalOver, setCrateExternalOver] = useState(false);
@@ -277,14 +287,14 @@ export function RightRail({
 
   // Up Next: バックエンドのキューを解決する。曲名はロード済み tracks に依存せず
   // getTracksByIds で取り直すため、別ビュー/別ページの曲もタイトル表示できる。
+  // 解決するのは先頭 UP_NEXT_LIMIT 曲だけ (残りは件数のみ)。
   const aliveRef = useRef(false);
-  const loadQueue = useCallback(async () => {
-    // ドラッグ中はローカルの並びを正とし、取得結果で上書きしない。
-    if (draggingQueue.current) return;
+  const fetchQueueOnce = useCallback(async () => {
     try {
       const q = await playbackApi.getQueue();
       const startAt = q.currentIndex != null ? q.currentIndex + 1 : 0;
-      const upcomingIds = q.trackIds.slice(startAt);
+      const allUpcoming = q.trackIds.slice(startAt);
+      const upcomingIds = allUpcoming.slice(0, UP_NEXT_LIMIT);
       // 入力順を保って解決(欠損 ID はスキップされる)。
       const resolved =
         upcomingIds.length > 0
@@ -300,29 +310,74 @@ export function RightRail({
         })
         .filter((x): x is QueueItem => !!x);
       setQueueTracks(upcoming);
+      setQueueMore(allUpcoming.length - upcomingIds.length);
     } catch {
-      if (aliveRef.current) setQueueTracks([]);
+      if (aliveRef.current) {
+        setQueueTracks([]);
+        setQueueMore(0);
+      }
     }
   }, []);
 
-  // Up Next タブを開いているときだけ取得する。
+  // 取得の多重発火 (queue-changed + playback-advanced + 曲変化が同時に来る等) をまとめる:
+  // 取得中に要求が来たら「もう 1 回」だけ予約し、終わったら最新状態で取り直す。
+  const queueLoadingRef = useRef(false);
+  const queueReloadPendingRef = useRef(false);
+  const loadQueue = useCallback(async () => {
+    // ドラッグ中はローカルの並びを正とし、取得結果で上書きしない。
+    if (draggingQueue.current) return;
+    if (queueLoadingRef.current) {
+      queueReloadPendingRef.current = true;
+      return;
+    }
+    queueLoadingRef.current = true;
+    try {
+      do {
+        queueReloadPendingRef.current = false;
+        await fetchQueueOnce();
+      } while (
+        queueReloadPendingRef.current &&
+        aliveRef.current &&
+        !draggingQueue.current
+      );
+    } finally {
+      queueLoadingRef.current = false;
+    }
+  }, [fetchQueueOnce]);
+
+  // Up Next タブを開いているときだけ取得・購読する。
+  // 1 秒ポーリングはやめ、キュー変更系コマンド/リモート API が emit する queue-changed と
+  // 曲の自動遷移 (playback-advanced) で取り直す (#213)。
   useEffect(() => {
     if (!showNext) return;
     aliveRef.current = true;
     loadQueue();
-    // enqueue や曲の自動遷移を反映するため、表示中は定期的に取り直す。
-    const iv = setInterval(loadQueue, 1000);
-    // 曲の自動遷移(playback-advanced)で即座に取り直し、1 秒待たずに反映する。
-    let unlisten: (() => void) | undefined;
+    // 取りこぼし (イベントを出さない経路) の自己修復用に、表示中だけ低頻度で取り直す。
+    const iv = setInterval(loadQueue, UP_NEXT_FALLBACK_POLL_MS);
+    let cancelled = false;
+    const unlisteners: Array<() => void> = [];
+    const keep = (u: () => void) => {
+      if (cancelled) u();
+      else unlisteners.push(u);
+    };
     (async () => {
-      unlisten = await playbackApi.onPlaybackAdvanced(() => loadQueue());
+      keep(await playbackApi.onPlaybackAdvanced(() => loadQueue()));
+    })();
+    (async () => {
+      keep(await playbackApi.onQueueChanged(() => loadQueue()));
     })();
     return () => {
+      cancelled = true;
       aliveRef.current = false;
       clearInterval(iv);
-      if (unlisten) unlisten();
+      for (const u of unlisteners) u();
     };
-    // shuffle / repeat 変更で再生順が変わるので Up Next を取り直す。
+  }, [showNext, loadQueue]);
+
+  // 再生曲 / shuffle / repeat の変化 (フロント状態経由で気づくもの) でも取り直す。
+  useEffect(() => {
+    if (!showNext) return;
+    loadQueue();
   }, [showNext, playback.currentTrackId, shuffle, repeat, loadQueue]);
 
   // Similar: 基準曲が解析済みなら似た曲を取得（サーバー側: BPM / Key / Energy フィルタ）。
@@ -1992,11 +2047,14 @@ export function RightRail({
         <div className="cb-cratehd">
           <b>Up Next</b>
           <span className="cb-cmeta">
-            {queueTracks.length > 0 && (
+            {(queueTracks.length > 0 || queueMore > 0) && (
               <>
-                <b>{queueTracks.length}</b> 曲
+                <b>{queueTracks.length + queueMore}</b> 曲
                 {" · "}
-                <b>{fmtTotal(queueTracks.map((q) => q.track))}</b>
+                <b>
+                  {fmtTotal(queueTracks.map((q) => q.track))}
+                  {queueMore > 0 ? "+" : ""}
+                </b>
               </>
             )}
             {shuffle && (
@@ -2020,7 +2078,7 @@ export function RightRail({
       )}
       {showNext && (
         <div className="cb-cratelist">
-          {queueTracks.length === 0 ? (
+          {queueTracks.length === 0 && queueMore === 0 ? (
             <div className="cb-rail-empty">キューは空です。トラックをダブルクリックで再生開始。</div>
           ) : (
             queueTracks.map(({ track: t, orderIndex }, i) => (
@@ -2069,6 +2127,9 @@ export function RightRail({
                 </button>
               </div>
             ))
+          )}
+          {queueMore > 0 && (
+            <div className="cb-rail-empty">+{queueMore} more</div>
           )}
         </div>
       )}

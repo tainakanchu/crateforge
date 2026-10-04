@@ -939,7 +939,9 @@ pub async fn upload_track_body(
                 ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "repaired track missing")
             })?;
         let _ = std::fs::remove_file(&metadata_path);
-        state.notify_library_changed(None);
+        // 既存曲の実体差し替え (repair)。同一パスに着地しうるため、ジャケットも
+        // 変わった扱いで WebView のアートワークキャッシュを捨てさせる。
+        state.notify_artwork_changed();
         return Ok((StatusCode::OK, Json(track)).into_response());
     }
     let track_id = match db.add_imported_track_with_persistent_id(
@@ -1697,7 +1699,7 @@ pub async fn set_track_artwork(
     }
     crate::artwork::set_picture(path_str, body.to_vec())
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    state.notify_library_changed(None);
+    state.notify_artwork_changed();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1719,7 +1721,7 @@ pub async fn delete_track_artwork(
     }
     crate::artwork::remove_cover(path_str)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    state.notify_library_changed(None);
+    state.notify_artwork_changed();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2308,6 +2310,8 @@ pub async fn remote_next(State(state): State<ApiState>) -> Result<Json<Value>, A
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .advance_next(false);
+    // デスクトップの Up Next を追従させる (queue-changed)。
+    crate::commands::playback::emit_queue_changed(app);
     if let Some(tid) = next_id {
         play_by_id_for_remote(&state, app, tid)?;
         Ok(Json(json!({ "trackId": tid })))
@@ -2333,6 +2337,7 @@ pub async fn remote_prev(State(state): State<ApiState>) -> Result<Json<Value>, A
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .advance_prev();
+    crate::commands::playback::emit_queue_changed(app);
     if let Some(tid) = prev_id {
         play_by_id_for_remote(&state, app, tid)?;
         Ok(Json(json!({ "trackId": tid })))
@@ -2385,6 +2390,7 @@ pub async fn remote_set_queue(
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .set_queue(body.track_ids, body.start_index.unwrap_or(0));
+    crate::commands::playback::emit_queue_changed(app);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2429,6 +2435,7 @@ pub async fn remote_shuffle(
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .set_shuffle(body.on);
+    crate::commands::playback::emit_queue_changed(app);
     Ok(StatusCode::NO_CONTENT)
 }
 

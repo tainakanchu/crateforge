@@ -307,7 +307,7 @@ pub fn sync_provision(
                     };
                 }
                 let _ = task_app.emit("sync-complete", summary);
-                let _ = task_app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+                let _ = task_app.emit("library-changed", serde_json::json!({ "playlistId": null, "artworkChanged": true }));
             }
             Err(error) => {
                 let message = sync_error(error);
@@ -373,7 +373,7 @@ pub async fn sync_writeback_apply(
         .await
         .map_err(WritebackApplyError::from_sync)?;
     let _ = app.emit("writeback-complete", summary.clone());
-    let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null, "artworkChanged": true }));
     Ok(summary)
 }
 
@@ -393,7 +393,7 @@ pub async fn sync_resync(app: AppHandle, source_id: i64) -> Result<ResyncSummary
     .map_err(sync_error)?;
     let _ = app.emit("resync-complete", summary.clone());
     if summary.mutations_committed {
-        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null, "artworkChanged": true }));
     }
     Ok(summary)
 }
@@ -434,7 +434,7 @@ pub async fn sync_evict(
         .await
         .map_err(|error| error.to_string())?;
     if summary.evicted > 0 {
-        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null, "artworkChanged": true }));
     }
     Ok(summary)
 }

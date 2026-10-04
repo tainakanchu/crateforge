@@ -1256,16 +1256,7 @@ impl Database {
     }
 
     pub fn get_track_by_track_id(&self, track_id: i64) -> Result<Option<Track>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
-             FROM tracks WHERE track_id = ?1",
-        )?;
+        let mut stmt = self.conn.prepare(TRACK_BY_TRACK_ID_SQL)?;
 
         let mut rows = stmt.query_map(params![track_id], row_to_track)?;
         match rows.next() {
@@ -1277,11 +1268,17 @@ impl Database {
     /// 指定した track_id 群を、**入力 ID の順序を保って** 解決する。
     /// 見つからない ID はスキップする (Up Next 表示で、フロントの
     /// ロード済みページに無い曲も解決できるようにするためのもの)。
+    ///
+    /// 1 件ずつ `prepare` し直すと ID 数だけ SQL のパースが走るため、
+    /// `prepare_cached` で 1 つの statement を使い回す (結果は `get_track_by_track_id`
+    /// を ID ごとに呼ぶのと同一)。
     pub fn get_tracks_by_ids(&self, track_ids: &[i64]) -> Result<Vec<Track>> {
+        let mut stmt = self.conn.prepare_cached(TRACK_BY_TRACK_ID_SQL)?;
         let mut out = Vec::with_capacity(track_ids.len());
         for &tid in track_ids {
-            if let Some(track) = self.get_track_by_track_id(tid)? {
-                out.push(track);
+            let mut rows = stmt.query_map(params![tid], row_to_track)?;
+            if let Some(row) = rows.next() {
+                out.push(row?);
             }
         }
         Ok(out)
@@ -1984,6 +1981,17 @@ pub fn delete_track_cascade(conn: &Connection, track_id: i64) -> Result<bool> {
     Ok(conn.execute("DELETE FROM tracks WHERE track_id = ?1", params![track_id])? > 0)
 }
 
+/// `get_track_by_track_id` / `get_tracks_by_ids` が共有する単曲取得 SQL。
+const TRACK_BY_TRACK_ID_SQL: &str =
+    "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
+                    album, genre, year, rating, play_count, skip_count, total_time_ms,
+                    date_added, date_modified, bpm, comments, location_raw, location_path,
+                    track_type, disabled, compilation, disc_number, disc_count,
+                    track_number, track_count, file_exists, last_played,
+                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
+                    key_camelot_user
+             FROM tracks WHERE track_id = ?1";
+
 pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
     Ok(Track {
         id: row.get(0)?,
@@ -2121,6 +2129,41 @@ mod tests {
         let hits = db.search_tracks("图书馆", 100, 0, None, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].track_id, 2);
+    }
+
+    /// get_tracks_by_ids: 入力順を保ち、欠損 ID はスキップし、重複 ID は重複のまま返す
+    /// (prepare_cached で statement を使い回しても ID ごとの単曲取得と同じ結果)。
+    #[test]
+    fn get_tracks_by_ids_keeps_input_order_and_skips_missing() {
+        use crate::itunes_xml::parser::{PlistValue, RawTrack};
+        let db = Database::open_memory().unwrap();
+        let mut imported_persistent_ids = HashSet::new();
+        let mut imported_track_ids = HashSet::new();
+        for (tid, name) in [(1i64, "one"), (2, "two"), (3, "three")] {
+            let mut raw = RawTrack::default();
+            raw.fields
+                .insert("Track ID".to_string(), PlistValue::Int(tid));
+            raw.fields
+                .insert("Name".to_string(), PlistValue::Str(name.to_string()));
+            db.insert_track(
+                &raw,
+                "",
+                true,
+                &mut imported_persistent_ids,
+                &mut imported_track_ids,
+            )
+            .unwrap();
+        }
+        let got = db.get_tracks_by_ids(&[3, 99, 1, 3, 2]).unwrap();
+        let ids: Vec<i64> = got.iter().map(|t| t.track_id).collect();
+        assert_eq!(ids, vec![3, 1, 3, 2]);
+        assert_eq!(got[0].name.as_deref(), Some("three"));
+        for t in &got {
+            let single = db.get_track_by_track_id(t.track_id).unwrap().unwrap();
+            assert_eq!(single.name, t.name);
+            assert_eq!(single.persistent_id, t.persistent_id);
+        }
+        assert!(db.get_tracks_by_ids(&[]).unwrap().is_empty());
     }
 
     /// ライブラリからの削除で、tracks 行と全依存行 (プレイリスト所属 / 再生履歴 /
