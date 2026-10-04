@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # website/ (Astro + Starlight). Starlight pins the astro major it supports,
+  # so bump astro and @astrojs/* together in a single PR.
+  - package-ecosystem: "npm"
+    directory: "/website"
+    schedule:
+      interval: "weekly"
+    groups:
+      astro:
+        patterns:
+          - "astro"
+          - "@astrojs/*"
