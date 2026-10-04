@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter};
 use crate::cd_ripper::encoder::{self, EncodeMeta};
 use crate::db::Database;
 use crate::itunes_xml::writer::path_to_file_url;
-use crate::models::{EncodeFormat, RipProgress, RipRequest};
+use crate::models::{EncodeFormat, RipProgress, RipRequest, RipStage};
 use crate::organizer;
 
 /// CD を取り込む。
@@ -104,6 +104,9 @@ pub fn rip_cd(
         // 1. Rip to a temporary WAV.
         let wav_path = output_dir.join(format!(".tmp_track_{:02}.wav", track_num));
 
+        // 読み取り開始 (0%)。Windows はこの後セクタ単位で進捗を送る。
+        emit_track_progress(app, idx, 0, RipStage::Reading);
+
         // Unix: cdparanoia 経由で WAV を取得。
         #[cfg(not(windows))]
         {
@@ -134,7 +137,15 @@ pub fn rip_cd(
         // Windows: IOCTL で CDDA 生データを読んで WAV を書き出す。
         #[cfg(windows)]
         {
-            let pcm = drive.read_track_pcm(&win_toc, track_num)?;
+            // 1% 刻みに間引いて送る (1 トラック最大 ~90 イベント)。
+            let mut last_pct: u8 = 0;
+            let pcm = drive.read_track_pcm(&win_toc, track_num, |done, total_sectors| {
+                let pct = reading_percent(done, total_sectors);
+                if pct != last_pct {
+                    last_pct = pct;
+                    emit_track_progress(app, idx, pct, RipStage::Reading);
+                }
+            })?;
             crate::cd_ripper::win_cd::write_wav(&wav_path, &pcm)?;
         }
 
@@ -157,6 +168,7 @@ pub fn rip_cd(
         let out_path = output_dir.join(format!("{}.{}", file_stem, req.format.extension()));
 
         // 3. Encode (or copy WAV).
+        emit_track_progress(app, idx, READ_SHARE_PERCENT, RipStage::Encoding);
         encoder::encode(
             req.format,
             &wav_path,
@@ -257,10 +269,69 @@ pub fn rip_cd(
     Ok(())
 }
 
+/// 1 トラックの進捗のうち読み取りに割り当てる割合 (%)。残りをエンコード以降に充てる。
+/// CD の読み取り (等倍〜数十倍速) はエンコードより桁違いに遅いので大半を読み取りに配分する。
+const READ_SHARE_PERCENT: u8 = 90;
+
+/// 読み取り済みセクタ数をトラック全体の進捗 (0..=READ_SHARE_PERCENT) に換算する。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn reading_percent(done: u32, total: u32) -> u8 {
+    if total == 0 {
+        return 0;
+    }
+    let done = done.min(total) as u64;
+    (done * READ_SHARE_PERCENT as u64 / total as u64) as u8
+}
+
+fn emit_track_progress(app: &AppHandle, index: usize, percent: u8, stage: RipStage) {
+    let _ = app.emit(
+        "rip-progress",
+        RipProgress::TrackProgress {
+            index,
+            percent,
+            stage,
+        },
+    );
+}
+
 pub fn sanitize_filename(name: &str) -> String {
     name.chars()
         .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reading_percent_maps_into_read_share() {
+        assert_eq!(reading_percent(0, 1000), 0);
+        assert_eq!(reading_percent(500, 1000), 45);
+        assert_eq!(reading_percent(1000, 1000), READ_SHARE_PERCENT);
+        // 範囲外・ゼロ除算でも暴れない。
+        assert_eq!(reading_percent(2000, 1000), READ_SHARE_PERCENT);
+        assert_eq!(reading_percent(10, 0), 0);
+    }
+
+    #[test]
+    fn track_progress_serializes_for_frontend() {
+        let v = serde_json::to_value(RipProgress::TrackProgress {
+            index: 2,
+            percent: 45,
+            stage: RipStage::Encoding,
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "trackProgress",
+                "index": 2,
+                "percent": 45,
+                "stage": "encoding"
+            })
+        );
+    }
 }

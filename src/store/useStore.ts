@@ -16,6 +16,7 @@ import type {
   RepeatMode,
   TrackAnalysis,
   EncodeFormat,
+  RipStage,
   SetMeta,
   CrateAnchors,
   CrateSection,
@@ -68,10 +69,14 @@ export const DEFAULT_SIMILAR_FILTERS: SimilarFilters = {
 export type RipPhase = "ripping" | "done" | "error";
 export interface RipStatus {
   phase: RipPhase;
+  // 現在のトラック番号 (1 始まり)。0 はまだトラックに着手していない状態。
   current: number;
   total: number;
   label: string;
+  // 現在トラック全体に対する進捗 (0〜100)。読み取り 0〜90 / エンコード 90〜。
   percent?: number;
+  // 現在トラックの工程 (読み取り中 / エンコード中)。
+  stage?: RipStage;
   log: string[];
   addedTracks?: number;
   error?: string;
@@ -133,6 +138,8 @@ interface PersistedSettings {
   setToolsOpen: boolean;
   // Key の表示表記 (#172)。保存値は Camelot のまま、表示だけ切り替える。
   keyNotation: KeyNotation;
+  // CD 取り込みの完了 / 失敗時に通知音を鳴らすか。既定 true。
+  ripSoundEnabled: boolean;
 }
 
 /// Artists ビューでしか意味を持たないソートフィールド (#155)。
@@ -323,6 +330,7 @@ interface AppState extends PersistedSettings {
   toggleFolder: (id: number) => void;
   setAutoExport: (enabled: boolean, path: string | null) => void;
   setAutoBackupEnabled: (enabled: boolean) => void;
+  setRipSoundEnabled: (enabled: boolean) => void;
   setRipFormat: (f: EncodeFormat) => void;
   setRipOutputDir: (dir: string | null) => void;
   setLastSyncDestRoot: (dir: string | null) => void;
@@ -616,6 +624,7 @@ export const useStore = create<AppState>()(
       autoExportEnabled: false,
       autoExportPath: null,
       autoBackupEnabled: true,
+      ripSoundEnabled: true,
       ripFormat: "alac",
       ripOutputDir: null,
       lastSyncDestRoot: null,
@@ -895,6 +904,7 @@ export const useStore = create<AppState>()(
       setAutoExport: (autoExportEnabled, autoExportPath) =>
         set({ autoExportEnabled, autoExportPath }),
       setAutoBackupEnabled: (autoBackupEnabled) => set({ autoBackupEnabled }),
+      setRipSoundEnabled: (ripSoundEnabled) => set({ ripSoundEnabled }),
       setRipFormat: (ripFormat) => set({ ripFormat }),
       setRipOutputDir: (ripOutputDir) => set({ ripOutputDir }),
       setLastSyncDestRoot: (lastSyncDestRoot) => set({ lastSyncDestRoot }),
@@ -950,7 +960,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -982,6 +992,7 @@ export const useStore = create<AppState>()(
           filterTags: state.filterTags,
           setToolsOpen: state.setToolsOpen,
           keyNotation: state.keyNotation,
+          ripSoundEnabled: state.ripSoundEnabled,
         }) satisfies PersistedSettings,
       // v1(visibleColumns) からの移行: 旧キーは破棄してデフォルトに倒す。
       // v3: recentPlaylistIds を追加（旧データには無いので配列で補完）。
@@ -1130,6 +1141,11 @@ export const useStore = create<AppState>()(
         if (version < 19 && persisted && typeof persisted === "object") {
           const p = persisted as Record<string, unknown>;
           if (!isKeyNotation(p.keyNotation)) p.keyNotation = "camelot";
+        }
+        // v20: CD 取り込み完了音。旧データには無いので既定 ON で補完。
+        if (version < 20 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (typeof p.ripSoundEnabled !== "boolean") p.ripSoundEnabled = true;
         }
         return persisted as PersistedSettings;
       },

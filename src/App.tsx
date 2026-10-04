@@ -811,11 +811,16 @@ export default function App() {
             label: p.label,
             log: prev?.log ?? [],
             addedTracks: prev?.addedTracks,
+            percent: 0,
+            stage: "reading",
           });
           appendRipLog(`[${p.index + 1}/${p.total}] ripping: ${p.label}`);
         } else if (p.kind === "trackProgress") {
           const cur = useStore.getState().ripStatus;
-          if (cur) useStore.getState().setRipStatus({ ...cur, percent: p.percent });
+          // 遅れて届いた前トラックのイベントで表示を巻き戻さない。
+          if (cur && cur.phase === "ripping" && cur.current === p.index + 1) {
+            useStore.getState().setRipStatus({ ...cur, percent: p.percent, stage: p.stage });
+          }
         } else if (p.kind === "trackDone") {
           appendRipLog(`  → ${p.outputPath}`);
         } else if (p.kind === "done") {
