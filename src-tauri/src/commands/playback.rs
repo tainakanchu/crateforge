@@ -259,7 +259,7 @@ pub(crate) fn drop_tracks_from_playback(
     let _ = app.emit("playback-advanced", AdvancePayload { track_id });
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_queue(
     player: tauri::State<'_, Mutex<AudioPlayer>>,
 ) -> Result<crate::models::QueueState, String> {

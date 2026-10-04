@@ -43,7 +43,7 @@ pub fn get_smart_criteria(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_smart_playlist_tracks(
     app: AppHandle,
     playlist_id: i64,
@@ -65,7 +65,7 @@ pub fn get_smart_playlist_tracks(
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_playlist_tracks(
     app: AppHandle,
     playlist_id: i64,

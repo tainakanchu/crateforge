@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useCallback, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useCallback, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { TrackTable } from "./components/TrackTable";
@@ -189,6 +189,7 @@ export default function App() {
     }
   }, [setPlaylists, setViewMode, setSelectedPlaylistId]);
 
+  const loadTracksGenRef = useRef(0);
   const loadTracks = useCallback(
     async (reset = true) => {
       if (!isTauri) {
@@ -204,6 +205,12 @@ export default function App() {
           ? (stBefore.tracks[stBefore.triageIndex]?.trackId ?? null)
           : null;
       const prevTriageIndex = stBefore.triageIndex;
+
+      // 一覧系コマンドはメインスレッド外で並行実行されるため (#213)、応答順が
+      // 呼び出し順と一致しない。古い呼び出しの結果で新しい表示を上書きしないよう、
+      // 最新の呼び出し以外の結果は捨てる。
+      const gen = ++loadTracksGenRef.current;
+      const stale = () => gen !== loadTracksGenRef.current;
 
       setIsLoading(true);
       try {
@@ -239,6 +246,7 @@ export default function App() {
             missingLater.length > 0
               ? await libraryApi.getTracksByIds(missingLater)
               : [];
+          if (stale()) return;
           result = mergeInboxSources(raw, laterExtra, persist);
           setTracks(result);
           setHasMore(false);
@@ -259,6 +267,7 @@ export default function App() {
           }
         } else if (viewMode === "recent") {
           result = await playbackApi.getRecentTracks(200);
+          if (stale()) return;
           setTracks(result);
           setHasMore(false);
         } else if (
@@ -289,6 +298,7 @@ export default function App() {
                 manualOrder ? undefined : effectiveOrder,
                 inPlaylistQuery,
               );
+          if (stale()) return;
           if (reset) setTracks(result);
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
@@ -300,6 +310,7 @@ export default function App() {
             effectiveSort,
             effectiveOrder,
           );
+          if (stale()) return;
           if (reset) setTracks(result);
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
@@ -310,14 +321,15 @@ export default function App() {
             effectiveSort,
             effectiveOrder,
           );
+          if (stale()) return;
           if (reset) setTracks(result);
           else appendTracks(result);
           setHasMore(result.length === PAGE_SIZE);
         }
       } catch (err) {
-        console.error("Failed to load tracks:", err);
+        if (!stale()) console.error("Failed to load tracks:", err);
       } finally {
-        setIsLoading(false);
+        if (!stale()) setIsLoading(false);
       }
     },
     [
@@ -481,18 +493,51 @@ export default function App() {
   }, [setPlayback]);
 
   // Sync now-playing to SMTC + listen to media key events from the OS.
+  // 曲メタデータの検索はポーリング毎ではなく tracks / 再生中の曲が変わったときだけ行う。
+  const smtcTrack = useMemo(
+    () =>
+      playback.currentTrackId
+        ? tracks.find((t) => t.trackId === playback.currentTrackId) ?? null
+        : null,
+    [playback.currentTrackId, tracks],
+  );
+  const smtcTitle = smtcTrack?.name ?? "";
+  const smtcArtist = smtcTrack?.artist ?? "";
+  const smtcAlbum = smtcTrack?.album ?? "";
+  // 最後に OS へ送った内容。再生中の位置は OS 側が進めてくれるので、
+  // 250ms ごとではなく「曲・再生状態・メタデータが変わった」「シーク（想定位置から 2 秒超ずれた）」
+  // のときと、念のための 5 秒おきの再同期だけ update_smtc を呼ぶ。
+  const smtcLastRef = useRef<{ key: string; positionMs: number; at: number } | null>(null);
   useEffect(() => {
     if (!isTauri) return;
 
-    const current = playback.currentTrackId
-      ? tracks.find((t) => t.trackId === playback.currentTrackId) ?? null
-      : null;
+    const key = JSON.stringify([
+      playback.currentTrackId,
+      playback.isPlaying,
+      playback.durationMs,
+      smtcTitle,
+      smtcArtist,
+      smtcAlbum,
+    ]);
+    const now = Date.now();
+    const last = smtcLastRef.current;
+    if (last && last.key === key) {
+      if (playback.isPlaying) {
+        const expected = last.positionMs + (now - last.at);
+        const drift = Math.abs(playback.positionMs - expected);
+        if (drift <= 2000 && now - last.at < 5000) return;
+      } else if (playback.positionMs === last.positionMs) {
+        // 一時停止・停止中は位置が動いたとき（シーク）だけ送る。
+        return;
+      }
+    }
+    smtcLastRef.current = { key, positionMs: playback.positionMs, at: now };
 
     systemApi
       .updateSmtc(
-        current?.name ?? "",
-        current?.artist ?? "",
-        current?.album ?? "",
+        smtcTitle,
+        smtcArtist,
+        smtcAlbum,
         playback.isPlaying,
         playback.positionMs,
         playback.durationMs,
@@ -503,7 +548,9 @@ export default function App() {
     playback.isPlaying,
     playback.positionMs,
     playback.durationMs,
-    tracks,
+    smtcTitle,
+    smtcArtist,
+    smtcAlbum,
   ]);
 
   useEffect(() => {
@@ -542,10 +589,14 @@ export default function App() {
   }, []);
 
   // 解析結果の読み込み + 進捗購読 (BPM/Key/Energy)。
+  // getAllAnalyses もメインスレッド外で並行実行されるので、最新の呼び出しの結果だけ反映する。
+  const loadAnalysesGenRef = useRef(0);
   const loadAnalyses = useCallback(async () => {
     if (!isTauri) return;
+    const gen = ++loadAnalysesGenRef.current;
     try {
-      setAnalyses(await analysisApi.getAllAnalyses());
+      const all = await analysisApi.getAllAnalyses();
+      if (gen === loadAnalysesGenRef.current) setAnalyses(all);
     } catch (err) {
       console.error("Failed to load analyses:", err);
     }
