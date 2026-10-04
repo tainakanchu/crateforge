@@ -301,8 +301,9 @@ impl TrackAnalysis {
 }
 
 /// 解析進捗イベント (`analysis-progress`)。RipProgress と同じノリのタグ付き enum。
+/// フィールド (track_id) も camelCase にするため `rename_all_fields` を併用する。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 pub enum AnalysisProgress {
     Start {
         total: usize,
@@ -422,8 +423,11 @@ pub enum RipStage {
     Encoding,
 }
 
+// NOTE: 内部タグ付き enum では `rename_all` はバリアント名にしか効かない。
+// struct バリアントのフィールド (output_path 等) も camelCase にするには
+// `rename_all_fields` が別途必要 (無いと フロントが `outputPath` を読めず undefined になる)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 pub enum RipProgress {
     Start {
         total: usize,
@@ -588,4 +592,30 @@ pub enum ConvertProgress {
         failed: usize,
         added: usize,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn analysis_progress_item_serializes_fields_in_camel_case() {
+        let v = serde_json::to_value(AnalysisProgress::Item {
+            track_id: 42,
+            done: 1,
+            total: 3,
+            ok: true,
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "item",
+                "trackId": 42,
+                "done": 1,
+                "total": 3,
+                "ok": true
+            })
+        );
+    }
 }

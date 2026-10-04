@@ -334,4 +334,38 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn track_done_serializes_fields_in_camel_case() {
+        let v = serde_json::to_value(RipProgress::TrackDone {
+            index: 3,
+            output_path: "C:/Music/01 - Intro.flac".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "trackDone",
+                "index": 3,
+                "outputPath": "C:/Music/01 - Intro.flac"
+            })
+        );
+    }
+
+    #[test]
+    fn done_serializes_fields_in_camel_case() {
+        let v = serde_json::to_value(RipProgress::Done {
+            written_files: vec!["a.flac".to_string(), "b.flac".to_string()],
+            added_tracks: 2,
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "done",
+                "writtenFiles": ["a.flac", "b.flac"],
+                "addedTracks": 2
+            })
+        );
+    }
 }
