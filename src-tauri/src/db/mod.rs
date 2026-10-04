@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod backup;
+pub mod generation;
 pub mod playback;
 pub mod playlists;
 pub mod schema;
@@ -39,6 +40,8 @@ pub fn forget_migrated(app_dir: &Path) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&key);
+    // DB ファイルが差し替わったので、世代カウンタに基づくキャッシュをすべて無効にする。
+    generation::bump_epoch();
 }
 
 pub struct Database {
@@ -166,6 +169,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     migrate_tech_meta(conn)?;
     // 再生キュー / 再生状態の永続化 (#159)。
     playback::migrate_playback_tables(conn)?;
+    // キャッシュ無効化用の世代トリガ (#213)。テーブルを作り直すマイグレーションの
+    // 後で張る必要があるので最後に置く。
+    generation::install(conn)?;
     Ok(())
 }
 

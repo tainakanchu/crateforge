@@ -1,6 +1,7 @@
 // Gig Snapshot (#122) — localStorage CRUD for readiness snapshots.
 
 import type { Track, TrackAnalysis } from "../types";
+import { hasAnalysisVector } from "../types/analysis";
 import type { SetMeta } from "../types/setWorkspace";
 import type { GigSnapshot } from "../types/gig";
 
@@ -162,7 +163,7 @@ export function buildGigSnapshot(input: BuildSnapshotInput): GigSnapshot {
     durationMs += t.totalTimeMs ?? 0;
     if (!t.fileExists) missing++;
     const a = analysisByTrack.get(t.trackId);
-    if (!a || ((!a.vector || a.vector.length === 0) && (a.bpm == null || a.bpm <= 0))) {
+    if (!a || (!hasAnalysisVector(a) && (a.bpm == null || a.bpm <= 0))) {
       unanalyzed++;
     }
   }
