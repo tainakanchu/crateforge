@@ -16,6 +16,7 @@ import type { CjkFontStatus } from "../api/fonts";
 import { Icon } from "./Icon";
 import { LicenseList } from "./LicenseList";
 import { KEY_NOTATIONS, KEY_NOTATION_LABELS, isKeyNotation } from "../lib/keyNotation";
+import { playRipChime } from "../lib/ripChime";
 
 const REPO_URL = "https://github.com/tainakanchu/crateforge";
 
@@ -78,6 +79,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     setAutoExport,
     autoBackupEnabled,
     setAutoBackupEnabled,
+    ripSoundEnabled,
+    setRipSoundEnabled,
     pendingUpdate,
     setPendingUpdate,
   } = useStore();
@@ -788,6 +791,22 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       </option>
                     ))}
                   </select>
+                </Row>
+
+                <Row
+                  title="CD 取り込みの完了音"
+                  desc="CD の取り込みが終わったときに短い通知音を鳴らします（失敗時は低めの音）。再生中の曲には影響しません。"
+                >
+                  <div className="settings-pathrow">
+                    <button
+                      className="toolbar-btn"
+                      onClick={() => playRipChime("done")}
+                      title="完了音を試聴します"
+                    >
+                      <Icon name="play" size={14} /> 試聴
+                    </button>
+                    <Toggle on={ripSoundEnabled} onClick={() => setRipSoundEnabled(!ripSoundEnabled)} />
+                  </div>
                 </Row>
 
                 <Row

@@ -10,6 +10,7 @@ import type {
   ReleaseCandidate,
 } from "../../types";
 import { defaultDevice } from "../../lib/disc";
+import { primeRipChime } from "../../lib/ripChime";
 
 interface RipDialogProps {
   open: boolean;
@@ -105,14 +106,22 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged: _onLibraryC
     };
 
     onClose(); // モーダルを即閉じ
+    // 完了音のための AudioContext をユーザー操作の中で起こしておく (自動再生ポリシー対策)。
+    primeRipChime();
 
     ripperApi.ripCd(req).catch((e: unknown) => {
+      // 途中までの進捗とログは残し、どこで止まったか分かるようにする。
+      // (Start 前に失敗した場合は前回分の表示を引き継がない)
+      const cur = useStore.getState().ripStatus;
+      const prev = cur?.phase === "ripping" ? cur : null;
       useStore.getState().setRipStatus({
         phase: "error",
-        current: 0,
-        total: 0,
-        label: "",
-        log: [String(e)],
+        current: prev?.current ?? 0,
+        total: prev?.total ?? 0,
+        label: prev?.label ?? "",
+        percent: prev?.percent,
+        stage: prev?.stage,
+        log: [...(prev?.log ?? []), String(e)],
         error: String(e),
       });
       useStore.getState().pushToast("error", `リッピング失敗: ${e}`);

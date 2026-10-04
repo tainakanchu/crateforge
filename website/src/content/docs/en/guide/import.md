@@ -119,7 +119,8 @@ From **"💿 Rip CD"** in the toolbar, you can import a physical CD (track info 
 2. The TOC is read and candidate albums from MusicBrainz are displayed automatically
 3. Re-pick the release if needed, and select the tracks
 4. Specify the **Format** (FLAC / ALAC / MP3 / WAV) and the **Output** folder, then click "▶ Start Ripping"
-5. When done, it is added to the library automatically (when the option is on)
+5. While ripping, a progress card appears at the bottom right (above the player bar), showing an overall progress bar, "track n / total", the current track, and the stage (reading / encoding). Click it (or press Enter) to open the log
+6. When done, it is added to the library automatically (when the option is on). A short chime plays on completion (a lower tone on failure); you can turn it off in **Settings → General → "CD rip completion sound"** (labeled 「CD 取り込みの完了音」 in the UI)
 
 :::caution
 Under WSL2, a physical CD isn't visible directly, so you need to attach the drive to WSL2 with `usbipd-win`.

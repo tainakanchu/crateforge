@@ -141,7 +141,15 @@ impl Drive {
     }
 
     /// 1 トラック分の CDDA を読み、生 PCM (16bit LE / stereo / 44100Hz) を返す。
-    pub fn read_track_pcm(&self, toc: &WinToc, track_num: usize) -> Result<Vec<u8>, String> {
+    ///
+    /// `on_progress(読み終えたセクタ数, 総セクタ数)` はチャンクを読むたびに呼ばれる
+    /// (間引きは呼び出し側で行う)。
+    pub fn read_track_pcm(
+        &self,
+        toc: &WinToc,
+        track_num: usize,
+        mut on_progress: impl FnMut(u32, u32),
+    ) -> Result<Vec<u8>, String> {
         let first = toc.first_track as usize;
         if track_num < first || track_num > toc.last_track as usize {
             return Err(format!("トラック番号 {} は範囲外です。", track_num));
@@ -192,6 +200,7 @@ impl Drive {
             }
             pcm.extend_from_slice(&buf[..returned as usize]);
             done += n;
+            on_progress(done, total_sectors);
         }
         Ok(pcm)
     }

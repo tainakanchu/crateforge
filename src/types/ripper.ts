@@ -37,10 +37,14 @@ export interface RipRequest {
   addToLibrary: boolean;
 }
 
+/** リッピング中のトラックの工程 (Rust 側 `RipStage`)。 */
+export type RipStage = "reading" | "encoding";
+
 export type RipProgress =
   | { kind: "start"; total: number }
   | { kind: "trackStart"; index: number; total: number; label: string }
-  | { kind: "trackProgress"; index: number; percent: number }
+  // percent はトラック全体 (読み取り 0〜90 / エンコード開始で 90) に対する割合。
+  | { kind: "trackProgress"; index: number; percent: number; stage: RipStage }
   | { kind: "trackDone"; index: number; outputPath: string }
   | { kind: "done"; writtenFiles: string[]; addedTracks: number }
   | { kind: "error"; message: string };

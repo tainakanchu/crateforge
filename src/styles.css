@@ -5084,36 +5084,125 @@ input {
    RipStatusBar — CD リッピング持続ステータスバー
    ============================================================ */
 .rip-status-bar {
-  grid-column: 3;
-  grid-row: 2;
-  background: var(--bg-side);
-  border-top: 1px solid var(--bd);
-  border-left: 1px solid var(--bd);
+  /* 右ペインの有無に関係なく見えるよう、プレーヤーバー (78px) の上・右下に浮かせる。 */
+  position: fixed;
+  right: 18px;
+  bottom: 90px;
+  width: 300px;
+  max-width: calc(100vw - 36px);
+  box-sizing: border-box;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 12px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 12px 10px;
+  background: #1b2125;
+  border: 1px solid var(--bd-strong);
+  border-left: 3px solid var(--ac);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   cursor: pointer;
   font-size: 12px;
   color: var(--tx);
-  overflow: hidden;
-  min-width: 0;
+  z-index: 1500;
+  animation: toast-in 0.18s ease-out;
 }
 .rip-status-bar:hover {
-  background: var(--bg-hover, #1e2428);
+  background: #1f262a;
+}
+.rip-status-bar:focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: 2px;
 }
 .rip-status-bar--done {
-  border-left-color: var(--green, #4ade80);
+  border-left-color: #5fae7e;
 }
 .rip-status-bar--error {
-  border-left-color: var(--red, #f87171);
+  border-left-color: #d2685f;
 }
-.rip-status-bar__text {
+.rip-status-bar__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--ac);
+}
+.rip-status-bar--done .rip-status-bar__head {
+  color: #5fae7e;
+}
+.rip-status-bar--error .rip-status-bar__head {
+  color: #d2685f;
+}
+.rip-status-bar--ripping .rip-status-bar__head > svg:first-child {
+  animation: rip-disc-spin 2.4s linear infinite;
+}
+@keyframes rip-disc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.rip-status-bar__title {
   flex: 1;
   min-width: 0;
+  font-weight: 600;
+  color: var(--tx-strong);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.rip-status-bar__count,
+.rip-status-bar__pct {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--tx2);
+}
+.rip-status-bar__pct {
+  min-width: 3.2em;
+  text-align: right;
+  color: var(--tx);
+}
+.rip-status-bar__track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bd-strong);
+  overflow: hidden;
+}
+.rip-status-bar__fill {
+  height: 100%;
+  background: var(--ac);
+  border-radius: 2px;
+  transition: width 0.25s ease-out;
+}
+.rip-status-bar--done .rip-status-bar__fill {
+  background: #5fae7e;
+}
+.rip-status-bar--error .rip-status-bar__fill {
+  background: #d2685f;
+}
+.rip-status-bar__sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.rip-status-bar__label {
+  flex: 1;
+  min-width: 0;
+  color: var(--tx2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rip-status-bar__stage {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  color: var(--ac-hi);
+  background: var(--ac-14);
+}
+.rip-status-bar__stage--encoding {
+  color: var(--warn);
+  background: rgba(224, 163, 60, 0.14);
 }
 .rip-status-bar__close {
   background: none;
@@ -5125,21 +5214,21 @@ input {
   align-items: center;
   flex-shrink: 0;
 }
-.rip-status-bar__close:hover {
+.rip-status-bar__close:hover,
+.rip-status-bar__close:focus-visible {
   color: var(--tx);
 }
-/* no-rail 時は fixed フォールバック */
-.app.no-rail .rip-status-bar {
-  grid-column: unset;
-  grid-row: unset;
-  position: fixed;
-  right: 12px;
-  bottom: 90px;
-  width: 280px;
-  border-radius: 8px;
-  border: 1px solid var(--bd-strong);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  z-index: 1500;
+/* 進捗カードが出ている間はトーストをその上に積む。 */
+.toaster.toaster--above-rip {
+  bottom: 166px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rip-status-bar,
+  .rip-status-bar__fill,
+  .rip-status-bar--ripping .rip-status-bar__head > svg:first-child {
+    animation: none;
+    transition: none;
+  }
 }
 
 /* ============================================================

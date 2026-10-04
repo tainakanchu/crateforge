@@ -414,6 +414,14 @@ pub struct RipRequest {
     pub add_to_library: bool,
 }
 
+/// リッピング中のトラックの工程 (UI の「読み取り中 / エンコード中」表示用)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RipStage {
+    Reading,
+    Encoding,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum RipProgress {
@@ -425,9 +433,13 @@ pub enum RipProgress {
         total: usize,
         label: String,
     },
+    /// トラック内の進捗。`percent` はそのトラック全体 (読み取り+エンコード) に対する
+    /// 0〜100 の割合で、`stage` は現在の工程。読み取りが大半の時間を占めるので
+    /// 読み取り = 0〜90%、エンコード開始 = 90% として配分する (ripper.rs 参照)。
     TrackProgress {
         index: usize,
         percent: u8,
+        stage: RipStage,
     },
     TrackDone {
         index: usize,
