@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.13.3] - 2026-10-05
+
+### 日本語
+
+#### デスクトップ
+- **動作の軽量化**: 一時停止中に画面全体が 1 秒に 4 回描き直されていたのを止め、OS のメディア表示の更新も必要なときだけに。ライブラリ操作のたびに走っていたデータベースの確認処理を起動時の 1 回だけにし、一覧・検索・Similar・スマートプレイリスト・エクスポート・バックアップなどの重い処理を画面の描画と別のスレッドで動かすようにして、操作中に画面が固まりにくくした。(#214)
+
+### English
+
+#### Desktop
+- **Performance improvements**: stopped the whole UI from re-rendering four times per second while paused, and the OS media display is now updated only when needed. The database check that ran on every library operation now runs once at startup, and heavy work such as listing, search, Similar, smart playlists, export, and backup now runs off the UI thread so the window is less likely to freeze. (#214)
+
 ## [v0.13.2] - 2026-10-05
 
 ### 日本語
