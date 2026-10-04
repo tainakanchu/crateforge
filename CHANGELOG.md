@@ -10,6 +10,20 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.13.2] - 2026-10-05
+
+### 日本語
+
+#### デスクトップ
+- **CD ドライブの自動検出と前回ドライブの記憶**: CD を入れても自動で検出されなかった問題を修正（Windows ではドライブが `D:` 固定で監視されていた）。接続されている CD ドライブを自動で見つけ、取り込み画面のドライブ欄も選択式に。前回使ったドライブを覚えるようになった。検出バナーの「取り込む」からは、そのドライブのまま取り込み画面が開く。(#212)
+- **CD 監視を軽量化**: ディスクの有無だけを軽く確認し、目次を読むのは入れたときの 1 回だけに。ディスクを入れっぱなしでもドライブが回り続けない。画面を最小化しているときや取り込み中は監視を止め、CD の読み取りで画面が固まらないようにした。(#212)
+
+### English
+
+#### Desktop
+- **Automatic CD drive detection and remembering the last drive**: fixed inserted CDs not being detected automatically (on Windows the watcher was hard-wired to `D:`). Connected CD drives are now found automatically, the drive field in the import dialog is a selector, and the last used drive is remembered. "Import" on the detection banner opens the import dialog with that drive. (#212)
+- **Lighter CD monitoring**: the watcher now only checks whether a disc is present and reads the table of contents once when a disc is inserted, so the drive no longer keeps spinning while a disc stays in. Monitoring pauses while the window is minimized or an import is running, and reading the CD no longer freezes the UI. (#212)
+
 ## [v0.13.1] - 2026-10-05
 
 ### 日本語
