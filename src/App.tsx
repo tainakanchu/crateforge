@@ -50,6 +50,9 @@ type RemotePlayerState = { shuffle: boolean; repeat: RepeatMode; volume: number 
 /// f32 で往復するので音量は誤差を許容して比較する。
 const VOLUME_EPS = 0.005;
 
+/// 解析進捗 (analysis-progress の item) をストアへ反映する最短間隔 (ms)。
+const ANALYSIS_PROGRESS_THROTTLE_MS = 250;
+
 /// Rust プレイヤーの shuffle / repeat / volume をストアへ逆同期する。
 /// リモート API (/api/remote/shuffle など) や別クライアントからの変更を拾うのが目的。
 /// ローカル操作は backend 完了後にストアへ書くので基本的に食い違わないが、
@@ -606,17 +609,53 @@ export default function App() {
     if (!isTauri) return;
     loadAnalyses();
     let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    // item 進捗は 1 曲ごとに来るので、ストア更新は最大 ANALYSIS_PROGRESS_THROTTLE_MS ごとに
+    // 間引く (最後の値は必ず反映)。start / finished は即時反映し、保留中の item は捨てる (#213)。
+    let pendingItem: { done: number; total: number } | null = null;
+    let lastApplied = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const flushItem = () => {
+      timer = undefined;
+      if (!pendingItem) return;
+      lastApplied = Date.now();
+      setAnalysisActive(pendingItem);
+      pendingItem = null;
+    };
+    const dropPending = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+      pendingItem = null;
+    };
     (async () => {
-      unlisten = await analysisApi.onAnalysisProgress((p) => {
-        if (p.kind === "start") setAnalysisActive({ done: 0, total: p.total });
-        else if (p.kind === "item") setAnalysisActive({ done: p.done, total: p.total });
-        else if (p.kind === "finished") {
+      const u = await analysisApi.onAnalysisProgress((p) => {
+        if (p.kind === "start") {
+          dropPending();
+          lastApplied = Date.now();
+          setAnalysisActive({ done: 0, total: p.total });
+        } else if (p.kind === "item") {
+          pendingItem = { done: p.done, total: p.total };
+          // 最終アイテム (done === total) は待たずに反映する。
+          if (p.done >= p.total) {
+            if (timer !== undefined) clearTimeout(timer);
+            flushItem();
+            return;
+          }
+          if (timer !== undefined) return;
+          const wait = Math.max(0, lastApplied + ANALYSIS_PROGRESS_THROTTLE_MS - Date.now());
+          timer = setTimeout(flushItem, wait);
+        } else if (p.kind === "finished") {
+          dropPending();
           setAnalysisActive(null);
           loadAnalyses();
         }
       });
+      if (cancelled) u();
+      else unlisten = u;
     })();
     return () => {
+      cancelled = true;
+      dropPending();
       if (unlisten) unlisten();
     };
   }, [loadAnalyses, setAnalysisActive]);
@@ -821,8 +860,11 @@ export default function App() {
     if (!isTauri) return;
     let unlisten: (() => void) | undefined;
     (async () => {
-      unlisten = await playlistsApi.onLibraryChanged(() => {
-        useStore.getState().bumpArtworkEpoch();
+      unlisten = await playlistsApi.onLibraryChanged((_playlistId, info) => {
+        // アートワークが実際に変わりうる変更のときだけ epoch を進める。
+        // 毎回進めると全 ArtworkImg が一斉に取り直してしまう (#213)。
+        // アプリ内のアートワーク編集は TrackEditor が直接 bumpArtworkEpoch する。
+        if (info.artworkChanged) useStore.getState().bumpArtworkEpoch();
         reloadPlaylists();
         setReloadCount((c) => c + 1);
         libraryDirtyRef.current = true;

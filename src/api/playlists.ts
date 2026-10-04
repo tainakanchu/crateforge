@@ -113,10 +113,21 @@ export async function getSmartPlaylistTracks(
 // ===== ライブラリ変更通知 =====
 
 /// API 経由などライブラリ変更時に発火するイベントを購読する。
+/// `library-changed` の付随情報。`artworkChanged` は埋め込みアートワークが
+/// 変わりうる書き込み (API の artwork PUT/DELETE・upload repair・同期) のときだけ true。
+/// 古いバックエンド / 付与されないイベントでは false 扱い。
+export interface LibraryChangedInfo {
+  artworkChanged: boolean;
+}
+
 export function onLibraryChanged(
-  cb: (playlistId: number | null) => void,
+  cb: (playlistId: number | null, info: LibraryChangedInfo) => void,
 ): Promise<UnlistenFn> {
-  return listen<{ playlistId: number | null }>("library-changed", (e) =>
-    cb(e.payload?.playlistId ?? null),
+  return listen<{ playlistId?: number | null; artworkChanged?: boolean } | null>(
+    "library-changed",
+    (e) =>
+      cb(e.payload?.playlistId ?? null, {
+        artworkChanged: e.payload?.artworkChanged === true,
+      }),
   );
 }
