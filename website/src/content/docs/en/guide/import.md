@@ -115,7 +115,9 @@ When an auto-export succeeds, `library.db` is backed up along with it
 
 From **"💿 Rip CD"** in the toolbar, you can import a physical CD (track info is fetched automatically from MusicBrainz, and cover art from the Cover Art Archive).
 
-1. Enter the **Drive** and click "🔍 Detect Disc" (defaults are Linux: `/dev/cdrom`, macOS: `disk1`, Windows: `D:`; on Linux you can also type `/dev/sr0` and the like manually)
+1. Choose the **Drive** and click "🔍 Detect Disc". Connected CD drives (e.g. `E:` on Windows, `/dev/sr0` / `/dev/cdrom` on Linux) are listed automatically, and the drive that was last read successfully is remembered as the next default. If yours isn't listed, pick "その他…" (Other) to type it manually (fallback defaults when nothing is detected: Linux: `/dev/cdrom`, macOS: `disk1`, Windows: `D:`)
+
+   While the app is running, CD drives are watched automatically: inserting a disc shows a "CD を検出しました" (CD detected) banner, and clicking "取り込む" (Import) opens Rip CD with that drive selected.
 2. The TOC is read and candidate albums from MusicBrainz are displayed automatically
 3. Re-pick the release if needed, and select the tracks
 4. Specify the **Format** (FLAC / ALAC / MP3 / WAV) and the **Output** folder, then click "▶ Start Ripping"

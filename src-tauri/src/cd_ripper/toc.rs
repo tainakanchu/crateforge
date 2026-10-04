@@ -102,3 +102,17 @@ pub fn detect_disc(_device: &str) -> Result<DiscToc, String> {
          or paste a TOC manually and use `compute_disc_id` to look it up on MusicBrainz."
         .to_string())
 }
+
+/// ドライブにディスクが入っているか (ポーリング用の軽量チェック)。
+/// Windows は IOCTL_STORAGE_CHECK_VERIFY2 で TOC を読まずに確認する。
+/// それ以外は TOC 読み取りの成否で代用する。panic しない。
+pub fn disc_present(device: &str) -> bool {
+    #[cfg(windows)]
+    {
+        crate::cd_ripper::win_cd::media_present(device)
+    }
+    #[cfg(not(windows))]
+    {
+        detect_disc(device).is_ok()
+    }
+}

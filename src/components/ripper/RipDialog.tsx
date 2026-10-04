@@ -14,9 +14,14 @@ import { primeRipChime } from "../../lib/ripChime";
 
 interface RipDialogProps {
   open: boolean;
+  // 検出バナーから開いたときの検出元ドライブ。null なら保存済み/自動検出に従う。
+  initialDevice?: string | null;
   onClose: () => void;
   onLibraryChanged: () => void;
 }
+
+// ドライブ選択の「その他…」(手入力) を表す番兵値
+const OTHER_DEVICE = "__other__";
 
 type Stage = "idle" | "detecting" | "looking-up" | "ready" | "ripping" | "done" | "error";
 
@@ -27,15 +32,21 @@ const FORMATS: { value: EncodeFormat; label: string; desc: string }[] = [
   { value: "wav", label: "WAV", desc: "無圧縮" },
 ];
 
-export function RipDialog({ open: isOpen, onClose, onLibraryChanged: _onLibraryChanged }: RipDialogProps) {
+export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibraryChanged: _onLibraryChanged }: RipDialogProps) {
   // グローバルトースト通知
   const pushToast = useStore((s) => s.pushToast);
   const ripFormat = useStore((s) => s.ripFormat);
   const ripOutputDir = useStore((s) => s.ripOutputDir);
   const setRipFormat = useStore((s) => s.setRipFormat);
   const setRipOutputDir = useStore((s) => s.setRipOutputDir);
+  const setRipDevice = useStore((s) => s.setRipDevice);
   const [stage, setStage] = useState<Stage>("idle");
-  const [device, setDevice] = useState(defaultDevice());
+  const [device, setDevice] = useState(
+    () => useStore.getState().ripDevice ?? defaultDevice(),
+  );
+  // listCdDrives で検出したドライブ一覧と、「その他…」(手入力) モードか
+  const [drives, setDrives] = useState<string[]>([]);
+  const [customDevice, setCustomDevice] = useState(false);
   const [toc, setToc] = useState<DiscToc | null>(null);
   const [candidates, setCandidates] = useState<ReleaseCandidate[]>([]);
   const [selectedRelease, setSelectedRelease] = useState<ReleaseCandidate | null>(null);
@@ -54,11 +65,46 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged: _onLibraryC
     }
   }, [isOpen]);
 
+  // 開くたびにドライブを検出し、初期ドライブを決める。
+  // 優先順: 検出バナーの検出元 > 保存済み (ripDevice) > 検出した先頭 > 既定値
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    setCustomDevice(false);
+    if (initialDevice) {
+      // 新しく入れたディスクなので、前回の TOC/候補は捨てる
+      setDevice(initialDevice);
+      setToc(null);
+      setCandidates([]);
+      setSelectedRelease(null);
+      setErrorMsg("");
+      setStage("idle");
+    } else {
+      const saved = useStore.getState().ripDevice;
+      if (saved) setDevice(saved);
+    }
+    ripperApi
+      .listCdDrives()
+      .catch(() => [] as string[])
+      .then((list) => {
+        if (cancelled) return;
+        setDrives(list);
+        if (!initialDevice && !useStore.getState().ripDevice) {
+          setDevice(list[0] ?? defaultDevice());
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, initialDevice]);
+
   const handleDetect = useCallback(async () => {
     setStage("detecting");
     setErrorMsg("");
     try {
       const t = await ripperApi.detectDisc(device);
+      // 読み取れたドライブを次回の既定 & ディスク監視対象として覚える
+      setRipDevice(device);
       setToc(t);
       setSelectedTracks(new Set(Array.from({ length: t.trackCount }, (_, i) => i + 1)));
       setStage("looking-up");
@@ -80,7 +126,7 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged: _onLibraryC
       setErrorMsg(`${e}`);
       setStage("error");
     }
-  }, [device]);
+  }, [device, setRipDevice]);
 
   const handlePickOutputDir = useCallback(async () => {
     const dir = await open({ directory: true, multiple: false });
@@ -218,13 +264,40 @@ export function RipDialog({ open: isOpen, onClose, onLibraryChanged: _onLibraryC
           {/* Device + detect */}
           <div className="rip-row">
             <label>Drive:</label>
-            <input
-              type="text"
-              value={device}
-              onChange={(e) => setDevice(e.target.value)}
-              disabled={stage === "ripping"}
-              className="rip-input"
-            />
+            {drives.length > 0 && (
+              <select
+                value={!customDevice && drives.includes(device) ? device : OTHER_DEVICE}
+                onChange={(e) => {
+                  if (e.target.value === OTHER_DEVICE) {
+                    setCustomDevice(true);
+                  } else {
+                    setCustomDevice(false);
+                    setDevice(e.target.value);
+                  }
+                }}
+                disabled={stage === "ripping"}
+                className="rip-input"
+                aria-label="ドライブ"
+              >
+                {drives.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+                <option value={OTHER_DEVICE}>その他…</option>
+              </select>
+            )}
+            {(drives.length === 0 || customDevice || !drives.includes(device)) && (
+              <input
+                type="text"
+                value={device}
+                onChange={(e) => setDevice(e.target.value)}
+                disabled={stage === "ripping"}
+                className="rip-input"
+                placeholder={defaultDevice()}
+                aria-label="ドライブ (手入力)"
+              />
+            )}
             <button
               className="toolbar-btn primary"
               onClick={handleDetect}

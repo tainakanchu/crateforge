@@ -114,7 +114,9 @@ Library XML を自動で書き出します。DJ ソフト側に最新のライ�
 
 ツールバーの **「💿 Rip CD」** から、物理 CD を取り込めます（MusicBrainz で曲情報、Cover Art Archive でジャケットを自動取得）。
 
-1. **Drive** を入力して「🔍 Detect Disc」（既定は Linux: `/dev/cdrom`、macOS: `disk1`、Windows: `D:`。Linux では `/dev/sr0` 等も手入力できます）
+1. **Drive** を選んで「🔍 Detect Disc」。接続されている CD ドライブ（Windows なら `E:` など、Linux なら `/dev/sr0` / `/dev/cdrom`）を自動で一覧表示し、前回読み取れたドライブを覚えて次回の既定にします。一覧にない場合は「その他…」で手入力できます（検出できないときの既定は Linux: `/dev/cdrom`、macOS: `disk1`、Windows: `D:`）
+
+   アプリ起動中に CD を入れると、ドライブを自動で監視して「CD を検出しました」バナーが出ます。「取り込む」を押すと、そのドライブが選ばれた状態で Rip CD が開きます。
 2. TOC が読まれ、自動的に MusicBrainz の候補アルバムを表示
 3. 必要に応じてリリースを選び直し、トラックを選択
 4. **Format**（FLAC / ALAC / MP3 / WAV）と **Output** フォルダを指定して「▶ Start Ripping」

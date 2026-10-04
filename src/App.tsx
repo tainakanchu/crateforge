@@ -151,6 +151,8 @@ export default function App() {
   const runAutoExportCallbackRef = useRef<() => Promise<void>>(async () => {});
   const [reloadCount, setReloadCount] = useState(0);
   const [ripOpen, setRipOpen] = useState(false);
+  // 検出バナーから開いたときに RipDialog へ渡すドライブ (検出元)
+  const [ripInitialDevice, setRipInitialDevice] = useState<string | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [editorTracks, setEditorTracks] = useState<Track[] | null>(null);
   const [convertIds, setConvertIds] = useState<number[] | null>(null);
@@ -1229,7 +1231,12 @@ export default function App() {
       )}
       <PlayerBar />
       <RipStatusBar onOpenLog={() => setRipOpen(true)} />
-      <RipDialog open={ripOpen} onClose={() => setRipOpen(false)} onLibraryChanged={triggerReload} />
+      <RipDialog
+        open={ripOpen}
+        initialDevice={ripInitialDevice}
+        onClose={() => { setRipOpen(false); setRipInitialDevice(null); }}
+        onLibraryChanged={triggerReload}
+      />
       <RulesPanel open={rulesOpen} onClose={() => setRulesOpen(false)} onLibraryChanged={triggerReload} />
       {editorTracks && (
         <TrackEditor
@@ -1266,7 +1273,7 @@ export default function App() {
       {detectedDisc && (
         <DiscDetectedBanner
           disc={detectedDisc}
-          onRip={() => { dismissDisc(); setRipOpen(true); }}
+          onRip={() => { setRipInitialDevice(detectedDisc.device); dismissDisc(); setRipOpen(true); }}
           onDismiss={dismissDisc}
         />
       )}

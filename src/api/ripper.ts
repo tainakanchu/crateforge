@@ -11,6 +11,16 @@ export async function detectDisc(device?: string): Promise<DiscToc> {
   return invoke("detect_disc", { device: device ?? null });
 }
 
+/** ディスクが入っているかの軽量チェック (TOC は読まない / Windows)。失敗時は false。 */
+export async function discPresent(device: string): Promise<boolean> {
+  return invoke("disc_present", { device });
+}
+
+/** 接続されている CD ドライブ一覧 (Windows: ["E:"] など)。取得失敗時は空配列。 */
+export async function listCdDrives(): Promise<string[]> {
+  return invoke("list_cd_drives");
+}
+
 export async function lookupReleaseByDiscId(
   musicbrainzId: string,
 ): Promise<ReleaseCandidate[]> {
