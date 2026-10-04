@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.13.1] - 2026-10-05
+
+### 日本語
+
+#### デスクトップ
+- **CD 取り込み完了後も「リッピング中」の表示が消えない問題を修正**: 取り込みが終わっても進捗カードが「リッピング中 12/12」のまま残り、ログの各トラックの出力先が `undefined` と表示されていた問題を修正。完了時の表示・完了音・トーストが正しく出るように。(#210)
+
+### English
+
+#### Desktop
+- **Fixed the CD import status staying at "Ripping" after completion**: after an import finished, the progress card stayed at "Ripping 12/12" and the log showed `undefined` as each track's output path. The completion state, sound, and toast now appear correctly. (#210)
+
 ## [v0.13.0] - 2026-10-05
 
 ### 日本語
