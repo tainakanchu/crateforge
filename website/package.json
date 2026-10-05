@@ -12,12 +12,14 @@
   "dependencies": {
     "@astrojs/starlight": "^0.42.5",
     "astro": "^7.2.10",
-    "sharp": "^0.35.0"
+    "sharp": "^0.35.4"
   },
   "pnpm": {
     "overrides": {
       "devalue": "5.9.4",
-      "http-cache-semantics": ">=4.3.0"
+      "http-cache-semantics": ">=4.3.0",
+      "js-yaml@4": "4.3.2",
+      "sharp": ">=0.35.4"
     }
   }
 }
