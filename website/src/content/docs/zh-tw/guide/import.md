@@ -115,7 +115,7 @@ Library XML。想要隨時把最新的音樂庫交給 DJ 軟體時很方便。
 
 1. 選擇 **Drive** 並按「🔍 Detect Disc」。會自動列出已連接的光碟機（Windows 如 `E:`，Linux 如 `/dev/sr0` / `/dev/cdrom`），並記住上次成功讀取的光碟機作為下次的預設。若清單中沒有，可選「その他…」（其他）手動輸入（偵測不到時的預設為 Linux：`/dev/cdrom`、macOS：`disk1`、Windows：`D:`）
 
-   應用程式執行中會自動監看光碟機：放入 CD 時會顯示「CD を検出しました」（偵測到 CD）橫幅，按「取り込む」（匯入）即會以該光碟機開啟 Rip CD。
+   應用程式執行中會自動監看光碟機：放入 CD 時會顯示「CD を検出しました」（偵測到 CD）對話框，按「取り込む」（匯入）即會以該光碟機開啟 Rip CD。
 2. 讀取 TOC 後，自動顯示 MusicBrainz 的候選專輯
 3. 視需要重新選擇發行版本，並選取曲目
 4. 指定 **Format**（FLAC / ALAC / MP3 / WAV）與 **Output** 資料夾後按「▶ Start Ripping」

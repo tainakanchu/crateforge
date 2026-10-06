@@ -151,7 +151,7 @@ export default function App() {
   const runAutoExportCallbackRef = useRef<() => Promise<void>>(async () => {});
   const [reloadCount, setReloadCount] = useState(0);
   const [ripOpen, setRipOpen] = useState(false);
-  // 検出バナーから開いたときに RipDialog へ渡すドライブ (検出元)
+  // 検出ダイアログから開いたときに RipDialog へ渡すドライブ (検出元)
   const [ripInitialDevice, setRipInitialDevice] = useState<string | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [editorTracks, setEditorTracks] = useState<Track[] | null>(null);
