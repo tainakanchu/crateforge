@@ -3212,20 +3212,6 @@ input {
 .update-banner-current {
   color: var(--tx2);
 }
-.disc-detected-banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 18px;
-  background: rgba(108, 161, 181, 0.12);
-  border-bottom: 1px solid rgba(108, 161, 181, 0.35);
-  color: var(--tx);
-  font-size: 12px;
-}
-.disc-detected-banner-text {
-  flex: 1;
-}
-
 /* ============================================================
    Modals (Rip / Rules / Track Info / generic)
    ============================================================ */

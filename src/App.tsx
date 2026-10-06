@@ -16,7 +16,7 @@ import { SmartPlaylistEditor } from "./components/SmartPlaylistEditor";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { PairingApprovalDialog } from "./components/PairingApprovalDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
-import { DiscDetectedBanner } from "./components/DiscDetectedBanner";
+import { DiscDetectedDialog } from "./components/DiscDetectedDialog";
 import { Toaster } from "./components/Toaster";
 import { RipStatusBar } from "./components/RipStatusBar";
 import { DropImportOverlay } from "./components/DropImportOverlay";
@@ -1322,7 +1322,7 @@ export default function App() {
       )}
       {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
       {detectedDisc && (
-        <DiscDetectedBanner
+        <DiscDetectedDialog
           disc={detectedDisc}
           onRip={() => { setRipInitialDevice(detectedDisc.device); dismissDisc(); setRipOpen(true); }}
           onDismiss={dismissDisc}
