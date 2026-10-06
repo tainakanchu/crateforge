@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.13.4] - 2026-10-06
+
+### 日本語
+
+#### デスクトップ
+- **CD 検出時の表示崩れを修正**: CD を入れたときの「CD を検出しました」の通知が、画面の端に崩れた状態で表示されていたのを修正。画面中央のダイアログで出るようにし、トラック数・総再生時間・ドライブも表示するようにした。Esc か背景クリックで閉じられる。(#219)
+
+### English
+
+#### Desktop
+- **Fixed the broken CD detection notice**: the "CD を検出しました" (CD detected) notice shown when inserting a disc rendered in a broken state at the edge of the window. It now appears as a centered dialog that also shows the track count, total length, and drive, and can be closed with Esc or by clicking the backdrop. (#219)
+
 ## [v0.13.3] - 2026-10-05
 
 ### 日本語
