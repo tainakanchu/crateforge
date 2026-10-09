@@ -1106,13 +1106,23 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         <div className="modal-header">
           <h2>
             <Icon name="upload" size={16} /> USB に書き出し（CDJ / rekordbox 互換）
+            <span className="usb-badge" title="CDJ / XDJ の実機ではまだ検証していません">
+              実験的
+            </span>
             {keepDeviceActive && <span className="usb-badge">CDJ の変更を優先</span>}
           </h2>
           <button className="modal-close" onClick={handleClose}>
             <Icon name="x" size={16} />
           </button>
         </div>
-        <div className="modal-body sync-body usb-body">{body}</div>
+        <div className="modal-body sync-body usb-body">
+          {step === "setup" && (
+            <p className="usb-fine usb-experimental">
+              実験的な機能です。CDJ / XDJ の実機ではまだ検証していないため、現場で使う前に手持ちのプレーヤーで読み込み・キュー・グリッドを確認してください。
+            </p>
+          )}
+          {body}
+        </div>
         <div className="modal-footer">{footer}</div>
       </div>
     </div>

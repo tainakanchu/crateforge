@@ -8,7 +8,7 @@ description: プレイリストを CDJ / XDJ で読める USB に書き出す。
 
 > 画像は後日追加
 
-:::caution
+:::caution[実験的な機能]
 rekordbox・CDJ・XDJ は AlphaTheta 株式会社の商標です。Crateforge と rbx-cli は同社とは **無関係** で、同社の承認も受けていません。
 また、この機能は **開発者の手元の実機（CDJ / XDJ）ではまだ検証していません**。本番の現場で使う前に、手持ちのプレーヤーで読み込み・キュー位置・グリッドを必ず確認してください。
 :::

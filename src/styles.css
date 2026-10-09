@@ -6425,6 +6425,10 @@ input {
   font-size: 11px;
   line-height: 1.55;
 }
+.usb-fine.usb-experimental {
+  margin: 0 0 10px;
+  color: var(--warn);
+}
 .usb-rbx-prompt p {
   margin: 8px 0;
   font-size: 12.5px;

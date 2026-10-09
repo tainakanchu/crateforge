@@ -8,7 +8,7 @@ description: 將播放清單匯出到 CDJ / XDJ 可讀取的 USB。外部工具 
 
 > 圖片日後補上
 
-:::caution
+:::caution[實驗性功能]
 rekordbox、CDJ、XDJ 是 AlphaTheta 株式會社的商標。Crateforge 與 rbx-cli 與該公司 **無關**，亦未獲其認可。
 此外，此功能 **開發者尚未在實機（CDJ / XDJ）上驗證**。正式上場前，請務必在自己的播放器上確認讀取、Cue 位置與格線。
 :::

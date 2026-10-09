@@ -8,7 +8,7 @@ An export works as a **sync**: from the second time on, only the tracks that cha
 
 > Screenshots to be added
 
-:::caution
+:::caution[Experimental feature]
 rekordbox, CDJ and XDJ are trademarks of AlphaTheta Corporation. Crateforge and rbx-cli are **not affiliated** with or endorsed by AlphaTheta.
 This feature has **not yet been tested on real CDJ / XDJ hardware by the developers**. Before relying on it at a gig, check loading, cue positions and grids on your own players.
 :::
