@@ -127,3 +127,7 @@ Library XML を自動で書き出します。DJ ソフト側に最新のライ�
 WSL2 では物理 CD が直接見えないため、`usbipd-win` でドライブを WSL2 に attach する必要があります。
 Windows ビルドでは `discid`（libdiscid）を同梱しませんが、TOC は OS の IOCTL から直接読み取り MusicBrainz Disc ID を自前計算するため、Detect Disc は動作します。libdiscid も IOCTL も使えない環境では、TOC を手動入力して MusicBrainz 検索できます。
 :::
+
+## 取り込んだ曲を CDJ で使う
+
+取り込んだ曲のプレイリストは、CDJ / XDJ 用の USB に書き出せます。Traktor のキュー/グリッドも一緒に書き出せます。詳しくは [USB 書き出し（CDJ / rekordbox 互換）](../usb-export/) を参照してください。

@@ -22,10 +22,13 @@ import { RipStatusBar } from "./components/RipStatusBar";
 import { DropImportOverlay } from "./components/DropImportOverlay";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 import { SyncProvisionDialog } from "./components/SyncProvisionDialog";
+import { UsbExportDialog } from "./components/UsbExportDialog";
+import { UsbExportStatusBar } from "./components/UsbExportStatusBar";
 import { TriagePanel } from "./components/TriagePanel";
 import { SetHistoryView } from "./components/SetHistoryView";
 import { useStore, markSetWorkspaceHydrationDone } from "./store/useStore";
 import { useDiscWatcher } from "./hooks/useDiscWatcher";
+import { useUsbExportEvents } from "./hooks/useUsbExportEvents";
 import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
 import * as playbackApi from "./api/playback";
@@ -163,6 +166,10 @@ export default function App() {
   const [installing, setInstalling] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [syncProvisionOpen, setSyncProvisionOpen] = useState(false);
+  // USB 書き出しダイアログ (開いているときは初期選択のプレイリスト ID 群)。
+  const [usbExportIds, setUsbExportIds] = useState<number[] | null>(null);
+  // 書き出しの進捗はダイアログを閉じていても store に集める。
+  useUsbExportEvents();
   const [helpOpen, setHelpOpen] = useState(false);
   const { detectedDisc, dismiss: dismissDisc } = useDiscWatcher({
     enabled: !ripOpen && ripStatus?.phase !== "ripping",
@@ -1210,6 +1217,7 @@ export default function App() {
       <Sidebar
         onPlaylistsChanged={triggerReload}
         onEditSmart={(id, name) => setSmartEditor({ playlistId: id, name })}
+        onUsbExport={(ids) => setUsbExportIds(ids)}
       />
       <div className="cb-main">
         <UpdateBanner />
@@ -1218,6 +1226,11 @@ export default function App() {
           onOpenRipDialog={() => setRipOpen(true)}
           onOpenRulesPanel={() => setRulesOpen(true)}
           onOpenSyncProvision={() => setSyncProvisionOpen(true)}
+          onOpenUsbExport={() =>
+            setUsbExportIds(
+              viewMode === "playlist" && selectedPlaylistId != null ? [selectedPlaylistId] : [],
+            )
+          }
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenHelp={() => setHelpOpen(true)}
         />
@@ -1282,6 +1295,13 @@ export default function App() {
       )}
       <PlayerBar />
       <RipStatusBar onOpenLog={() => setRipOpen(true)} />
+      <UsbExportStatusBar
+        hidden={usbExportIds != null}
+        onOpen={() =>
+          // 実行中 / 最後の書き出しの選択で開く (ダイアログ側も最後の設定を優先して表示する)。
+          setUsbExportIds(useStore.getState().usbExportLastOptions?.playlistIds ?? [])
+        }
+      />
       <RipDialog
         open={ripOpen}
         initialDevice={ripInitialDevice}
@@ -1318,6 +1338,12 @@ export default function App() {
         <SyncProvisionDialog
           onClose={() => setSyncProvisionOpen(false)}
           onLibraryChanged={triggerReload}
+        />
+      )}
+      {usbExportIds && (
+        <UsbExportDialog
+          initialPlaylistIds={usbExportIds}
+          onClose={() => setUsbExportIds(null)}
         />
       )}
       {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}

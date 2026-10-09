@@ -19,11 +19,14 @@ mod organizer;
 mod pairing;
 mod playlist_rules;
 mod proc;
+mod rbx_cli;
 mod smart;
 mod smtc;
 mod sync;
 mod text_fold;
+mod traktor_nml;
 mod updater;
+mod usb_export;
 
 use std::sync::Mutex;
 
@@ -124,6 +127,8 @@ pub fn run() {
         .manage(commands::playback::PreviewMode::default())
         .manage(commands::playback_persist::PlaybackPersister::default())
         .manage(commands::output_device::OutputDeviceNotices::default())
+        // USB 書き出し (rbx-cli) の単一実行ガード。
+        .manage(usb_export::UsbExportRuntime::default())
         .setup(|app| {
             // クラッシュ痕跡を残すためのファイルロガー + panic フックを最初に仕込む
             // (GUI 起動で stderr が残らない。panic=abort でも abort 前にフックが走る)。
@@ -294,6 +299,18 @@ pub fn run() {
             // ffmpeg (resolution / on-demand download)
             commands::ffmpeg::get_ffmpeg_status,
             commands::ffmpeg::download_ffmpeg,
+            // USB 書き出し (rekordbox 互換 / CDJ 向け、外部 rbx-cli)
+            commands::usb_export::get_rbx_cli_status,
+            commands::usb_export::download_rbx_cli,
+            commands::usb_export::set_rbx_cli_path,
+            commands::usb_export::get_traktor_nml_status,
+            commands::usb_export::set_traktor_nml_path,
+            commands::usb_export::usb_list_devices,
+            commands::usb_export::usb_eject,
+            commands::usb_export::usb_export_plan,
+            commands::usb_export::usb_export_start,
+            commands::usb_export::usb_export_cancel,
+            commands::usb_export::usb_export_status,
             // audio analysis
             commands::analysis::analyze_tracks,
             commands::analysis::get_analysis,
@@ -356,6 +373,8 @@ pub fn run() {
             // 終了時に再生キュー / 再生位置を即時保存する (#159)。
             if let tauri::RunEvent::Exit = event {
                 commands::playback_persist::flush(app);
+                // 実行中の rbx-cli (USB 書き出し) を孤児にしない。
+                commands::usb_export::shutdown(app);
             }
         });
 }

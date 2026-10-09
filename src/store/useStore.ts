@@ -21,6 +21,9 @@ import type {
   CrateAnchors,
   CrateSection,
   AnchorKind,
+  UsbExportError,
+  UsbExportOptions,
+  UsbExportResult,
 } from "../types";
 import {
   DEFAULT_FIELDS,
@@ -34,6 +37,54 @@ import {
   newSectionId,
 } from "../lib/setWorkspacePersist";
 import { isKeyNotation, type KeyNotation } from "../lib/keyNotation";
+
+// USB 書き出し (rbx-cli) のダイアログ設定 — 永続化する。
+export interface UsbExportSettings {
+  /** 最後に選んだ書き出し先 (USB のマウントポイント / フォルダ)。 */
+  lastDestination: string | null;
+  /** Traktor のキュー / グリッドを使う。既定 false (USB 上のキューを保持)。 */
+  useTraktor: boolean;
+  /** 埋め込みアートワークを書き出す。 */
+  artwork: boolean;
+  /** 今回の内容に無い曲を USB から消す。 */
+  prune: boolean;
+  /** プレーヤーに表示するデバイス名 (空なら変更しない)。 */
+  deviceName: string;
+  /** MP3 のキュー / グリッド補正 (ms)。既定 0 (実機で校正が必要)。 */
+  mp3OffsetMs: number;
+  /** CDJ で変更したキュー / グリッドを優先する (rbx-cli `onDeviceChanges: "keepDevice"`)。既定 false。 */
+  keepDeviceChanges: boolean;
+}
+
+export const DEFAULT_USB_EXPORT_SETTINGS: UsbExportSettings = {
+  lastDestination: null,
+  useTraktor: false,
+  artwork: true,
+  prune: true,
+  deviceName: "",
+  mp3OffsetMs: 0,
+  keepDeviceChanges: false,
+};
+
+// USB 書き出しの進捗 — セッション専用・永続化しない (浮遊ステータスカード / ダイアログ共用)。
+export type UsbExportPhase = "running" | "done" | "error";
+export interface UsbExportStatus {
+  /** バックエンドが実行ごとに振る id (イベントの runId)。古い実行のイベントは無視する。 */
+  runId: number;
+  phase: UsbExportPhase;
+  destination: string;
+  tracks: number;
+  /** rbx-cli の工程 (plan / analyze / check / copy / database / verify / publish)。 */
+  stage: string;
+  current: number;
+  total: number;
+  title: string | null;
+  skipped: number;
+  warnings: string[];
+  cancelling: boolean;
+  result?: UsbExportResult;
+  error?: UsbExportError;
+}
 
 // グローバルトースト（成功/失敗/情報の一時通知）。永続化しない。
 export type ToastKind = "success" | "error" | "info";
@@ -142,6 +193,8 @@ interface PersistedSettings {
   keyNotation: KeyNotation;
   // CD 取り込みの完了 / 失敗時に通知音を鳴らすか。既定 true。
   ripSoundEnabled: boolean;
+  // USB 書き出しダイアログの設定。
+  usbExport: UsbExportSettings;
 }
 
 /// Artists ビューでしか意味を持たないソートフィールド (#155)。
@@ -341,6 +394,16 @@ interface AppState extends PersistedSettings {
   // Analysis
   setAnalyses: (list: TrackAnalysis[]) => void;
   setAnalysisActive: (v: { done: number; total: number } | null) => void;
+  // USB export
+  setUsbExportSettings: (patch: Partial<UsbExportSettings>) => void;
+  usbExportStatus: UsbExportStatus | null;
+  setUsbExportStatus: (
+    s: UsbExportStatus | null | ((prev: UsbExportStatus | null) => UsbExportStatus | null),
+  ) => void;
+  /** 最後に開始した書き出しの設定 (セッション専用)。ステータスカードから開き直したときの
+   *  選択の表示と、「CDJ の変更を優先」での再試行に使う。 */
+  usbExportLastOptions: UsbExportOptions | null;
+  setUsbExportLastOptions: (o: UsbExportOptions | null) => void;
   // Rip progress
   ripStatus: RipStatus | null;
   setRipStatus: (s: RipStatus | null) => void;
@@ -606,6 +669,8 @@ export const useStore = create<AppState>()(
       analysisByTrack: new Map(),
       analysisActive: null,
       ripStatus: null,
+      usbExportStatus: null,
+      usbExportLastOptions: null,
       similarBaseTrackId: null,
       pendingUpdate: null,
       previewActive: false,
@@ -648,6 +713,7 @@ export const useStore = create<AppState>()(
       ripOutputDir: null,
       ripDevice: null,
       lastSyncDestRoot: null,
+      usbExport: { ...DEFAULT_USB_EXPORT_SETTINGS },
       similarFilters: DEFAULT_SIMILAR_FILTERS,
       auditionMode: false,
 
@@ -934,6 +1000,13 @@ export const useStore = create<AppState>()(
       setRipOutputDir: (ripOutputDir) => set({ ripOutputDir }),
       setRipDevice: (ripDevice) => set({ ripDevice }),
       setLastSyncDestRoot: (lastSyncDestRoot) => set({ lastSyncDestRoot }),
+      setUsbExportSettings: (patch) =>
+        set((state) => ({ usbExport: { ...state.usbExport, ...patch } })),
+      setUsbExportStatus: (s) =>
+        set((state) => ({
+          usbExportStatus: typeof s === "function" ? s(state.usbExportStatus) : s,
+        })),
+      setUsbExportLastOptions: (usbExportLastOptions) => set({ usbExportLastOptions }),
 
       setAnalyses: (list) =>
         set({ analysisByTrack: new Map(list.map((a) => [a.trackId, a])) }),
@@ -986,7 +1059,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 21,
+      version: 23,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -1020,6 +1093,7 @@ export const useStore = create<AppState>()(
           setToolsOpen: state.setToolsOpen,
           keyNotation: state.keyNotation,
           ripSoundEnabled: state.ripSoundEnabled,
+          usbExport: state.usbExport,
         }) satisfies PersistedSettings,
       // v1(visibleColumns) からの移行: 旧キーは破棄してデフォルトに倒す。
       // v3: recentPlaylistIds を追加（旧データには無いので配列で補完）。
@@ -1178,6 +1252,35 @@ export const useStore = create<AppState>()(
         if (version < 21 && persisted && typeof persisted === "object") {
           const p = persisted as Record<string, unknown>;
           if (typeof p.ripDevice !== "string") p.ripDevice = null;
+        }
+        // v22: USB 書き出し (rbx-cli) のダイアログ設定。旧データには無いので既定で補完し、
+        // 型の合わない値は既定に倒す。
+        if (version < 22 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          const u = (typeof p.usbExport === "object" && p.usbExport !== null
+            ? p.usbExport
+            : {}) as Record<string, unknown>;
+          const d = DEFAULT_USB_EXPORT_SETTINGS;
+          p.usbExport = {
+            lastDestination:
+              typeof u.lastDestination === "string" ? u.lastDestination : d.lastDestination,
+            useTraktor: typeof u.useTraktor === "boolean" ? u.useTraktor : d.useTraktor,
+            artwork: typeof u.artwork === "boolean" ? u.artwork : d.artwork,
+            prune: typeof u.prune === "boolean" ? u.prune : d.prune,
+            deviceName: typeof u.deviceName === "string" ? u.deviceName : d.deviceName,
+            mp3OffsetMs:
+              typeof u.mp3OffsetMs === "number" && Number.isFinite(u.mp3OffsetMs)
+                ? u.mp3OffsetMs
+                : d.mp3OffsetMs,
+          } satisfies Omit<UsbExportSettings, "keepDeviceChanges">;
+        }
+        // v23: USB 書き出しの「CDJ で変更したキュー/グリッドを優先する」。既定 false で補完。
+        if (version < 23 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (typeof p.usbExport === "object" && p.usbExport !== null) {
+            const u = p.usbExport as Record<string, unknown>;
+            if (typeof u.keepDeviceChanges !== "boolean") u.keepDeviceChanges = false;
+          }
         }
         return persisted as PersistedSettings;
       },

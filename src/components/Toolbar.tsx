@@ -13,6 +13,7 @@ interface ToolbarProps {
   onOpenRipDialog: () => void;
   onOpenRulesPanel: () => void;
   onOpenSyncProvision: () => void;
+  onOpenUsbExport: () => void;
   onOpenSettings: () => void;
   onOpenHelp: () => void;
 }
@@ -103,6 +104,7 @@ export function Toolbar({
   onOpenRipDialog,
   onOpenRulesPanel,
   onOpenSyncProvision,
+  onOpenUsbExport,
   onOpenSettings,
   onOpenHelp,
 }: ToolbarProps) {
@@ -519,6 +521,13 @@ export function Toolbar({
       title: "接続済みサーバーからプレイリストと曲を取り寄せる",
       onClick: onOpenSyncProvision,
       showLabel: true,
+    },
+    {
+      id: "usbExport",
+      label: "USB に書き出し",
+      icon: "upload",
+      title: "プレイリストを CDJ 用 USB (rekordbox 互換) に書き出す",
+      onClick: onOpenUsbExport,
     },
     {
       id: "import",

@@ -4,7 +4,7 @@
 //          ソースディレクトリから LICENSE/COPYING 等の全文を収集する。
 // - JS:    `pnpm licenses list --json --prod` で配布物に含まれる prod 依存を列挙し、
 //          node_modules の LICENSE 全文を収集する。
-// - FFmpeg は実行時 DL の外部コンポーネントなので、手動エントリで GPL を明記する。
+// - FFmpeg / rbx-cli は実行時 DL の外部コンポーネントなので、手動エントリで GPL を明記する。
 //
 // 配布前に必ず再生成すること:  nix develop -c node scripts/gen-licenses.mjs
 //
@@ -155,6 +155,23 @@ const RUNTIME_EXTRAS = [
       "ローカル領域に保存します（本アプリの配布物には含めず、リンクもしません = mere\n" +
       "aggregation）。FFmpeg は GPL-3.0-or-later の下で配布されています。ソースおよび\n" +
       "ライセンス全文: https://www.ffmpeg.org/  /  https://www.gnu.org/licenses/gpl-3.0.html",
+  },
+  {
+    name: "rbx-cli",
+    version: "runtime",
+    kind: "runtime",
+    license: "GPL-2.0-or-later",
+    repository: "https://github.com/tainakanchu/rbx-cli",
+    text:
+      "rbx-cli は本アプリには同梱されません。USB 書き出し（CDJ / rekordbox 互換）の際に、\n" +
+      "外部プロセスとして CLI を起動し、標準入出力の JSON でやり取りするためだけに使用します\n" +
+      "（リンクもコードの取り込みもしません = mere aggregation）。バイナリはユーザーの操作で\n" +
+      "上流の GitHub Release から自動ダウンロードし、ソースに固定した SHA-256 で検証してから\n" +
+      "ユーザーのローカル領域に保存します。rbx-cli は rbxport (Copyright (c) 2026 Chris Le) を\n" +
+      "基にした GPL-2.0-or-later のソフトウェアで、配布バイナリは LGPL-3.0 の mp3lame-encoder を\n" +
+      "含むため実質 GPL-3.0 として配布されています。ソースおよびライセンス全文:\n" +
+      "https://github.com/tainakanchu/rbx-cli  /  https://www.gnu.org/licenses/gpl-3.0.html\n" +
+      "rekordbox・CDJ は AlphaTheta 株式会社の商標であり、本アプリおよび rbx-cli は同社とは無関係です。",
   },
 ];
 

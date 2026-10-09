@@ -52,10 +52,13 @@ fontdb = "0.23"
 # tauri は内部で tokio をランタイムに使うため、tauri::async_runtime 経由で
 # axum::serve を spawn できる。tokio の features は明示的に拾っておく。
 axum = "0.8"
-tokio = { version = "1", features = ["net", "sync", "rt", "macros", "io-util", "process", "fs"] }
+tokio = { version = "1", features = ["net", "sync", "rt", "macros", "io-util", "process", "fs", "time"] }
 tower-http = { version = "0.6", features = ["fs"] }
 # ServeFile を 1 リクエストに oneshot で適用する (ストリーミング配信)。tests でも使う。
 tower = { version = "0.5", features = ["util"] }
+# USB 書き出し (rbx-cli): リクエストの一時ファイル (本人だけが読める 0600) と、
+# rbx-cli 取得時の衝突しない一時ファイル。テストでも使う。
+tempfile = "3"
 local-ip-address = "0.6"
 getrandom = "0.2"
 qrcode = "0.14"
@@ -97,12 +100,18 @@ discid = "0.6"
 [target.'cfg(target_os = "windows")'.dependencies]
 zip = "2"
 
+# === Windows 以外: rbx-cli (USB 書き出しエンジン) の Release アセット (tar.gz) の展開用 ===
+# Windows のアセットは zip なので上の `zip` を使う。
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+flate2 = "1"
+tar = "0.4"
+
 [dev-dependencies]
 # 内蔵 API サーバーのハンドラテスト用。
 #   tempfile = ファイルベースの一時 DB (インメモリは接続ごとに別物になり、
 #             ハンドラ内の Database::open と共有できないため不可)。
+#             本体依存にもある (下の [dependencies] の rbx-cli 用)。
 #   (tower は本体依存へ移動済み: ServiceExt::oneshot を tests でも使う。)
-tempfile = "3"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

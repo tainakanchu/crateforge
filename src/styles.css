@@ -6278,3 +6278,262 @@ input {
 .set-history-bind-pick:hover {
   background: var(--hover);
 }
+
+/* ============================================================
+   USB 書き出し (rbx-cli) — UsbExportDialog / UsbExportStatusBar
+   ============================================================ */
+.usb-modal {
+  width: 680px;
+  max-width: calc(100vw - 32px);
+}
+.usb-modal .modal-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.usb-body {
+  max-height: min(70vh, 640px);
+  overflow-y: auto;
+}
+.usb-badge {
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(224, 163, 60, 0.14);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 600;
+}
+.usb-gap {
+  margin-top: 18px;
+}
+.usb-gap-sm {
+  margin-top: 10px;
+}
+.usb-playlist-list {
+  max-height: 220px;
+}
+.usb-playlist {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--bg2);
+  cursor: pointer;
+  font-size: 12px;
+}
+.usb-playlist:last-child {
+  border-bottom: 0;
+}
+.usb-playlist:hover {
+  background: var(--hover);
+}
+.usb-playlist.implied {
+  color: var(--tx2);
+  cursor: default;
+}
+.usb-playlist .sync-playlist-name {
+  flex: 1;
+  min-width: 0;
+}
+.usb-playlist > svg {
+  flex-shrink: 0;
+  color: var(--mut);
+}
+.usb-devices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.usb-device {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--bd);
+  border-radius: 9px;
+  background: var(--bg2);
+  cursor: pointer;
+}
+.usb-device:hover {
+  background: var(--hover);
+}
+.usb-device > svg {
+  flex-shrink: 0;
+  color: var(--ac);
+}
+.usb-device-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.usb-device-copy strong {
+  font-size: 12.5px;
+}
+.usb-device-copy span {
+  color: var(--mut);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usb-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 9px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.usb-check input {
+  margin-top: 2px;
+}
+.usb-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--mut);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.usb-advanced {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--bd);
+  border-radius: 9px;
+  background: var(--bg2);
+}
+.usb-advanced .sync-field:last-child {
+  margin-bottom: 0;
+}
+.usb-number {
+  max-width: 120px;
+}
+.usb-detail {
+  margin-top: 6px;
+  color: var(--mut);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+.usb-fine {
+  margin: 10px 0 0;
+  color: var(--mut);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.usb-fine.usb-experimental {
+  margin: 0 0 10px;
+  color: var(--warn);
+}
+.usb-rbx-prompt p {
+  margin: 8px 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--tx2);
+}
+.usb-plan-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--bg2);
+  font-size: 12px;
+}
+.usb-plan-grid > div {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+.usb-plan-grid .k {
+  flex: 0 0 104px;
+  color: var(--mut);
+}
+.usb-plan-grid .v {
+  flex: 1;
+  min-width: 0;
+  color: var(--tx);
+  overflow-wrap: anywhere;
+}
+.usb-plan-grid .v.mono {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.usb-bad {
+  color: #ef9d9d !important;
+}
+.usb-examples {
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--tx2);
+}
+.usb-examples summary {
+  cursor: pointer;
+}
+.usb-examples ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  max-height: 140px;
+  overflow-y: auto;
+  color: var(--mut);
+  overflow-wrap: anywhere;
+}
+.usb-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 9px 11px;
+  border: 1px solid rgba(224, 163, 60, 0.35);
+  border-radius: 8px;
+  background: rgba(224, 163, 60, 0.08);
+  color: #e9c98d;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.usb-phases {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+}
+.usb-phases li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg2);
+  color: var(--mut);
+}
+.usb-phases li.done {
+  color: #72cb98;
+}
+.usb-phases li.current {
+  background: var(--ac-16);
+  color: var(--ac-hi);
+}
+/* CD 取り込みのカードが出ているときは、その上に積む。 */
+.usb-status-bar--stacked {
+  bottom: 178px;
+}
+.rip-status-bar--running .rip-status-bar__head {
+  color: var(--ac);
+}
+.toaster.toaster--above-two {
+  bottom: 254px;
+}
+.usb-rbx-prompt .sync-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warn);
+}
