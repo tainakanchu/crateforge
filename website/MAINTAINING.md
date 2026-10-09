@@ -45,6 +45,11 @@ GitHub Pages の使い方ドキュメント（`website/src/content/docs/`）が�
       `src-tauri/src/cd_ripper/`、`src/components/Toolbar.tsx` のダイアログ フィルタ）。
 - [ ] **convert.md** — 対応フォーマット・ビットレート・ffmpeg 解決順・ライブラリ追加の挙動
       （`src-tauri/src/converter/`、`src-tauri/src/ffmpeg.rs`、`src/components/ConvertDialog.tsx`）。
+- [ ] **usb-export.md** — 入口・オプション・計画の表示項目・Traktor の変換規則 / 照合 / MP3 オフセット・
+      キュー競合時の挙動・rbx-cli の解決順 / 取得 / 対応 OS
+      （`src-tauri/src/usb_export/`、`src-tauri/src/rbx_cli.rs`（`RBX_CLI_VERSION` / `PINNED_SHA256`）、
+      `src-tauri/src/traktor_nml/`、`src-tauri/src/commands/usb_export.rs`、`src/components/UsbExportDialog.tsx`）。
+      ※ rbx-cli 側の挙動（キャッシュ・同期・中止・エラーコード）は rbx-cli の `docs/protocol.md` が真実。
 - [ ] **customize.md** — 列/行高/カバーサイズの選択肢・検索構文・**キーボードショートカット表**
       （`src/components/TrackTable.tsx`、`ColumnPicker.tsx`、`src/App.tsx` のキーハンドラ、
       `src/components/ShortcutHelp.tsx`、`src-tauri/src/text_fold/`、`src-tauri/src/db/tracks.rs`）。

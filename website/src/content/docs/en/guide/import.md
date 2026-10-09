@@ -128,3 +128,7 @@ From **"💿 Rip CD"** in the toolbar, you can import a physical CD (track info 
 Under WSL2, a physical CD isn't visible directly, so you need to attach the drive to WSL2 with `usbipd-win`.
 The Windows build does not bundle `discid` (libdiscid), but "Detect Disc" still works because it reads the TOC directly via the OS IOCTL and computes the MusicBrainz Disc ID in-house. Entering the TOC manually is a fallback for environments where neither libdiscid nor IOCTL is available.
 :::
+
+## Using your tracks on a CDJ
+
+Playlists of the tracks you imported can be exported to a USB stick for CDJ / XDJ players, optionally with your Traktor cues and grids. See [USB export (CDJ / rekordbox-compatible)](../usb-export/).

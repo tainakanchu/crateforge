@@ -126,3 +126,7 @@ Library XML。想要隨時把最新的音樂庫交給 DJ 軟體時很方便。
 WSL2 無法直接看到實體 CD，因此需用 `usbipd-win` 將光碟機 attach 到 WSL2。
 Windows 組建未隨附 `discid`（libdiscid），但會使用 OS 的 IOCTL 直接讀取 TOC、並在應用程式端算出 MusicBrainz Disc ID，因此「Detect Disc」在 Windows 上也能運作（手動輸入 TOC 為備援方式）。
 :::
+
+## 在 CDJ 上使用匯入的曲目
+
+匯入曲目的播放清單可以匯出到 CDJ / XDJ 用的 USB，也可以一併匯出 Traktor 的 Cue / 格線。詳見 [USB 匯出（CDJ / rekordbox 相容）](../usb-export/)。
