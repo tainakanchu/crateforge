@@ -6,6 +6,9 @@
 //! | 0 cue / 1 fade-in / 2 fade-out / 3 load | キューポイント |
 //! | 5 loop | ループ (`loopEndMs = START + LEN`) |
 //!
+//! トラック先頭より前 (負の位置) のグリッドマーカーは、rbx-cli がアンカーを小節の頭として
+//! 扱うため、拍ではなく **小節単位** で 0 以上へ送る (送った先が次のマーカーに届くなら捨てる)。
+//!
 //! `HOTCUE` 0..7 → ホットキュー A..H、-1 → メモリーキュー。プロトコル上限 (A–P) を超える枠は捨てる。
 //! 名前はキューのコメントへ (Traktor 既定の `n.n.` は無名扱い)。
 //!
@@ -74,20 +77,43 @@ fn slot_letter(hotcue: i32) -> Option<String> {
     }
 }
 
-/// 負の位置 (Traktor はトラック先頭より前にグリッドマーカーを置ける) を、拍単位で
-/// 前へ送って 0 以上にする。テンポ位相は保たれる。
-fn first_non_negative_beat(time_ms: f64, bpm: f64) -> f64 {
+/// 1 小節の拍数。rbx-cli はアンカーを小節の頭 (1 拍目) として扱う。
+const BEATS_PER_BAR: f64 = 4.0;
+
+/// 負の位置 (Traktor はトラック先頭より前にグリッドマーカーを置ける) を、**小節単位** で
+/// 前へ送って 0 以上にする。rbx-cli はアンカーを 1 拍目として扱うので、拍単位で送ると
+/// ダウンビートが別の拍にずれる。テンポ位相と小節の位相の両方が保たれる。
+fn first_non_negative_bar(time_ms: f64, bpm: f64) -> f64 {
     if time_ms >= 0.0 {
         return time_ms;
     }
     let period = 60_000.0 / bpm;
     let beats = (-time_ms / period).ceil();
-    let t = time_ms + beats * period;
-    if t < 0.0 {
-        0.0
-    } else {
-        t
+    let bars = (beats / BEATS_PER_BAR).ceil();
+    (time_ms + bars * BEATS_PER_BAR * period).max(0.0)
+}
+
+/// グリッドマーカーの位置 (ms、オフセット適用済み) → アンカーの時刻。
+/// 負のマーカーは小節単位で前へ送るが、送った先が次の (本来の) マーカーに届く /
+/// 越えるなら捨てる (次のマーカーからのグリッドが優先)。
+fn grid_anchor_times(mut marks: Vec<f64>, bpm: f64) -> Vec<f64> {
+    marks.sort_by(|a, b| a.total_cmp(b));
+    let mut times = Vec::with_capacity(marks.len());
+    for (i, &t) in marks.iter().enumerate() {
+        if t >= 0.0 {
+            times.push(t);
+            continue;
+        }
+        let shifted = first_non_negative_bar(t, bpm);
+        if marks.get(i + 1).is_some_and(|&next| shifted >= next) {
+            continue;
+        }
+        times.push(shifted);
     }
+    times.sort_by(|a, b| a.total_cmp(b));
+    // rbx-cli はミリ秒に丸めた時刻が厳密に増加することを要求する。
+    times.dedup_by(|b, a| b.round() <= a.round());
+    times
 }
 
 /// 1 曲の NML エントリを、`offset_ms` を足しつつ cues / beatGrid に変換する。
@@ -103,15 +129,13 @@ pub fn map_entry(entry: &NmlEntry, offset_ms: f64) -> MappedCues {
         .bpm
         .filter(|b| b.is_finite() && *b > 0.0 && *b <= MAX_GRID_BPM)
         .and_then(|bpm| {
-            let mut times: Vec<f64> = entry
+            let marks: Vec<f64> = entry
                 .cues
                 .iter()
                 .filter(|c| c.kind == 4)
-                .map(|c| first_non_negative_beat(c.start_ms + offset, bpm))
+                .map(|c| c.start_ms + offset)
                 .collect();
-            times.sort_by(|a, b| a.total_cmp(b));
-            // rbx-cli はミリ秒に丸めた時刻が厳密に増加することを要求する。
-            times.dedup_by(|b, a| b.round() <= a.round());
+            let times = grid_anchor_times(marks, bpm);
             if times.is_empty() {
                 None
             } else {
@@ -324,11 +348,76 @@ mod tests {
     }
 
     #[test]
-    fn negative_grid_markers_are_moved_forward_by_whole_beats() {
-        // 120 BPM = 500 ms/拍。-120 ms → 380 ms。
+    fn negative_grid_markers_are_moved_forward_by_whole_bars() {
+        // 120 BPM = 500 ms/拍、2000 ms/小節。-120 ms → 1880 ms (1 小節後。拍単位なら 380 ms で
+        // 2 拍目が 1 拍目扱いになってしまう)。
         let m = map_entry(&entry(Some(120.0), vec![cue(4, -120.0, 0.0, -1, "")]), 0.0);
         let a = &m.grid.unwrap().anchors[0];
-        assert!((a.time_ms - 380.0).abs() < 1e-9, "{}", a.time_ms);
+        assert!((a.time_ms - 1880.0).abs() < 1e-9, "{}", a.time_ms);
+
+        // 4 拍を超える前置き: -2100 ms → 5 拍 → 2 小節 (4000 ms) 送って 1900 ms。
+        let m = map_entry(&entry(Some(120.0), vec![cue(4, -2100.0, 0.0, -1, "")]), 0.0);
+        let a = &m.grid.unwrap().anchors[0];
+        assert!((a.time_ms - 1900.0).abs() < 1e-9, "{}", a.time_ms);
+
+        // ちょうど 1 小節前 → 0 ms。
+        let m = map_entry(&entry(Some(120.0), vec![cue(4, -2000.0, 0.0, -1, "")]), 0.0);
+        assert_eq!(m.grid.unwrap().anchors[0].time_ms, 0.0);
+
+        // 負のオフセットで負になったマーカーも同じ扱い。
+        let m = map_entry(&entry(Some(120.0), vec![cue(4, 30.0, 0.0, -1, "")]), -150.0);
+        let a = &m.grid.unwrap().anchors[0];
+        assert!((a.time_ms - 1880.0).abs() < 1e-9, "{}", a.time_ms);
+    }
+
+    #[test]
+    fn shifted_negative_markers_never_reach_the_next_marker() {
+        // -120 → 1880 ms は次のマーカー (1000 ms) を越えるので捨てる。
+        let m = map_entry(
+            &entry(
+                Some(120.0),
+                vec![cue(4, 1000.0, 0.0, -1, ""), cue(4, -120.0, 0.0, -1, "")],
+            ),
+            0.0,
+        );
+        let times: Vec<f64> = m.grid.unwrap().anchors.iter().map(|a| a.time_ms).collect();
+        assert_eq!(times, vec![1000.0]);
+
+        // ちょうど届く (= 同じ位置) 場合も捨てる。
+        let m = map_entry(
+            &entry(
+                Some(120.0),
+                vec![cue(4, -120.0, 0.0, -1, ""), cue(4, 1880.0, 0.0, -1, "")],
+            ),
+            0.0,
+        );
+        let times: Vec<f64> = m.grid.unwrap().anchors.iter().map(|a| a.time_ms).collect();
+        assert_eq!(times, vec![1880.0]);
+
+        // 次のマーカーより手前に収まるなら残す。
+        let m = map_entry(
+            &entry(
+                Some(120.0),
+                vec![cue(4, -120.0, 0.0, -1, ""), cue(4, 60_000.0, 0.0, -1, "")],
+            ),
+            0.0,
+        );
+        let times: Vec<f64> = m.grid.unwrap().anchors.iter().map(|a| a.time_ms).collect();
+        assert_eq!(times.len(), 2);
+        assert!((times[0] - 1880.0).abs() < 1e-9);
+        assert_eq!(times[1], 60_000.0);
+
+        // 負のマーカーが 2 つ: 前のものは送った先が後ろの (負の) マーカーを越えるので捨て、
+        // 後ろのものだけを送る。
+        let m = map_entry(
+            &entry(
+                Some(120.0),
+                vec![cue(4, -3000.0, 0.0, -1, ""), cue(4, -100.0, 0.0, -1, "")],
+            ),
+            0.0,
+        );
+        let times: Vec<f64> = m.grid.unwrap().anchors.iter().map(|a| a.time_ms).collect();
+        assert_eq!(times, vec![1900.0]);
     }
 
     #[test]
