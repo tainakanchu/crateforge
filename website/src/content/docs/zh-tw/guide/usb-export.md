@@ -70,7 +70,8 @@ Traktor 與 rekordbox / CDJ 對 MP3 解碼起點的處理不同，**MP3 的 Cue 
 
 在 CDJ 上將 Cue 存到 USB 時，USB 上的分析檔會被改寫。之後若送出 Traktor 的 Cue，會使 CDJ 上儲存的 Cue 遺失，因此匯出會 **在不變更 USB 的情況下中止** 並顯示說明。此時：
 
-- 以 **「USB 上のキューを優先（Traktor のキューを送らない）」**（優先使用 USB 上的 Cue）重試：這次不送出 Traktor 的 Cue，保留 USB 上的 Cue（格線仍會送出 Traktor 的）。
+- 以 **「USB 上のキューを優先（Traktor のキューを送らない）」**（優先使用 USB 上的 Cue）重試：以相同的播放清單、匯出目的地與選項重新匯出，但不送出 Traktor 的 Cue，保留 USB 上的 Cue（格線仍會送出 Traktor 的）。
+- 不過，若 **在 CDJ 上變更了節拍格線**，目前的版本無法保留該格線，因此重試仍可能因相同原因中止（此重試不會連續提供）。若不需要 CDJ 上的變更，可以匯出到另一個（空的）USB。
 - 若想先把 CDJ 上儲存的 Cue 帶回 Traktor，請用 rekordbox 等工具從 USB 匯入後再匯出。
 
 「Traktor のキュー/グリッドを使う」關閉時，CDJ 上儲存的 Cue 每次都會保留。

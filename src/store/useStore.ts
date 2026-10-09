@@ -22,6 +22,7 @@ import type {
   CrateSection,
   AnchorKind,
   UsbExportError,
+  UsbExportOptions,
   UsbExportResult,
 } from "../types";
 import {
@@ -396,6 +397,10 @@ interface AppState extends PersistedSettings {
   setUsbExportStatus: (
     s: UsbExportStatus | null | ((prev: UsbExportStatus | null) => UsbExportStatus | null),
   ) => void;
+  /** 最後に開始した書き出しの設定 (セッション専用)。ステータスカードから開き直したときの
+   *  選択の表示と、「USB 上のキューを優先」での再試行に使う。 */
+  usbExportLastOptions: UsbExportOptions | null;
+  setUsbExportLastOptions: (o: UsbExportOptions | null) => void;
   // Rip progress
   ripStatus: RipStatus | null;
   setRipStatus: (s: RipStatus | null) => void;
@@ -662,6 +667,7 @@ export const useStore = create<AppState>()(
       analysisActive: null,
       ripStatus: null,
       usbExportStatus: null,
+      usbExportLastOptions: null,
       similarBaseTrackId: null,
       pendingUpdate: null,
       previewActive: false,
@@ -997,6 +1003,7 @@ export const useStore = create<AppState>()(
         set((state) => ({
           usbExportStatus: typeof s === "function" ? s(state.usbExportStatus) : s,
         })),
+      setUsbExportLastOptions: (usbExportLastOptions) => set({ usbExportLastOptions }),
 
       setAnalyses: (list) =>
         set({ analysisByTrack: new Map(list.map((a) => [a.trackId, a])) }),

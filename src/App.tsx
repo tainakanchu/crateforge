@@ -1295,7 +1295,13 @@ export default function App() {
       )}
       <PlayerBar />
       <RipStatusBar onOpenLog={() => setRipOpen(true)} />
-      <UsbExportStatusBar hidden={usbExportIds != null} onOpen={() => setUsbExportIds([])} />
+      <UsbExportStatusBar
+        hidden={usbExportIds != null}
+        onOpen={() =>
+          // 実行中 / 最後の書き出しの選択で開く (ダイアログ側も最後の設定を優先して表示する)。
+          setUsbExportIds(useStore.getState().usbExportLastOptions?.playlistIds ?? [])
+        }
+      />
       <RipDialog
         open={ripOpen}
         initialDevice={ripInitialDevice}

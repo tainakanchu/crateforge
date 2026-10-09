@@ -27,7 +27,10 @@ import { Icon } from "./Icon";
 const RBX_CLI_URL = "https://github.com/tainakanchu/rbx-cli";
 
 interface UsbExportDialogProps {
-  /** 開いたときに選んでおくプレイリスト / フォルダ。 */
+  /**
+   * 開いたときに選んでおくプレイリスト / フォルダ。書き出しの結果 / 進捗が残っている間に
+   * 開いた場合 (ステータスカードから等) は、最後に開始した書き出しの設定を優先して表示する。
+   */
   initialPlaylistIds: number[];
   onClose: () => void;
 }
@@ -49,7 +52,14 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
   const setSettings = useStore((s) => s.setUsbExportSettings);
   const status = useStore((s) => s.usbExportStatus);
   const setStatus = useStore((s) => s.setUsbExportStatus);
+  const lastOptions = useStore((s) => s.usbExportLastOptions);
+  const setLastOptions = useStore((s) => s.setUsbExportLastOptions);
   const pushToast = useStore((s) => s.pushToast);
+  // 進捗 / 結果が残っているときに開いた → 最後に開始した書き出しの設定を表示する。
+  const [reopened] = useState(() => {
+    const st = useStore.getState();
+    return st.usbExportStatus != null ? st.usbExportLastOptions : null;
+  });
 
   const [step, setStep] = useState<Step>("setup");
   const [rbx, setRbx] = useState<RbxCliStatus | null>(null);
@@ -59,9 +69,13 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [devicesError, setDevicesError] = useState<string | null>(null);
   const [nml, setNml] = useState<TraktorNmlStatus | null>(null);
-  const [selected, setSelected] = useState<Set<number>>(() => new Set(initialPlaylistIds));
-  const [destination, setDestination] = useState<string>(settings.lastDestination ?? "");
-  const [preferDeviceCues, setPreferDeviceCues] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(
+    () => new Set(reopened?.playlistIds ?? initialPlaylistIds),
+  );
+  const [destination, setDestination] = useState<string>(
+    reopened?.destination ?? settings.lastDestination ?? "",
+  );
+  const [preferDeviceCues, setPreferDeviceCues] = useState(reopened?.preferDeviceCues ?? false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [plan, setPlan] = useState<UsbExportPlan | null>(null);
   const [planError, setPlanError] = useState<UsbExportError | null>(null);
@@ -73,6 +87,10 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
 
   const running = status?.phase === "running";
   const finished = status && status.phase !== "running" ? status : null;
+  // 「USB 上のキューを優先」での再試行を出せるか: 最後の書き出しが Traktor のキューを送っていた
+  // ときだけ (同じ再試行を続けて出さない)。
+  const canRetryPreferDevice =
+    !!lastOptions && lastOptions.useTraktor && !lastOptions.preferDeviceCues;
 
   // ---------------------------------------------------------------- loading
 
@@ -283,6 +301,8 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
     async (opts: UsbExportOptions) => {
       setStarting(true);
       setEjected(false);
+      // 再試行 / ステータスカードから開き直したときのために、開始した設定を覚えておく。
+      setLastOptions(opts);
       try {
         const started = await usbApi.start(opts);
         // started イベントが届くまでの間も実行中表示にする。イベント (同じ runId) が先に
@@ -298,7 +318,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         setStarting(false);
       }
     },
-    [setStatus],
+    [setLastOptions, setStatus],
   );
 
   const handleCancel = useCallback(async () => {
@@ -317,11 +337,18 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
     usbApi.cancel({ job: "plan" }).catch(() => {});
   }, []);
 
+  // 「USB 上のキューを優先」での再試行: 最後に開始した書き出しと同じ設定 (プレイリスト・
+  // 書き出し先・オプション) で、Traktor のキューだけ送らない。
   const handleRetryPreferDevice = useCallback(async () => {
+    const base = useStore.getState().usbExportLastOptions;
+    if (!base) return;
+    const opts: UsbExportOptions = { ...base, preferDeviceCues: true };
     setPreferDeviceCues(true);
+    setSelected(new Set(opts.playlistIds));
+    setDestination(opts.destination);
     setStatus(null);
-    await startExport(options(true));
-  }, [options, setStatus, startExport]);
+    await startExport(opts);
+  }, [setStatus, startExport]);
 
   const handleBackToSetup = useCallback(() => {
     setStatus(null);
@@ -867,13 +894,27 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         {err?.cueConflict && (
           <div className="usb-warnings" style={{ textAlign: "left" }}>
             <div>
-              CDJ で USB にキューを保存すると、USB 上の解析ファイルが書き換わります。このまま Traktor のキューを送ると
-              CDJ で保存したキューが失われるため、rbx-cli は書き出しを止めました。
+              CDJ で USB にキューを保存したり、ビートグリッドを変更したりすると、USB 上の解析ファイルが書き換わります。
+              このまま Traktor のキュー/グリッドを送ると CDJ での変更が失われるため、rbx-cli は書き出しを止めました（USB
+              は変更されていません）。
             </div>
+            {canRetryPreferDevice ? (
+              <div>
+                「USB 上のキューを優先」で再試行すると、今回は Traktor のキューを送らず USB 上のキューを残します。ただし
+                グリッドは Traktor のものを送るため、<b>CDJ でビートグリッドを変更していた場合は、そのグリッドは
+                今のバージョンでは残せず、再試行しても同じ理由で中止されることがあります</b>。
+              </div>
+            ) : (
+              <div>
+                {lastOptions?.preferDeviceCues
+                  ? "「USB 上のキューを優先」でも中止されました。CDJ でビートグリッドが変更されている可能性があります。"
+                  : ""}
+                CDJ で変更したビートグリッドを残したまま書き出すことは、今のバージョンではできません。
+              </div>
+            )}
             <div>
-              「USB 上のキューを優先」で再試行すると、今回は Traktor のキューを送らず USB 上のキューを残します（グリッドは
-              Traktor のものを送ります）。CDJ で保存したキューを Traktor 側に取り込みたい場合は、rekordbox 等で USB
-              から取り込んでください。
+              CDJ で保存したキュー/グリッドを残したい場合は、rekordbox 等で USB から取り込んでください。CDJ
+              での変更が不要なら、別の（空の）USB に書き出せます。
             </div>
           </div>
         )}
@@ -908,7 +949,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         <button className="toolbar-btn" onClick={handleBackToSetup}>
           設定に戻る
         </button>
-        {finished.error?.cueConflict && (
+        {finished.error?.cueConflict && canRetryPreferDevice && (
           <button
             className="toolbar-btn primary"
             onClick={handleRetryPreferDevice}

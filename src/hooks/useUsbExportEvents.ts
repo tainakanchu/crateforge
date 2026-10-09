@@ -38,13 +38,15 @@ export function useUsbExportEvents() {
             usbApi.cancel({ runId: st.runId, job: "plan" }).catch(() => {});
             return;
           }
-          const { setUsbExportStatus } = useStore.getState();
+          const { setUsbExportStatus, setUsbExportLastOptions, usbExportLastOptions } =
+            useStore.getState();
           const runId = st.runId;
           const destination = st.options?.destination ?? "";
           setUsbExportStatus((prev) => {
             const next = startedUsbExportStatus(prev, runId, destination, 0);
             return next.runId === runId && !next.destination ? { ...next, destination } : next;
           });
+          if (st.options && !usbExportLastOptions) setUsbExportLastOptions(st.options);
         });
       })
       .catch(() => {});

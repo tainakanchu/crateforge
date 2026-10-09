@@ -70,7 +70,8 @@ Because the shift can depend on the file and encoder, **calibrate the value on r
 
 When you save cues to the stick on a CDJ, the analysis files on the stick change. Sending Traktor's cues afterwards would lose them, so the export is **stopped without changing the stick**, with an explanation. Then:
 
-- Retry with **"USB 上のキューを優先（Traktor のキューを送らない）"** (Prefer the cues on the USB): this time Traktor's cues are not sent and the stick's cues are kept (Traktor's grids are still sent).
+- Retry with **"USB 上のキューを優先（Traktor のキューを送らない）"** (Prefer the cues on the USB): the same playlists, destination and options are exported again, but Traktor's cues are not sent and the stick's cues are kept (Traktor's grids are still sent).
+- However, if the **beat grid was changed on the CDJ**, this version cannot keep that grid, so the retry may stop again for the same reason (the retry is not offered twice in a row). If you do not need the CDJ changes, export to another (empty) stick.
 - To bring the CDJ cues into Traktor first, import them from the stick with rekordbox or similar, then export again.
 
 With "Traktor のキュー/グリッドを使う" off, cues saved on a CDJ are always kept.
