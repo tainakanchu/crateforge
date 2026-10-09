@@ -4,11 +4,14 @@
 //! 1. 単一実行ガード ([`begin`]) を取ってから、選択プレイリストから rbx-cli のリクエストを作り
 //!    (`request.rs`、Traktor のキュー / グリッドは `crate::traktor_nml` から)、本人だけが読める
 //!    一時ファイル (0600) に書いて `--input` で渡す (子プロセスが終わるまで保持し、後で消す)。
-//! 2. `rbx-cli --json usb export ... --stdin-control` を起動し、stdout の NDJSON を 1 行ずつ
-//!    読んで `usb-export-progress` イベント ([`ProgressEnvelope`]) に変換して配信する。
+//! 2. `rbx-cli --json usb export ... --cancel-on-stdin-eof` を起動し、stdout の NDJSON を 1 行
+//!    ずつ読んで `usb-export-progress` イベント ([`ProgressEnvelope`]) に変換して配信する。
 //!    実行ごとに run id を振り、すべてのイベントに付ける (UI は古い実行のイベントを無視する)。
 //! 3. 中止は stdin に `cancel` 行を書く (rbx-cli のプロトコル)。一定時間で終わらなければ kill。
-//!    子プロセスは `kill_on_drop` で、アプリ終了時は [`UsbExportRuntime::kill_now`] で必ず止める。
+//!    stdin のパイプは子プロセスが終わるまで開いたままにする: `--cancel-on-stdin-eof`
+//!    (`--stdin-control` を含む) により、crateforge が異常終了して OS がパイプを閉じると
+//!    rbx-cli は自分で中止する (孤児のまま USB に書き続けない)。子プロセスは `kill_on_drop` で、
+//!    アプリ終了時は [`UsbExportRuntime::kill_now`] でも止める (二重の安全策)。
 //!
 //! ライブラリ DB には何も書かない (読み取りのみ)。
 
@@ -480,7 +483,8 @@ async fn run_inner(
         .arg(prepared.request_file.path())
         .arg("--to")
         .arg(destination)
-        .arg("--stdin-control")
+        // stdin の `cancel` 行で中止 + stdin が閉じたら (= crateforge が落ちたら) 中止。
+        .arg("--cancel-on-stdin-eof")
         .stdin(std::process::Stdio::piped());
     if job == JobKind::Plan {
         cmd.arg("--dry-run");
@@ -493,6 +497,7 @@ async fn run_inner(
     })?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    // stdin は子プロセスが終わるまで保持する (閉じると `--cancel-on-stdin-eof` で中止になる)。
     *run.stdin.lock().await = child.stdin.take();
     *run.child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
     // 起動前に中止が来ていたら (競合) すぐ止める。
@@ -548,6 +553,7 @@ async fn run_inner(
             _ => break None,
         }
     };
+    // 子プロセスが終わってから stdin を閉じる。
     *run.stdin.lock().await = None;
     let stderr_tail = stderr_task.await.unwrap_or_default();
 
