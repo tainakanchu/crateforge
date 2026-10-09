@@ -162,6 +162,19 @@ pub struct UsbExportPlan {
 pub struct UsbExportStatus {
     pub running: bool,
     pub job: Option<JobKind>,
+    /// 実行中の run id (イベントの `runId` と同じ)。
+    pub run_id: Option<u64>,
+    /// 実行中のジョブの設定 (webview の再読み込み後に UI を復元するため)。
+    pub options: Option<UsbExportOptions>,
+}
+
+/// 書き出しを開始した結果。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbExportStarted {
+    /// この書き出しの run id (以降のイベントの `runId`)。
+    pub run_id: u64,
+    pub report: BuildReport,
 }
 
 fn file_size(path: &str) -> Option<u64> {
@@ -236,14 +249,17 @@ async fn exe(app: &AppHandle) -> Result<PathBuf, UsbExportError> {
 }
 
 /// 計画を作る (`usb export --dry-run`)。USB にもキャッシュにも何も書かない。
+/// 実行ガードはリクエスト作成の前に取るので、作成中でも `usb_export_cancel` で止められる。
 #[tauri::command]
 pub async fn usb_export_plan(
     app: AppHandle,
     options: UsbExportOptions,
 ) -> Result<UsbExportPlan, UsbExportError> {
+    let guard = job::begin(&app, JobKind::Plan, &options)?;
     let exe = exe(&app).await?;
     let built = build(&app, &options).await?;
-    let prepared = job::prepare(&app, JobKind::Plan, &built.request)?;
+    guard.check_cancelled()?;
+    let prepared = job::prepare(guard, &built.request)?;
     let result = job::run(
         &app,
         &exe,
@@ -258,42 +274,61 @@ pub async fn usb_export_plan(
     })
 }
 
-/// 書き出しを開始する。すぐに戻り、進捗と結果は `usb-export-progress` で配信する。
+/// 書き出しを開始する。すぐに戻り、進捗と結果は `usb-export-progress` で配信する
+/// (どのイベントにも戻り値と同じ `runId` が付く)。
 #[tauri::command]
 pub async fn usb_export_start(
     app: AppHandle,
     options: UsbExportOptions,
-) -> Result<BuildReport, UsbExportError> {
+) -> Result<UsbExportStarted, UsbExportError> {
+    let guard = job::begin(&app, JobKind::Export, &options)?;
     let exe = exe(&app).await?;
     let built = build(&app, &options).await?;
+    guard.check_cancelled()?;
     if built.report.found == 0 {
         return Err(errors::local(
             "empty",
             "書き出せる曲がありません（プレイリストが空か、ファイルが見つかりません）。",
         ));
     }
-    let prepared = job::prepare(&app, JobKind::Export, &built.request)?;
+    let prepared = job::prepare(guard, &built.request)?;
+    let run_id = prepared.id();
     let tracks = built.request.tracks.len();
     let destination = options.destination.trim().to_string();
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let _ = job::run(&handle, &exe, prepared, &destination, tracks).await;
     });
-    Ok(built.report)
+    Ok(UsbExportStarted {
+        run_id,
+        report: built.report,
+    })
 }
 
-/// 実行中の計画 / 書き出しを中止する (rbx-cli に `cancel` を送る)。実行中でなければ false。
+/// 実行中の計画 / 書き出しを中止する (rbx-cli に `cancel` を送る)。`run_id` / `job` の
+/// 指定に合う実行だけを止める (どちらも無ければ何もしない)。止める実行が無ければ false。
 #[tauri::command]
-pub async fn usb_export_cancel(app: AppHandle) -> bool {
-    app.state::<UsbExportRuntime>().cancel().await
+pub async fn usb_export_cancel(app: AppHandle, run_id: Option<u64>, job: Option<JobKind>) -> bool {
+    app.state::<UsbExportRuntime>()
+        .cancel(job::CancelTarget { run_id, job })
+        .await
 }
 
 #[tauri::command]
 pub fn usb_export_status(app: AppHandle) -> UsbExportStatus {
-    let job = app.state::<UsbExportRuntime>().current();
-    UsbExportStatus {
-        running: job.is_some(),
-        job,
+    match app.state::<UsbExportRuntime>().current() {
+        Some(info) => UsbExportStatus {
+            running: true,
+            job: Some(info.job),
+            run_id: Some(info.run_id),
+            options: Some(info.options),
+        },
+        None => UsbExportStatus {
+            running: false,
+            job: None,
+            run_id: None,
+            options: None,
+        },
     }
 }
 

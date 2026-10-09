@@ -1,10 +1,12 @@
 //! USB 書き出し (rekordbox 互換 / CDJ 向け) のジョブ実行。
 //!
 //! 実際の書き出しは外部の GPL CLI `rbx-cli` が行う (`crate::rbx_cli` 参照)。ここでは
-//! 1. 選択プレイリストから rbx-cli のリクエストを作り (`request.rs`、Traktor の
-//!    キュー / グリッドは `crate::traktor_nml` から)、一時ファイルに書いて `--input` で渡す。
+//! 1. 単一実行ガード ([`begin`]) を取ってから、選択プレイリストから rbx-cli のリクエストを作り
+//!    (`request.rs`、Traktor のキュー / グリッドは `crate::traktor_nml` から)、本人だけが読める
+//!    一時ファイル (0600) に書いて `--input` で渡す (子プロセスが終わるまで保持し、後で消す)。
 //! 2. `rbx-cli --json usb export ... --stdin-control` を起動し、stdout の NDJSON を 1 行ずつ
-//!    読んで `usb-export-progress` イベント ([`UsbExportProgress`]) に変換して配信する。
+//!    読んで `usb-export-progress` イベント ([`ProgressEnvelope`]) に変換して配信する。
+//!    実行ごとに run id を振り、すべてのイベントに付ける (UI は古い実行のイベントを無視する)。
 //! 3. 中止は stdin に `cancel` 行を書く (rbx-cli のプロトコル)。一定時間で終わらなければ kill。
 //!    子プロセスは `kill_on_drop` で、アプリ終了時は [`UsbExportRuntime::kill_now`] で必ず止める。
 //!
@@ -16,16 +18,17 @@ pub mod errors;
 pub mod request;
 pub mod wire;
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use errors::UsbExportError;
+use request::UsbExportOptions;
 use wire::{Envelope, ExportResult};
 
 /// 中止要求 (`cancel` 行) の後、強制終了するまでの猶予。rbx-cli は曲の区切りで中止を
@@ -33,7 +36,7 @@ use wire::{Envelope, ExportResult};
 const CANCEL_GRACE: Duration = Duration::from_secs(30);
 
 /// 実行の種類。
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum JobKind {
     /// `--dry-run` (計画)。
@@ -91,6 +94,15 @@ pub enum UsbExportProgress {
     },
 }
 
+/// `usb-export-progress` で実際に配信するもの: 実行ごとの run id + イベント。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressEnvelope {
+    pub run_id: u64,
+    #[serde(flatten)]
+    pub event: UsbExportProgress,
+}
+
 /// NDJSON 1 行 → UI イベント (`result` / `error` は終端なので None。呼び出し側が扱う)。
 pub fn envelope_to_event(env: &Envelope, job: JobKind) -> Option<UsbExportProgress> {
     match env {
@@ -146,15 +158,32 @@ pub fn envelope_to_event(env: &Envelope, job: JobKind) -> Option<UsbExportProgre
 
 // ============================================================ runtime
 
+/// 実行ごとの id (1 から。アプリの起動中は単調増加)。
+static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
+
 /// 実行中の 1 回分。
 pub struct ActiveRun {
+    pub id: u64,
     pub job: JobKind,
+    /// この実行の設定 (webview の再読み込み後に UI を復元するため)。
+    pub options: UsbExportOptions,
     child: Mutex<Option<tokio::process::Child>>,
     stdin: tokio::sync::Mutex<Option<tokio::process::ChildStdin>>,
     cancel_requested: AtomicBool,
 }
 
 impl ActiveRun {
+    fn new(job: JobKind, options: UsbExportOptions) -> Self {
+        Self {
+            id: NEXT_RUN_ID.fetch_add(1, Ordering::SeqCst),
+            job,
+            options,
+            child: Mutex::new(None),
+            stdin: tokio::sync::Mutex::new(None),
+            cancel_requested: AtomicBool::new(false),
+        }
+    }
+
     fn kill(&self) {
         if let Some(c) = self
             .child
@@ -165,6 +194,34 @@ impl ActiveRun {
             let _ = c.start_kill();
         }
     }
+
+    pub fn cancel_requested(&self) -> bool {
+        self.cancel_requested.load(Ordering::SeqCst)
+    }
+}
+
+/// 実行中のジョブの情報 (`usb_export_status` 用)。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunInfo {
+    pub run_id: u64,
+    pub job: JobKind,
+    pub options: UsbExportOptions,
+}
+
+/// 中止する対象。指定した条件すべてに合う実行だけを止める (どれも無ければ何もしない)。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CancelTarget {
+    pub run_id: Option<u64>,
+    pub job: Option<JobKind>,
+}
+
+impl CancelTarget {
+    fn matches(&self, run: &ActiveRun) -> bool {
+        (self.run_id.is_some() || self.job.is_some())
+            && self.run_id.is_none_or(|id| id == run.id)
+            && self.job.is_none_or(|j| j == run.job)
+    }
 }
 
 /// 単一実行ガード (managed state)。同時に 1 つの plan / export しか走らせない。
@@ -174,7 +231,11 @@ pub struct UsbExportRuntime {
 }
 
 impl UsbExportRuntime {
-    fn begin(&self, job: JobKind) -> Result<Arc<ActiveRun>, UsbExportError> {
+    fn begin(
+        &self,
+        job: JobKind,
+        options: UsbExportOptions,
+    ) -> Result<Arc<ActiveRun>, UsbExportError> {
         let mut slot = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(run) = slot.as_ref() {
             return Err(errors::local(
@@ -187,12 +248,7 @@ impl UsbExportRuntime {
                 },
             ));
         }
-        let run = Arc::new(ActiveRun {
-            job,
-            child: Mutex::new(None),
-            stdin: tokio::sync::Mutex::new(None),
-            cancel_requested: AtomicBool::new(false),
-        });
+        let run = Arc::new(ActiveRun::new(job, options));
         *slot = Some(run.clone());
         Ok(run)
     }
@@ -205,21 +261,28 @@ impl UsbExportRuntime {
     }
 
     /// 実行中のジョブ (無ければ None)。
-    pub fn current(&self) -> Option<JobKind> {
+    pub fn current(&self) -> Option<RunInfo> {
         self.active
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .map(|r| r.job)
+            .map(|r| RunInfo {
+                run_id: r.id,
+                job: r.job,
+                options: r.options.clone(),
+            })
     }
 
-    /// 中止を要求する (stdin に `cancel`)。猶予後も終わらなければ kill。実行中でなければ false。
-    pub async fn cancel(&self) -> bool {
+    /// `target` に合う実行に中止を要求する (stdin に `cancel`。子プロセスがまだ無い =
+    /// リクエスト作成中なら、作成後に中止される)。猶予後も終わらなければ kill。
+    /// 合う実行が無ければ false。
+    pub async fn cancel(&self, target: CancelTarget) -> bool {
         let Some(run) = self
             .active
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+            .filter(|r| target.matches(r))
         else {
             return false;
         };
@@ -232,6 +295,7 @@ impl UsbExportRuntime {
             }
         };
         if !wrote {
+            // 子プロセスがまだ無い (リクエスト作成中: 起動前に中止される) か、stdin が閉じている。
             run.kill();
             return true;
         }
@@ -259,63 +323,102 @@ impl UsbExportRuntime {
     }
 }
 
-/// 終了時に必ず単一実行ガードと一時ファイルを片付ける。
-struct RunCleanup {
+/// 単一実行ガード。落ちると (どの経路でも) ガードを外す。
+pub struct RunGuard {
     app: AppHandle,
     run: Arc<ActiveRun>,
-    request_file: PathBuf,
 }
 
-impl Drop for RunCleanup {
+impl RunGuard {
+    pub fn id(&self) -> u64 {
+        self.run.id
+    }
+
+    pub fn job(&self) -> JobKind {
+        self.run.job
+    }
+
+    /// 中止が要求されていれば `cancelled` エラー (リクエスト作成の後に確認する)。
+    pub fn check_cancelled(&self) -> Result<(), UsbExportError> {
+        if self.run.cancel_requested() {
+            Err(errors::local(
+                "cancelled",
+                match self.run.job {
+                    JobKind::Plan => "計画の作成を中止しました。",
+                    JobKind::Export => {
+                        "書き出しを中止しました。USB には以前の内容がそのまま残っています。"
+                    }
+                },
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for RunGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.request_file);
         self.app.state::<UsbExportRuntime>().end(&self.run);
     }
 }
 
-fn request_file_path() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!(
-        "crateforge-usb-export-{}-{nanos}.json",
-        std::process::id()
-    ))
-}
-
-/// ジョブの開始 (単一実行ガードの取得 + リクエストの書き出し)。
-pub struct Prepared {
-    run: Arc<ActiveRun>,
-    cleanup: RunCleanup,
-}
-
-/// 単一実行ガードを取り、リクエストを一時ファイルに書く。
-pub fn prepare(
+/// 単一実行ガードを取る。リクエストを作る **前に** 取ること (作成中の中止・二重実行を防ぐ)。
+pub fn begin(
     app: &AppHandle,
     job: JobKind,
-    request: &wire::ExportRequest,
-) -> Result<Prepared, UsbExportError> {
-    let run = app.state::<UsbExportRuntime>().begin(job)?;
-    let request_file = request_file_path();
-    let cleanup = RunCleanup {
+    options: &UsbExportOptions,
+) -> Result<RunGuard, UsbExportError> {
+    let run = app
+        .state::<UsbExportRuntime>()
+        .begin(job, options.clone())?;
+    Ok(RunGuard {
         app: app.clone(),
-        run: run.clone(),
-        request_file: request_file.clone(),
-    };
-    let json = serde_json::to_vec(request)
-        .map_err(|e| errors::local("internal", format!("リクエストの作成に失敗: {e}")))?;
-    std::fs::write(&request_file, json).map_err(|e| {
-        errors::local(
-            "io",
-            format!("一時ファイルを書けません ({}): {e}", request_file.display()),
-        )
-    })?;
-    Ok(Prepared { run, cleanup })
+        run,
+    })
 }
 
-fn emit(app: &AppHandle, ev: UsbExportProgress) {
-    let _ = app.emit("usb-export-progress", ev);
+/// 起動の準備ができた実行 (ガード + リクエストの一時ファイル)。
+pub struct Prepared {
+    guard: RunGuard,
+    /// 本人だけが読める一時ファイル (Unix は 0600)。子プロセスが終わるまで保持し、落ちると消える。
+    request_file: tempfile::NamedTempFile,
+}
+
+impl Prepared {
+    pub fn id(&self) -> u64 {
+        self.guard.id()
+    }
+}
+
+/// リクエストを一時ファイルに書く。
+pub fn prepare(guard: RunGuard, request: &wire::ExportRequest) -> Result<Prepared, UsbExportError> {
+    Ok(Prepared {
+        request_file: write_request_file(request)?,
+        guard,
+    })
+}
+
+/// リクエストを本人だけが読める一時ファイル (Unix は 0600、名前は衝突しない) に書く。
+/// 返したハンドルが落ちるとファイルは消える。
+fn write_request_file(
+    request: &wire::ExportRequest,
+) -> Result<tempfile::NamedTempFile, UsbExportError> {
+    use std::io::Write;
+    let json = serde_json::to_vec(request)
+        .map_err(|e| errors::local("internal", format!("リクエストの作成に失敗: {e}")))?;
+    let io = |e: std::io::Error| errors::local("io", format!("一時ファイルを書けません: {e}"));
+    let mut file = tempfile::Builder::new()
+        .prefix("crateforge-usb-export-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(io)?;
+    file.write_all(&json).map_err(io)?;
+    file.flush().map_err(io)?;
+    Ok(file)
+}
+
+fn emit(app: &AppHandle, run_id: u64, event: UsbExportProgress) {
+    let _ = app.emit("usb-export-progress", ProgressEnvelope { run_id, event });
 }
 
 /// rbx-cli を起動して終わるまで NDJSON を中継する。終端の `Finished` / `Failed` も配信する。
@@ -326,9 +429,11 @@ pub async fn run(
     destination: &str,
     tracks: usize,
 ) -> Result<ExportResult, UsbExportError> {
-    let job = prepared.run.job;
+    let job = prepared.guard.job();
+    let run_id = prepared.id();
     emit(
         app,
+        run_id,
         UsbExportProgress::Started {
             job,
             tracks,
@@ -336,11 +441,13 @@ pub async fn run(
         },
     );
     let outcome = run_inner(app, exe, &prepared, destination).await;
-    // 終端イベントより先にガードを外す (受け取った UI がすぐ次の計画を始められるように)。
+    // 終端イベントより先にガードを外し、一時ファイルを消す
+    // (受け取った UI がすぐ次の計画を始められるように)。
     drop(prepared);
     match &outcome {
         Ok(result) => emit(
             app,
+            run_id,
             UsbExportProgress::Finished {
                 job,
                 result: Box::new(result.clone()),
@@ -348,6 +455,7 @@ pub async fn run(
         ),
         Err(error) => emit(
             app,
+            run_id,
             UsbExportProgress::Failed {
                 job,
                 error: error.clone(),
@@ -363,12 +471,13 @@ async fn run_inner(
     prepared: &Prepared,
     destination: &str,
 ) -> Result<ExportResult, UsbExportError> {
-    let run = &prepared.run;
+    let run = &prepared.guard.run;
     let job = run.job;
+    let run_id = run.id;
     let mut cmd = crate::rbx_cli::command(exe);
     cmd.arg("--json")
         .args(["usb", "export", "--input"])
-        .arg(&prepared.cleanup.request_file)
+        .arg(prepared.request_file.path())
         .arg("--to")
         .arg(destination)
         .arg("--stdin-control")
@@ -418,7 +527,7 @@ async fn run_inner(
                 Envelope::Error(e) => error = Some(e),
                 other => {
                     if let Some(ev) = envelope_to_event(&other, job) {
-                        emit(app, ev);
+                        emit(app, run_id, ev);
                     }
                 }
             }
@@ -564,24 +673,121 @@ mod tests {
     }
 
     #[test]
+    fn events_carry_the_run_id() {
+        let v = serde_json::to_value(ProgressEnvelope {
+            run_id: 42,
+            event: UsbExportProgress::Started {
+                job: JobKind::Export,
+                tracks: 3,
+                destination: "/Volumes/STICK".into(),
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "runId": 42, "kind": "started", "job": "export", "tracks": 3,
+                "destination": "/Volumes/STICK"
+            })
+        );
+    }
+
+    #[test]
     fn runtime_allows_one_run_at_a_time() {
         let rt = UsbExportRuntime::default();
-        let a = rt.begin(JobKind::Plan).unwrap();
-        assert_eq!(rt.current(), Some(JobKind::Plan));
-        let busy = rt.begin(JobKind::Export).err().unwrap();
+        let opts = UsbExportOptions {
+            destination: "/Volumes/STICK".into(),
+            ..Default::default()
+        };
+        let a = rt.begin(JobKind::Plan, opts.clone()).unwrap();
+        let info = rt.current().unwrap();
+        assert_eq!(info.job, JobKind::Plan);
+        assert_eq!(info.run_id, a.id);
+        assert_eq!(info.options.destination, "/Volumes/STICK");
+        let busy = rt.begin(JobKind::Export, opts.clone()).err().unwrap();
         assert_eq!(busy.code, "busy");
         // 別の run の end では外れない。
-        let other = Arc::new(ActiveRun {
-            job: JobKind::Export,
-            child: Mutex::new(None),
-            stdin: tokio::sync::Mutex::new(None),
-            cancel_requested: AtomicBool::new(false),
-        });
+        let other = Arc::new(ActiveRun::new(JobKind::Export, opts.clone()));
+        assert_ne!(other.id, a.id, "run ids are unique");
         rt.end(&other);
-        assert_eq!(rt.current(), Some(JobKind::Plan));
+        assert!(rt.current().is_some());
         rt.end(&a);
         assert_eq!(rt.current(), None);
-        assert!(rt.begin(JobKind::Export).is_ok());
+        let b = rt.begin(JobKind::Export, opts).unwrap();
+        assert!(b.id > a.id);
         rt.kill_now(); // 子プロセスが無くても安全
+    }
+
+    #[test]
+    fn request_file_is_private_and_removed_on_drop() {
+        let request = wire::ExportRequest {
+            protocol: wire::PROTOCOL_VERSION,
+            options: wire::ExportOptions {
+                analyze: "missing".into(),
+                read_tags: true,
+                embedded_artwork: true,
+                prune: false,
+                device_name: None,
+            },
+            tracks: vec![],
+            playlists: vec![],
+        };
+        let file = write_request_file(&request).unwrap();
+        let path = file.path().to_path_buf();
+        let back: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(back["protocol"], 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "other users must not read it: {mode:o}");
+        }
+        // 2 つ目は別の名前 (同時に作っても衝突しない)。
+        let other = write_request_file(&request).unwrap();
+        assert_ne!(other.path(), path);
+        drop(file);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn cancel_only_hits_the_targeted_run() {
+        let rt = UsbExportRuntime::default();
+        let block = |f: std::pin::Pin<Box<dyn std::future::Future<Output = bool> + '_>>| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(f)
+        };
+        let run = rt
+            .begin(JobKind::Plan, UsbExportOptions::default())
+            .unwrap();
+        // 対象の指定が無い / 別の run id / 別の種類 → 何もしない。
+        assert!(!block(Box::pin(rt.cancel(CancelTarget::default()))));
+        assert!(!block(Box::pin(rt.cancel(CancelTarget {
+            run_id: Some(run.id + 1),
+            job: None,
+        }))));
+        assert!(!block(Box::pin(rt.cancel(CancelTarget {
+            run_id: None,
+            job: Some(JobKind::Export),
+        }))));
+        assert!(!run.cancel_requested());
+        // 計画 (子プロセス起動前 = リクエスト作成中) を種類で止める → 中止フラグが立つ。
+        assert!(block(Box::pin(rt.cancel(CancelTarget {
+            run_id: None,
+            job: Some(JobKind::Plan),
+        }))));
+        assert!(run.cancel_requested());
+        rt.end(&run);
+        let run2 = rt
+            .begin(JobKind::Export, UsbExportOptions::default())
+            .unwrap();
+        assert!(block(Box::pin(rt.cancel(CancelTarget {
+            run_id: Some(run2.id),
+            job: Some(JobKind::Export),
+        }))));
+        assert!(run2.cancel_requested());
     }
 }

@@ -15,6 +15,7 @@ import { useStore } from "../store/useStore";
 import {
   USB_PHASES,
   flattenPlaylistTree,
+  startedUsbExportStatus,
   formatBytes,
   formatDurationMs,
   hasSelectedAncestor,
@@ -279,27 +280,15 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
   }, [destination, effectiveSelection.length, options, preferDeviceCues, setSettings]);
 
   const startExport = useCallback(
-    async (prefer: boolean) => {
+    async (opts: UsbExportOptions) => {
       setStarting(true);
       setEjected(false);
       try {
-        const report = await usbApi.start(options(prefer));
-        // started イベントが届くまでの間も実行中表示にする (以降は App のイベント購読が更新)。
+        const started = await usbApi.start(opts);
+        // started イベントが届くまでの間も実行中表示にする。イベント (同じ runId) が先に
+        // 届いていれば (失敗・完了を含め) そちらを優先し、上書きしない。
         setStatus((s) =>
-          s?.phase === "running"
-            ? s
-            : {
-                phase: "running",
-                destination,
-                tracks: report.tracks,
-                stage: "plan",
-                current: 0,
-                total: report.tracks,
-                title: null,
-                skipped: 0,
-                warnings: [],
-                cancelling: false,
-              },
+          startedUsbExportStatus(s, started.runId, opts.destination, started.report.tracks),
         );
       } catch (e) {
         const err = usbApi.toUsbError(e);
@@ -309,23 +298,30 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         setStarting(false);
       }
     },
-    [options, destination, setStatus],
+    [setStatus],
   );
 
   const handleCancel = useCallback(async () => {
-    setStatus((s) => (s ? { ...s, cancelling: true } : s));
+    const runId = useStore.getState().usbExportStatus?.runId;
+    if (runId == null) return;
+    setStatus((s) => (s && s.runId === runId ? { ...s, cancelling: true } : s));
     try {
-      await usbApi.cancel();
+      await usbApi.cancel({ runId, job: "export" });
     } catch (e) {
       pushToast("error", `中止できませんでした: ${e}`);
     }
   }, [setStatus, pushToast]);
 
+  /** 計画の作成 (リクエスト作成中を含む) を中止する。書き出しは止めない。 */
+  const cancelPlan = useCallback(() => {
+    usbApi.cancel({ job: "plan" }).catch(() => {});
+  }, []);
+
   const handleRetryPreferDevice = useCallback(async () => {
     setPreferDeviceCues(true);
     setStatus(null);
-    await startExport(true);
-  }, [setStatus, startExport]);
+    await startExport(options(true));
+  }, [options, setStatus, startExport]);
 
   const handleBackToSetup = useCallback(() => {
     setStatus(null);
@@ -357,9 +353,9 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
   const handleClose = useCallback(() => {
     // 実行中は閉じても続行 (浮遊カードで進捗を表示)。終わっていれば結果を片付ける。
     if (!running && step !== "planning") setStatus(null);
-    if (step === "planning") usbApi.cancel().catch(() => {});
+    if (step === "planning") cancelPlan();
     onClose();
-  }, [running, step, setStatus, onClose]);
+  }, [running, step, setStatus, cancelPlan, onClose]);
 
   // Esc で閉じる。
   const closeRef = useRef(handleClose);
@@ -943,7 +939,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         </button>
         <button
           className="toolbar-btn primary"
-          onClick={() => startExport(preferDeviceCues)}
+          onClick={() => startExport(options(preferDeviceCues))}
           disabled={starting || !plan || plan.build.found === 0}
         >
           <Icon name="upload" size={14} /> {starting ? "開始中…" : "書き出す"}
@@ -952,7 +948,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
     );
   } else if (step === "planning") {
     footer = (
-      <button className="toolbar-btn" onClick={() => usbApi.cancel().catch(() => {})}>
+      <button className="toolbar-btn" onClick={cancelPlan}>
         中止
       </button>
     );

@@ -65,6 +65,8 @@ export const DEFAULT_USB_EXPORT_SETTINGS: UsbExportSettings = {
 // USB 書き出しの進捗 — セッション専用・永続化しない (浮遊ステータスカード / ダイアログ共用)。
 export type UsbExportPhase = "running" | "done" | "error";
 export interface UsbExportStatus {
+  /** バックエンドが実行ごとに振る id (イベントの runId)。古い実行のイベントは無視する。 */
+  runId: number;
   phase: UsbExportPhase;
   destination: string;
   tracks: number;

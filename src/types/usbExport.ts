@@ -121,8 +121,8 @@ export interface UsbExportError {
 
 export type UsbJobKind = "plan" | "export";
 
-/** `usb-export-progress` イベント。phase: plan / analyze / check / copy / database / verify / publish */
-export type UsbExportProgress =
+/** `usb-export-progress` のイベント本体。phase: plan / analyze / check / copy / database / verify / publish */
+export type UsbExportProgressEvent =
   | { kind: "started"; job: UsbJobKind; tracks: number; destination: string }
   | {
       kind: "phase";
@@ -138,9 +138,28 @@ export type UsbExportProgress =
   | { kind: "finished"; job: UsbJobKind; result: UsbExportResult }
   | { kind: "failed"; job: UsbJobKind; error: UsbExportError };
 
+/** `usb-export-progress` イベント。runId はバックエンドが実行ごとに振る id。 */
+export type UsbExportProgress = UsbExportProgressEvent & { runId: number };
+
+/** `usb_export_start` の戻り値。 */
+export interface UsbExportStarted {
+  /** この書き出しの run id (以降のイベントの runId)。 */
+  runId: number;
+  report: UsbBuildReport;
+}
+
 export interface UsbExportJobStatus {
   running: boolean;
   job: UsbJobKind | null;
+  runId: number | null;
+  /** 実行中のジョブの設定 (再読み込み後の復元用)。 */
+  options: UsbExportOptions | null;
+}
+
+/** 中止する対象 (指定した条件すべてに合う実行だけを止める)。 */
+export interface UsbExportCancelTarget {
+  runId?: number;
+  job?: UsbJobKind;
 }
 
 /** rbx-cli `devices list` の 1 ボリューム。 */

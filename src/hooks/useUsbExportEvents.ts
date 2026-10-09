@@ -1,11 +1,15 @@
 import { useEffect } from "react";
 import * as usbApi from "../api/usbExport";
 import { useStore } from "../store/useStore";
-import { reduceUsbExportStatus } from "../lib/usbExport";
+import { reduceUsbExportStatus, startedUsbExportStatus } from "../lib/usbExport";
 
 /**
  * `usb-export-progress` (書き出しジョブ) を購読して store の usbExportStatus に畳み込む。
  * ダイアログを閉じていても進捗・結果を取りこぼさないよう App で常時購読する。
+ *
+ * 起動時 (webview の再読み込み後を含む) は `usb_export_status` で実行中のジョブを確認し、
+ * 書き出し中ならステータスカードを復元する。待っているダイアログの無い計画 (再読み込みで
+ * ダイアログが消えた) は中止する。
  */
 export function useUsbExportEvents() {
   useEffect(() => {
@@ -22,8 +26,26 @@ export function useUsbExportEvents() {
         }
       })
       .then((u) => {
-        if (disposed) u();
-        else un = u;
+        if (disposed) {
+          u();
+          return;
+        }
+        un = u;
+        // 購読を始めてから状態を問い合わせる (その間のイベントは runId で整合する)。
+        return usbApi.status().then((st) => {
+          if (disposed || !st.running || st.runId == null) return;
+          if (st.job === "plan") {
+            usbApi.cancel({ runId: st.runId, job: "plan" }).catch(() => {});
+            return;
+          }
+          const { setUsbExportStatus } = useStore.getState();
+          const runId = st.runId;
+          const destination = st.options?.destination ?? "";
+          setUsbExportStatus((prev) => {
+            const next = startedUsbExportStatus(prev, runId, destination, 0);
+            return next.runId === runId && !next.destination ? { ...next, destination } : next;
+          });
+        });
       })
       .catch(() => {});
     return () => {

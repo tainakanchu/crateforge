@@ -57,93 +57,99 @@ export function usbOverallFraction(s: UsbExportStatus): number {
 
 const MAX_WARNINGS = 200;
 
+/** 実行中の書き出しの初期状態 (started イベント / 開始コマンドの戻り / 再読み込み後の復元)。 */
+export function runningUsbExportStatus(
+  runId: number,
+  destination: string,
+  tracks: number,
+): UsbExportStatus {
+  return {
+    runId,
+    phase: "running",
+    destination,
+    tracks,
+    stage: "plan",
+    current: 0,
+    total: tracks,
+    title: null,
+    skipped: 0,
+    warnings: [],
+    cancelling: false,
+  };
+}
+
 /**
  * `usb-export-progress` (job = export) をストアの状態へ畳み込む。
- * plan のイベントはダイアログ側で扱うので null 以外の prev をそのまま返す。
+ * plan のイベントはダイアログ側で扱うので prev をそのまま返す。
+ * runId で実行を区別する: 今の状態より古い実行のイベントは無視し、新しい実行のイベントは
+ * (started を取りこぼしていても) その実行の状態として受け入れる。
  */
 export function reduceUsbExportStatus(
   prev: UsbExportStatus | null,
   ev: UsbExportProgress,
 ): UsbExportStatus | null {
   if (ev.job !== "export") return prev;
+  if (prev && ev.runId < prev.runId) return prev; // 古い実行
+  if (ev.kind === "started") {
+    return runningUsbExportStatus(ev.runId, ev.destination, ev.tracks);
+  }
+  // 別の (新しい) 実行のイベントが started より先に来た / 再読み込み後: その実行として始める。
+  const base: UsbExportStatus =
+    prev && prev.runId === ev.runId ? prev : runningUsbExportStatus(ev.runId, "", 0);
   switch (ev.kind) {
-    case "started":
-      return {
-        phase: "running",
-        destination: ev.destination,
-        tracks: ev.tracks,
-        stage: "plan",
-        current: 0,
-        total: ev.tracks,
-        title: null,
-        skipped: 0,
-        warnings: [],
-        cancelling: false,
-      };
     case "phase":
-      if (!prev) return prev;
+      if (base.phase !== "running") return base;
       return {
-        ...prev,
+        ...base,
         stage: ev.phase,
         current: ev.current,
         total: ev.total,
-        title: ev.title ?? prev.title,
+        title: ev.title ?? base.title,
       };
     case "trackSkipped":
-      if (!prev) return prev;
       return {
-        ...prev,
-        skipped: prev.skipped + 1,
+        ...base,
+        skipped: base.skipped + 1,
         warnings:
-          prev.warnings.length < MAX_WARNINGS
-            ? [...prev.warnings, `見つからないため書き出しません: ${ev.path}`]
-            : prev.warnings,
+          base.warnings.length < MAX_WARNINGS
+            ? [...base.warnings, `見つからないため書き出しません: ${ev.path}`]
+            : base.warnings,
       };
     case "trackWarning":
     case "log":
-      if (!prev) return prev;
       return {
-        ...prev,
+        ...base,
         warnings:
-          prev.warnings.length < MAX_WARNINGS ? [...prev.warnings, ev.message] : prev.warnings,
+          base.warnings.length < MAX_WARNINGS ? [...base.warnings, ev.message] : base.warnings,
       };
     case "finished":
       return {
-        ...(prev ?? {
-          destination: ev.result.destination,
-          tracks: ev.result.tracks.requested,
-          stage: "publish",
-          current: 0,
-          total: 0,
-          title: null,
-          skipped: 0,
-          warnings: [],
-          cancelling: false,
-        }),
+        ...base,
+        destination: base.destination || ev.result.destination,
+        tracks: base.tracks || ev.result.tracks.requested,
         phase: "done",
         result: ev.result,
         cancelling: false,
       };
     case "failed":
-      return {
-        ...(prev ?? {
-          destination: "",
-          tracks: 0,
-          stage: "plan",
-          current: 0,
-          total: 0,
-          title: null,
-          skipped: 0,
-          warnings: [],
-          cancelling: false,
-        }),
-        phase: "error",
-        error: ev.error,
-        cancelling: false,
-      };
+      return { ...base, phase: "error", error: ev.error, cancelling: false };
     default:
       return prev;
   }
+}
+
+/**
+ * 開始コマンド (usb_export_start) が戻ったときの状態。イベントが先に届いていれば
+ * (同じか新しい runId の状態があれば) それを優先し、上書きしない。
+ */
+export function startedUsbExportStatus(
+  prev: UsbExportStatus | null,
+  runId: number,
+  destination: string,
+  tracks: number,
+): UsbExportStatus {
+  if (prev && prev.runId >= runId) return prev;
+  return runningUsbExportStatus(runId, destination, tracks);
 }
 
 /** サイドバーと同じ順で、プレイリストを (深さ付きの) 木順に並べる。 */

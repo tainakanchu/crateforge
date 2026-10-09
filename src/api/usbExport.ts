@@ -4,13 +4,14 @@ import type {
   RbxCliProgress,
   RbxCliStatus,
   TraktorNmlStatus,
-  UsbBuildReport,
   UsbDevice,
+  UsbExportCancelTarget,
   UsbExportError,
   UsbExportJobStatus,
   UsbExportOptions,
   UsbExportPlan,
   UsbExportProgress,
+  UsbExportStarted,
 } from "../types";
 
 // ---- rbx-cli (外部 GPL CLI) ----
@@ -62,14 +63,17 @@ export async function plan(options: UsbExportOptions): Promise<UsbExportPlan> {
   return invoke("usb_export_plan", { options });
 }
 
-/** 書き出しを開始する (すぐ戻る)。進捗・結果は onUsbExportProgress で。 */
-export async function start(options: UsbExportOptions): Promise<UsbBuildReport> {
+/** 書き出しを開始する (すぐ戻る)。進捗・結果は onUsbExportProgress で (runId が同じもの)。 */
+export async function start(options: UsbExportOptions): Promise<UsbExportStarted> {
   return invoke("usb_export_start", { options });
 }
 
-/** 実行中の計画 / 書き出しを中止する。 */
-export async function cancel(): Promise<boolean> {
-  return invoke("usb_export_cancel");
+/**
+ * 実行中の計画 / 書き出しを中止する。`target` (run id / 種類) に合う実行だけを止める
+ * (別のジョブを止めないように)。止める実行が無ければ false。
+ */
+export async function cancel(target: UsbExportCancelTarget): Promise<boolean> {
+  return invoke("usb_export_cancel", { runId: target.runId ?? null, job: target.job ?? null });
 }
 
 export async function status(): Promise<UsbExportJobStatus> {
