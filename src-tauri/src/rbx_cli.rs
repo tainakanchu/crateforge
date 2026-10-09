@@ -36,7 +36,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::usb_export::wire::{self, Envelope, ErrorLine, VersionInfo};
 
 /// crateforge が取得・想定する rbx-cli のバージョン。
-pub const RBX_CLI_VERSION: &str = "0.1.0";
+pub const RBX_CLI_VERSION: &str = "0.1.1";
 
 /// rbx-cli の GitHub Release のダウンロード元。
 const RELEASE_BASE: &str = "https://github.com/tainakanchu/rbx-cli/releases/download";
@@ -52,20 +52,20 @@ pub const OVERRIDE_STATE_KEY: &str = "rbx_cli_path";
 /// 該当アセットが無い場合に限り `SHA256SUMS` にフォールバックする (転送破損の検知が主)。
 pub const PINNED_SHA256: &[(&str, &str)] = &[
     (
-        "rbx-cli-0.1.0-aarch64-apple-darwin.tar.gz",
-        "3730212d6f78cdb4882669b2759cb7461937f23bc825b808a3ee5eb0fd806e44",
+        "rbx-cli-0.1.1-aarch64-apple-darwin.tar.gz",
+        "3ef7044388e889a59c1f928405deba8ed6887a3604b8d2b26d3fee84512bfc94",
     ),
     (
-        "rbx-cli-0.1.0-x86_64-apple-darwin.tar.gz",
-        "aee3320b2b5d7ecfcd90eb24e58b42f8e7f4a5f0a43c2061fd1b62e6e566a185",
+        "rbx-cli-0.1.1-x86_64-apple-darwin.tar.gz",
+        "fb9642d726e6983130f92eef276a474ddc1d35a994bf640ac082d4058686ffee",
     ),
     (
-        "rbx-cli-0.1.0-x86_64-pc-windows-msvc.zip",
-        "9bbeb89bdf2ae3b646b2905e05fdf7d82359eda20c86fb43fa824a733b0184bc",
+        "rbx-cli-0.1.1-x86_64-pc-windows-msvc.zip",
+        "e8cdb2d24b1a9b384985de82d82b0eb6716d5edc6364e2a1479d4b1d85ec6c94",
     ),
     (
-        "rbx-cli-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
-        "913523e0086ee3e4208a04197cdcd82d03cc8954174cc451022111e29698c94a",
+        "rbx-cli-0.1.1-x86_64-unknown-linux-gnu.tar.gz",
+        "e07f1bce889325fc3b226eec26cab8abfb5e7f7ae43a4f2459c1523490c1d415",
     ),
 ];
 
@@ -79,12 +79,17 @@ const RELEASE_TARGETS: &[&str] = &[
 ];
 
 /// crateforge が必要とする capability (rbx-cli `version` が返す安定文字列)。
+/// 0.1.1 で追加されたもの (競合の理由・CDJ の変更の保持・stdin の終端での中止) も必須にする
+/// ので、指定パスの古い rbx-cli (0.1.0) は「更新してください」で弾かれる。
 const REQUIRED_CAPABILITIES: &[&str] = &[
     "usb.export",
     "usb.export.dryRun",
     "usb.export.cues",
     "usb.export.beatGrid.anchors",
     "usb.export.stdinCancel",
+    "usb.export.stdinEofCancel",
+    "usb.export.conflictReasons",
+    "usb.export.keepDeviceChanges",
     "devices.list",
     "devices.eject",
 ];
@@ -835,7 +840,7 @@ mod tests {
     fn info(protocol: u32, caps: &[&str]) -> VersionInfo {
         VersionInfo {
             name: "rbx-cli".into(),
-            version: "0.1.0".into(),
+            version: "0.1.1".into(),
             protocol,
             capabilities: caps.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
@@ -851,6 +856,27 @@ mod tests {
         assert!(older.contains("rbx-cli を更新"), "{older}");
         let missing = check_compatible(&info(1, &["usb.export"])).unwrap_err();
         assert!(missing.contains("usb.export.cues"), "{missing}");
+        // 0.1.0 の capability だけでは足りない (0.1.1 の 3 つが必要)。
+        let v010: Vec<&str> = REQUIRED_CAPABILITIES
+            .iter()
+            .copied()
+            .filter(|c| {
+                !matches!(
+                    *c,
+                    "usb.export.stdinEofCancel"
+                        | "usb.export.conflictReasons"
+                        | "usb.export.keepDeviceChanges"
+                )
+            })
+            .collect();
+        let old = check_compatible(&info(1, &v010)).unwrap_err();
+        for c in [
+            "usb.export.stdinEofCancel",
+            "usb.export.conflictReasons",
+            "usb.export.keepDeviceChanges",
+        ] {
+            assert!(old.contains(c), "{old}");
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
