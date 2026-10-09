@@ -696,7 +696,10 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
 
         {build.missing > 0 && (
           <details className="usb-examples">
-            <summary>見つからないファイル {build.missing} 曲（書き出しません）</summary>
+            <summary>
+              見つからないファイル {build.missing} 曲（以前書き出していない曲はスキップ。以前書き出した曲があると
+              USB を変更せずに中止します）
+            </summary>
             <ul>
               {build.missingExamples.map((x) => (
                 <li key={x}>{x}</li>
@@ -917,7 +920,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         <button
           className="toolbar-btn primary"
           onClick={() => startExport(preferDeviceCues)}
-          disabled={starting || !plan || plan.result.tracks.requested === 0}
+          disabled={starting || !plan || plan.build.found === 0}
         >
           <Icon name="upload" size={14} /> {starting ? "開始中…" : "書き出す"}
         </button>

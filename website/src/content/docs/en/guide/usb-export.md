@@ -41,7 +41,9 @@ You can close the dialog while it runs. Progress is shown on a card at the botto
 - Title, artist, album, genre, comment, year, track number, disc number, play count, date added and rating (0–5 stars; half stars round up) come **from the Crateforge library**.
 - The **key** is Crateforge's effective key (your manual override, else the analysed key), written in rekordbox notation (`Am`, `F#m`, …). Tracks without one use the key analysed during the export.
 - **BPM, beat grid and waveforms** are analysed during the export (or taken from Traktor's grid when that option is on). The displayed BPM matches the grid's tempo.
-- Missing files are not exported (the plan shows how many, with examples).
+- **Tracks whose file is missing** (an external drive or NAS not connected, for example) are listed in the plan with a count and examples. They are still handed to rbx-cli and stay in their playlists:
+  - a track never exported to this stick before is skipped;
+  - if the stick **already holds** such a track from an earlier export, the export **stops without changing the stick**, so its copy is not deleted. Connect the drive (or fix the track's location) and export again. Even with "USB から消す" (Remove from USB) on, a track whose file is merely missing is never deleted from the stick.
 
 ## Traktor cues and grids
 

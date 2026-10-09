@@ -312,4 +312,49 @@ fn e2e_dry_run_export_inspect_resync_and_cancel() {
     assert!(msg.contains("中止"));
     let (_, out) = run(&exe, &["usb", "verify", &stick.to_string_lossy()], false);
     assert_eq!(out.expect("verify after cancel")["ok"], true);
+
+    // 6. 元ファイルが見つからない (外付けドライブ未接続など): 曲は落とさずに送り、rbx-cli が
+    //    USB を変更せずに conflict で止める (prune がオンでも USB の曲は消えない)。
+    let moved = tmp.path().join("bravo.moved");
+    std::fs::rename(&b, &moved).unwrap();
+    let built = build_request(
+        &db,
+        &opts,
+        Some(TraktorInput {
+            nml_path: "inline".into(),
+            index: &index,
+        }),
+        &size,
+    )
+    .unwrap();
+    assert_eq!(
+        built.request.tracks.len(),
+        2,
+        "the missing track is still sent"
+    );
+    assert_eq!(built.report.missing, 1);
+    assert!(opts.prune);
+    std::fs::write(&req_path, serde_json::to_vec(&built.request).unwrap()).unwrap();
+    let (_, out) = run(&exe, &args(&base(&[])), false);
+    let err = out.expect_err("a missing, previously exported source must stop the export");
+    assert_eq!(err.code, "conflict", "{err:?}");
+    let mapped = super::errors::from_error_line(&err);
+    assert!(!mapped.cue_conflict);
+    assert!(
+        mapped
+            .message
+            .contains("ソースファイルが見つからない曲が以前 USB に書き出されています"),
+        "{}",
+        mapped.message
+    );
+    let (_, out) = run(&exe, &["usb", "inspect", &stick.to_string_lossy()], false);
+    assert_eq!(
+        out.expect("inspect after conflict")["tracks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "the stick still holds both tracks"
+    );
+    std::fs::rename(&moved, &b).unwrap();
 }

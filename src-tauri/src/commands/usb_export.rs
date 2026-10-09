@@ -266,7 +266,7 @@ pub async fn usb_export_start(
 ) -> Result<BuildReport, UsbExportError> {
     let exe = exe(&app).await?;
     let built = build(&app, &options).await?;
-    if built.request.tracks.is_empty() {
+    if built.report.found == 0 {
         return Err(errors::local(
             "empty",
             "書き出せる曲がありません（プレイリストが空か、ファイルが見つかりません）。",

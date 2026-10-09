@@ -44,7 +44,7 @@ pub fn user_message(e: &ErrorLine) -> String {
                 .into()
         }
         "conflict" if raw.to_ascii_lowercase().contains("source unavailable") => format!(
-            "以前 USB に書き出した曲の元ファイルが見つかりません。ドライブを接続するか、曲の場所を直してから書き出してください（USB は変更されていません）。（{raw}）"
+            "ソースファイルが見つからない曲が以前 USB に書き出されています（外付けドライブ未接続など）。USB 上の曲を消さないよう、書き出しを中止しました（USB は変更されていません）。ドライブを接続するか、曲の場所を直してから書き出してください。（{raw}）"
         ),
         "conflict" => format!(
             "USB 上のライブラリと今回の内容が食い違っているため、書き出しを中止しました（USB は変更されていません）。（{raw}）"
@@ -144,7 +144,8 @@ mod tests {
             "USB sync conflict: Source unavailable for 'Cue Song'. Reconnect or relocate it before syncing; the USB has not been changed.",
         );
         assert!(!is_cue_conflict(&source));
-        assert!(user_message(&source).contains("元ファイルが見つかりません"));
+        assert!(user_message(&source)
+            .contains("ソースファイルが見つからない曲が以前 USB に書き出されています"));
 
         let other = err(
             "conflict",

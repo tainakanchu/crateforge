@@ -15,7 +15,10 @@
 //! - **cues / beatGrid**: Traktor を使わない / 曲が NML に無い → **両方省略** (USB 上の既存
 //!   キューを保持し、グリッドは rbx-cli が解析)。Traktor を使い一致した → 送る (キューが無ければ
 //!   空配列 = USB のキューを消す)。「USB 上のキューを優先」なら cues だけ省略してグリッドは送る。
-//! - **見つからないファイル** は送らず、件数と例をレポートする。
+//! - **見つからないファイル** も (パスがあれば) そのまま送り、件数と例をレポートする。
+//!   以前書き出した曲の元ファイルが無いときに USB を守るのは rbx-cli / rbl-export の役目
+//!   (`conflict` / `source_unavailable` で USB を変更せずに止まる)。ここで落とすと
+//!   「今回の内容に無い曲」扱いになり、プレイリストから消え、prune で USB からも消える。
 //! - メタデータは常に crateforge の DB の値 (NML の値は使わない)。
 
 use std::collections::{HashMap, HashSet};
@@ -104,6 +107,9 @@ pub struct BuildReport {
     pub tracks: usize,
     pub playlists: usize,
     pub folders: usize,
+    /// ファイルが見つかった曲 (書き出される見込みの曲)。
+    pub found: usize,
+    /// ファイルが見つからない曲 (パスの無い曲を含む)。パスのある曲は rbx-cli に渡す。
     pub missing: usize,
     pub missing_examples: Vec<String>,
     pub traktor: Option<TraktorReport>,
@@ -454,18 +460,27 @@ pub fn build_request(
             continue;
         };
         let path = t.location_path.as_deref().map(str::trim).unwrap_or("");
+        // パスの無い曲は rbx-cli に渡せない (`path` は必須) ので送らない。
+        // ファイルが見つからない曲は **そのまま送る**: rbx-cli は、以前書き出していない曲は
+        // スキップし、以前この USB に書き出した曲なら USB を変更せずに `conflict`
+        // (`source_unavailable`) で止める。ここで落とすと、外付けドライブ未接続などで
+        // プレイリストから曲が消え、「USB から消す」がオンだと USB からも削除されてしまう。
         let size = if path.is_empty() {
             None
         } else {
             file_size(path)
         };
-        let Some(size) = size else {
+        if size.is_none() {
             report.missing += 1;
             if report.missing_examples.len() < MAX_EXAMPLES {
                 report.missing_examples.push(track_label(t));
             }
-            continue;
-        };
+            if path.is_empty() {
+                continue;
+            }
+        } else {
+            report.found += 1;
+        }
         // 同じファイルを指す別の曲は 1 曲にまとめる (USB には 1 回だけ書く)。
         if let Some(existing) = by_path.get(path) {
             refs.insert(*tid, existing.clone());
@@ -518,7 +533,8 @@ pub fn build_request(
         };
 
         if let (Some(tk), Some(rep)) = (traktor.as_ref(), traktor_report.as_mut()) {
-            match tk.index.find(path, Some(size)) {
+            // サイズが分からない (ファイルが無い) ときはパス一致だけ (名前 + サイズのフォールバックはしない)。
+            match tk.index.find(path, size) {
                 Some((entry, kind)) => {
                     rep.matched += 1;
                     if kind == MatchKind::NameSize {
@@ -548,9 +564,9 @@ pub fn build_request(
     }
 
     report.tracks = inputs.len();
-    if report.missing > 0 && opts.prune {
+    if report.missing > 0 {
         report.warnings.push(format!(
-            "見つからない {} 曲は書き出しません。以前この USB に書き出していた場合、「USB から消す」がオンだと USB からも削除されます。",
+            "ファイルが見つからない曲が {} 曲あります。以前この USB に書き出していない曲はスキップされます。以前書き出した曲が含まれていると、USB を変更せずに書き出しが中止されます（外付けドライブを接続するか、曲の場所を直してから書き出してください）。",
             report.missing
         ));
     }
@@ -568,7 +584,7 @@ pub fn build_request(
             ));
         }
     }
-    if inputs.is_empty() {
+    if report.found == 0 {
         report.warnings.push(
             "書き出せる曲がありません（プレイリストが空か、ファイルが見つかりません）。".into(),
         );
@@ -802,9 +818,12 @@ mod tests {
         assert!(req.options.prune && req.options.embedded_artwork);
         assert_eq!(req.options.device_name.as_deref(), Some("STICK"));
 
-        // 曲は初出順・重複なし・見つからない曲は除外。
+        // 曲は初出順・重複なし。見つからない曲も送る (USB を守る判断は rbx-cli に任せる)。
         let paths: Vec<&str> = req.tracks.iter().map(|t| t.path.as_str()).collect();
-        assert_eq!(paths, vec!["/music/a.mp3", "/music/b.flac"]);
+        assert_eq!(
+            paths,
+            vec!["/music/a.mp3", "/music/gone.mp3", "/music/b.flac"]
+        );
         let a = &req.tracks[0];
         assert_eq!(a.reference.as_deref(), Some(pid(&f.db, f.a).as_str()));
         assert_eq!(a.title.as_deref(), Some("Alpha"));
@@ -821,7 +840,10 @@ mod tests {
         assert!(a.id.is_some());
         assert_eq!(a.cues, None, "no Traktor → cues omitted");
         assert_eq!(a.beat_grid, None);
-        let b = &req.tracks[1];
+        let gone = &req.tracks[1];
+        assert_eq!(gone.title.as_deref(), Some("Charlie"));
+        assert_eq!(gone.reference.as_deref(), Some(pid(&f.db, f.c).as_str()));
+        let b = &req.tracks[2];
         assert_eq!(b.key.as_deref(), Some("F#m"), "user override 11A wins");
         assert_eq!(b.comment.as_deref(), Some("hi"));
         assert_eq!(b.rating, None);
@@ -838,7 +860,8 @@ mod tests {
         assert_eq!(friday.name, "Friday");
         let ra = pid(&f.db, f.a);
         let rb = pid(&f.db, f.b);
-        assert_eq!(friday.tracks, vec![ra.clone(), rb.clone(), ra.clone()]);
+        let rc = pid(&f.db, f.c);
+        assert_eq!(friday.tracks, vec![ra.clone(), rc, rb.clone(), ra.clone()]);
         let smart = &req.playlists[1];
         assert_eq!(smart.name, "Bravo only");
         assert_eq!(smart.tracks, vec![rb]);
@@ -855,13 +878,16 @@ mod tests {
 
         // レポート。
         let r = &built.report;
-        assert_eq!(r.tracks, 2);
+        assert_eq!(r.tracks, 3);
+        assert_eq!(r.found, 2);
         assert_eq!(r.playlists, 2);
         assert_eq!(r.folders, 1);
         assert_eq!(r.missing, 1);
         assert!(r.missing_examples[0].contains("Charlie"));
-        assert!(r.warnings.iter().any(|w| w.contains("見つからない 1 曲")));
-        let _ = f.c;
+        assert!(r
+            .warnings
+            .iter()
+            .any(|w| w.contains("見つからない曲が 1 曲")));
     }
 
     #[test]
@@ -937,6 +963,7 @@ mod tests {
         )
         .unwrap();
         let t = &built.request.tracks;
+        assert_eq!(t[1].path, "/music/gone.mp3");
         // a: パス一致、MP3 オフセット +10ms。
         let grid = t[0].beat_grid.as_ref().unwrap();
         assert_eq!(grid.anchors[0].time_ms, 60.0);
@@ -946,20 +973,23 @@ mod tests {
         assert_eq!(cues[0].kind, CueKind::Hot);
         assert_eq!(cues[0].slot.as_deref(), Some("A"));
         assert_eq!(cues[0].time_ms, 1010.0);
-        // b: 名前 + サイズで一致、キュー無し → 空配列 (USB のキューを消す)、グリッド無し → 省略。
-        assert_eq!(t[1].cues, Some(vec![]));
+        // gone: ファイルが無く NML にも無い → 両方省略 (名前 + サイズの照合もしない)。
+        assert_eq!(t[1].cues, None);
         assert_eq!(t[1].beat_grid, None);
-        // d: NML に無い → 両方省略。
-        assert_eq!(t[2].path, "/music/d.wav");
-        assert_eq!(t[2].cues, None);
+        // b: 名前 + サイズで一致、キュー無し → 空配列 (USB のキューを消す)、グリッド無し → 省略。
+        assert_eq!(t[2].cues, Some(vec![]));
         assert_eq!(t[2].beat_grid, None);
+        // d: NML に無い → 両方省略。
+        assert_eq!(t[3].path, "/music/d.wav");
+        assert_eq!(t[3].cues, None);
+        assert_eq!(t[3].beat_grid, None);
 
         let rep = built.report.traktor.as_ref().unwrap();
         assert_eq!(rep.entries, 2);
         assert_eq!(rep.matched, 2);
         assert_eq!(rep.matched_by_name, 1);
-        assert_eq!(rep.unmatched, 1);
-        assert!(rep.unmatched_examples[0].contains("Delta"));
+        assert_eq!(rep.unmatched, 2);
+        assert!(rep.unmatched_examples.iter().any(|x| x.contains("Delta")));
         assert_eq!(rep.with_cues, 1);
         assert_eq!(rep.with_grid, 1);
         assert!(rep.cues_sent);
@@ -986,7 +1016,7 @@ mod tests {
         .unwrap();
         assert_eq!(built.request.tracks[0].cues, None);
         assert!(built.request.tracks[0].beat_grid.is_some());
-        assert_eq!(built.request.tracks[1].cues, None);
+        assert_eq!(built.request.tracks[2].cues, None);
         assert!(!built.report.traktor.unwrap().cues_sent);
     }
 
@@ -1010,5 +1040,85 @@ mod tests {
         assert_eq!(built.request.tracks.len(), 1);
         let ra = pid(&f.db, f.a);
         assert_eq!(built.request.playlists[0].tracks, vec![ra.clone(), ra]);
+    }
+    #[test]
+    fn missing_files_are_sent_and_matched_by_path_only() {
+        let f = fixture();
+        let nopath = add_track(&f.db, "No path", "");
+        let pl = f.db.create_playlist("Gone", None, false).unwrap();
+        f.db.add_tracks_to_playlist(pl.playlist_id, &[f.c, nopath])
+            .unwrap();
+        // gone.mp3 は NML ではパスが一致する / 別の場所の同名ファイルは名前 + サイズでは採らない。
+        let idx = NmlIndex::new(
+            vec![NmlEntry {
+                volume: "".into(),
+                dir: "/:music/:".into(),
+                file: "gone.mp3".into(),
+                file_size_kb: Some(11720),
+                bpm: Some(120.0),
+                cues: vec![],
+            }],
+            PathStyle::Unix,
+        );
+        let built = build_request(
+            &f.db,
+            &UsbExportOptions {
+                playlist_ids: vec![pl.playlist_id],
+                use_traktor: true,
+                ..Default::default()
+            },
+            Some(TraktorInput {
+                nml_path: "x".into(),
+                index: &idx,
+            }),
+            &existing(&[]),
+        )
+        .unwrap();
+        // パスの無い曲だけは送れない。見つからない曲はそのまま送る (プレイリストからも消さない)。
+        assert_eq!(built.request.tracks.len(), 1);
+        assert_eq!(built.request.tracks[0].path, "/music/gone.mp3");
+        assert_eq!(built.request.tracks[0].cues, Some(vec![]));
+        assert_eq!(
+            built.request.playlists[0].tracks,
+            vec![pid(&f.db, f.c)],
+            "the missing track stays in its playlist"
+        );
+        assert_eq!(built.report.missing, 2);
+        assert_eq!(built.report.found, 0);
+        assert_eq!(built.report.traktor.as_ref().unwrap().matched, 1);
+        assert!(built
+            .report
+            .warnings
+            .iter()
+            .any(|w| w.contains("書き出せる曲がありません")));
+
+        // 別の場所にある同名・同サイズの NML エントリは、サイズが分からないので採用しない。
+        let moved = NmlIndex::new(
+            vec![NmlEntry {
+                volume: "".into(),
+                dir: "/:elsewhere/:".into(),
+                file: "gone.mp3".into(),
+                file_size_kb: Some(11720),
+                bpm: Some(120.0),
+                cues: vec![],
+            }],
+            PathStyle::Unix,
+        );
+        let built = build_request(
+            &f.db,
+            &UsbExportOptions {
+                playlist_ids: vec![pl.playlist_id],
+                use_traktor: true,
+                ..Default::default()
+            },
+            Some(TraktorInput {
+                nml_path: "x".into(),
+                index: &moved,
+            }),
+            &existing(&[]),
+        )
+        .unwrap();
+        assert_eq!(built.request.tracks[0].cues, None);
+        assert_eq!(built.report.traktor.as_ref().unwrap().unmatched, 1);
     }
 }

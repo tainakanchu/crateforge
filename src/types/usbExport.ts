@@ -41,6 +41,9 @@ export interface UsbBuildReport {
   tracks: number;
   playlists: number;
   folders: number;
+  /** ファイルが見つかった曲。 */
+  found: number;
+  /** ファイルが見つからない曲 (パスがあれば rbx-cli に渡し、判断を任せる)。 */
   missing: number;
   missingExamples: string[];
   traktor: TraktorReport | null;
