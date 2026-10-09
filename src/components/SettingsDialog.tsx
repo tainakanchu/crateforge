@@ -8,6 +8,8 @@ import * as playbackApi from "../api/playback";
 import * as systemApi from "../api/system";
 import * as ffmpegApi from "../api/ffmpeg";
 import type { FfmpegStatus } from "../api/ffmpeg";
+import * as usbApi from "../api/usbExport";
+import type { RbxCliStatus, TraktorNmlStatus } from "../types";
 import type { UpdateInfo } from "../api/system";
 import * as serverApi from "../api/server";
 import type { ApiServerStatus } from "../api/server";
@@ -20,12 +22,13 @@ import { playRipChime } from "../lib/ripChime";
 
 const REPO_URL = "https://github.com/tainakanchu/crateforge";
 
-type Section = "general" | "fonts" | "ffmpeg" | "api" | "updates" | "about";
+type Section = "general" | "fonts" | "ffmpeg" | "usb" | "api" | "updates" | "about";
 
 const SECTIONS: { key: Section; label: string; icon: string }[] = [
   { key: "general", label: "一般", icon: "sliders" },
   { key: "fonts", label: "フォント", icon: "sliders" },
   { key: "ffmpeg", label: "変換 (ffmpeg)", icon: "waveform" },
+  { key: "usb", label: "USB 書き出し (rbx-cli)", icon: "upload" },
   { key: "api", label: "AI 連携 / API", icon: "info" },
   { key: "updates", label: "アップデート", icon: "download" },
   { key: "about", label: "情報・ライセンス", icon: "info" },
@@ -34,6 +37,7 @@ const SECTIONS: { key: Section; label: string; icon: string }[] = [
 // ライセンス表記（CLI 経由で別プロセス起動している ffmpeg と、主な OSS 依存）。
 const CREDITS: { name: string; license: string; note?: string }[] = [
   { name: "FFmpeg (BtbN win64 build)", license: "GPL-3.0", note: "変換時に外部プロセスとして利用。配布物には含めず上流から取得します。" },
+  { name: "rbx-cli (rbxport ベース)", license: "GPL-2.0-or-later", note: "USB 書き出し (CDJ / rekordbox 互換) に外部プロセスとして利用。配布物には含めず、必要時に上流の GitHub Release から取得します。" },
   { name: "Tauri", license: "MIT / Apache-2.0" },
   { name: "React / React DOM", license: "MIT" },
   { name: "zustand", license: "MIT" },
@@ -127,6 +131,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [ffBusy, setFfBusy] = useState(false);
   const [ffProgress, setFfProgress] = useState<string>("");
 
+  // USB 書き出し (rbx-cli) と Traktor collection.nml
+  const [rbxStatus, setRbxStatus] = useState<RbxCliStatus | null>(null);
+  const [rbxBusy, setRbxBusy] = useState(false);
+  const [rbxProgress, setRbxProgress] = useState<string>("");
+  const [nmlStatus, setNmlStatus] = useState<TraktorNmlStatus | null>(null);
+
   // library.db バックアップ / 復元 / 整合性チェック / VACUUM (#167)
   const [backupBusy, setBackupBusy] = useState(false);
   const [integrityBusy, setIntegrityBusy] = useState(false);
@@ -177,6 +187,100 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       fontsApi.listSystemFonts().then(setFontList).catch(() => setFontList([]));
     }
   }, [section, fontList.length]);
+
+  // rbx-cli の確認は子プロセス起動を伴うので、USB セクションを開いたときに行う。
+  const refreshRbx = useCallback(async () => {
+    try {
+      setRbxStatus(await usbApi.getRbxCliStatus());
+    } catch {
+      setRbxStatus(null);
+    }
+    usbApi.getTraktorNmlStatus().then(setNmlStatus).catch(() => setNmlStatus(null));
+  }, []);
+  useEffect(() => {
+    if (section === "usb") refreshRbx();
+  }, [section, refreshRbx]);
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    usbApi
+      .onRbxCliProgress((p) => {
+        if (p.kind === "start") setRbxProgress("ダウンロードを開始します…");
+        else if (p.kind === "download")
+          setRbxProgress(
+            p.total > 0
+              ? `ダウンロード中 ${mb(p.received)} / ${mb(p.total)} MB`
+              : `ダウンロード中 ${mb(p.received)} MB`,
+          );
+        else if (p.kind === "verify") setRbxProgress("チェックサムを確認中…");
+        else if (p.kind === "extract") setRbxProgress("展開中…");
+        else if (p.kind === "done") setRbxProgress("完了しました");
+        else if (p.kind === "error") setRbxProgress(`失敗: ${p.message}`);
+      })
+      .then((u) => {
+        un = u;
+      })
+      .catch(() => {});
+    return () => un?.();
+  }, []);
+
+  const handleDownloadRbx = useCallback(async () => {
+    setRbxBusy(true);
+    setRbxProgress("");
+    try {
+      await usbApi.downloadRbxCli();
+      await refreshRbx();
+    } catch (err) {
+      setRbxProgress(`失敗: ${err}`);
+    } finally {
+      setRbxBusy(false);
+    }
+  }, [refreshRbx]);
+
+  const handlePickRbx = useCallback(async () => {
+    const f = await openDir({ multiple: false, directory: false });
+    if (typeof f !== "string") return;
+    setRbxBusy(true);
+    try {
+      setRbxStatus(await usbApi.setRbxCliPath(f));
+    } catch (err) {
+      pushToast("error", `保存に失敗しました: ${err}`);
+    } finally {
+      setRbxBusy(false);
+    }
+  }, [pushToast]);
+
+  const handleClearRbx = useCallback(async () => {
+    setRbxBusy(true);
+    try {
+      setRbxStatus(await usbApi.setRbxCliPath(null));
+    } catch (err) {
+      pushToast("error", `保存に失敗しました: ${err}`);
+    } finally {
+      setRbxBusy(false);
+    }
+  }, [pushToast]);
+
+  const handlePickNml = useCallback(async () => {
+    const f = await openDir({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Traktor collection", extensions: ["nml"] }],
+    });
+    if (typeof f !== "string") return;
+    try {
+      setNmlStatus(await usbApi.setTraktorNmlPath(f));
+    } catch (err) {
+      pushToast("error", `保存に失敗しました: ${err}`);
+    }
+  }, [pushToast]);
+
+  const handleClearNml = useCallback(async () => {
+    try {
+      setNmlStatus(await usbApi.setTraktorNmlPath(null));
+    } catch (err) {
+      pushToast("error", `保存に失敗しました: ${err}`);
+    }
+  }, [pushToast]);
 
   // ffmpeg 取得の進捗購読。
   useEffect(() => {
@@ -665,6 +769,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     openShell(REPO_URL).catch(() => window.open(REPO_URL, "_blank"));
   }, []);
 
+  const rbxSourceLabel: Record<RbxCliStatus["source"], string> = {
+    override: "設定で指定したパス",
+    cache: "ダウンロード済み（キャッシュ）",
+    path: "PATH 上の rbx-cli",
+    none: "未検出",
+  };
+
   const ffSourceLabel: Record<FfmpegStatus["source"], string> = {
     cache: "ダウンロード済み（キャッシュ）",
     bundled: "同梱（旧インストール）",
@@ -1022,6 +1133,130 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     再チェック
                   </button>
                   {ffProgress && <span className="settings-progress">{ffProgress}</span>}
+                </div>
+              </>
+            )}
+
+            {section === "usb" && (
+              <>
+                <Row
+                  title="rbx-cli の状態"
+                  desc="USB 書き出し（CDJ / rekordbox 互換）に使う外部ツールです。別プロセスとして呼び出すだけで、本体には組み込みません。"
+                >
+                  <span className={"settings-badge" + (rbxStatus?.available ? " ok" : " warn")}>
+                    {rbxStatus == null ? (
+                      "確認中…"
+                    ) : rbxStatus.available ? (
+                      <>
+                        <Icon name="check" size={13} /> 利用可能
+                      </>
+                    ) : (
+                      <>
+                        <Icon name="warning" size={13} /> 利用不可
+                      </>
+                    )}
+                  </span>
+                </Row>
+                {rbxStatus && (
+                  <div className="settings-kv">
+                    <div>
+                      <span className="k">取得元</span>
+                      <span className="v">{rbxSourceLabel[rbxStatus.source]}</span>
+                    </div>
+                    {rbxStatus.path && (
+                      <div>
+                        <span className="k">パス</span>
+                        <span className="v mono" title={rbxStatus.path}>
+                          {rbxStatus.path}
+                        </span>
+                      </div>
+                    )}
+                    {rbxStatus.version && (
+                      <div>
+                        <span className="k">バージョン</span>
+                        <span className="v">
+                          {rbxStatus.version}（protocol {rbxStatus.protocol}）
+                        </span>
+                      </div>
+                    )}
+                    <div>
+                      <span className="k">取得対象</span>
+                      <span className="v">v{rbxStatus.pinnedVersion}</span>
+                    </div>
+                  </div>
+                )}
+                {rbxStatus?.error && (
+                  <div className="settings-note">
+                    <Icon name="warning" size={14} />
+                    <span>{rbxStatus.error}</span>
+                  </div>
+                )}
+                <div className="settings-note">
+                  <Icon name="info" size={14} />
+                  <span>
+                    rbx-cli は <b>GPL-2.0-or-later</b>（配布バイナリは実質 GPL-3.0）のオープンソースです。Crateforge
+                    には同梱せず、「今すぐ取得」で上流の GitHub Release から取得し、チェックサムを確認してアプリのデータフォルダに保存します。
+                    自分でビルドした rbx-cli を使う場合は「パスを指定」してください。
+                  </span>
+                </div>
+                <div className="settings-actions">
+                  <button
+                    className="toolbar-btn primary"
+                    onClick={handleDownloadRbx}
+                    disabled={rbxBusy || !rbxStatus?.canDownload}
+                  >
+                    <Icon name="download" size={14} />
+                    {rbxStatus?.available && rbxStatus.source === "cache" ? "再取得" : "今すぐ取得"}
+                  </button>
+                  <button className="toolbar-btn" onClick={handlePickRbx} disabled={rbxBusy}>
+                    パスを指定…
+                  </button>
+                  {rbxStatus?.overridePath && (
+                    <button className="toolbar-btn" onClick={handleClearRbx} disabled={rbxBusy}>
+                      指定を解除
+                    </button>
+                  )}
+                  <button className="toolbar-btn" onClick={refreshRbx} disabled={rbxBusy}>
+                    再チェック
+                  </button>
+                  {rbxProgress && <span className="settings-progress">{rbxProgress}</span>}
+                </div>
+
+                <Row
+                  title="Traktor の collection.nml"
+                  desc="USB 書き出しで「Traktor のキュー/グリッドを使う」ときに読みます（書き出しの時だけ読み、Crateforge には保存しません）。"
+                >
+                  <span className={"settings-badge" + (nmlStatus?.exists ? " ok" : " warn")}>
+                    {nmlStatus?.exists ? "検出" : "未検出"}
+                  </span>
+                </Row>
+                {nmlStatus && (
+                  <div className="settings-kv">
+                    <div>
+                      <span className="k">使用するファイル</span>
+                      <span className="v mono" title={nmlStatus.effectivePath ?? ""}>
+                        {nmlStatus.effectivePath ?? "—"}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="k">決め方</span>
+                      <span className="v">
+                        {nmlStatus.overridePath
+                          ? "手動で指定"
+                          : "自動検出（Documents/Native Instruments/Traktor */ の最新版）"}
+                      </span>
+                    </div>
+                  </div>
+                )}
+                <div className="settings-actions">
+                  <button className="toolbar-btn" onClick={handlePickNml}>
+                    ファイルを指定…
+                  </button>
+                  {nmlStatus?.overridePath && (
+                    <button className="toolbar-btn" onClick={handleClearNml}>
+                      自動検出に戻す
+                    </button>
+                  )}
                 </div>
               </>
             )}
@@ -1427,7 +1662,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 )}
 
                 <p className="settings-fine">
-                  各ライブラリの著作権は各権利者に帰属します。MIT / BSD / Apache-2.0 / MPL-2.0 などのライセンスは上記「全文」に同梱しています。FFmpeg は GPL-3.0 で配布されており、本アプリはこれを外部コマンドとして呼び出すだけ（リンクはしていません／配布物にも含めません）です。
+                  各ライブラリの著作権は各権利者に帰属します。MIT / BSD / Apache-2.0 / MPL-2.0 などのライセンスは上記「全文」に同梱しています。FFmpeg は GPL-3.0、USB 書き出しに使う rbx-cli は GPL-2.0-or-later（配布バイナリは実質 GPL-3.0）で配布されており、本アプリはこれらを外部コマンドとして呼び出すだけ（リンクはしていません／配布物にも含めません）です。rekordbox・CDJ は AlphaTheta 株式会社の商標であり、本アプリおよび rbx-cli は同社とは無関係です。
                 </p>
               </>
             )}

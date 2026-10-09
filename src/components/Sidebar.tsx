@@ -10,6 +10,8 @@ import { listSetHistories } from "../lib/setHistoryStore";
 interface SidebarProps {
   onPlaylistsChanged: () => void;
   onEditSmart: (playlistId: number | null, name?: string) => void;
+  /** USB 書き出しダイアログを、このプレイリスト / フォルダを選んだ状態で開く。 */
+  onUsbExport: (playlistIds: number[]) => void;
 }
 
 /** サイドバー右クリック用メニューの状態（位置＋対象プレイリスト） */
@@ -143,7 +145,7 @@ const NAV: NavItem[] = [
   { mode: "recent", icon: "clock", label: "Recently Played" },
 ];
 
-export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
+export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: SidebarProps) {
   const {
     viewMode,
     playlists,
@@ -299,6 +301,12 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
           run: () => handleDuplicate(pl),
         });
       }
+      actions.push({
+        id: "usb-export",
+        icon: "upload",
+        label: "USB に書き出し…",
+        run: () => onUsbExport([pl.playlistId]),
+      });
       if (editable) {
         actions.push({
           id: "edit",
@@ -316,7 +324,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart }: SidebarProps) {
       });
       return actions;
     },
-    [startRename, handleDuplicate, onEditSmart, handleDelete],
+    [startRename, handleDuplicate, onEditSmart, onUsbExport, handleDelete],
   );
 
   // === トラックのドロップ受け入れ (TrackTable / Similar からの D&D) ===

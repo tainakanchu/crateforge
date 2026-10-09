@@ -10,10 +10,17 @@ export function Toaster() {
   const toasts = useStore((s) => s.toasts);
   // CD 取り込みの進捗カード (RipStatusBar) と同じ右下に出るので、表示中はその上へずらす。
   const ripVisible = useStore((s) => s.ripStatus !== null);
+  // USB 書き出しの進捗カードも同じ位置に出る (両方出ていればさらに一段上へ)。
+  const usbVisible = useStore((s) => s.usbExportStatus !== null);
+  const cards = (ripVisible ? 1 : 0) + (usbVisible ? 1 : 0);
   if (toasts.length === 0) return null;
   return (
     <div
-      className={"toaster" + (ripVisible ? " toaster--above-rip" : "")}
+      className={
+        "toaster" +
+        (cards >= 1 ? " toaster--above-rip" : "") +
+        (cards >= 2 ? " toaster--above-two" : "")
+      }
       role="region"
       aria-label="通知"
       aria-live="polite"
