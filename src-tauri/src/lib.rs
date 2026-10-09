@@ -24,6 +24,7 @@ mod smart;
 mod smtc;
 mod sync;
 mod text_fold;
+mod traktor_nml;
 mod updater;
 mod usb_export;
 
