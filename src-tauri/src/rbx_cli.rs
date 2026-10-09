@@ -18,8 +18,8 @@
 //! 合わなければ使わずに分かりやすいエラーを返す。
 //!
 //! 取得 ([`download`]): 固定バージョン [`RBX_CLI_VERSION`] の Release アセットを `.part` へ
-//! ストリーミング保存しながら SHA-256 を計算 → [`PINNED_SHA256`] (空なら Release の
-//! `SHA256SUMS`) と照合 → 展開 (Windows は zip、他は tar.gz) → 実行権限 → アトミック rename。
+//! ストリーミング保存しながら SHA-256 を計算 → ソースに固定した [`PINNED_SHA256`] と照合
+//! (固定値が無いアセットに限り Release の `SHA256SUMS`) → 展開 (Windows は zip、他は tar.gz) → 実行権限 → アトミック rename。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,12 +40,39 @@ const RELEASE_BASE: &str = "https://github.com/tainakanchu/rbx-cli/releases/down
 /// ユーザーが指定した rbx-cli のパスを保存する `app_state` のキー。
 pub const OVERRIDE_STATE_KEY: &str = "rbx_cli_path";
 
-/// アセットごとの SHA-256 をソースに固定するための表 (`(アセット名, 小文字 hex)`)。
+/// アセットごとの SHA-256 をソースに固定した表 (`(アセット名, 小文字 hex)`)。
 ///
-/// **現在は空**: 空 (または該当アセットが無い) ときは、同じ Release の `SHA256SUMS` と
-/// 照合する (同じ配布元なので改ざん検知としては弱く、転送破損の検知が主)。リリースが
-/// 確定したらここに値を入れると、`SHA256SUMS` を取りに行かずソース側の値で検証する。
-pub const PINNED_SHA256: &[(&str, &str)] = &[];
+/// ダウンロードはこの値だけで検証し、同じ Release の `SHA256SUMS` は取りに行かない
+/// (同じ配布元のファイルなので、ソースに固定した値と突き合わせる以上の意味が無い)。
+/// [`RBX_CLI_VERSION`] を上げるときはここも必ず更新する (全ターゲット分あることをテストで確認)。
+/// 該当アセットが無い場合に限り `SHA256SUMS` にフォールバックする (転送破損の検知が主)。
+pub const PINNED_SHA256: &[(&str, &str)] = &[
+    (
+        "rbx-cli-0.1.0-aarch64-apple-darwin.tar.gz",
+        "3730212d6f78cdb4882669b2759cb7461937f23bc825b808a3ee5eb0fd806e44",
+    ),
+    (
+        "rbx-cli-0.1.0-x86_64-apple-darwin.tar.gz",
+        "aee3320b2b5d7ecfcd90eb24e58b42f8e7f4a5f0a43c2061fd1b62e6e566a185",
+    ),
+    (
+        "rbx-cli-0.1.0-x86_64-pc-windows-msvc.zip",
+        "9bbeb89bdf2ae3b646b2905e05fdf7d82359eda20c86fb43fa824a733b0184bc",
+    ),
+    (
+        "rbx-cli-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
+        "913523e0086ee3e4208a04197cdcd82d03cc8954174cc451022111e29698c94a",
+    ),
+];
+
+/// Release のビルドマトリクス (rbx-cli の release.yml) のターゲット。
+#[cfg_attr(not(test), allow(dead_code))]
+const RELEASE_TARGETS: &[&str] = &[
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+];
 
 /// crateforge が必要とする capability (rbx-cli `version` が返す安定文字列)。
 const REQUIRED_CAPABILITIES: &[&str] = &[
@@ -454,11 +481,31 @@ pub async fn download(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 async fn download_inner(app: &AppHandle) -> Result<PathBuf, String> {
-    use sha2::{Digest, Sha256};
-
     let target = target_triple()
         .ok_or("この OS / CPU 向けの rbx-cli は配布されていません。rbx-cli をビルドして設定でパスを指定してください。")?;
     let dest = cache_path(app).ok_or("保存先フォルダを解決できませんでした")?;
+    let emit = |p: RbxCliProgress| {
+        let _ = app.emit("rbx-cli-progress", p);
+    };
+    let client = reqwest::Client::builder()
+        .user_agent("Crateforge")
+        .build()
+        .map_err(|e| e.to_string())?;
+    download_to(&client, target, &dest, None, &emit).await?;
+    Ok(dest)
+}
+
+/// `target` 向けの Release アセットを取得して `dest` に実行ファイルを置き、互換性を確認する。
+/// `expected_sha256` を渡すとそれで検証する (テスト用。通常は None = 固定値 / SHA256SUMS)。
+pub async fn download_to(
+    client: &reqwest::Client,
+    target: &str,
+    dest: &Path,
+    expected_sha256: Option<String>,
+    progress: &(dyn Fn(RbxCliProgress) + Sync),
+) -> Result<VersionInfo, String> {
+    use sha2::{Digest, Sha256};
+
     let dir = dest
         .parent()
         .ok_or("保存先フォルダを解決できませんでした")?
@@ -468,13 +515,9 @@ async fn download_inner(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("フォルダ作成に失敗: {e}"))?;
 
     let asset = asset_name(RBX_CLI_VERSION, target);
-    let client = reqwest::Client::builder()
-        .user_agent("Crateforge")
-        .build()
-        .map_err(|e| e.to_string())?;
 
     // 期待するハッシュ: ソースに固定した値 → 無ければ同 Release の SHA256SUMS。
-    let expected = match pinned_sha256(&asset) {
+    let expected = match expected_sha256.or_else(|| pinned_sha256(&asset)) {
         Some(h) => h,
         None => {
             let sums = client
@@ -520,10 +563,7 @@ async fn download_inner(app: &AppHandle) -> Result<PathBuf, String> {
             // イベントを撒きすぎないよう 256KB ごとに通知する。
             if received - last_emit >= 256 * 1024 || received == total {
                 last_emit = received;
-                let _ = app.emit(
-                    "rbx-cli-progress",
-                    RbxCliProgress::Download { received, total },
-                );
+                progress(RbxCliProgress::Download { received, total });
             }
         }
         out.flush()
@@ -531,7 +571,7 @@ async fn download_inner(app: &AppHandle) -> Result<PathBuf, String> {
             .map_err(|e| format!("書き込みに失敗: {e}"))?;
     }
 
-    let _ = app.emit("rbx-cli-progress", RbxCliProgress::Verify);
+    progress(RbxCliProgress::Verify);
     let actual = hex(&hasher.finalize());
     if actual != expected {
         let _ = tokio::fs::remove_file(&archive_part).await;
@@ -540,20 +580,19 @@ async fn download_inner(app: &AppHandle) -> Result<PathBuf, String> {
         ));
     }
 
-    let _ = app.emit("rbx-cli-progress", RbxCliProgress::Extract);
+    progress(RbxCliProgress::Extract);
     let archive = archive_part.clone();
-    let dest_clone = dest.clone();
-    let extracted =
-        tauri::async_runtime::spawn_blocking(move || extract_binary(&archive, &dest_clone))
-            .await
-            .map_err(|e| format!("展開に失敗: {e}"))?;
+    let dest_clone = dest.to_path_buf();
+    let extracted = tokio::task::spawn_blocking(move || extract_binary(&archive, &dest_clone))
+        .await
+        .map_err(|e| format!("展開に失敗: {e}"))?;
     let _ = tokio::fs::remove_file(&archive_part).await;
     extracted?;
 
     // 取得したものが本当に使えるか確かめる。
-    let info = probe(&dest).await?;
+    let info = probe(dest).await?;
     check_compatible(&info)?;
-    Ok(dest)
+    Ok(info)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -662,7 +701,29 @@ mod tests {
         );
         assert_eq!(parse_sha256sums(&text, "missing.tar.gz"), None);
         assert_eq!(parse_sha256sums("short  x.tar.gz", "x.tar.gz"), None);
-        assert!(PINNED_SHA256.is_empty() || pinned_sha256("nothing").is_none());
+        assert!(pinned_sha256("nothing").is_none());
+    }
+
+    #[test]
+    fn every_release_target_of_the_pinned_version_has_a_checksum() {
+        for target in RELEASE_TARGETS {
+            let asset = asset_name(RBX_CLI_VERSION, target);
+            let hash = pinned_sha256(&asset)
+                .unwrap_or_else(|| panic!("PINNED_SHA256 has no entry for {asset}"));
+            assert_eq!(hash.len(), 64);
+            assert!(hash
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        }
+        assert_eq!(
+            PINNED_SHA256.len(),
+            RELEASE_TARGETS.len(),
+            "stale pins for an old version?"
+        );
+        // このビルドのターゲットも表に含まれる。
+        if let Some(t) = target_triple() {
+            assert!(RELEASE_TARGETS.contains(&t));
+        }
     }
 
     fn info(protocol: u32, caps: &[&str]) -> VersionInfo {
@@ -747,5 +808,83 @@ mod tests {
         assert!(extract_binary(&bad, &dest2).is_err());
         assert!(!dest2.exists());
         assert!(!dest2.with_extension("part").exists());
+    }
+
+    /// 実際の GitHub Release から取得する (ネットワークが要るので既定では実行しない)。
+    /// `cargo test -- --ignored rbx_cli::tests::downloads_the_real_release`
+    #[test]
+    #[ignore = "downloads the real rbx-cli release from GitHub"]
+    fn downloads_the_real_release() {
+        let Some(target) = target_triple() else {
+            return;
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        // 本番と同じクライアント設定。サンドボックス等で TLS を中継するプロキシがある場合だけ、
+        // SSL_CERT_FILE の CA を追加で信頼する (アプリ本体の信頼ストアは変えない)。
+        let mut builder = reqwest::Client::builder().user_agent("Crateforge");
+        if let Some(pem) = std::env::var_os("SSL_CERT_FILE").and_then(|p| std::fs::read(p).ok()) {
+            for cert in reqwest::Certificate::from_pem_bundle(&pem).unwrap_or_default() {
+                builder = builder.add_root_certificate(cert);
+            }
+        }
+        let client = builder.build().unwrap();
+        let events = std::sync::Mutex::new(Vec::<String>::new());
+        let record = |p: RbxCliProgress| {
+            let kind = serde_json::to_value(&p).unwrap()["kind"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            events.lock().unwrap().push(kind);
+        };
+
+        // 1. 固定したチェックサムで取得 → 展開 → version --json で互換確認。
+        let dest = tmp.path().join("bin").join(RBX_CLI_VERSION).join(EXE);
+        let info = rt
+            .block_on(download_to(&client, target, &dest, None, &record))
+            .unwrap();
+        assert_eq!(info.version, RBX_CLI_VERSION);
+        assert_eq!(info.protocol, wire::PROTOCOL_VERSION);
+        assert!(dest.is_file());
+        let leftovers: Vec<_> = std::fs::read_dir(dest.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            leftovers,
+            vec![EXE.to_string()],
+            "no .part files left behind"
+        );
+        let kinds = events.lock().unwrap().clone();
+        assert!(kinds.contains(&"download".to_string()));
+        assert!(kinds.ends_with(&["verify".to_string(), "extract".to_string()]));
+        eprintln!(
+            "downloaded rbx-cli {} ({}) to {}",
+            info.version,
+            info.target,
+            dest.display()
+        );
+
+        // 2. チェックサムが違えば何も置かずに失敗する。
+        let bad = tmp.path().join("bad").join(EXE);
+        let err = rt
+            .block_on(download_to(
+                &client,
+                target,
+                &bad,
+                Some("0".repeat(64)),
+                &|_| {},
+            ))
+            .unwrap_err();
+        assert!(err.contains("チェックサムが一致しません"), "{err}");
+        assert!(!bad.exists());
+        assert_eq!(
+            std::fs::read_dir(bad.parent().unwrap()).unwrap().count(),
+            0,
+            "the .part archive is removed"
+        );
     }
 }
