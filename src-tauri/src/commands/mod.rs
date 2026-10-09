@@ -16,3 +16,4 @@ pub mod rules;
 pub mod smtc;
 pub mod sync;
 pub mod updater;
+pub mod usb_export;
