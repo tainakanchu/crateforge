@@ -134,15 +134,20 @@ pub async fn usb_eject(app: AppHandle, mount_point: String) -> Result<(), String
         return Err("書き出し中は取り出せません".to_string());
     }
     let exe = rbx_cli::ensure(&app).await?;
-    rbx_cli::run_json(&exe, &["devices", "eject", &mount_point])
-        .await
-        .map(|_| ())
-        .map_err(|e| match e {
-            rbx_cli::RunError::Cli(line) if line.code == "not_found" => {
-                "このボリュームは取り出せません（デバイス一覧にありません）。".to_string()
-            }
-            other => format!("取り出しに失敗しました: {}", other.message()),
-        })
+    // `--` の後に置く (`-` で始まるマウントポイントをオプションと解釈させない)。
+    rbx_cli::run_json_with_timeout(
+        &exe,
+        &["devices", "eject", "--", &mount_point],
+        rbx_cli::EJECT_TIMEOUT,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| match e {
+        rbx_cli::RunError::Cli(line) if line.code == "not_found" => {
+            "このボリュームは取り出せません（デバイス一覧にありません）。".to_string()
+        }
+        other => format!("取り出しに失敗しました: {}", other.message()),
+    })
 }
 
 // ============================================================ export

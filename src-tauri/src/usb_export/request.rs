@@ -5,7 +5,7 @@
 //!   `persistent_id` そのもの。ファイルを移動しても USB 上の同じ曲として扱われる。
 //!   プレイリスト / フォルダの `id` も `persistent_id` から同様に導く (改名しても同一)。
 //! - **rating**: crateforge の 0–100 (★1 = 20) → 0–5 の星。半星は切り上げ (70 → 4)。
-//! - **key**: 実効キー (`key_camelot_user ?? 解析 key_camelot`) を rekordbox の綴り
+//! - **key**: 実効キー (`key_camelot_user ?? 解析 key_camelot`、空白だけの値は未設定扱い) を rekordbox の綴り
 //!   (`Am`, `F#m`, `Db` — 黒鍵はフラット、F# のみシャープ) に変換して送る。
 //!   無ければ省略し、rbx-cli の解析キー (`detectKey`) に任せる。
 //! - **BPM は送らない**: rbx-cli は `bpm` 省略時、送ったグリッドの先頭テンポ → 無ければ
@@ -209,6 +209,14 @@ fn non_empty(s: &Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+/// 実効キー: 手動のキー ?? 解析キー。空 (空白だけ) の手動キーは未設定扱いにして解析キーを使う。
+pub fn effective_key(user: Option<&str>, analysed: Option<&str>) -> Option<String> {
+    fn clean(k: Option<&str>) -> Option<&str> {
+        k.map(str::trim).filter(|k| !k.is_empty())
+    }
+    clean(user).or_else(|| clean(analysed)).map(str::to_string)
 }
 
 fn track_label(t: &Track) -> String {
@@ -500,10 +508,10 @@ pub fn build_request(
         refs.insert(*tid, reference.clone());
         by_path.insert(path.to_string(), reference.clone());
 
-        let effective_key = t
-            .key_camelot_user
-            .clone()
-            .or_else(|| analysis.get(&pid).cloned().flatten());
+        let effective_key = effective_key(
+            t.key_camelot_user.as_deref(),
+            analysis.get(&pid).and_then(|k| k.as_deref()),
+        );
         let mut input = TrackInput {
             path: path.to_string(),
             reference: Some(reference),
@@ -1195,5 +1203,18 @@ mod tests {
         let built = build(&idx);
         assert_eq!(built.report.traktor.as_ref().unwrap().ambiguous, 0);
         assert_eq!(built.request.tracks[0].cues, Some(vec![]));
+    }
+    #[test]
+    fn blank_user_key_falls_back_to_the_analysed_key() {
+        assert_eq!(
+            effective_key(Some("11A"), Some("8A")).as_deref(),
+            Some("11A")
+        );
+        assert_eq!(effective_key(None, Some("8A")).as_deref(), Some("8A"));
+        assert_eq!(effective_key(Some(""), Some("8A")).as_deref(), Some("8A"));
+        assert_eq!(effective_key(Some("  "), Some("8A")).as_deref(), Some("8A"));
+        assert_eq!(effective_key(Some(" 5a "), None).as_deref(), Some("5a"));
+        assert_eq!(effective_key(Some(" "), Some(" ")), None);
+        assert_eq!(effective_key(None, None), None);
     }
 }
