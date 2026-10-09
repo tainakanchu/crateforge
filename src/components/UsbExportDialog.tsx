@@ -669,7 +669,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
                 <span className="k">一致</span>
                 <span className="v">
                   {tk.matched} 曲{tk.matchedByName > 0 ? `（うちファイル名+サイズで ${tk.matchedByName} 曲）` : ""}
-                  ／ 不一致 {tk.unmatched} 曲
+                  ／ 不一致 {tk.unmatched} 曲{tk.ambiguous > 0 ? `（うち候補が複数 ${tk.ambiguous} 曲）` : ""}
                 </span>
               </div>
               <div>
@@ -681,6 +681,18 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
                 </span>
               </div>
             </div>
+            {tk.ambiguousExamples.length > 0 && (
+              <details className="usb-examples">
+                <summary>
+                  Traktor に候補が複数ある曲 {tk.ambiguous} 曲（例）— 別のボリュームに同じパスの曲があるため使いません
+                </summary>
+                <ul>
+                  {tk.ambiguousExamples.map((x) => (
+                    <li key={x}>{x}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
             {tk.unmatchedExamples.length > 0 && (
               <details className="usb-examples">
                 <summary>Traktor に見つからない曲（例）— キューは USB 上のまま、グリッドは解析</summary>

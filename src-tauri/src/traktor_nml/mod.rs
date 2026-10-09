@@ -22,7 +22,7 @@ use std::time::SystemTime;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
-pub use path::{MatchKind, NmlIndex};
+pub use path::{Lookup, MatchKind, NmlIndex};
 
 /// コレクションの 1 曲 (必要な属性だけ)。
 #[derive(Debug, Clone, Default, PartialEq)]

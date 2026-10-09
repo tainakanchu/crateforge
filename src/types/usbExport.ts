@@ -28,8 +28,12 @@ export interface TraktorReport {
   entries: number;
   matched: number;
   matchedByName: number;
+  /** 一致しなかった曲 (曖昧だった曲を含む)。 */
   unmatched: number;
   unmatchedExamples: string[];
+  /** 候補が複数あって決められなかった曲 (別ボリュームに同じパスの曲がある等)。 */
+  ambiguous: number;
+  ambiguousExamples: string[];
   withCues: number;
   withGrid: number;
   mp3OffsetMs: number;

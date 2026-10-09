@@ -1,9 +1,12 @@
 //! NML の `LOCATION` → ネイティブパス変換と、crateforge の曲との突き合わせ。
 //!
 //! - `DIR` は `/:` 区切り (`/:Users/:me/:Music/:`)。
-//! - macOS: `VOLUME` はボリューム名。起動ボリュームなら `/<dir>/<file>`、外部ボリュームなら
-//!   `/Volumes/<VOLUME>/<dir>/<file>`。どちらか事前に断定せず **両方を候補** にして照合する
-//!   (起動ボリューム名の判定が不要で、外付けの同名フォルダも取りこぼさない)。
+//! - macOS: `VOLUME` はボリューム名。外部ボリュームなら `/Volumes/<VOLUME>/<dir>/<file>`、
+//!   起動ボリュームなら `/<dir>/<file>`。ボリューム付きのキーを優先して照合し、ボリュームを
+//!   含まない `/<dir>/<file>` (bare キー) は補助として使う。クローン / バックアップ用の
+//!   ボリュームが同じフォルダ構成を持つと bare キーが複数のボリュームで重なるので、その場合は
+//!   起動ボリューム (実行時に `/Volumes/<v>` のうち `/` を指すものから判定) のエントリが
+//!   あればそれを、無ければ **曖昧として対応付けない** (レポートに出す)。
 //! - Windows: `VOLUME` はドライブ (`C:`) → `C:\<dir>\<file>`。
 //! - 照合キーは Unicode NFC + 区切り `/` 統一 + (macOS / Windows は) 小文字化。
 //! - パスが一致しなければ「ファイル名 + サイズ」(NML の `FILESIZE` は KB) で一意に決まる
@@ -48,10 +51,22 @@ fn dir_components(dir: &str) -> Vec<&str> {
         .collect()
 }
 
-/// `LOCATION` からネイティブパスの候補を作る (先頭ほど有力)。
-pub fn native_candidates(volume: &str, dir: &str, file: &str, style: PathStyle) -> Vec<String> {
+/// `LOCATION` から作るネイティブパスの候補。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidates {
+    /// ボリュームまで含むパス (macOS は `/Volumes/<VOLUME>/…`、Windows はドライブ / UNC 付き)。
+    pub qualified: Option<String>,
+    /// ボリュームを含まないパス `/<dir>/<file>` (macOS / Unix のみ。起動ボリューム上ならこれ)。
+    pub bare: Option<String>,
+}
+
+/// `LOCATION` からネイティブパスの候補を作る。
+pub fn native_candidates(volume: &str, dir: &str, file: &str, style: PathStyle) -> Candidates {
     if file.is_empty() {
-        return Vec::new();
+        return Candidates {
+            qualified: None,
+            bare: None,
+        };
     }
     let parts = dir_components(dir);
     match style {
@@ -70,7 +85,10 @@ pub fn native_candidates(volume: &str, dir: &str, file: &str, style: PathStyle) 
             }
             path.push('\\');
             path.push_str(file);
-            vec![path]
+            Candidates {
+                qualified: Some(path),
+                bare: None,
+            }
         }
         PathStyle::Mac | PathStyle::Unix => {
             let mut rel = String::new();
@@ -80,23 +98,24 @@ pub fn native_candidates(volume: &str, dir: &str, file: &str, style: PathStyle) 
             }
             rel.push('/');
             rel.push_str(file);
-            let mut out = vec![rel.clone()];
-            if !volume.is_empty() {
-                let on_volume = format!("/Volumes/{volume}{rel}");
-                // 外部ボリューム上と分かっているなら (マウント済み) そちらを優先する。
-                if style == PathStyle::Mac
-                    && std::path::Path::new(&format!("/Volumes/{volume}"))
-                        .symlink_metadata()
-                        .is_ok_and(|m| m.is_dir())
-                {
-                    out.insert(0, on_volume);
-                } else {
-                    out.push(on_volume);
-                }
+            Candidates {
+                qualified: (!volume.is_empty()).then(|| format!("/Volumes/{volume}{rel}")),
+                bare: Some(rel),
             }
-            out
         }
     }
+}
+
+/// 起動ボリュームの名前 (macOS: `/Volumes/<v>` のうち `/` を指すもの)。他の OS / 不明なら None。
+pub fn boot_volume_name() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let root = std::fs::canonicalize("/").ok()?;
+    std::fs::read_dir("/Volumes").ok()?.flatten().find_map(|e| {
+        let resolved = std::fs::canonicalize(e.path()).ok()?;
+        (resolved == root).then(|| e.file_name().to_string_lossy().into_owned())
+    })
 }
 
 /// 照合キー: NFC + 区切り統一 + (大文字小文字を区別しない FS なら) 小文字化。
@@ -131,25 +150,53 @@ pub enum MatchKind {
     NameSize,
 }
 
+/// 照合の結果。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Lookup<'a> {
+    Match(&'a NmlEntry, MatchKind),
+    /// 候補が複数あり決められない (別ボリュームの同じパス / 同名・同サイズ)。
+    Ambiguous,
+    NotFound,
+}
+
 /// 照合用インデックス。
 #[derive(Debug)]
 pub struct NmlIndex {
     entries: Vec<NmlEntry>,
     style: PathStyle,
-    by_path: HashMap<String, usize>,
+    /// ボリューム付きのキー → エントリ (同じキーは先勝ち。同じボリュームの同じパスなので同じ曲)。
+    by_qualified: HashMap<String, usize>,
+    /// ボリュームを含まないキー → エントリ群 (別ボリュームで重なり得る)。
+    by_bare: HashMap<String, Vec<usize>>,
     by_name: HashMap<String, Vec<usize>>,
+    /// 起動ボリューム名 (照合キーと同じ正規化済み)。
+    boot_volume: Option<String>,
 }
 
 impl NmlIndex {
+    /// 起動ボリュームは実行時に判定する (macOS 以外は無し)。
     pub fn new(entries: Vec<NmlEntry>, style: PathStyle) -> Self {
-        let mut by_path = HashMap::with_capacity(entries.len() * 2);
+        let boot = match style {
+            PathStyle::Mac => boot_volume_name(),
+            _ => None,
+        };
+        Self::with_boot_volume(entries, style, boot.as_deref())
+    }
+
+    pub fn with_boot_volume(entries: Vec<NmlEntry>, style: PathStyle, boot: Option<&str>) -> Self {
+        let mut by_qualified = HashMap::with_capacity(entries.len());
+        let mut by_bare: HashMap<String, Vec<usize>> = HashMap::with_capacity(entries.len());
         let mut by_name: HashMap<String, Vec<usize>> = HashMap::with_capacity(entries.len());
         for (i, e) in entries.iter().enumerate() {
             if e.file.is_empty() {
                 continue;
             }
-            for candidate in native_candidates(&e.volume, &e.dir, &e.file, style) {
-                by_path.entry(normalize_key(&candidate, style)).or_insert(i);
+            let c = native_candidates(&e.volume, &e.dir, &e.file, style);
+            if let Some(q) = c.qualified {
+                by_qualified.entry(normalize_key(&q, style)).or_insert(i);
+            }
+            if let Some(b) = c.bare {
+                by_bare.entry(normalize_key(&b, style)).or_default().push(i);
             }
             by_name
                 .entry(normalize_key(&e.file, style))
@@ -159,8 +206,13 @@ impl NmlIndex {
         Self {
             entries,
             style,
-            by_path,
+            by_qualified,
+            by_bare,
             by_name,
+            boot_volume: boot
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| normalize_key(v, style)),
         }
     }
 
@@ -168,24 +220,53 @@ impl NmlIndex {
         self.entries.len()
     }
 
-    /// crateforge の曲 (パス + 既知ならファイルサイズ) に対応する NML の曲を探す。
-    pub fn find(&self, path: &str, size_bytes: Option<u64>) -> Option<(&NmlEntry, MatchKind)> {
-        if let Some(&i) = self.by_path.get(&normalize_key(path, self.style)) {
-            return Some((&self.entries[i], MatchKind::Path));
+    fn volume_key(&self, i: usize) -> String {
+        normalize_key(&self.entries[i].volume, self.style)
+    }
+
+    /// bare キーの候補から 1 つに決める。全部同じボリュームならその先頭、別ボリュームが
+    /// 混ざるなら起動ボリュームのものだけ (無ければ曖昧)。
+    fn pick_bare(&self, hits: &[usize]) -> Option<usize> {
+        let first = *hits.first()?;
+        let v0 = self.volume_key(first);
+        if hits.iter().all(|&i| self.volume_key(i) == v0) {
+            return Some(first);
         }
-        let bytes = size_bytes?;
+        let boot = self.boot_volume.as_ref()?;
+        hits.iter().copied().find(|&i| self.volume_key(i) == *boot)
+    }
+
+    /// crateforge の曲 (パス + 既知ならファイルサイズ) に対応する NML の曲を探す。
+    pub fn find(&self, path: &str, size_bytes: Option<u64>) -> Lookup<'_> {
+        let key = normalize_key(path, self.style);
+        if let Some(&i) = self.by_qualified.get(&key) {
+            return Lookup::Match(&self.entries[i], MatchKind::Path);
+        }
+        if let Some(hits) = self.by_bare.get(&key) {
+            return match self.pick_bare(hits) {
+                Some(i) => Lookup::Match(&self.entries[i], MatchKind::Path),
+                None => Lookup::Ambiguous,
+            };
+        }
+        let Some(bytes) = size_bytes else {
+            return Lookup::NotFound;
+        };
         let name = normalize_key(file_name(path), self.style);
-        let candidates = self.by_name.get(&name)?;
+        let Some(candidates) = self.by_name.get(&name) else {
+            return Lookup::NotFound;
+        };
         let mut hits = candidates.iter().filter(|&&i| {
             self.entries[i]
                 .file_size_kb
                 .is_some_and(|kb| size_matches(kb, bytes))
         });
-        let first = *hits.next()?;
+        let Some(&first) = hits.next() else {
+            return Lookup::NotFound;
+        };
         if hits.next().is_some() {
-            return None; // 同名・同サイズが複数 → 曖昧なので採用しない
+            return Lookup::Ambiguous; // 同名・同サイズが複数 → 曖昧なので採用しない
         }
-        Some((&self.entries[first], MatchKind::NameSize))
+        Lookup::Match(&self.entries[first], MatchKind::NameSize)
     }
 }
 
@@ -204,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn mac_location_yields_boot_and_volume_candidates() {
+    fn mac_location_yields_volume_and_bare_candidates() {
         let c = native_candidates(
             "Macintosh HD",
             "/:Users/:dj/:Music/:",
@@ -213,26 +294,29 @@ mod tests {
         );
         assert_eq!(
             c,
-            vec![
-                "/Users/dj/Music/a.mp3".to_string(),
-                "/Volumes/Macintosh HD/Users/dj/Music/a.mp3".to_string()
-            ]
+            Candidates {
+                qualified: Some("/Volumes/Macintosh HD/Users/dj/Music/a.mp3".into()),
+                bare: Some("/Users/dj/Music/a.mp3".into()),
+            }
         );
-        let ext = native_candidates("DJ DRIVE", "/:Crates/:", "b.wav", PathStyle::Unix);
-        assert!(ext.contains(&"/Volumes/DJ DRIVE/Crates/b.wav".to_string()));
+        let no_volume = native_candidates("", "/:Crates/:", "b.wav", PathStyle::Unix);
+        assert_eq!(no_volume.qualified, None);
+        assert_eq!(no_volume.bare.as_deref(), Some("/Crates/b.wav"));
     }
 
     #[test]
     fn windows_location_uses_the_drive_letter() {
+        let c = native_candidates("C:", "/:Users/:dj/:Music/:", "a.mp3", PathStyle::Windows);
+        assert_eq!(c.qualified.as_deref(), Some(r"C:\Users\dj\Music\a.mp3"));
+        assert_eq!(c.bare, None);
         assert_eq!(
-            native_candidates("C:", "/:Users/:dj/:Music/:", "a.mp3", PathStyle::Windows),
-            vec![r"C:\Users\dj\Music\a.mp3".to_string()]
+            native_candidates("NAS", "/:share/:", "x.mp3", PathStyle::Windows)
+                .qualified
+                .as_deref(),
+            Some(r"\\NAS\share\x.mp3")
         );
-        assert_eq!(
-            native_candidates("NAS", "/:share/:", "x.mp3", PathStyle::Windows),
-            vec![r"\\NAS\share\x.mp3".to_string()]
-        );
-        assert!(native_candidates("C:", "/:", "", PathStyle::Windows).is_empty());
+        let empty = native_candidates("C:", "/:", "", PathStyle::Windows);
+        assert_eq!((empty.qualified, empty.bare), (None, None));
     }
 
     #[test]
@@ -267,14 +351,20 @@ mod tests {
             ],
             PathStyle::Unix,
         );
-        let (e, kind) = idx.find("/Users/dj/Music/a.mp3", None).unwrap();
+        let Lookup::Match(e, kind) = idx.find("/Users/dj/Music/a.mp3", None) else {
+            panic!("bare path should match");
+        };
         assert_eq!(e.file, "a.mp3");
         assert_eq!(kind, MatchKind::Path);
-        let (e, _) = idx
-            .find("/Volumes/Macintosh HD/Users/dj/Music/a.mp3", None)
-            .unwrap();
+        let Lookup::Match(e, _) = idx.find("/Volumes/Macintosh HD/Users/dj/Music/a.mp3", None)
+        else {
+            panic!("volume path should match");
+        };
         assert_eq!(e.file, "a.mp3");
-        assert!(idx.find("/Users/dj/Music/missing.mp3", None).is_none());
+        assert_eq!(
+            idx.find("/Users/dj/Music/missing.mp3", None),
+            Lookup::NotFound
+        );
     }
 
     #[test]
@@ -283,7 +373,10 @@ mod tests {
             vec![entry("C:", "/:Users/:DJ/:Music/:", "Track.MP3", None)],
             PathStyle::Windows,
         );
-        assert!(idx.find(r"c:\users\dj\music\track.mp3", None).is_some());
+        assert!(matches!(
+            idx.find(r"c:\users\dj\music\track.mp3", None),
+            Lookup::Match(..)
+        ));
     }
 
     #[test]
@@ -296,13 +389,15 @@ mod tests {
             PathStyle::Unix,
         );
         // 11720 KB = 12_001_280 bytes 前後なら一致。
-        let (e, kind) = idx.find("/new/place/a.mp3", Some(12_001_000)).unwrap();
+        let Lookup::Match(e, kind) = idx.find("/new/place/a.mp3", Some(12_001_000)) else {
+            panic!("name + size should match");
+        };
         assert_eq!(e.dir, "/:Music/:");
         assert_eq!(kind, MatchKind::NameSize);
         // サイズが違えば採用しない。
-        assert!(idx.find("/new/place/a.mp3", Some(1_000)).is_none());
+        assert_eq!(idx.find("/new/place/a.mp3", Some(1_000)), Lookup::NotFound);
         // サイズ不明ならフォールバックしない。
-        assert!(idx.find("/new/place/a.mp3", None).is_none());
+        assert_eq!(idx.find("/new/place/a.mp3", None), Lookup::NotFound);
     }
 
     #[test]
@@ -314,7 +409,83 @@ mod tests {
             ],
             PathStyle::Unix,
         );
-        assert!(idx.find("/elsewhere/same.mp3", Some(10 * 1024)).is_none());
+        assert_eq!(
+            idx.find("/elsewhere/same.mp3", Some(10 * 1024)),
+            Lookup::Ambiguous
+        );
+    }
+
+    /// クローン / バックアップ用ボリュームが同じフォルダ構成を持つコレクション。
+    fn cloned_volumes() -> Vec<NmlEntry> {
+        let mut main = entry("Macintosh HD", "/:Users/:dj/:Music/:", "a.mp3", Some(1));
+        main.bpm = Some(120.0);
+        let mut backup = entry("Backup", "/:Users/:dj/:Music/:", "a.mp3", Some(1));
+        backup.bpm = Some(128.0);
+        // 先頭が backup (ファイル内で先に出る方が勝つ実装だと backup を選んでしまう)。
+        vec![backup, main]
+    }
+
+    #[test]
+    fn volume_qualified_keys_win() {
+        let idx = NmlIndex::with_boot_volume(cloned_volumes(), PathStyle::Unix, None);
+        let Lookup::Match(e, _) = idx.find("/Volumes/Backup/Users/dj/Music/a.mp3", None) else {
+            panic!("qualified path should match");
+        };
+        assert_eq!(e.volume, "Backup");
+        let Lookup::Match(e, _) = idx.find("/Volumes/Macintosh HD/Users/dj/Music/a.mp3", None)
+        else {
+            panic!("qualified path should match");
+        };
+        assert_eq!(e.volume, "Macintosh HD");
+    }
+
+    #[test]
+    fn a_bare_key_shared_by_several_volumes_is_ambiguous_without_the_boot_volume() {
+        let idx = NmlIndex::with_boot_volume(cloned_volumes(), PathStyle::Unix, None);
+        assert_eq!(idx.find("/Users/dj/Music/a.mp3", None), Lookup::Ambiguous);
+        // 起動ボリュームが分からない / どちらでもないときも曖昧。
+        let idx = NmlIndex::with_boot_volume(cloned_volumes(), PathStyle::Unix, Some("Other"));
+        assert_eq!(idx.find("/Users/dj/Music/a.mp3", None), Lookup::Ambiguous);
+    }
+
+    #[test]
+    fn a_bare_key_resolves_to_the_boot_volume_entry() {
+        let idx =
+            NmlIndex::with_boot_volume(cloned_volumes(), PathStyle::Unix, Some("Macintosh HD"));
+        let Lookup::Match(e, kind) = idx.find("/Users/dj/Music/a.mp3", None) else {
+            panic!("boot volume entry should match");
+        };
+        assert_eq!(e.volume, "Macintosh HD");
+        assert_eq!(e.bpm, Some(120.0));
+        assert_eq!(kind, MatchKind::Path);
+        // macOS はボリューム名も大文字小文字を区別しない。
+        let idx =
+            NmlIndex::with_boot_volume(cloned_volumes(), PathStyle::Mac, Some("macintosh hd"));
+        let Lookup::Match(e, _) = idx.find("/users/DJ/music/A.mp3", None) else {
+            panic!("boot volume entry should match");
+        };
+        assert_eq!(e.volume, "Macintosh HD");
+    }
+
+    #[test]
+    fn a_bare_key_from_a_single_volume_still_matches() {
+        // 起動ボリューム名が分からなくても、重なりが無ければ従来どおり一致させる。
+        let idx = NmlIndex::with_boot_volume(
+            vec![entry("Backup", "/:Users/:dj/:", "b.mp3", None)],
+            PathStyle::Unix,
+            None,
+        );
+        assert!(matches!(
+            idx.find("/Users/dj/b.mp3", None),
+            Lookup::Match(_, MatchKind::Path)
+        ));
+    }
+
+    #[test]
+    fn boot_volume_detection_is_macos_only() {
+        if !cfg!(target_os = "macos") {
+            assert_eq!(boot_volume_name(), None);
+        }
     }
 
     #[test]

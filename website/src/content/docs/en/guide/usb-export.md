@@ -51,6 +51,7 @@ Crateforge itself does not store cues or beat grids. With **"Traktor のキュ�
 
 - `collection.nml` is **auto-detected** as the newest `Documents/Native Instruments/Traktor <version>/collection.nml`. If yours is elsewhere, set it under Advanced (or **Settings → USB 書き出し**).
 - Tracks whose path differs are matched only when **file name and file size** match exactly one Traktor track. The plan shows matched / unmatched counts with examples.
+- On macOS, a clone or backup volume holding **the same path** can make it unclear which Traktor track is meant. Then the one on the startup volume is used; if none is on the startup volume, **that track gets no Traktor cues or grid** (the plan lists it under "候補が複数" — several candidates).
 - Mapping:
   - Grid markers → beat grid (constant tempo at Traktor's BPM; several markers become several anchors)
   - Cue / fade-in / fade-out / load → cue points; loops → loops

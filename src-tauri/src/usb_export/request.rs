@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::models::{Playlist, Track};
 use crate::traktor_nml::mapping::{map_entry, CodecOffsets};
-use crate::traktor_nml::{MatchKind, NmlIndex};
+use crate::traktor_nml::{Lookup, MatchKind, NmlIndex};
 
 use super::wire::{ExportOptions, ExportRequest, PlaylistInput, TrackInput, PROTOCOL_VERSION};
 
@@ -90,8 +90,13 @@ pub struct TraktorReport {
     pub matched: usize,
     /// うちファイル名 + サイズで一致した曲。
     pub matched_by_name: usize,
+    /// 一致しなかった曲 (曖昧だった曲を含む)。
     pub unmatched: usize,
     pub unmatched_examples: Vec<String>,
+    /// 候補が複数あって決められなかった曲 (クローン / バックアップ用ボリュームに同じパスの
+    /// 曲がある、同名・同サイズの曲が複数ある)。
+    pub ambiguous: usize,
+    pub ambiguous_examples: Vec<String>,
     /// 一致した曲のうち、キュー (1 個以上) / グリッドを送る曲。
     pub with_cues: usize,
     pub with_grid: usize,
@@ -535,7 +540,7 @@ pub fn build_request(
         if let (Some(tk), Some(rep)) = (traktor.as_ref(), traktor_report.as_mut()) {
             // サイズが分からない (ファイルが無い) ときはパス一致だけ (名前 + サイズのフォールバックはしない)。
             match tk.index.find(path, size) {
-                Some((entry, kind)) => {
+                Lookup::Match(entry, kind) => {
                     rep.matched += 1;
                     if kind == MatchKind::NameSize {
                         rep.matched_by_name += 1;
@@ -552,7 +557,15 @@ pub fn build_request(
                         input.cues = Some(mapped.cues);
                     }
                 }
-                None => {
+                Lookup::Ambiguous => {
+                    // 別ボリュームの同じパス / 同名・同サイズが複数 → どれか決めず送らない。
+                    rep.unmatched += 1;
+                    rep.ambiguous += 1;
+                    if rep.ambiguous_examples.len() < MAX_EXAMPLES {
+                        rep.ambiguous_examples.push(track_label(t));
+                    }
+                }
+                Lookup::NotFound => {
                     rep.unmatched += 1;
                     if rep.unmatched_examples.len() < MAX_EXAMPLES {
                         rep.unmatched_examples.push(track_label(t));
@@ -575,6 +588,12 @@ pub fn build_request(
             report.warnings.push(format!(
                 "{} 曲はパスが一致せず、ファイル名とサイズで Traktor の曲と対応付けました。",
                 rep.matched_by_name
+            ));
+        }
+        if rep.ambiguous > 0 {
+            report.warnings.push(format!(
+                "{} 曲は Traktor のコレクションに候補が複数あり（別のボリュームに同じパスの曲がある等）、どれか決められないため Traktor のキュー/グリッドを使いません（USB 上のキューを残し、グリッドは解析）。",
+                rep.ambiguous
             ));
         }
         if rep.cues_sent && rep.matched > rep.with_cues {
@@ -1120,5 +1139,61 @@ mod tests {
         .unwrap();
         assert_eq!(built.request.tracks[0].cues, None);
         assert_eq!(built.report.traktor.as_ref().unwrap().unmatched, 1);
+    }
+    #[test]
+    fn ambiguous_traktor_entries_are_reported_and_not_used() {
+        let f = fixture();
+        let entry = |volume: &str, bpm: f64| NmlEntry {
+            volume: volume.into(),
+            dir: "/:music/:".into(),
+            file: "a.mp3".into(),
+            file_size_kb: Some(11720),
+            bpm: Some(bpm),
+            cues: vec![],
+        };
+        let idx = NmlIndex::with_boot_volume(
+            vec![entry("Backup", 128.0), entry("Macintosh HD", 124.0)],
+            PathStyle::Unix,
+            None,
+        );
+        let opts = UsbExportOptions {
+            playlist_ids: vec![f.sub.playlist_id],
+            use_traktor: true,
+            ..Default::default()
+        };
+        let build = |idx: &NmlIndex| {
+            build_request(
+                &f.db,
+                &opts,
+                Some(TraktorInput {
+                    nml_path: "x".into(),
+                    index: idx,
+                }),
+                &existing(&["/music/a.mp3", "/music/b.flac"]),
+            )
+            .unwrap()
+        };
+        let built = build(&idx);
+        assert_eq!(built.request.tracks[0].path, "/music/a.mp3");
+        assert_eq!(built.request.tracks[0].cues, None);
+        assert_eq!(built.request.tracks[0].beat_grid, None);
+        let rep = built.report.traktor.as_ref().unwrap();
+        assert_eq!(rep.ambiguous, 1);
+        assert!(rep.ambiguous_examples[0].contains("Alpha"));
+        assert!(built
+            .report
+            .warnings
+            .iter()
+            .any(|w| w.contains("候補が複数")));
+
+        // 起動ボリュームのエントリがあればそれを使う。
+        let idx = NmlIndex::with_boot_volume(
+            vec![entry("Backup", 128.0), entry("Macintosh HD", 124.0)],
+            PathStyle::Unix,
+            Some("Macintosh HD"),
+        );
+        let built = build(&idx);
+        assert_eq!(built.report.traktor.as_ref().unwrap().ambiguous, 0);
+        assert_eq!(built.request.tracks[0].cues, Some(vec![]));
     }
 }
