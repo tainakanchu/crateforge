@@ -19,8 +19,11 @@ export interface UsbExportOptions {
   prune: boolean;
   /** プレーヤーに表示するデバイス名 (空なら変更しない)。 */
   deviceName: string | null;
-  /** USB 上のキューを優先 (Traktor のキューを送らない、グリッドは送る)。 */
-  preferDeviceCues: boolean;
+  /**
+   * CDJ で変更したキュー / グリッドを優先する (rbx-cli `onDeviceChanges: "keepDevice"`)。
+   * 前回の同期の後に USB 上で変わった曲だけ、その同期では USB 上のキュー / グリッドを残す。
+   */
+  keepDeviceChanges: boolean;
 }
 
 export interface TraktorReport {
@@ -37,7 +40,6 @@ export interface TraktorReport {
   withCues: number;
   withGrid: number;
   mp3OffsetMs: number;
-  cuesSent: boolean;
 }
 
 /** crateforge 側でのリクエスト作成結果。 */
@@ -62,6 +64,8 @@ export interface UsbTrackCounts {
   skipped: number;
   removed: number;
   kept: number;
+  /** keepDevice で USB 上のキュー / グリッドを残した曲 (dry-run では残す見込みの曲)。 */
+  deviceChangesKept: number;
 }
 
 export interface UsbAnalysisCounts {
@@ -86,6 +90,9 @@ export interface UsbTrackResult {
   analysis: string;
   /** dry-run のみ: copy | reuse */
   audio: string | null;
+  /** keepDevice で USB 上のキュー / グリッドを残した (dry-run では残す見込み)。 */
+  deviceChangesKept: boolean;
+  analysisDir: string | null;
   warnings: string[];
 }
 
@@ -115,8 +122,24 @@ export interface UsbExportError {
   message: string;
   /** rbx-cli の原文 (調査用)。 */
   detail: string;
-  /** CDJ 等で USB 上のキュー / グリッドが変わったための競合。 */
+  /**
+   * CDJ 等で USB 上のキュー / グリッドが変わったための競合 (`cues_or_grid_changed_on_device`)。
+   * 「CDJ の変更を優先」(keepDevice) での再試行で解決できる。
+   */
   cueConflict: boolean;
+  /** conflict の理由 (rbx-cli の details.reason)。conflict 以外は null。 */
+  reason: string | null;
+  /** 競合に関係する曲 (crateforge の曲名に対応付け済み)。 */
+  conflictTracks: UsbConflictTrack[];
+}
+
+/** 競合に関係する曲。 */
+export interface UsbConflictTrack {
+  /** リクエストの tracks の添字。 */
+  index: number;
+  title: string;
+  artist: string | null;
+  path: string | null;
 }
 
 export type UsbJobKind = "plan" | "export";

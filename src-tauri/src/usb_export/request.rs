@@ -14,7 +14,13 @@
 //!   出どころの値になるよう省略する。
 //! - **cues / beatGrid**: Traktor を使わない / 曲が NML に無い → **両方省略** (USB 上の既存
 //!   キューを保持し、グリッドは rbx-cli が解析)。Traktor を使い一致した → 送る (キューが無ければ
-//!   空配列 = USB のキューを消す)。「USB 上のキューを優先」なら cues だけ省略してグリッドは送る。
+//!   空配列 = USB のキューを消す)。
+//! - **CDJ での変更**: 「CDJ で変更したキュー/グリッドを優先する」(`keep_device_changes`) なら
+//!   `options.onDeviceChanges: "keepDevice"` を付ける (キュー / グリッドは同じように送る)。
+//!   前回の同期の後に USB 上の解析ファイル (キュー / グリッド) が変わった曲だけ、rbx-cli が
+//!   USB 上のキュー / グリッドを残してリクエストの cues / beatGrid を無視する。その 1 回の
+//!   同期だけで、次の同期では (CDJ で再び変えない限り) Traktor の内容が書かれる。
+//!   OneLibrary (exportLibrary.db) だけのキュー変更など、ほかの競合は残せない。
 //! - **見つからないファイル** も (パスがあれば) そのまま送り、件数と例をレポートする。
 //!   以前書き出した曲の元ファイルが無いときに USB を守るのは rbx-cli / rbl-export の役目
 //!   (`conflict` / `source_unavailable` で USB を変更せずに止まる)。ここで落とすと
@@ -30,7 +36,9 @@ use crate::models::{Playlist, Track};
 use crate::traktor_nml::mapping::{map_entry, CodecOffsets};
 use crate::traktor_nml::{Lookup, MatchKind, NmlIndex};
 
-use super::wire::{ExportOptions, ExportRequest, PlaylistInput, TrackInput, PROTOCOL_VERSION};
+use super::wire::{
+    ExportOptions, ExportRequest, OnDeviceChanges, PlaylistInput, TrackInput, PROTOCOL_VERSION,
+};
 
 /// スマートプレイリストを全件評価するための上限 (実質無制限)。
 const SMART_LIMIT: i64 = 1_000_000_000;
@@ -59,8 +67,8 @@ pub struct UsbExportOptions {
     pub prune: bool,
     /// プレーヤーに表示するデバイス名 (空なら変更しない)。
     pub device_name: Option<String>,
-    /// USB 上のキューを優先 (Traktor のキューを送らない、グリッドは送る)。
-    pub prefer_device_cues: bool,
+    /// CDJ で変更したキュー / グリッドを優先する (`onDeviceChanges: "keepDevice"`)。
+    pub keep_device_changes: bool,
 }
 
 impl Default for UsbExportOptions {
@@ -74,7 +82,7 @@ impl Default for UsbExportOptions {
             artwork: true,
             prune: true,
             device_name: None,
-            prefer_device_cues: false,
+            keep_device_changes: false,
         }
     }
 }
@@ -101,8 +109,6 @@ pub struct TraktorReport {
     pub with_cues: usize,
     pub with_grid: usize,
     pub mp3_offset_ms: f64,
-    /// キューを送るか (false = 「USB 上のキューを優先」)。
-    pub cues_sent: bool,
 }
 
 /// リクエスト作成のレポート (プラン表示用)。
@@ -457,7 +463,6 @@ pub fn build_request(
         nml_path: t.nml_path.clone(),
         entries: t.index.len(),
         mp3_offset_ms: opts.mp3_offset_ms,
-        cues_sent: !opts.prefer_device_cues,
         ..Default::default()
     });
     let offsets = CodecOffsets {
@@ -558,12 +563,10 @@ pub fn build_request(
                         rep.with_grid += 1;
                     }
                     input.beat_grid = mapped.grid;
-                    if !opts.prefer_device_cues {
-                        if !mapped.cues.is_empty() {
-                            rep.with_cues += 1;
-                        }
-                        input.cues = Some(mapped.cues);
+                    if !mapped.cues.is_empty() {
+                        rep.with_cues += 1;
                     }
+                    input.cues = Some(mapped.cues);
                 }
                 Lookup::Ambiguous => {
                     // 別ボリュームの同じパス / 同名・同サイズが複数 → どれか決めず送らない。
@@ -604,7 +607,7 @@ pub fn build_request(
                 rep.ambiguous
             ));
         }
-        if rep.cues_sent && rep.matched > rep.with_cues {
+        if rep.matched > rep.with_cues {
             report.warnings.push(format!(
                 "Traktor にキューが無い {} 曲は、USB 上のキューが消えます（Traktor の状態に合わせます）。",
                 rep.matched - rep.with_cues
@@ -632,6 +635,9 @@ pub fn build_request(
             embedded_artwork: opts.artwork,
             prune: opts.prune,
             device_name,
+            on_device_changes: opts
+                .keep_device_changes
+                .then_some(OnDeviceChanges::KeepDevice),
         },
         tracks: inputs,
         playlists: nodes.into_iter().map(|n| to_input(n, &refs)).collect(),
@@ -1019,21 +1025,22 @@ mod tests {
         assert!(rep.unmatched_examples.iter().any(|x| x.contains("Delta")));
         assert_eq!(rep.with_cues, 1);
         assert_eq!(rep.with_grid, 1);
-        assert!(rep.cues_sent);
+        assert_eq!(built.request.options.on_device_changes, None);
         assert!(built
             .report
             .warnings
             .iter()
             .any(|w| w.contains("ファイル名とサイズ")));
 
-        // 「USB 上のキューを優先」: cues は省略、グリッドは送る。
-        let prefer = UsbExportOptions {
-            prefer_device_cues: true,
+        // 「CDJ で変更したキュー/グリッドを優先する」: キュー / グリッドは同じように送り、
+        // onDeviceChanges: keepDevice を付ける (どの曲を残すかは rbx-cli が USB を見て決める)。
+        let keep = UsbExportOptions {
+            keep_device_changes: true,
             ..opts.clone()
         };
-        let built = build_request(
+        let kept = build_request(
             &f.db,
-            &prefer,
+            &keep,
             Some(TraktorInput {
                 nml_path: "/x/collection.nml".into(),
                 index: &idx,
@@ -1041,10 +1048,19 @@ mod tests {
             &existing(&["/music/a.mp3", "/music/b.flac", "/music/d.wav"]),
         )
         .unwrap();
-        assert_eq!(built.request.tracks[0].cues, None);
-        assert!(built.request.tracks[0].beat_grid.is_some());
-        assert_eq!(built.request.tracks[2].cues, None);
-        assert!(!built.report.traktor.unwrap().cues_sent);
+        assert_eq!(
+            kept.request.options.on_device_changes,
+            Some(OnDeviceChanges::KeepDevice)
+        );
+        assert_eq!(kept.request.tracks, built.request.tracks);
+        assert_eq!(
+            serde_json::to_value(&kept.request.options).unwrap()["onDeviceChanges"],
+            "keepDevice"
+        );
+        assert!(serde_json::to_value(&built.request.options)
+            .unwrap()
+            .get("onDeviceChanges")
+            .is_none());
     }
 
     #[test]

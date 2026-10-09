@@ -95,8 +95,17 @@ export function toUsbError(e: unknown): UsbExportError {
       message: String(o.message ?? ""),
       detail: String(o.detail ?? o.message ?? ""),
       cueConflict: Boolean(o.cueConflict),
+      reason: typeof o.reason === "string" ? o.reason : null,
+      conflictTracks: Array.isArray(o.conflictTracks) ? o.conflictTracks : [],
     };
   }
   const m = e instanceof Error ? e.message : String(e);
-  return { code: "unknown", message: m, detail: m, cueConflict: false };
+  return {
+    code: "unknown",
+    message: m,
+    detail: m,
+    cueConflict: false,
+    reason: null,
+    conflictTracks: [],
+  };
 }

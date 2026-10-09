@@ -385,6 +385,8 @@ pub struct Prepared {
     guard: RunGuard,
     /// 本人だけが読める一時ファイル (Unix は 0600)。子プロセスが終わるまで保持し、落ちると消える。
     request_file: tempfile::NamedTempFile,
+    /// リクエストの曲 (競合した曲を crateforge の曲名で示すため)。
+    tracks: Vec<wire::TrackInput>,
 }
 
 impl Prepared {
@@ -398,6 +400,7 @@ pub fn prepare(guard: RunGuard, request: &wire::ExportRequest) -> Result<Prepare
     Ok(Prepared {
         request_file: write_request_file(request)?,
         guard,
+        tracks: request.tracks.clone(),
     })
 }
 
@@ -558,7 +561,7 @@ async fn run_inner(
     let stderr_tail = stderr_task.await.unwrap_or_default();
 
     if let Some(e) = error {
-        return Err(errors::from_error_line(&e));
+        return Err(errors::from_error_line_for(&e, &prepared.tracks));
     }
     if let Some(data) = result {
         return serde_json::from_value::<ExportResult>(data)
@@ -614,6 +617,8 @@ mod tests {
         assert_eq!(v["kind"], "failed");
         assert_eq!(v["job"], "plan");
         assert_eq!(v["error"]["cueConflict"], false);
+        assert_eq!(v["error"]["reason"], serde_json::Value::Null);
+        assert_eq!(v["error"]["conflictTracks"], serde_json::json!([]));
         let v = serde_json::to_value(UsbExportProgress::Finished {
             job: JobKind::Export,
             result: Box::default(),
@@ -734,6 +739,7 @@ mod tests {
                 embedded_artwork: true,
                 prune: false,
                 device_name: None,
+                on_device_changes: None,
             },
             tracks: vec![],
             playlists: vec![],

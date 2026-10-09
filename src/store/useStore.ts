@@ -52,6 +52,8 @@ export interface UsbExportSettings {
   deviceName: string;
   /** MP3 のキュー / グリッド補正 (ms)。既定 0 (実機で校正が必要)。 */
   mp3OffsetMs: number;
+  /** CDJ で変更したキュー / グリッドを優先する (rbx-cli `onDeviceChanges: "keepDevice"`)。既定 false。 */
+  keepDeviceChanges: boolean;
 }
 
 export const DEFAULT_USB_EXPORT_SETTINGS: UsbExportSettings = {
@@ -61,6 +63,7 @@ export const DEFAULT_USB_EXPORT_SETTINGS: UsbExportSettings = {
   prune: true,
   deviceName: "",
   mp3OffsetMs: 0,
+  keepDeviceChanges: false,
 };
 
 // USB 書き出しの進捗 — セッション専用・永続化しない (浮遊ステータスカード / ダイアログ共用)。
@@ -398,7 +401,7 @@ interface AppState extends PersistedSettings {
     s: UsbExportStatus | null | ((prev: UsbExportStatus | null) => UsbExportStatus | null),
   ) => void;
   /** 最後に開始した書き出しの設定 (セッション専用)。ステータスカードから開き直したときの
-   *  選択の表示と、「USB 上のキューを優先」での再試行に使う。 */
+   *  選択の表示と、「CDJ の変更を優先」での再試行に使う。 */
   usbExportLastOptions: UsbExportOptions | null;
   setUsbExportLastOptions: (o: UsbExportOptions | null) => void;
   // Rip progress
@@ -1056,7 +1059,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 22,
+      version: 23,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -1269,7 +1272,15 @@ export const useStore = create<AppState>()(
               typeof u.mp3OffsetMs === "number" && Number.isFinite(u.mp3OffsetMs)
                 ? u.mp3OffsetMs
                 : d.mp3OffsetMs,
-          } satisfies UsbExportSettings;
+          } satisfies Omit<UsbExportSettings, "keepDeviceChanges">;
+        }
+        // v23: USB 書き出しの「CDJ で変更したキュー/グリッドを優先する」。既定 false で補完。
+        if (version < 23 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          if (typeof p.usbExport === "object" && p.usbExport !== null) {
+            const u = p.usbExport as Record<string, unknown>;
+            if (typeof u.keepDeviceChanges !== "boolean") u.keepDeviceChanges = false;
+          }
         }
         return persisted as PersistedSettings;
       },

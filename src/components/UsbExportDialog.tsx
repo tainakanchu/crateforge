@@ -6,6 +6,7 @@ import type {
   Playlist,
   RbxCliStatus,
   TraktorNmlStatus,
+  UsbConflictTrack,
   UsbDevice,
   UsbExportError,
   UsbExportOptions,
@@ -39,6 +40,26 @@ type Step = "setup" | "planning" | "review";
 
 function mb(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1);
+}
+
+/** 競合に関係する曲 (rbx-cli の details.tracks を Crateforge の曲名に対応付けたもの)。 */
+function ConflictTracks({ tracks }: { tracks: UsbConflictTrack[] | undefined }) {
+  if (!tracks || tracks.length === 0) return null;
+  const shown = tracks.slice(0, 50);
+  return (
+    <details className="usb-examples" open style={{ textAlign: "left" }}>
+      <summary>対象の曲 {tracks.length} 曲</summary>
+      <ul>
+        {shown.map((t) => (
+          <li key={t.index} title={t.path ?? undefined}>
+            {t.title}
+            {t.artist ? ` — ${t.artist}` : ""}
+          </li>
+        ))}
+        {tracks.length > shown.length && <li>…ほか {tracks.length - shown.length} 曲</li>}
+      </ul>
+    </details>
+  );
 }
 
 /**
@@ -75,7 +96,6 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
   const [destination, setDestination] = useState<string>(
     reopened?.destination ?? settings.lastDestination ?? "",
   );
-  const [preferDeviceCues, setPreferDeviceCues] = useState(reopened?.preferDeviceCues ?? false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [plan, setPlan] = useState<UsbExportPlan | null>(null);
   const [planError, setPlanError] = useState<UsbExportError | null>(null);
@@ -87,10 +107,12 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
 
   const running = status?.phase === "running";
   const finished = status && status.phase !== "running" ? status : null;
-  // 「USB 上のキューを優先」での再試行を出せるか: 最後の書き出しが Traktor のキューを送っていた
-  // ときだけ (同じ再試行を続けて出さない)。
-  const canRetryPreferDevice =
-    !!lastOptions && lastOptions.useTraktor && !lastOptions.preferDeviceCues;
+  // 「CDJ の変更を優先」での再試行を出せるか: 最後の書き出しが keepDevice でなかったときだけ
+  // (同じ再試行を続けて出さない)。
+  const canRetryKeepDevice = !!lastOptions && !lastOptions.keepDeviceChanges;
+  // 表示中の書き出し (実行中 / 結果) または設定で「CDJ の変更を優先」が有効か。
+  const keepDeviceActive =
+    running || finished ? !!lastOptions?.keepDeviceChanges : settings.keepDeviceChanges;
 
   // ---------------------------------------------------------------- loading
 
@@ -210,7 +232,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
   // ---------------------------------------------------------------- options
 
   const options = useCallback(
-    (prefer: boolean): UsbExportOptions => ({
+    (): UsbExportOptions => ({
       playlistIds: effectiveSelection,
       destination,
       useTraktor: settings.useTraktor,
@@ -219,7 +241,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
       artwork: settings.artwork,
       prune: settings.prune,
       deviceName: settings.deviceName.trim() || null,
-      preferDeviceCues: prefer,
+      keepDeviceChanges: settings.keepDeviceChanges,
     }),
     [effectiveSelection, destination, settings],
   );
@@ -289,13 +311,13 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
     setPlanProgress("");
     setSettings({ lastDestination: destination });
     try {
-      setPlan(await usbApi.plan(options(preferDeviceCues)));
+      setPlan(await usbApi.plan(options()));
       setStep("review");
     } catch (e) {
       setPlanError(usbApi.toUsbError(e));
       setStep("setup");
     }
-  }, [destination, effectiveSelection.length, options, preferDeviceCues, setSettings]);
+  }, [destination, effectiveSelection.length, options, setSettings]);
 
   const startExport = useCallback(
     async (opts: UsbExportOptions) => {
@@ -337,13 +359,13 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
     usbApi.cancel({ job: "plan" }).catch(() => {});
   }, []);
 
-  // 「USB 上のキューを優先」での再試行: 最後に開始した書き出しと同じ設定 (プレイリスト・
-  // 書き出し先・オプション) で、Traktor のキューだけ送らない。
-  const handleRetryPreferDevice = useCallback(async () => {
+  // 「CDJ の変更を優先」での再試行: 最後に開始した書き出しと同じ設定・同じ内容 (Traktor の
+  // キュー / グリッドも送る) に onDeviceChanges: keepDevice を付ける。CDJ で変更された曲だけ
+  // USB 上のキュー / グリッドが残る。保存済みの設定 (オプションのチェック) は変えない。
+  const handleRetryKeepDevice = useCallback(async () => {
     const base = useStore.getState().usbExportLastOptions;
     if (!base) return;
-    const opts: UsbExportOptions = { ...base, preferDeviceCues: true };
-    setPreferDeviceCues(true);
+    const opts: UsbExportOptions = { ...base, keepDeviceChanges: true };
     setSelected(new Set(opts.playlistIds));
     setDestination(opts.destination);
     setStatus(null);
@@ -568,6 +590,24 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
           <span className="usb-hint">今回の内容に含まれない、以前書き出した曲を USB から削除します</span>
         </span>
       </label>
+      <label className="usb-check">
+        <input
+          type="checkbox"
+          checked={settings.keepDeviceChanges}
+          onChange={(e) => {
+            setSettings({ keepDeviceChanges: e.target.checked });
+            setPlan(null);
+          }}
+        />
+        <span>
+          CDJ で変更したキュー/グリッドを優先する
+          <span className="usb-hint">
+            前回の書き出しの後に CDJ で USB 上のキューやグリッドを変更した曲は、その曲だけ USB
+            上のキュー/グリッドを残して書き出します（オフなら書き出しを中止して知らせます）。残るのはその書き出しの
+            1 回だけで、次の書き出しでは Traktor 側で同じように直さない限り Traktor のキュー/グリッドに戻ります。
+          </span>
+        </span>
+      </label>
       <label className="sync-field usb-gap-sm">
         デバイス名（CDJ に表示。空欄なら変更しない）
         <input
@@ -627,12 +667,15 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
       )}
 
       {planError && (
-        <div className="sync-error">
-          {planError.message}
-          {planError.detail && planError.detail !== planError.message && (
-            <div className="usb-detail">{planError.detail}</div>
-          )}
-        </div>
+        <>
+          <div className="sync-error">
+            {planError.message}
+            {planError.detail && planError.detail !== planError.message && (
+              <div className="usb-detail">{planError.detail}</div>
+            )}
+          </div>
+          <ConflictTracks tracks={planError.conflictTracks} />
+        </>
       )}
     </>
   );
@@ -657,8 +700,10 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
     const cache = result.items.filter((i) => i.analysis === "cache").length;
     const device = result.items.filter((i) => i.analysis === "device").length;
     const itemWarnings = result.items.reduce((n, i) => n + i.warnings.length, 0);
+    // 空き容量は USB のボリュームでも普通のフォルダでも返る (そのフォルダがあるファイルシステム)。
     const free = result.bytes.free;
     const tooBig = free != null && result.bytes.toCopy > free;
+    const keptOnDevice = result.items.filter((i) => i.deviceChangesKept);
     const tk = build.traktor;
     return (
       <>
@@ -687,9 +732,17 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
             <span className="k">転送量</span>
             <span className={"v" + (tooBig ? " usb-bad" : "")}>
               約 {formatBytes(result.bytes.toCopy)}
-              {free != null ? ` / 空き ${formatBytes(free)}` : ""}
+              {free != null ? ` / 空き ${formatBytes(free)}` : "（空き容量は確認できませんでした）"}
             </span>
           </div>
+          {result.tracks.deviceChangesKept > 0 && (
+            <div>
+              <span className="k">CDJ の変更</span>
+              <span className="v">
+                CDJ で変更されたキュー/グリッドを保持する曲: {result.tracks.deviceChangesKept}
+              </span>
+            </div>
+          )}
           <div>
             <span className="k">書き出し先</span>
             <span className="v mono">{result.destination}</span>
@@ -710,8 +763,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
               <div>
                 <span className="k">送る内容</span>
                 <span className="v">
-                  {tk.cuesSent ? `キュー ${tk.withCues} 曲` : "キューは送らない（USB 上のキューを優先）"} / グリッド{" "}
-                  {tk.withGrid} 曲
+                  キュー {tk.withCues} 曲 / グリッド {tk.withGrid} 曲
                   {tk.mp3OffsetMs !== 0 ? ` / MP3 オフセット ${tk.mp3OffsetMs} ms` : ""}
                 </span>
               </div>
@@ -741,6 +793,19 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
           </>
         )}
 
+        {keptOnDevice.length > 0 && (
+          <details className="usb-examples">
+            <summary>
+              CDJ で変更されたキュー/グリッドを USB 上のまま残す曲 {keptOnDevice.length} 曲（今回の書き出しのみ）
+            </summary>
+            <ul>
+              {keptOnDevice.map((i) => (
+                <li key={i.index}>{i.title}</li>
+              ))}
+            </ul>
+          </details>
+        )}
+
         {build.missing > 0 && (
           <details className="usb-examples">
             <summary>
@@ -757,7 +822,12 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
 
         {(build.warnings.length > 0 || itemWarnings > 0 || tooBig) && (
           <div className="usb-warnings">
-            {tooBig && <div>USB の空き容量が足りない見込みです。曲を減らすか別の USB を使ってください。</div>}
+            {tooBig && (
+              <div>
+                書き出し先の空き容量が足りない見込みです（必要 約 {formatBytes(result.bytes.toCopy)} / 空き{" "}
+                {formatBytes(free)}）。曲を減らすか、空きのある USB / フォルダを使ってください。
+              </div>
+            )}
             {build.warnings.map((w) => (
               <div key={w}>{w}</div>
             ))}
@@ -823,6 +893,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
     if (!finished) return null;
     if (finished.phase === "done" && finished.result) {
       const r = finished.result;
+      const keptOnDevice = r.items.filter((i) => i.deviceChangesKept);
       return (
         <div className="sync-result">
           <div className="sync-result-icon success">
@@ -858,6 +929,14 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
                 キュー {r.analysis.cueOverrides} 曲 / グリッド {r.analysis.gridOverrides} 曲
               </span>
             </div>
+            {r.tracks.deviceChangesKept > 0 && (
+              <div>
+                <span className="k">CDJ の変更</span>
+                <span className="v">
+                  CDJ で変更されたキュー/グリッドを保持した曲: {r.tracks.deviceChangesKept}
+                </span>
+              </div>
+            )}
             <div>
               <span className="k">転送</span>
               <span className="v">
@@ -866,6 +945,19 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
               </span>
             </div>
           </div>
+          {keptOnDevice.length > 0 && (
+            <details className="usb-examples" style={{ textAlign: "left" }}>
+              <summary>
+                CDJ で変更されたキュー/グリッドを保持した曲 {keptOnDevice.length} 曲 —
+                次の書き出しでは Traktor のキュー/グリッドに戻ります（Traktor 側で直さない限り）
+              </summary>
+              <ul>
+                {keptOnDevice.map((i) => (
+                  <li key={i.index}>{i.title}</li>
+                ))}
+              </ul>
+            </details>
+          )}
           {finished.warnings.length > 0 && (
             <details className="usb-examples" style={{ textAlign: "left" }}>
               <summary>注意 {finished.warnings.length} 件</summary>
@@ -891,6 +983,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
           {err?.message}
           {err?.detail && err.detail !== err.message && <div className="usb-detail">{err.detail}</div>}
         </div>
+        <ConflictTracks tracks={err?.conflictTracks} />
         {err?.cueConflict && (
           <div className="usb-warnings" style={{ textAlign: "left" }}>
             <div>
@@ -898,23 +991,15 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
               このまま Traktor のキュー/グリッドを送ると CDJ での変更が失われるため、rbx-cli は書き出しを止めました（USB
               は変更されていません）。
             </div>
-            {canRetryPreferDevice ? (
+            {canRetryKeepDevice && (
               <div>
-                「USB 上のキューを優先」で再試行すると、今回は Traktor のキューを送らず USB 上のキューを残します。ただし
-                グリッドは Traktor のものを送るため、<b>CDJ でビートグリッドを変更していた場合は、そのグリッドは
-                今のバージョンでは残せず、再試行しても同じ理由で中止されることがあります</b>。
-              </div>
-            ) : (
-              <div>
-                {lastOptions?.preferDeviceCues
-                  ? "「USB 上のキューを優先」でも中止されました。CDJ でビートグリッドが変更されている可能性があります。"
-                  : ""}
-                CDJ で変更したビートグリッドを残したまま書き出すことは、今のバージョンではできません。
+                「CDJ の変更を優先して再試行」すると、同じ内容（Traktor のキュー/グリッドを含む）で書き出し、CDJ
+                で変更された曲だけ USB 上のキューとグリッドを残します。ほかの曲には Traktor のキュー/グリッドを書きます。
               </div>
             )}
             <div>
-              CDJ で保存したキュー/グリッドを残したい場合は、rekordbox 等で USB から取り込んでください。CDJ
-              での変更が不要なら、別の（空の）USB に書き出せます。
+              残るのは <b>その書き出しの 1 回だけ</b> です。次の書き出しでは、その後 CDJ で再び変更しない限り Traktor
+              のキュー/グリッドが書かれます。CDJ での変更を残したい場合は、Traktor 側でも同じように直してください。
             </div>
           </div>
         )}
@@ -949,13 +1034,13 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         <button className="toolbar-btn" onClick={handleBackToSetup}>
           設定に戻る
         </button>
-        {finished.error?.cueConflict && canRetryPreferDevice && (
+        {finished.error?.cueConflict && canRetryKeepDevice && (
           <button
             className="toolbar-btn primary"
-            onClick={handleRetryPreferDevice}
+            onClick={handleRetryKeepDevice}
             disabled={starting}
           >
-            USB 上のキューを優先（Traktor のキューを送らない）
+            CDJ の変更を優先して再試行
           </button>
         )}
         {finished.phase === "done" && ejectTarget && (
@@ -980,7 +1065,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         </button>
         <button
           className="toolbar-btn primary"
-          onClick={() => startExport(options(preferDeviceCues))}
+          onClick={() => startExport(options())}
           disabled={starting || !plan || plan.build.found === 0}
         >
           <Icon name="upload" size={14} /> {starting ? "開始中…" : "書き出す"}
@@ -1021,7 +1106,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         <div className="modal-header">
           <h2>
             <Icon name="upload" size={16} /> USB に書き出し（CDJ / rekordbox 互換）
-            {preferDeviceCues && <span className="usb-badge">USB 上のキューを優先</span>}
+            {keepDeviceActive && <span className="usb-badge">CDJ の変更を優先</span>}
           </h2>
           <button className="modal-close" onClick={handleClose}>
             <Icon name="x" size={16} />

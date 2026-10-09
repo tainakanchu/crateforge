@@ -35,6 +35,23 @@ pub struct ExportOptions {
     pub prune: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
+    /// CDJ 等で USB 上のキュー / グリッドが前回の同期後に変わった曲の扱い
+    /// (rbx-cli 0.1.1 / capability `usb.export.keepDeviceChanges`)。None なら省略 (= `fail`)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_device_changes: Option<OnDeviceChanges>,
+}
+
+/// `options.onDeviceChanges`。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OnDeviceChanges {
+    /// 競合 (`cues_or_grid_changed_on_device`) で書き出しを中止する (rbx-cli の既定。
+    /// crateforge は送らずに省略する)。
+    #[cfg_attr(not(test), allow(dead_code))]
+    Fail,
+    /// その曲は USB 上のキュー / グリッドを残し、リクエストの `cues` / `beatGrid` を無視する
+    /// (その 1 回の同期だけ。次の同期ではリクエストの内容が再び書かれる)。
+    KeepDevice,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -271,6 +288,8 @@ pub struct TrackCounts {
     pub skipped: u64,
     pub removed: u64,
     pub kept: u64,
+    /// `keepDevice` で USB 上のキュー / グリッドを残した曲 (dry-run では残す見込みの曲)。
+    pub device_changes_kept: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -325,7 +344,50 @@ pub struct TrackResult {
     pub analysis: String,
     /// dry-run のみ: `copy` / `reuse`。
     pub audio: Option<String>,
+    /// `keepDevice` で USB 上のキュー / グリッドを残した (dry-run では残す見込み)。
+    pub device_changes_kept: bool,
+    /// USB 上の解析ファイルのフォルダ (`/PIONEER/USBANLZ/...`)。
+    pub analysis_dir: Option<String>,
     pub warnings: Vec<String>,
+}
+
+// ============================================================ conflict details
+
+/// `conflict` エラーの `details` (rbx-cli 0.1.1 / capability `usb.export.conflictReasons`)。
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ConflictDetails {
+    /// 安定した snake_case の理由。未知の値は `other` と同じに扱う。
+    pub reason: String,
+    /// `deviceLibrary` (`export.pdb`) / `oneLibrary` (`exportLibrary.db`)。
+    pub database: Option<String>,
+    /// rbxport が名前を挙げた曲名 / プレイリスト名 / My Tag 名。
+    pub name: Option<String>,
+    pub device_track_id: Option<u64>,
+    /// 関係するリクエストの曲 (分かるときだけ)。
+    pub tracks: Vec<ConflictTrack>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ConflictTrack {
+    /// リクエストの `tracks` の添字。
+    pub index: usize,
+    #[serde(rename = "ref")]
+    pub reference: Option<String>,
+    pub device_id: Option<u64>,
+}
+
+impl ConflictDetails {
+    /// エラー行の `details` を読む (`conflict` 以外・読めないときは None)。
+    pub fn from_error(e: &ErrorLine) -> Option<Self> {
+        if e.code != "conflict" {
+            return None;
+        }
+        e.details
+            .as_ref()
+            .and_then(|d| serde_json::from_value(d.clone()).ok())
+    }
 }
 
 #[cfg(test)]
@@ -492,5 +554,83 @@ mod tests {
         assert_eq!(r.bytes.to_copy, 1000);
         assert_eq!(r.bytes.free, None);
         assert_eq!(r.items[0].audio.as_deref(), Some("copy"));
+        // 0.1.1 より前の結果 (deviceChangesKept 無し) も読める。
+        assert_eq!(r.tracks.device_changes_kept, 0);
+        assert!(!r.items[0].device_changes_kept);
+    }
+
+    #[test]
+    fn keep_device_results_and_option_round_trip() {
+        let data = serde_json::json!({
+            "tracks": { "requested": 2, "exported": 2, "deviceChangesKept": 1 },
+            "items": [
+                { "index": 0, "ref": "a", "title": "A", "status": "exported", "analysis": "cache",
+                  "deviceChangesKept": true, "analysisDir": "/PIONEER/USBANLZ/P051/0001470B",
+                  "warnings": ["cues ignored: ..."] },
+                { "index": 1, "ref": "b", "title": "B", "status": "exported", "analysis": "cache",
+                  "deviceChangesKept": false, "warnings": [] }
+            ]
+        });
+        let r: ExportResult = serde_json::from_value(data).unwrap();
+        assert_eq!(r.tracks.device_changes_kept, 1);
+        assert!(r.items[0].device_changes_kept);
+        assert_eq!(
+            r.items[0].analysis_dir.as_deref(),
+            Some("/PIONEER/USBANLZ/P051/0001470B")
+        );
+        assert!(!r.items[1].device_changes_kept);
+        // UI へはそのまま camelCase で渡る。
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["tracks"]["deviceChangesKept"], 1);
+        assert_eq!(v["items"][0]["deviceChangesKept"], true);
+
+        let opts = ExportOptions {
+            analyze: "missing".into(),
+            read_tags: true,
+            embedded_artwork: true,
+            prune: true,
+            device_name: None,
+            on_device_changes: Some(OnDeviceChanges::KeepDevice),
+        };
+        assert_eq!(
+            serde_json::to_value(&opts).unwrap()["onDeviceChanges"],
+            "keepDevice"
+        );
+        assert_eq!(serde_json::to_value(OnDeviceChanges::Fail).unwrap(), "fail");
+    }
+
+    #[test]
+    fn conflict_details_are_read_from_error_lines() {
+        let line = r#"{"type":"error","protocol":1,"command":"usb.export","code":"conflict","message":"USB sync conflict: x","exitCode":1,"details":{"reason":"cues_or_grid_changed_on_device","tracks":[{"index":0,"ref":"a","deviceId":7},{"index":2,"ref":null,"deviceId":null}],"futureField":1}}"#;
+        let Some(Envelope::Error(e)) = parse_line(line) else {
+            panic!("not an error line");
+        };
+        let d = ConflictDetails::from_error(&e).unwrap();
+        assert_eq!(d.reason, "cues_or_grid_changed_on_device");
+        assert_eq!(d.tracks.len(), 2);
+        assert_eq!(d.tracks[0].reference.as_deref(), Some("a"));
+        assert_eq!(d.tracks[0].device_id, Some(7));
+        assert_eq!(d.tracks[1].index, 2);
+        assert_eq!(d.tracks[1].reference, None);
+
+        let named = ErrorLine {
+            code: "conflict".into(),
+            details: Some(serde_json::json!({
+                "reason": "track_changed_on_device", "database": "oneLibrary",
+                "name": "Song", "deviceTrackId": 12, "tracks": []
+            })),
+            ..Default::default()
+        };
+        let d = ConflictDetails::from_error(&named).unwrap();
+        assert_eq!(d.database.as_deref(), Some("oneLibrary"));
+        assert_eq!(d.name.as_deref(), Some("Song"));
+        assert_eq!(d.device_track_id, Some(12));
+        // conflict 以外は対象外。
+        let other = ErrorLine {
+            code: "io".into(),
+            details: Some(serde_json::json!({ "reason": "x" })),
+            ..Default::default()
+        };
+        assert_eq!(ConflictDetails::from_error(&other), None);
     }
 }
