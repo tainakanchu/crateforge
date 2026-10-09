@@ -89,7 +89,7 @@ Traktor 與 rekordbox / CDJ 對 MP3 解碼起點的處理不同，**MP3 的 Cue 
 
 - Crateforge 只會 **以獨立行程啟動 rbx-cli 並以 JSON 溝通**，不會內建於本體，也不隨附於發行檔。
 - 尚未安裝 rbx-cli 時，可在匯出對話框（或 **設定 → USB 書き出し (rbx-cli)**）中 **下載**。會從上游的 GitHub Release 取得，確認 SHA-256 校驗碼後儲存到應用程式的資料資料夾。
-- rbx-cli 依「設定中指定的路徑 → 已下載的版本 → PATH 上的 `rbx-cli`」順序尋找，且只使用支援的協定版本。也可透過設定中的 **「パスを指定…」**（指定路徑…）使用自行建置的 rbx-cli。
+- rbx-cli 依「設定中指定的路徑 → 已下載的版本」順序尋找，且只使用支援的協定版本（為了安全，不會自行使用 PATH 上的 `rbx-cli`）。若要使用自行建置的 rbx-cli，請透過設定中的 **「パスを指定…」**（指定路徑…）指定。
 - 發行的執行檔支援 Windows（x86-64）/ macOS（Apple Silicon / Intel）/ Linux（x86-64，glibc 2.39 以上）。
 
 :::note

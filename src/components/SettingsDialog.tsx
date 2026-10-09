@@ -778,7 +778,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const rbxSourceLabel: Record<RbxCliStatus["source"], string> = {
     override: "設定で指定したパス",
     cache: "ダウンロード済み（キャッシュ）",
-    path: "PATH 上の rbx-cli",
+    path: "PATH 上の rbx-cli（開発ビルドのみ）",
     none: "未検出",
   };
 

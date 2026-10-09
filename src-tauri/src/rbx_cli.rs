@@ -12,14 +12,18 @@
 //! 解決順:
 //!   1. ユーザー指定のパス (`app_state` の [`OVERRIDE_STATE_KEY`])  ← 指定時はこれだけを使う
 //!   2. アプリのキャッシュ `<app_local_data>/bin/rbx-cli/<version>/rbx-cli[.exe]`  ← 自動DL先
-//!   3. PATH 上の `rbx-cli`
+//!   3. (開発ビルドのみ) PATH 上の `rbx-cli`。リリースビルドでは、検証していない PATH 上の
+//!      実行ファイルを勝手に起動しない (使うなら 1. で明示的に指定する)。
 //!
 //! どれを使う場合も `rbx-cli --json version` で protocol と必要な capability を確認し、
 //! 合わなければ使わずに分かりやすいエラーを返す。
 //!
-//! 取得 ([`download`]): 固定バージョン [`RBX_CLI_VERSION`] の Release アセットを `.part` へ
-//! ストリーミング保存しながら SHA-256 を計算 → ソースに固定した [`PINNED_SHA256`] と照合
-//! (固定値が無いアセットに限り Release の `SHA256SUMS`) → 展開 (Windows は zip、他は tar.gz) → 実行権限 → アトミック rename。
+//! 取得 ([`download`]): 保存先フォルダのロックファイルを新規作成で取り (他のインスタンスと
+//! 同時に取得しない)、固定バージョン [`RBX_CLI_VERSION`] の Release アセットを保存先フォルダ内の
+//! 一意な一時ファイルへストリーミング保存しながら SHA-256 を計算 → ソースに固定した
+//! [`PINNED_SHA256`] と照合 (固定値が無いアセットに限り Release の `SHA256SUMS`) → **ハッシュを
+//! 計算したのと同じファイルハンドル** から展開 (Windows は zip、他は tar.gz) → 実行権限 →
+//! アトミック rename。失敗時は一時ファイルを残さない。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -92,6 +96,12 @@ pub const EXE: &str = "rbx-cli";
 
 /// `version --json` 等の短いコマンドの制限時間。
 const SHORT_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
+/// `devices eject` の制限時間 (書き込みキャッシュの吐き出しで時間がかかることがある)。
+pub const EJECT_TIMEOUT: Duration = Duration::from_secs(120);
+/// ダウンロードのロックファイル名 (保存先フォルダ内)。
+const DOWNLOAD_LOCK: &str = ".download.lock";
+/// これより古いロックファイルは、異常終了したインスタンスの残骸とみなして取り直す。
+const STALE_LOCK: Duration = Duration::from_secs(15 * 60);
 
 /// 同時に 1 つだけダウンロードする。
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
@@ -204,6 +214,15 @@ impl RunError {
 
 /// `rbx-cli --json <args>` を実行し、終端の `result` の `data` を返す。
 pub async fn run_json(exe: &Path, args: &[&str]) -> Result<serde_json::Value, RunError> {
+    run_json_with_timeout(exe, args, SHORT_COMMAND_TIMEOUT).await
+}
+
+/// [`run_json`] の制限時間を指定する版。
+pub async fn run_json_with_timeout(
+    exe: &Path,
+    args: &[&str],
+    limit: Duration,
+) -> Result<serde_json::Value, RunError> {
     let mut cmd = command(exe);
     cmd.arg("--json").args(args);
     let run = async {
@@ -255,7 +274,7 @@ pub async fn run_json(exe: &Path, args: &[&str]) -> Result<serde_json::Value, Ru
             ))),
         }
     };
-    match tokio::time::timeout(SHORT_COMMAND_TIMEOUT, run).await {
+    match tokio::time::timeout(limit, run).await {
         Ok(r) => r,
         Err(_) => Err(RunError::Spawn("rbx-cli が応答しません (時間切れ)".into())),
     }
@@ -364,18 +383,22 @@ pub async fn resolve(app: &AppHandle) -> Result<Resolved, (Option<PathBuf>, &'st
             Err(e) => last_err = Some((Some(p), "cache", e)),
         }
     }
-    let on_path = PathBuf::from(EXE);
-    // PATH に無いのは普通なので、起動できないことは理由にしない。
-    if let Ok(info) = probe(&on_path).await {
-        match check_compatible(&info) {
-            Ok(()) => {
-                return Ok(Resolved {
-                    path: on_path,
-                    source: "path",
-                    info,
-                })
+    // PATH 上の rbx-cli は開発ビルドだけ (リリースでは検証していない実行ファイルを起動しない)。
+    #[cfg(debug_assertions)]
+    {
+        let on_path = PathBuf::from(EXE);
+        // PATH に無いのは普通なので、起動できないことは理由にしない。
+        if let Ok(info) = probe(&on_path).await {
+            match check_compatible(&info) {
+                Ok(()) => {
+                    return Ok(Resolved {
+                        path: on_path,
+                        source: "path",
+                        info,
+                    })
+                }
+                Err(e) => last_err = last_err.or(Some((Some(on_path), "path", e))),
             }
-            Err(e) => last_err = last_err.or(Some((Some(on_path), "path", e))),
         }
     }
     Err(last_err.unwrap_or((
@@ -534,8 +557,16 @@ pub async fn download_to(
         }
     };
 
-    // 本体を .part へストリーミング保存しつつハッシュを計算する (全体をメモリに載せない)。
-    let archive_part = dir.join(format!("{asset}.part"));
+    // 同じ保存先へ同時に取得しない (別インスタンスを含む)。
+    let _lock = DownloadLock::acquire(&dir)?;
+
+    // 本体を保存先フォルダ内の一意な一時ファイルへストリーミング保存しつつハッシュを計算する
+    // (全体をメモリに載せない)。一時ファイルは落ちると消えるので、どの失敗でも残らない。
+    let archive = tempfile::Builder::new()
+        .prefix(".rbx-cli-download-")
+        .suffix(".part")
+        .tempfile_in(&dir)
+        .map_err(|e| format!("書き込みに失敗: {e}"))?;
     let mut resp = client
         .get(release_url(RBX_CLI_VERSION, &asset))
         .send()
@@ -547,14 +578,17 @@ pub async fn download_to(
     let mut received: u64 = 0;
     let mut hasher = Sha256::new();
     {
-        let mut out = tokio::fs::File::create(&archive_part)
-            .await
+        let handle = archive
+            .as_file()
+            .try_clone()
             .map_err(|e| format!("書き込みに失敗: {e}"))?;
+        let mut out = tokio::fs::File::from_std(handle);
         let mut last_emit = 0u64;
-        while let Some(chunk) = resp.chunk().await.map_err(|e| {
-            let _ = std::fs::remove_file(&archive_part);
-            format!("ダウンロード中にエラー: {e}")
-        })? {
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| format!("ダウンロード中にエラー: {e}"))?
+        {
             hasher.update(&chunk);
             out.write_all(&chunk)
                 .await
@@ -574,20 +608,28 @@ pub async fn download_to(
     progress(RbxCliProgress::Verify);
     let actual = hex(&hasher.finalize());
     if actual != expected {
-        let _ = tokio::fs::remove_file(&archive_part).await;
         return Err(format!(
             "ダウンロードした rbx-cli のチェックサムが一致しません (期待 {expected}, 実際 {actual})。もう一度お試しください。"
         ));
     }
 
     progress(RbxCliProgress::Extract);
-    let archive = archive_part.clone();
     let dest_clone = dest.to_path_buf();
-    let extracted = tokio::task::spawn_blocking(move || extract_binary(&archive, &dest_clone))
-        .await
-        .map_err(|e| format!("展開に失敗: {e}"))?;
-    let _ = tokio::fs::remove_file(&archive_part).await;
-    extracted?;
+    // 名前で開き直さず、ハッシュを計算したのと同じファイル (ハンドル) から展開する。
+    tokio::task::spawn_blocking(move || {
+        let mut file = archive
+            .as_file()
+            .try_clone()
+            .map_err(|e| format!("アーカイブを開けません: {e}"))?;
+        use std::io::Seek;
+        file.rewind()
+            .map_err(|e| format!("アーカイブを開けません: {e}"))?;
+        let result = extract_binary_from(file, &dest_clone);
+        drop(archive); // 一時ファイルを消す
+        result
+    })
+    .await
+    .map_err(|e| format!("展開に失敗: {e}"))??;
 
     // 取得したものが本当に使えるか確かめる。
     let info = probe(dest).await?;
@@ -595,32 +637,95 @@ pub async fn download_to(
     Ok(info)
 }
 
+/// 保存先フォルダのロックファイル (新規作成で取る)。落ちると消す。
+struct DownloadLock {
+    path: PathBuf,
+}
+
+impl DownloadLock {
+    fn acquire(dir: &Path) -> Result<Self, String> {
+        let path = dir.join(DOWNLOAD_LOCK);
+        for attempt in 0..2 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{}", std::process::id());
+                    return Ok(Self { path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt == 0 => {
+                    // 異常終了したインスタンスの残骸なら取り直す。
+                    let stale = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > STALE_LOCK);
+                    if !stale {
+                        break;
+                    }
+                    let _ = std::fs::remove_file(&path);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => break,
+                Err(e) => return Err(format!("ダウンロードの準備に失敗: {e}")),
+            }
+        }
+        Err(
+            "rbx-cli は別の Crateforge で取得中です。終わってから「再チェック」してください。"
+                .into(),
+        )
+    }
+}
+
+impl Drop for DownloadLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// アーカイブから実行ファイルだけを取り出し、`.part` 経由のアトミック rename で `dest` に置く。
+/// アーカイブ (パス) から実行ファイルだけを取り出して `dest` に置く。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn extract_binary(archive: &Path, dest: &Path) -> Result<(), String> {
-    let tmp = dest.with_extension("part");
-    let result = extract_to(archive, &tmp).and_then(|()| {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| format!("実行権限の設定に失敗: {e}"))?;
-        }
-        std::fs::rename(&tmp, dest).map_err(|e| format!("保存に失敗: {e}"))
-    });
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    let file = std::fs::File::open(archive).map_err(|e| format!("アーカイブを開けません: {e}"))?;
+    extract_binary_from(file, dest)
+}
+
+/// 開いたアーカイブから実行ファイルだけを取り出し、同じフォルダの一意な一時ファイル経由の
+/// アトミック rename で `dest` に置く。失敗時は何も残さない。
+pub fn extract_binary_from(archive: std::fs::File, dest: &Path) -> Result<(), String> {
+    let dir = dest
+        .parent()
+        .ok_or("保存先フォルダを解決できませんでした")?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".rbx-cli-extract-")
+        .suffix(".part")
+        .tempfile_in(dir)
+        .map_err(|e| format!("書き込みに失敗: {e}"))?;
+    let out = tmp
+        .as_file()
+        .try_clone()
+        .map_err(|e| format!("書き込みに失敗: {e}"))?;
+    extract_to(archive, out)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("実行権限の設定に失敗: {e}"))?;
     }
-    result
+    tmp.persist(dest)
+        .map(|_| ())
+        .map_err(|e| format!("保存に失敗: {}", e.error))
 }
 
 #[cfg(not(target_os = "windows"))]
-fn extract_to(archive: &Path, out: &Path) -> Result<(), String> {
-    let file = std::fs::File::open(archive).map_err(|e| format!("アーカイブを開けません: {e}"))?;
-    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
+fn extract_to(archive: std::fs::File, mut out: std::fs::File) -> Result<(), String> {
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     for entry in tar
         .entries()
         .map_err(|e| format!("アーカイブを読めません: {e}"))?
@@ -633,8 +738,9 @@ fn extract_to(archive: &Path, out: &Path) -> Result<(), String> {
                 .and_then(|p| p.file_name().map(|n| n == EXE))
                 .unwrap_or(false);
         if is_exe {
-            let mut f = std::fs::File::create(out).map_err(|e| format!("書き込みに失敗: {e}"))?;
-            std::io::copy(&mut entry, &mut f).map_err(|e| format!("書き込みに失敗: {e}"))?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| format!("書き込みに失敗: {e}"))?;
+            use std::io::Write;
+            out.flush().map_err(|e| format!("書き込みに失敗: {e}"))?;
             return Ok(());
         }
     }
@@ -642,15 +748,15 @@ fn extract_to(archive: &Path, out: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn extract_to(archive: &Path, out: &Path) -> Result<(), String> {
-    let file = std::fs::File::open(archive).map_err(|e| format!("アーカイブを開けません: {e}"))?;
-    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("zip を開けません: {e}"))?;
+fn extract_to(archive: std::fs::File, mut out: std::fs::File) -> Result<(), String> {
+    let mut zip = zip::ZipArchive::new(archive).map_err(|e| format!("zip を開けません: {e}"))?;
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(|e| e.to_string())?;
         let name = f.name().replace('\\', "/");
         if f.is_file() && name.rsplit('/').next() == Some(EXE) {
-            let mut w = std::fs::File::create(out).map_err(|e| format!("書き込みに失敗: {e}"))?;
-            std::io::copy(&mut f, &mut w).map_err(|e| format!("書き込みに失敗: {e}"))?;
+            std::io::copy(&mut f, &mut out).map_err(|e| format!("書き込みに失敗: {e}"))?;
+            use std::io::Write;
+            out.flush().map_err(|e| format!("書き込みに失敗: {e}"))?;
             return Ok(());
         }
     }
@@ -782,7 +888,15 @@ mod tests {
         std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
         extract_binary(&archive, &dest).unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"#!/bin/sh\necho hi\n");
-        assert!(!dest.with_extension("part").exists());
+        let names = |dir: &Path| -> Vec<String> {
+            let mut v: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(names(dest.parent().unwrap()), vec!["rbx-cli".to_string()]);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -807,7 +921,36 @@ mod tests {
         let dest2 = tmp.path().join("bin").join("other");
         assert!(extract_binary(&bad, &dest2).is_err());
         assert!(!dest2.exists());
-        assert!(!dest2.with_extension("part").exists());
+        assert_eq!(
+            names(dest.parent().unwrap()),
+            vec!["rbx-cli".to_string()],
+            "no partial files left behind"
+        );
+    }
+
+    #[test]
+    fn download_lock_is_exclusive_and_released() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = DownloadLock::acquire(tmp.path()).unwrap();
+        let err = DownloadLock::acquire(tmp.path()).err().unwrap();
+        assert!(err.contains("別の Crateforge"), "{err}");
+        drop(a);
+        assert!(!tmp.path().join(DOWNLOAD_LOCK).exists());
+        let b = DownloadLock::acquire(tmp.path()).unwrap();
+        drop(b);
+        // 古い残骸のロックは取り直す。
+        let lock = tmp.path().join(DOWNLOAD_LOCK);
+        std::fs::write(&lock, "1").unwrap();
+        let old = std::time::SystemTime::now() - STALE_LOCK - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let c = DownloadLock::acquire(tmp.path()).unwrap();
+        drop(c);
+        assert!(!lock.exists());
     }
 
     /// 実際の GitHub Release から取得する (ネットワークが要るので既定では実行しない)。
