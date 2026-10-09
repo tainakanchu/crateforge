@@ -19,11 +19,13 @@ mod organizer;
 mod pairing;
 mod playlist_rules;
 mod proc;
+mod rbx_cli;
 mod smart;
 mod smtc;
 mod sync;
 mod text_fold;
 mod updater;
+mod usb_export;
 
 use std::sync::Mutex;
 

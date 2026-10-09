@@ -52,7 +52,7 @@ fontdb = "0.23"
 # tauri は内部で tokio をランタイムに使うため、tauri::async_runtime 経由で
 # axum::serve を spawn できる。tokio の features は明示的に拾っておく。
 axum = "0.8"
-tokio = { version = "1", features = ["net", "sync", "rt", "macros", "io-util", "process", "fs"] }
+tokio = { version = "1", features = ["net", "sync", "rt", "macros", "io-util", "process", "fs", "time"] }
 tower-http = { version = "0.6", features = ["fs"] }
 # ServeFile を 1 リクエストに oneshot で適用する (ストリーミング配信)。tests でも使う。
 tower = { version = "0.5", features = ["util"] }
@@ -96,6 +96,12 @@ discid = "0.6"
 # === Windows-only: `zip` は on-demand ffmpeg ダウンロード解凍 (BtbN win64) に使用 ===
 [target.'cfg(target_os = "windows")'.dependencies]
 zip = "2"
+
+# === Windows 以外: rbx-cli (USB 書き出しエンジン) の Release アセット (tar.gz) の展開用 ===
+# Windows のアセットは zip なので上の `zip` を使う。
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+flate2 = "1"
+tar = "0.4"
 
 [dev-dependencies]
 # 内蔵 API サーバーのハンドラテスト用。
