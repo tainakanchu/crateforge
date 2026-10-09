@@ -109,6 +109,7 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
   // rbx-cli 取得の進捗。
   useEffect(() => {
     let un: (() => void) | undefined;
+    let disposed = false;
     usbApi
       .onRbxCliProgress((p) => {
         if (p.kind === "start") setRbxProgress(`rbx-cli ${p.version} の取得を開始します…`);
@@ -124,14 +125,20 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         else if (p.kind === "error") setRbxProgress(`失敗: ${p.message}`);
       })
       .then((u) => {
-        un = u;
-      });
-    return () => un?.();
+        if (disposed) u();
+        else un = u;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      un?.();
+    };
   }, []);
 
   // 計画 (dry-run) の進捗。
   useEffect(() => {
     let un: (() => void) | undefined;
+    let disposed = false;
     usbApi
       .onUsbExportProgress((p) => {
         if (p.job !== "plan") return;
@@ -144,9 +151,14 @@ export function UsbExportDialog({ initialPlaylistIds, onClose }: UsbExportDialog
         }
       })
       .then((u) => {
-        un = u;
-      });
-    return () => un?.();
+        if (disposed) u();
+        else un = u;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      un?.();
+    };
   }, []);
 
   // ---------------------------------------------------------------- selection

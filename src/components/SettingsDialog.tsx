@@ -202,6 +202,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   }, [section, refreshRbx]);
   useEffect(() => {
     let un: (() => void) | undefined;
+    let disposed = false;
     usbApi
       .onRbxCliProgress((p) => {
         if (p.kind === "start") setRbxProgress("ダウンロードを開始します…");
@@ -217,10 +218,15 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
         else if (p.kind === "error") setRbxProgress(`失敗: ${p.message}`);
       })
       .then((u) => {
-        un = u;
+        // 購読が確立する前に閉じられたら、その場で解除する (リーク防止)。
+        if (disposed) u();
+        else un = u;
       })
       .catch(() => {});
-    return () => un?.();
+    return () => {
+      disposed = true;
+      un?.();
+    };
   }, []);
 
   const handleDownloadRbx = useCallback(async () => {
