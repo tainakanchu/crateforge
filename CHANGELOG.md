@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.14.0] - 2026-10-10
+
+### 日本語
+
+#### デスクトップ
+- **USB 書き出し（CDJ / rekordbox 互換、実験的）**: プレイリストやフォルダを、CDJ / XDJ で読める rekordbox 互換の USB に書き出せるようにした（Device Library と OneLibrary、解析・波形・キー、アートワーク）。2 回目以降は同期として、変わった曲だけを書き換える。Traktor の `collection.nml` があれば、ホットキュー・メモリーキュー・ループ・ビートグリッドも一緒に書き出す。書き出しは外部ツール rbx-cli（GPL、初回にダウンロード、別プロセスで実行）が行う。CDJ / XDJ の実機ではまだ検証できていないので、現場で使う前に手持ちのプレーヤーで確認してほしい。(#221)
+
+### English
+
+#### Desktop
+- **USB export for CDJ (rekordbox-compatible, experimental)**: playlists and folders can now be exported to a rekordbox-compatible USB drive that CDJ / XDJ players can read (Device Library and OneLibrary, with analysis, waveforms, key, and artwork). Later exports work as a sync and rewrite only the tracks that changed. If you have a Traktor `collection.nml`, hot cues, memory cues, loops, and beat grids are exported too. The export is done by the external tool rbx-cli (GPL, downloaded on first use, run as a separate process). It has not been verified on real CDJ / XDJ hardware yet, so please test it on your own players before using it at a gig. (#221)
+
 ## [v0.13.4] - 2026-10-06
 
 ### 日本語
