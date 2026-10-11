@@ -255,6 +255,10 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const ctxTrack = contextMenu
     ? tracks.find((t) => t.trackId === contextMenu.track.trackId) ?? contextMenu.track
     : null;
+  const activePlaylist =
+    viewMode === "playlist" && selectedPlaylistId !== null
+      ? playlists.find((p) => p.playlistId === selectedPlaylistId)
+      : undefined;
   const targetPlaylists = playlists.filter((p) => !p.isFolder && !p.isSmart);
   const recentPlaylists = recentPlaylistIds
     .map((id) => targetPlaylists.find((p) => p.playlistId === id))
@@ -377,7 +381,10 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           genreTags={ctxGenreTags}
           playlists={playlists}
           recentPlaylists={recentPlaylists}
-          showRemoveFromPlaylist={viewMode === "playlist"}
+          showRemoveFromPlaylist={
+            // スマート / フォルダは所属を直接持たないので「外す」は出さない。
+            !!activePlaylist && !activePlaylist.isSmart && !activePlaylist.isFolder
+          }
           revealPath={ctxTrack.fileExists ? ctxTrack.locationPath : null}
           relocateTrack={ctxTrack}
           deleteCount={1}

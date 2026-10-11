@@ -63,6 +63,15 @@ export async function removeTrackFromPlaylist(
   return invoke("remove_track_from_playlist", { playlistId, trackId });
 }
 
+/// 複数曲をまとめてプレイリストから外す (1 トランザクション)。各 ID につき最初の
+/// 出現 1 つだけを外す (単曲版と同じ意味)。外した行数を返す。
+export async function removeTracksFromPlaylist(
+  playlistId: number,
+  trackIds: number[],
+): Promise<number> {
+  return invoke("remove_tracks_from_playlist", { playlistId, trackIds });
+}
+
 export async function reorderPlaylistTracks(
   playlistId: number,
   orderedTrackIds: number[],

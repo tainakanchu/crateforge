@@ -513,19 +513,22 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     setContextMenu(null);
   }, [ctxIds, tracks, addToCrate]);
 
-  const handleRemoveFromPlaylist = useCallback(
-    async (track: Track) => {
-      if (viewMode !== "playlist" || selectedPlaylistId === null) return;
-      try {
-        await playlistsApi.removeTrackFromPlaylist(selectedPlaylistId, track.trackId);
-        onTracksChanged();
-      } catch (err) {
-        pushToast("error", `削除に失敗しました: ${err}`);
-      }
-      setContextMenu(null);
-    },
-    [viewMode, selectedPlaylistId, onTracksChanged, pushToast],
-  );
+  // 選択（or 右クリック対象）の曲をまとめて今のプレイリストから外す。
+  // 同じ曲が複数回入っている場合は、単曲版と同じく各曲の最初の 1 つだけを外す。
+  const handleRemoveFromPlaylist = useCallback(async () => {
+    const ids = ctxIds();
+    setContextMenu(null);
+    if (viewMode !== "playlist" || selectedPlaylistId === null || ids.length === 0) return;
+    try {
+      const removed = await playlistsApi.removeTracksFromPlaylist(selectedPlaylistId, ids);
+      // 外した曲は一覧から消えるので、選択も残さない（見えない曲が選択件数に残らないように）。
+      setSelectedTrackIds(new Set());
+      onTracksChanged();
+      if (removed > 1) pushToast("success", `${removed} 曲をプレイリストから外しました`);
+    } catch (err) {
+      pushToast("error", `削除に失敗しました: ${err}`);
+    }
+  }, [ctxIds, viewMode, selectedPlaylistId, setSelectedTrackIds, onTracksChanged, pushToast]);
 
   const handleSetRating = useCallback(
     async (track: Track, stars: number) => {
@@ -1238,7 +1241,10 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           genreTags={ctxGenreTags}
           playlists={playlists}
           recentPlaylists={recentPlaylists}
-          showRemoveFromPlaylist={viewMode === "playlist"}
+          showRemoveFromPlaylist={
+            // スマート / フォルダは所属を直接持たないので「外す」は出さない。
+            !!activePlaylist && !activePlaylist.isSmart && !activePlaylist.isFolder
+          }
           revealPath={
             // 「表示」は単曲のみ。複数選択・ファイル欠損時は無効表示にする。
             ctxIds().length === 1 && ctxTrack.fileExists ? ctxTrack.locationPath : null
@@ -1258,7 +1264,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onFindSimilar={handleFindSimilar}
           onConvert={handleConvert}
           onGetInfo={handleGetInfo}
-          onRemoveFromPlaylist={() => handleRemoveFromPlaylist(ctxTrack)}
+          onRemoveFromPlaylist={handleRemoveFromPlaylist}
           onReveal={() => void handleReveal(ctxTrack.locationPath ?? "")}
           onDelete={handleDelete}
           onAddToPlaylist={handleAddToPlaylist}

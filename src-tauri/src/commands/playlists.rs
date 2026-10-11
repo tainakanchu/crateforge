@@ -138,6 +138,18 @@ pub fn remove_track_from_playlist(
         .map_err(|e| e.to_string())
 }
 
+/// 選択中の複数曲をまとめてプレイリストから外す (1 トランザクション)。外した行数を返す。
+#[tauri::command]
+pub fn remove_tracks_from_playlist(
+    app: AppHandle,
+    playlist_id: i64,
+    track_ids: Vec<i64>,
+) -> Result<usize, String> {
+    let db = open_db(&app)?;
+    db.remove_tracks_from_playlist(playlist_id, &track_ids)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn reorder_playlist_tracks(
     app: AppHandle,

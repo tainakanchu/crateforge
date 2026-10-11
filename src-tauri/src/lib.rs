@@ -254,6 +254,7 @@ pub fn run() {
             commands::playlists::delete_playlist,
             commands::playlists::add_tracks_to_playlist,
             commands::playlists::remove_track_from_playlist,
+            commands::playlists::remove_tracks_from_playlist,
             commands::playlists::reorder_playlist_tracks,
             commands::playlists::create_smart_playlist,
             commands::playlists::update_smart_criteria,
