@@ -789,6 +789,10 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
               ? ctxPrimary.locationPath
               : null
           }
+          relocateTrack={
+            // 「ファイルの場所を指定…」も単曲メニューのみ。
+            contextMenu.trackIds.length === 1 ? ctxPrimary : null
+          }
           deleteCount={contextMenu.trackIds.length}
           onClose={closeMenu}
           onPlay={() => {

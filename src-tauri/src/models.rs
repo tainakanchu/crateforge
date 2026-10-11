@@ -489,6 +489,20 @@ pub struct TechMetaRefreshSummary {
     pub failed: usize,
 }
 
+/// リンク切れ再チェック (全曲の実ファイル有無の再確認) の結果。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileCheckSummary {
+    /// 確認した曲数 (= ライブラリの全曲数)。
+    pub checked: usize,
+    /// 確認後にファイルが見つからない曲数 (今回から欠損になった曲も含む)。
+    pub missing: usize,
+    /// 前回まではあったのに、今回見つからなくなった曲数。
+    pub newly_missing: usize,
+    /// 前回まではリンク切れだったのに、今回見つかった曲数。
+    pub newly_found: usize,
+}
+
 // === Smart playlists ===
 
 /// スマートプレイリストの条件 (フラットなルール列 + 全/いずれか一致)。

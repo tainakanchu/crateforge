@@ -124,6 +124,7 @@ pnpm tauri build
 | `key:compat:8A` | 8A とハーモニックに繋がるキー (8A / 8B / 7A / 9A) |
 | `energy:60-100` | エネルギー (0〜1 でも 0〜100 でも可) |
 | `analyzed:yes` / `analyzed:no` | 解析済み / 未解析 |
+| `missing:yes` / `missing:no` | ファイルが見つからない (リンク切れ) / ある |
 
 例: `artist:"daft punk" year:2001 key:compat:8A analyzed:yes`
 

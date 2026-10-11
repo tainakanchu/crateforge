@@ -75,12 +75,14 @@ description: 列の追加 / 並べ替え / 幅、行高・カバー・右ペイ�
 | `key:compat:8A` | 8A とハーモニックに繋がるキー（8A / 8B / 7A / 9A） |
 | `energy:60-100` | エネルギー（0〜1 でも 0〜100 でも可） |
 | `analyzed:yes` / `analyzed:no` | 解析済み / 未解析 |
+| `missing:yes` / `missing:no` | ファイルが見つからない（リンク切れ）/ ファイルがある |
 
 例: `artist:"daft punk" year:2001 key:compat:8A analyzed:yes`
 
 テキスト系のフィールド指定は、フリーテキスト検索と同じ字体ゆれ吸収が効きます。
 解釈できない値（`key:compat:99Z` など）は、そのままフリーテキストとして扱われます。
 `bpm:` / `key:` / `energy:` / `analyzed:` は[解析](../dj-analysis/)済みの情報を参照します。
+`missing:` は取り込み時と「リンク切れを再チェック」をした時点のファイルの有無で判定します（[見つからないファイルを直す](../import/)）。
 
 ### プレイリストの中を検索する
 

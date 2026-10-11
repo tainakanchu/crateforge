@@ -75,12 +75,14 @@ To include spaces in a value, wrap it in double quotes, as in `artist:"daft punk
 | `key:compat:8A` | Keys that mix harmonically with 8A (8A / 8B / 7A / 9A) |
 | `energy:60-100` | Energy (0–1 or 0–100 both accepted) |
 | `analyzed:yes` / `analyzed:no` | Analyzed / not analyzed |
+| `missing:yes` / `missing:no` | File not found (broken link) / file exists |
 
 Example: `artist:"daft punk" year:2001 key:compat:8A analyzed:yes`
 
 Text field filters get the same variant normalization as free-text search.
 Values that can't be parsed (such as `key:compat:99Z`) simply fall back to free text.
 `bpm:` / `key:` / `energy:` / `analyzed:` refer to [analysis](../dj-analysis/) data.
+`missing:` reflects whether the file existed at import time or at the last "re-check missing files" run (see [Fixing missing files](../import/)).
 
 ### Searching inside a playlist
 
