@@ -28,7 +28,7 @@ argument-hint: "[フライヤー画像のパス | テーマ・ムードのテキ
 
 - 失敗したら、ユーザーに「Crateforge アプリを起動し、設定 → 『AI 連携 / API』で API サーバーを有効化してください（既定ポート 8787）」と案内し、有効化を待ってから先に進む。
 - 別ポートなら環境変数 `CRATEFORGE_API`（例 `http://127.0.0.1:9000`）を使う。
-- WSL/Docker など**別ネットワークから叩く場合、`127.0.0.1` はホストと別物**。`health` が即失敗するときは、WSL2 をミラーモード化（`.wslconfig` に `networkingMode=mirrored` を書いて `wsl --shutdown`）するか、`CRATEFORGE_API=http://<ホストIP>:8787` を指定する。
+- WSL/Docker など**別ネットワークから叩く場合、`127.0.0.1` はホストと別物**。`health` が即失敗するときは、WSL2 をミラーモード化（`.wslconfig` に `networkingMode=mirrored` を書いて `wsl --shutdown`）するか、`CRATEFORGE_API=http://<ホストIP>:8787` を指定する。ただし後者（ループバック以外からのアクセス）はアプリ側の LAN 公開とトークンが必要で、プレイリスト作成などの書き込みは `403` で拒否される（`reference.md`「認証・アクセス制御」）。プレイリスト作成まで行うなら `127.0.0.1` で届く構成（ミラーモード等）にする。
 
 ## 選曲ワークスペース (嗜好・基準の置き場)
 選曲の「方針・基準・嗜好」は **このスキルではなく、ユーザーが Claude Code を開いている作業ディレクトリ (選曲ワークスペース repo) の rules** に置く想定。
@@ -94,8 +94,9 @@ argument-hint: "[フライヤー画像のパス | テーマ・ムードのテキ
 ### 5. 新規プレイリストを作る
 - 名前はイベント名やコンセプトから（例「夏の夕暮れ chill house (叩き台)」）。
 - 作成: `crate-api.sh POST /api/playlists '{"name":"...","isFolder":false}'` → 返り値の `playlistId` を取得。
-- 曲を追加: `crate-api.sh POST /api/playlists/<playlistId>/tracks '{"trackIds":[...]}'`（`trackId` は手順 3〜4 で得た曲の `trackId`）。
+- 曲を追加: `crate-api.sh POST /api/playlists/<playlistId>/tracks '{"trackIds":[...]}'`（`trackId` は手順 3〜4 で得た曲の `trackId`。API は重複を弾かないので事前に重複排除する）。
 - 反映確認: `crate-api.sh GET /api/playlists/<playlistId>/tracks`。
+- ユーザーとのやり取りで叩き台を手直しする場合、**このスキルで作ったプレイリストに限り**、候補の差し替え（`PUT /api/playlists/<playlistId>/tracks` で全置換、または `POST`/`DELETE` で追加・除外）や名前の変更（`PATCH /api/playlists/<playlistId>`）ができる（詳細は `reference.md`）。
 
 ### 6. 根拠レポートを返す
 **Markdown** で以下を返す（チャットに表示し、ワークスペースに `sets/` があれば「保存しますか？」と提案して `sets/<日付>-<イベント>.md` に書く）:
@@ -107,6 +108,6 @@ argument-hint: "[フライヤー画像のパス | テーマ・ムードのテキ
 最後に「**プレイリストは Crateforge アプリに作成済みです。曲順はアプリ上で調整してください**」と伝える。
 
 ## 原則
-- 破壊的操作はしない（既存プレイリストの削除・改変はしない。常に**新規**プレイリストを作る）。
+- 破壊的操作はしない（既存プレイリストの削除・改変はしない。常に**新規**プレイリストを作る）。改名・中身の差し替えは、このスキルで作ったプレイリストか、ユーザーが明示的に指示したプレイリストに限る。プレイリストの削除はユーザーの明示指示がある場合のみ。
 - API が落ちている / 未解析が多い等は、止まらず可能な範囲で進め、状況を正直に伝える。
 - ユーザーのワークスペース方針を最優先する（このスキルの既定より rules を優先）。
