@@ -1177,6 +1177,148 @@ pub async fn get_similar_tracks(
     Ok(Json(hits))
 }
 
+// ===== 解析キュー =====
+// `POST /api/analysis` (他デバイスで計算済みの解析結果のアップロード) とは別物。
+// こちらはこの PC のバックグラウンド解析ワーカ (`crate::analyzer::Analyzer`) に解析を依頼する。
+
+/// `POST /api/tracks/analyze` 1 リクエストあたりの ID 上限 (重複排除後)。
+/// 解析は 1 曲数秒かかるため、これ以上はクライアント側で分割して投げてもらう。
+pub(crate) const ANALYZE_MAX_IDS: usize = 1000;
+
+/// `POST /api/tracks/analyze` のボディ。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyzeTracksBody {
+    pub track_ids: Vec<i64>,
+    /// true なら解析済み (現行バージョン) の曲も再解析する。
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// 投入前の振り分け結果。`queue` だけをワーカへ渡す。
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct AnalyzePlan {
+    /// ワーカへ投入する ID (入力順・重複排除済み)。
+    pub queue: Vec<i64>,
+    /// 現行バージョンで解析済みのためスキップした曲数 (`force=false` のときのみ)。
+    pub already_analyzed: usize,
+    /// 音源ファイルが無い (パス未設定・実ファイル欠落) ため解析できない ID。
+    pub missing_file: Vec<i64>,
+    /// DB に存在しない ID。
+    pub unknown: Vec<i64>,
+}
+
+/// 重複排除済みの ID 列を「投入 / 解析済み / ファイル無し / 不明」に振り分ける。
+/// 判定はワーカ (`analyzer::process_batch`) の絞り込みと同じ条件にそろえ、
+/// レスポンスの `queued` が実際に解析される曲数とほぼ一致するようにする。
+pub(crate) fn plan_analysis(
+    db: &crate::db::Database,
+    ids: &[i64],
+    force: bool,
+) -> rusqlite::Result<AnalyzePlan> {
+    let mut plan = AnalyzePlan::default();
+    for &id in ids {
+        let Some(track) = db.get_track_by_track_id(id)? else {
+            plan.unknown.push(id);
+            continue;
+        };
+        if !force && !db.needs_analysis(id)? {
+            plan.already_analyzed += 1;
+            continue;
+        }
+        let has_file = matches!(
+            (track.persistent_id.as_deref(), track.location_path.as_deref()),
+            (Some(pid), Some(path)) if !pid.is_empty() && !path.is_empty() && FsPath::new(path).exists()
+        );
+        if has_file {
+            plan.queue.push(id);
+        } else {
+            plan.missing_file.push(id);
+        }
+    }
+    Ok(plan)
+}
+
+/// `POST /api/tracks/analyze` — 指定曲の BPM/Key/Energy/類似度ベクトル解析をキューへ積む。
+///
+/// - ボディ: `{ "trackIds": [i64...], "force"?: bool }`。ID は入力順のまま重複排除する。
+/// - 検証順: ボディ検証 (空 / 上限超過 → 400) → 解析ワーカの有無 (無ければ 503)
+///   → DB で振り分け。ワーカ不在でも入力ミスは 400 として先に知らせる。
+/// - 不明 ID は無視して `unknownTrackIds` で返す。ただし全 ID が不明なら 404。
+/// - 解析済み (force=false) / ファイル無しの曲は投入せず、件数・ID を返す。
+/// - 成功時は常に 202 (`queued` は 0 のこともある)。進捗は `GET /api/analysis/status`
+///   をポーリングする (GUI には従来どおり `analysis-progress` イベントが届く)。
+pub async fn analyze_tracks(
+    State(state): State<ApiState>,
+    ExtractJson(body): ExtractJson<AnalyzeTracksBody>,
+) -> Result<Response, ApiError> {
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<i64> = body
+        .track_ids
+        .into_iter()
+        .filter(|id| seen.insert(*id))
+        .collect();
+    if ids.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "trackIds is empty"));
+    }
+    if ids.len() > ANALYZE_MAX_IDS {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("too many trackIds (max {ANALYZE_MAX_IDS} per request)"),
+        ));
+    }
+
+    let app = state.app.as_ref().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "analyzer is not available (app handle missing)",
+        )
+    })?;
+    let analyzer = app
+        .try_state::<crate::analyzer::Analyzer>()
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "analyzer is not available (not initialized)",
+            )
+        })?;
+
+    let plan = plan_analysis(&state.db()?, &ids, body.force)?;
+    if plan.unknown.len() == ids.len() {
+        return Err(ApiError::not_found("no known trackIds"));
+    }
+    let queued = plan.queue.len();
+    analyzer.submit(plan.queue, body.force);
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "queued": queued,
+            "alreadyAnalyzed": plan.already_analyzed,
+            "missingFileTrackIds": plan.missing_file,
+            "unknownTrackIds": plan.unknown,
+        })),
+    )
+        .into_response())
+}
+
+/// `GET /api/analysis/status` — 解析の進捗サマリ (`commands::analysis::get_analysis_status` 相当)。
+/// `{ analyzed, total, pending }`。`pending` は解析ワーカのキュー待ち + 処理中の ID 数 (概数) で、
+/// ワーカが取得できない場合 (API 単体起動 / 未初期化) は null。
+pub async fn get_analysis_status(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
+    let (analyzed, total) = state.db()?.analysis_status()?;
+    let pending = state
+        .app
+        .as_ref()
+        .and_then(|app| app.try_state::<crate::analyzer::Analyzer>())
+        .map(|analyzer| analyzer.pending());
+    Ok(Json(json!({
+        "analyzed": analyzed,
+        "total": total,
+        "pending": pending,
+    })))
+}
+
 /// `GET /api/stats` — ライブラリ統計。
 pub async fn get_stats(State(state): State<ApiState>) -> Result<Json<LibraryStats>, ApiError> {
     let db = state.db()?;

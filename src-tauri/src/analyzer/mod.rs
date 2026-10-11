@@ -2,15 +2,17 @@
 //!
 //! 重い処理 (デコード + DSP) は単一のバックグラウンドワーカで逐次実行する。
 //! フロントは `analyze_tracks` でトラック ID を投げ、進捗は `analysis-progress`
-//! イベントで受け取る。ワーカが 1 本なので二重解析や競合は起きない。
+//! イベントで受け取る。ローカル HTTP API (`POST /api/tracks/analyze`) も同じキューへ
+//! 投入する。ワーカが 1 本なので二重解析や競合は起きない。
 
 mod decode;
 mod features;
 pub mod similarity;
 
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -47,13 +49,21 @@ struct Job {
 /// `Sender` は `!Sync` なので `Mutex` で包んで Sync 化する。
 pub struct Analyzer {
     tx: Mutex<Sender<Job>>,
+    /// キュー待ち + 処理中の ID 数 (概数)。投入時に加算し、ワーカがスキップ/処理した分を減算する。
+    /// ワーカ側の重複排除・解析済みスキップ前の件数を含むので、ジョブ開始までは多めに出ることがある。
+    pending: Arc<AtomicUsize>,
 }
 
 impl Analyzer {
     pub fn new(app: AppHandle) -> Self {
         let (tx, rx) = channel::<Job>();
-        std::thread::spawn(move || worker(app, rx));
-        Analyzer { tx: Mutex::new(tx) }
+        let pending = Arc::new(AtomicUsize::new(0));
+        let worker_pending = Arc::clone(&pending);
+        std::thread::spawn(move || worker(app, rx, worker_pending));
+        Analyzer {
+            tx: Mutex::new(tx),
+            pending,
+        }
     }
 
     /// 解析対象 ID をワーカへ投入する (空なら無視)。`force` で再解析を強制。
@@ -62,9 +72,26 @@ impl Analyzer {
             return;
         }
         if let Ok(tx) = self.tx.lock() {
-            let _ = tx.send(Job { ids, force });
+            let n = ids.len();
+            self.pending.fetch_add(n, Ordering::SeqCst);
+            if tx.send(Job { ids, force }).is_err() {
+                // ワーカが死んでいる (受信側 drop) なら積んだ分を戻す。
+                release(&self.pending, n);
+            }
         }
     }
+
+    /// キュー待ち + 処理中の ID 数 (概数)。0 ならワーカは idle。
+    pub fn pending(&self) -> usize {
+        self.pending.load(Ordering::SeqCst)
+    }
+}
+
+/// `pending` から `n` を減算する (下限 0 で飽和)。
+fn release(pending: &AtomicUsize, n: usize) {
+    let _ = pending.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+        Some(v.saturating_sub(n))
+    });
 }
 
 fn open_db(app: &AppHandle) -> Result<Database, String> {
@@ -72,17 +99,21 @@ fn open_db(app: &AppHandle) -> Result<Database, String> {
     Database::open(&dir).map_err(|e| e.to_string())
 }
 
-fn worker(app: AppHandle, rx: Receiver<Job>) {
+fn worker(app: AppHandle, rx: Receiver<Job>, pending: Arc<AtomicUsize>) {
     while let Ok(job) = rx.recv() {
-        process_batch(&app, job.ids, job.force);
+        process_batch(&app, job.ids, job.force, &pending);
     }
 }
 
-fn process_batch(app: &AppHandle, ids: Vec<i64>, force: bool) {
+/// 1 ジョブを処理する。`pending` はジョブの ID 数ぶん加算済みの前提で、
+/// スキップした分は絞り込み直後に、解析した分は 1 曲ごとに減算する。
+fn process_batch(app: &AppHandle, ids: Vec<i64>, force: bool, pending: &AtomicUsize) {
+    let submitted = ids.len();
     let db = match open_db(app) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("analyzer: open db failed: {e}");
+            release(pending, submitted);
             return;
         }
     };
@@ -108,6 +139,8 @@ fn process_batch(app: &AppHandle, ids: Vec<i64>, force: bool) {
     }
 
     let total = todo.len();
+    // 重複・解析済み・ファイル無しでスキップした分をここで戻す。
+    release(pending, submitted - total);
     if total == 0 {
         return;
     }
@@ -121,6 +154,7 @@ fn process_batch(app: &AppHandle, ids: Vec<i64>, force: bool) {
                 .map_err(|e| e.to_string())
         });
         let ok = result.is_ok();
+        release(pending, 1);
         if let Err(e) = result {
             eprintln!("analyzer: track {id} failed: {e}");
             failed += 1;
