@@ -494,11 +494,20 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     [contextMenu, onTracksChanged],
   );
 
+  // メニューの操作対象 (trackIds) だけを入れる。contextMenu.tracks はアルバム全曲なので、
+  // 展開した曲一覧の 1 曲から開いたときにアルバムごと入ってしまわないよう絞り込む。
+  const ctxTargetTracks = useCallback((): Track[] => {
+    if (!contextMenu) return [];
+    const ids = new Set(contextMenu.trackIds);
+    const targets = contextMenu.tracks.filter((t) => ids.has(t.trackId));
+    return targets.length > 0 ? targets : [contextMenu.primary];
+  }, [contextMenu]);
+
   const handleAddToCrate = useCallback(() => {
     if (!contextMenu) return;
-    contextMenu.tracks.forEach((t) => addToCrate(t));
+    ctxTargetTracks().forEach((t) => addToCrate(t));
     closeMenu();
-  }, [contextMenu, addToCrate, closeMenu]);
+  }, [contextMenu, ctxTargetTracks, addToCrate, closeMenu]);
 
   const handleEnqueue = useCallback(async () => {
     if (!contextMenu) return;
@@ -555,17 +564,16 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   // アルバムのカバーから開いた場合はアルバム全曲が対象になる。
   const handleDelete = useCallback(() => {
     if (!contextMenu) return;
-    const ids = new Set(contextMenu.trackIds);
-    const targets = contextMenu.tracks.filter((t) => ids.has(t.trackId));
-    setDeleteTargets(targets.length > 0 ? targets : [contextMenu.primary]);
+    setDeleteTargets(ctxTargetTracks());
     closeMenu();
-  }, [contextMenu, closeMenu]);
+  }, [contextMenu, ctxTargetTracks, closeMenu]);
 
+  // 編集対象も trackIds に揃える (単曲メニューなら 1 曲、アルバムのカバーからなら全曲)。
   const handleGetInfo = useCallback(() => {
     if (!contextMenu) return;
-    onEditTrack(contextMenu.tracks.length > 0 ? contextMenu.tracks : [contextMenu.primary]);
+    onEditTrack(ctxTargetTracks());
     closeMenu();
-  }, [contextMenu, onEditTrack, closeMenu]);
+  }, [contextMenu, ctxTargetTracks, onEditTrack, closeMenu]);
 
   const handleAddToPlaylist = useCallback(
     async (playlistId: number) => {
@@ -585,10 +593,13 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleRemoveFromPlaylist = useCallback(async () => {
     if (!contextMenu || viewMode !== "playlist" || selectedPlaylistId === null) return;
     try {
-      for (const id of contextMenu.trackIds) {
-        await playlistsApi.removeTrackFromPlaylist(selectedPlaylistId, id);
-      }
+      // アルバムのカバーから開いた場合は全曲を 1 回の呼び出し (1 トランザクション) で外す。
+      const removed = await playlistsApi.removeTracksFromPlaylist(
+        selectedPlaylistId,
+        contextMenu.trackIds,
+      );
       onTracksChanged();
+      if (removed > 1) pushToast("success", `${removed} 曲をプレイリストから外しました`);
     } catch (err) {
       pushToast("error", `削除に失敗しました: ${err}`);
     }
@@ -630,6 +641,10 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const ctxPrimary = contextMenu
     ? tracks.find((t) => t.trackId === contextMenu.primary.trackId) ?? contextMenu.primary
     : null;
+  const activePlaylist =
+    viewMode === "playlist" && selectedPlaylistId !== null
+      ? playlists.find((p) => p.playlistId === selectedPlaylistId)
+      : undefined;
   const targetPlaylists = playlists.filter((p) => !p.isFolder && !p.isSmart);
   const recentPlaylists = recentPlaylistIds
     .map((id) => targetPlaylists.find((p) => p.playlistId === id))
@@ -782,7 +797,10 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           genreTags={ctxGenreTags}
           playlists={playlists}
           recentPlaylists={recentPlaylists}
-          showRemoveFromPlaylist={viewMode === "playlist"}
+          showRemoveFromPlaylist={
+            // スマート / フォルダは所属を直接持たないので「外す」は出さない。
+            !!activePlaylist && !activePlaylist.isSmart && !activePlaylist.isFolder
+          }
           revealPath={
             // 「表示」は単曲メニューのみ。アルバム全体・ファイル欠損時は無効表示。
             contextMenu.trackIds.length === 1 && ctxPrimary.fileExists
