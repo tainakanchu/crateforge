@@ -10,6 +10,24 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.14.2] - 2026-10-11
+
+### 日本語
+
+#### デスクトップ
+- **複数選択した曲をまとめてプレイリストから外せるように**: 曲を複数選んで右クリック →「Remove from this playlist」を押しても、右クリックした 1 曲しか外れなかったのを修正。選択中の曲をまとめて外す。Albums 表示で曲を右クリックしたときの「Add to Crate」「Get Info」がアルバム全曲を対象にしていたのも、その曲だけを対象にするよう修正。スマートプレイリストやフォルダでは効かない「外す」項目を出さないようにした。(#225)
+
+#### API
+- **ローカル API から解析を実行できるように**: `POST /api/tracks/analyze` で指定した曲の BPM / キー / エナジー / 類似度の解析をキューに積めるようにした。`GET /api/analysis/status` で解析済み件数と残りの件数を確認できる。dj-curator プラグイン（v0.4.3）は、選曲中に未解析の曲が多いとこれを使って解析してから選ぶ。既存の `POST /api/analysis`（他の端末で計算した解析結果のアップロード）とは別物。(#226)
+
+### English
+
+#### Desktop
+- **Remove multiple selected tracks from a playlist at once**: selecting several tracks, right-clicking, and choosing "Remove from this playlist" removed only the track you right-clicked. It now removes the whole selection. In the Albums view, "Add to Crate" and "Get Info" from a single track's context menu acted on the whole album; they now act on that track only. The "remove" item is no longer shown for smart playlists and folders, where it did nothing. (#225)
+
+#### API
+- **Run analysis from the local API**: `POST /api/tracks/analyze` queues BPM / key / energy / similarity analysis for the given tracks, and `GET /api/analysis/status` reports how many tracks are analyzed and how many are still pending. The dj-curator plugin (v0.4.3) uses this to analyze unanalyzed tracks before picking. This is separate from the existing `POST /api/analysis`, which uploads analysis results computed on another device. (#226)
+
 ## [v0.14.1] - 2026-10-11
 
 ### 日本語
