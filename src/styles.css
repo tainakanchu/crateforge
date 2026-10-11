@@ -311,6 +311,14 @@ input {
   scrollbar-width: thin;
   scrollbar-color: var(--bd-strong) transparent;
 }
+/* 縮めてよいのは検索ボックスだけ。他を縮めると日本語ラベルのセグメント
+   (min-content が1文字幅) が1文字ずつ折り返して縦書き状に崩れる。 */
+.cb-tb-row > * {
+  flex-shrink: 0;
+}
+.cb-tb-row > .cb-sbox {
+  flex-shrink: 1;
+}
 .cb-tb-row::-webkit-scrollbar {
   height: 6px;
 }
@@ -360,6 +368,7 @@ input {
   gap: 2px;
 }
 .cb-segb {
+  white-space: nowrap;
   padding: 7px 13px;
   border-radius: 7px;
   color: var(--mut);
@@ -2842,6 +2851,7 @@ input {
   gap: 2px;
 }
 .cb-segb2 {
+  white-space: nowrap;
   padding: 5px 10px;
   border-radius: 6px;
   font-size: 11.5px;
