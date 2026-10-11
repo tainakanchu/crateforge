@@ -10,6 +10,20 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.14.1] - 2026-10-11
+
+### 日本語
+
+#### デスクトップ
+- **リンク切れの曲を探して直せるように**: ツールバーの「リンク切れを再チェック」で全曲のファイルが今もあるかを確認し直せるようにした（外付けドライブを付け直した後など）。消えた曲・戻ってきた曲の両方を反映する。検索に `missing:yes` / `missing:no` を追加し、リンク切れの曲だけを一覧できる。曲の右クリック「ファイルの場所を指定…」で、移動したファイルを選んで付け直せる。(#224)
+- **狭いウィンドウでのツールバー崩れを修正**: ウィンドウを狭くすると、プレイリスト表示中の「このプレイリスト / ライブラリ全体」の切り替えが 1 文字ずつ縦に折り返して崩れていたのを修正。入りきらない分は横スクロールで表示する。(#223)
+
+### English
+
+#### Desktop
+- **Find and fix missing files**: the new "リンク切れを再チェック" (re-check missing files) toolbar action re-checks whether every track's file still exists (for example after reconnecting an external drive), marking both newly missing and restored tracks. The search now supports `missing:yes` / `missing:no` to list only missing tracks, and the track context menu has "ファイルの場所を指定…" (locate file) to point a track at its moved file. (#224)
+- **Fixed the toolbar breaking in narrow windows**: in a narrow window, the "このプレイリスト / ライブラリ全体" (this playlist / whole library) search scope switch wrapped one character per line and broke the toolbar layout. Items that don't fit now scroll horizontally. (#223)
+
 ## [v0.14.0] - 2026-10-10
 
 ### 日本語
