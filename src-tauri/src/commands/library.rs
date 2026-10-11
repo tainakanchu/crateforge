@@ -11,8 +11,9 @@ use crate::db::Database;
 use crate::importer;
 use crate::itunes_xml::{parser, writer};
 use crate::models::{
-    AlbumRow, ArtistRow, ExportResult, GenreTagCount, ImportFileResult, ImportResult,
-    ImportSummary, LibraryStats, Tag, TagCount, TechMetaRefreshSummary, Track, TrackEdit,
+    AlbumRow, ArtistRow, ExportResult, FileCheckSummary, GenreTagCount, ImportFileResult,
+    ImportResult, ImportSummary, LibraryStats, Tag, TagCount, TechMetaRefreshSummary, Track,
+    TrackEdit,
 };
 use crate::organizer;
 
@@ -74,11 +75,14 @@ pub fn import_folders(app: AppHandle, paths: Vec<String>) -> Result<ImportSummar
 /// 技術メタデータ一括再読み取りの多重起動ガード (#171)。
 static TECH_META_REFRESH_RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// リンク切れ再チェックの多重起動ガード。
+static FILE_CHECK_RUNNING: AtomicBool = AtomicBool::new(false);
+
 /// 実行中フラグを確実に戻すための RAII ガード (panic 時も解除する)。
-struct RunningGuard;
+struct RunningGuard(&'static AtomicBool);
 impl Drop for RunningGuard {
     fn drop(&mut self) {
-        TECH_META_REFRESH_RUNNING.store(false, Ordering::SeqCst);
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -93,7 +97,7 @@ pub async fn refresh_tech_metadata(app: AppHandle) -> Result<TechMetaRefreshSumm
     }
     let worker_app = app.clone();
     let summary = tauri::async_runtime::spawn_blocking(move || {
-        let _guard = RunningGuard;
+        let _guard = RunningGuard(&TECH_META_REFRESH_RUNNING);
         let db = get_db(&worker_app)?;
         let event_app = worker_app.clone();
         importer::refresh_missing_tech_meta(&db, move |done, total| {
@@ -111,6 +115,49 @@ pub async fn refresh_tech_metadata(app: AppHandle) -> Result<TechMetaRefreshSumm
         let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
     }
     Ok(summary)
+}
+
+/// ライブラリ全曲の実ファイル有無を確認し直し、`file_exists` を更新する (リンク切れ再チェック)。
+/// 欠損 → 発見 / 発見 → 欠損の両方向を反映する。数万曲の stat になるのでワーカースレッドで
+/// 実行し、進捗は `file-check-progress` イベント (`{done, total}`) で通知する。
+/// 1 曲でも状態が変わったら `library-changed` を送る。
+#[tauri::command]
+pub async fn rescan_file_existence(app: AppHandle) -> Result<FileCheckSummary, String> {
+    if FILE_CHECK_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("リンク切れの再チェックは既に実行中です".to_string());
+    }
+    let worker_app = app.clone();
+    let summary = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = RunningGuard(&FILE_CHECK_RUNNING);
+        let db = get_db(&worker_app)?;
+        let event_app = worker_app.clone();
+        // stat は 1 件が軽いので、tech-meta (25 件ごと) より間引いて通知する。
+        importer::rescan_file_existence(&db, move |done, total| {
+            if done == 0 || done == total || done % 250 == 0 {
+                let _ = event_app.emit(
+                    "file-check-progress",
+                    serde_json::json!({ "done": done, "total": total }),
+                );
+            }
+        })
+    })
+    .await
+    .map_err(|e| format!("file check task panicked: {}", e))??;
+    if summary.newly_missing > 0 || summary.newly_found > 0 {
+        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    }
+    Ok(summary)
+}
+
+/// 曲の実ファイルの場所を手動で指定し直す (「ファイルの場所を指定…」)。
+/// 指定パスが実在するファイルか検証してから location を書き換え、`file_exists = 1` にする。
+/// 更新後の Track を返し、`library-changed` を送る (一覧・ジャケットを再読み込みさせる)。
+#[tauri::command(async)]
+pub fn relocate_track_file(app: AppHandle, track_id: i64, path: String) -> Result<Track, String> {
+    let db = get_db(&app)?;
+    let track = importer::relocate_track(&db, track_id, &path)?;
+    let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    Ok(track)
 }
 
 #[tauri::command(async)]

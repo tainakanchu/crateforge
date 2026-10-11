@@ -1243,6 +1243,10 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
             // 「表示」は単曲のみ。複数選択・ファイル欠損時は無効表示にする。
             ctxIds().length === 1 && ctxTrack.fileExists ? ctxTrack.locationPath : null
           }
+          relocateTrack={
+            // 「ファイルの場所を指定…」も単曲のみ (リンク切れでなくても付け替えられる)。
+            ctxIds().length === 1 ? ctxTrack : null
+          }
           deleteCount={ctxIds().length}
           onClose={closeMenu}
           onPlay={() => handleDoubleClick(ctxTrack)}

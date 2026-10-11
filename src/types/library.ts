@@ -39,6 +39,18 @@ export interface TechMetaRefreshSummary {
   failed: number;
 }
 
+/** リンク切れ再チェック (全曲の実ファイル有無の再確認) の結果 (Rust: FileCheckSummary)。 */
+export interface FileCheckSummary {
+  /** 確認した曲数 (= ライブラリの全曲数) */
+  checked: number;
+  /** 確認後にファイルが見つからない曲数 */
+  missing: number;
+  /** 前回まではあったのに、今回見つからなくなった曲数 */
+  newlyMissing: number;
+  /** 前回まではリンク切れだったのに、今回見つかった曲数 */
+  newlyFound: number;
+}
+
 export interface LibraryStats {
   trackCount: number;
   playlistCount: number;

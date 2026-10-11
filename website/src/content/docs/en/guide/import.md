@@ -91,6 +91,20 @@ Deleting actual files is **limited to files inside the organize folder (library 
   Uncheck the box in that case and remove the tracks from the library (database) only.
 :::
 
+## Fixing missing files (broken links)
+
+Tracks whose files can no longer be found — because an external drive or NAS was disconnected, or the files were
+moved in Finder — are shown as missing ("見つかりません").
+
+- **"リンク切れを再チェック" (Re-check missing files)** (on the right of the toolbar, or inside the **⋯** menu
+  when the window is narrow) — checks again whether every track's file still exists. Tracks whose files have
+  disappeared become missing, and tracks whose files are back (for example after reconnecting the drive) return
+  to normal. Progress and the result ("N 曲のファイルが見つかりません" — N files not found) are shown below the toolbar.
+- Type **`missing:yes`** in the search box to list only the missing tracks (`missing:no` lists tracks whose files exist).
+- Right-click a track → **"ファイルの場所を指定…" (Locate file…)** (single selection) — pick the file at its new
+  location in the file dialog and the track is repointed to it. Play counts, ratings, playlists and analysis
+  results are kept. You can repoint tracks that are not missing, too.
+
 ## Exporting iTunes-compatible XML
 
 With **"📤 Export XML"** in the toolbar, you can export an `iTunes Library.xml` (Apple plist format).

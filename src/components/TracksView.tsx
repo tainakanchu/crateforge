@@ -379,6 +379,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           recentPlaylists={recentPlaylists}
           showRemoveFromPlaylist={viewMode === "playlist"}
           revealPath={ctxTrack.fileExists ? ctxTrack.locationPath : null}
+          relocateTrack={ctxTrack}
           deleteCount={1}
           onClose={closeMenu}
           onPlay={() => { void playTrack(contextMenu.track); closeMenu(); }}

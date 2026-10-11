@@ -16,6 +16,7 @@ import type {
   SortField,
   SortOrder,
   TechMetaRefreshSummary,
+  FileCheckSummary,
 } from "../types";
 
 export async function importLibrary(xmlPath: string): Promise<ImportResult> {
@@ -65,6 +66,31 @@ export async function onTechMetaProgress(
   handler: (p: ImportProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<ImportProgress>("tech-meta-progress", (e) => handler(e.payload));
+}
+
+/**
+ * ライブラリ全曲の実ファイル有無を確認し直し、`fileExists` を更新する (リンク切れ再チェック)。
+ * Rust 側はワーカースレッドで実行し、進捗を `file-check-progress` で通知する。
+ * 状態が変わった曲があれば `library-changed` が飛んで一覧が再読み込みされる。
+ */
+export async function rescanFileExistence(): Promise<FileCheckSummary> {
+  return invoke("rescan_file_existence");
+}
+
+/** リンク切れ再チェックの進捗を購読する。戻り値を呼ぶと購読解除。 */
+export async function onFileCheckProgress(
+  handler: (p: ImportProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ImportProgress>("file-check-progress", (e) => handler(e.payload));
+}
+
+/**
+ * 曲の実ファイルの場所を手動で指定し直す (「ファイルの場所を指定…」)。
+ * Rust 側で実在するファイルか検証し、location を書き換えて `fileExists` を true にする。
+ * 更新後の Track を返す (`library-changed` も飛ぶ)。
+ */
+export async function relocateTrackFile(trackId: number, path: string): Promise<Track> {
+  return invoke("relocate_track_file", { trackId, path });
 }
 
 export async function getTracks(

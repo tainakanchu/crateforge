@@ -8,7 +8,9 @@ use lofty::tag::{Accessor, ItemKey, Tag};
 use crate::db::Database;
 use crate::itunes_xml::writer::path_to_file_url;
 use crate::metadata::tech;
-use crate::models::{ImportFileResult, ImportSummary, TechMetaRefreshSummary};
+use crate::models::{
+    FileCheckSummary, ImportFileResult, ImportSummary, TechMetaRefreshSummary, Track,
+};
 use crate::organizer;
 
 /// 取り込み対象とするオーディオ拡張子 (小文字)。
@@ -345,6 +347,84 @@ pub fn refresh_missing_tech_meta(
     Ok(summary)
 }
 
+/// 全曲の `location_path` を stat し直し、`file_exists` を実態に合わせる (リンク切れ再チェック)。
+/// 欠損 → 発見 / 発見 → 欠損の両方向を反映する。場所が空の曲は欠損扱い (XML 取り込みと同じ)。
+/// ファイル確認は DB を握らずに全件済ませ、変化があった行だけを最後に 1 トランザクションで書く。
+/// `on_progress(done, total)` は他の一括処理と同じく最初に `0/total` を 1 回通知する。
+pub fn rescan_file_existence(
+    db: &Database,
+    mut on_progress: impl FnMut(usize, usize),
+) -> Result<FileCheckSummary, String> {
+    let rows = db
+        .track_locations_for_file_check()
+        .map_err(|e| format!("query failed: {e}"))?;
+    let total = rows.len();
+    let mut summary = FileCheckSummary {
+        checked: total,
+        ..Default::default()
+    };
+    let mut updates: Vec<(i64, Option<String>, bool)> = Vec::new();
+    on_progress(0, total);
+    for (i, (track_id, location_path, prev)) in rows.iter().enumerate() {
+        let exists = location_path
+            .as_deref()
+            .filter(|p| !p.trim().is_empty())
+            .is_some_and(|p| Path::new(p).is_file());
+        if !exists {
+            summary.missing += 1;
+        }
+        match (*prev, exists) {
+            (Some(true), false) => summary.newly_missing += 1,
+            (Some(false), true) => summary.newly_found += 1,
+            _ => {}
+        }
+        if *prev != Some(exists) {
+            updates.push((*track_id, location_path.clone(), exists));
+        }
+        on_progress(i + 1, total);
+    }
+    db.set_file_exists_bulk(&updates)
+        .map_err(|e| format!("db update failed: {e}"))?;
+    Ok(summary)
+}
+
+/// リンク切れ (または場所を変えたい) 曲の実ファイルを手動で付け替える。
+/// 指定パスが実在するファイルであることを確かめてから `location_path` / `location_raw`
+/// (`file://` URL) を書き換え、`file_exists = 1` にして更新後の Track を返す。
+/// 付け替え先は別のエンコードの場合もあるので、技術メタデータ (#171) はベストエフォートで
+/// 読み直す (失敗しても付け替え自体は成功扱い)。ジャケットはパス基準の URL で引くので
+/// キャッシュの無効化は不要。
+pub fn relocate_track(db: &Database, track_id: i64, new_path: &str) -> Result<Track, String> {
+    let path = Path::new(new_path);
+    if new_path.trim().is_empty() || !path.is_absolute() {
+        return Err(format!("絶対パスを指定してください: {}", new_path));
+    }
+    if !path.exists() {
+        return Err(format!("ファイルが見つかりません: {}", new_path));
+    }
+    if !path.is_file() {
+        return Err(format!("ファイルではありません: {}", new_path));
+    }
+    if db
+        .get_track_by_track_id(track_id)
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        return Err(format!("トラックが見つかりません (id={})", track_id));
+    }
+    db.relink_track_location(track_id, new_path, &path_to_file_url(new_path))
+        .map_err(|e| format!("db update failed: {e}"))?;
+    if let Err(e) = refresh_tech_meta_from_file(db, track_id, path) {
+        eprintln!(
+            "relocate: tech meta refresh failed for {} ({})",
+            new_path, e
+        );
+    }
+    db.get_track_by_track_id(track_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("トラックが見つかりません (id={})", track_id))
+}
+
 /// タグから BPM を読む。TBPM/tmpo (IntegerBpm) を優先し、無ければ Vorbis "BPM"。
 /// "128" / "128.00" の両方を許容し、四捨五入して正の整数のみ採用する。
 fn read_bpm(tag: &Tag) -> Option<i64> {
@@ -526,5 +606,189 @@ mod tests {
             .map(|(id, _)| id)
             .collect();
         assert_eq!(remaining, vec![ids[1], ids[2]]);
+    }
+
+    /// テスト用: 指定パスを location に持つ曲を 1 件追加して track_id を返す。
+    fn add_track_at(db: &Database, name: &str, path: &Path) -> i64 {
+        let path = path.to_string_lossy().to_string();
+        db.add_imported_track(
+            Some(name),
+            Some("Artist"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &path,
+            &path_to_file_url(&path),
+        )
+        .unwrap()
+    }
+
+    fn file_exists_of(db: &Database, track_id: i64) -> bool {
+        db.get_track_by_track_id(track_id)
+            .unwrap()
+            .unwrap()
+            .file_exists
+    }
+
+    /// リンク切れ再チェック: 消えたファイルは欠損に、戻ってきたファイルは発見に、
+    /// 両方向で file_exists を更新し、件数を正しく数える。
+    #[test]
+    fn rescan_file_existence_updates_both_directions() {
+        let tmp = TempDir::new().unwrap();
+        let keep = tmp.path().join("keep.mp3");
+        let removed = tmp.path().join("removed.mp3");
+        let restored = tmp.path().join("restored.flac");
+        touch(&keep);
+        touch(&removed);
+        touch(&restored);
+
+        let db = Database::open_memory().unwrap();
+        let keep_id = add_track_at(&db, "Keep", &keep);
+        let removed_id = add_track_at(&db, "Removed", &removed);
+        let restored_id = add_track_at(&db, "Restored", &restored);
+        // 場所が空の曲は常に欠損扱い。
+        let no_loc_id = add_track_at(&db, "NoLocation", Path::new(""));
+        // ディレクトリはファイルとして扱わない。
+        let dir_id = add_track_at(&db, "Dir", tmp.path());
+
+        // 1 回目: 全曲 file_exists=1 で入っているので、空パスとディレクトリだけが新たに欠損。
+        let s = rescan_file_existence(&db, |_, _| {}).unwrap();
+        assert_eq!(s.checked, 5);
+        assert_eq!(s.missing, 2);
+        assert_eq!(s.newly_missing, 2);
+        assert_eq!(s.newly_found, 0);
+        assert!(!file_exists_of(&db, no_loc_id));
+        assert!(!file_exists_of(&db, dir_id));
+
+        // ファイルを消す / 欠損扱いの曲のファイルが戻る状況を作る。
+        fs::remove_file(&removed).unwrap();
+        fs::remove_file(&restored).unwrap();
+        let s = rescan_file_existence(&db, |_, _| {}).unwrap();
+        assert_eq!(s.missing, 4);
+        assert_eq!(s.newly_missing, 2);
+        assert_eq!(s.newly_found, 0);
+        assert!(!file_exists_of(&db, removed_id));
+        assert!(!file_exists_of(&db, restored_id));
+
+        touch(&restored);
+        let mut last = (0, 0);
+        let mut calls = 0;
+        let s = rescan_file_existence(&db, |d, t| {
+            last = (d, t);
+            calls += 1;
+        })
+        .unwrap();
+        assert_eq!(s.checked, 5);
+        assert_eq!(s.missing, 3);
+        assert_eq!(s.newly_missing, 0);
+        assert_eq!(s.newly_found, 1);
+        assert!(file_exists_of(&db, keep_id));
+        assert!(file_exists_of(&db, restored_id));
+        assert!(!file_exists_of(&db, removed_id));
+        // 0/total を最初に 1 回 + 1 曲ごと。
+        assert_eq!(last, (5, 5));
+        assert_eq!(calls, 6);
+
+        // 変化が無ければ newly_* は 0 のまま。
+        let s = rescan_file_existence(&db, |_, _| {}).unwrap();
+        assert_eq!((s.missing, s.newly_missing, s.newly_found), (3, 0, 0));
+    }
+
+    #[test]
+    fn rescan_file_existence_on_empty_library() {
+        let db = Database::open_memory().unwrap();
+        let mut last = None;
+        let s = rescan_file_existence(&db, |d, t| last = Some((d, t))).unwrap();
+        assert_eq!(
+            (s.checked, s.missing, s.newly_missing, s.newly_found),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(last, Some((0, 0)));
+    }
+
+    /// 確認中に場所が変わった行は、古いパスでの判定で file_exists を上書きしない。
+    #[test]
+    fn file_exists_bulk_skips_rows_whose_location_changed() {
+        let tmp = TempDir::new().unwrap();
+        let old = tmp.path().join("old.mp3");
+        let new = tmp.path().join("new.mp3");
+        touch(&old);
+        touch(&new);
+        let db = Database::open_memory().unwrap();
+        let id = add_track_at(&db, "Moved", &old);
+        let old_str = old.to_string_lossy().to_string();
+        // 確認後・書き込み前に別の場所へ付け替えられた想定。
+        relocate_track(&db, id, &new.to_string_lossy()).unwrap();
+        let n = db.set_file_exists_bulk(&[(id, Some(old_str), false)]).unwrap();
+        assert_eq!(n, 0);
+        assert!(file_exists_of(&db, id));
+    }
+
+    /// 手動付け替え: 実在しないパス / ディレクトリ / 相対パスは拒否し、DB は変えない。
+    #[test]
+    fn relocate_track_rejects_invalid_paths() {
+        let tmp = TempDir::new().unwrap();
+        let gone = tmp.path().join("gone.mp3");
+        let db = Database::open_memory().unwrap();
+        let id = add_track_at(&db, "Gone", &gone);
+        rescan_file_existence(&db, |_, _| {}).unwrap();
+        assert!(!file_exists_of(&db, id));
+
+        let nowhere = tmp.path().join("nowhere.mp3");
+        assert!(relocate_track(&db, id, &nowhere.to_string_lossy()).is_err());
+        assert!(relocate_track(&db, id, &tmp.path().to_string_lossy()).is_err());
+        assert!(relocate_track(&db, id, "relative/song.mp3").is_err());
+        assert!(relocate_track(&db, id, "").is_err());
+
+        let t = db.get_track_by_track_id(id).unwrap().unwrap();
+        assert_eq!(
+            t.location_path.as_deref(),
+            Some(gone.to_string_lossy().as_ref())
+        );
+        assert!(!t.file_exists);
+
+        // 存在しない track_id もエラー。
+        let real = tmp.path().join("real.mp3");
+        touch(&real);
+        assert!(relocate_track(&db, 9999, &real.to_string_lossy()).is_err());
+    }
+
+    /// 手動付け替え: location_path / location_raw (file:// URL) / file_exists を更新し、
+    /// 付け替え先から技術メタデータも読み直す。
+    #[test]
+    fn relocate_track_updates_location_and_file_exists() {
+        let tmp = TempDir::new().unwrap();
+        let gone = tmp.path().join("old/gone.wav");
+        let db = Database::open_memory().unwrap();
+        let id = add_track_at(&db, "Song", &gone);
+        rescan_file_existence(&db, |_, _| {}).unwrap();
+        assert!(!file_exists_of(&db, id));
+
+        let new = tmp.path().join("new place/song.wav");
+        fs::create_dir_all(new.parent().unwrap()).unwrap();
+        crate::metadata::tech::write_test_wav(&new);
+        let new_str = new.to_string_lossy().to_string();
+
+        let t = relocate_track(&db, id, &new_str).unwrap();
+        assert_eq!(t.track_id, id);
+        assert_eq!(t.location_path.as_deref(), Some(new_str.as_str()));
+        assert_eq!(
+            t.location_raw.as_deref(),
+            Some(path_to_file_url(&new_str).as_str())
+        );
+        assert!(t.file_exists);
+        assert_eq!(t.codec.as_deref(), Some("WAV"));
+        // タグ由来の列には触れない。
+        assert_eq!(t.name.as_deref(), Some("Song"));
+
+        // 再チェックしても見つかったままで、newly_found には数えない (既に 1)。
+        let s = rescan_file_existence(&db, |_, _| {}).unwrap();
+        assert_eq!((s.missing, s.newly_missing, s.newly_found), (0, 0, 0));
     }
 }
