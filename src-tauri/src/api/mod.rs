@@ -435,7 +435,12 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/tracks/by-ids", post(handlers::tracks_by_ids))
         .route("/api/tracks/lookup", post(handlers::tracks_lookup))
+        // 解析キュー投入 (この PC で解析を走らせる)。静的セグメントなので
+        // `/api/tracks/{trackId}` より優先解決される。`POST /api/analysis` (結果アップロード) とは別物。
+        // LAN からは書き込み許可リストに入れていないため 403 (ループバック専用)。
+        .route("/api/tracks/analyze", post(handlers::analyze_tracks))
         .route("/api/analysis/lookup", post(handlers::analysis_lookup))
+        .route("/api/analysis/status", get(handlers::get_analysis_status))
         .route(
             "/api/analysis",
             post(handlers::upload_analyses).layer(axum::extract::DefaultBodyLimit::max(
@@ -2875,5 +2880,157 @@ mod tests {
         let analysis = db.get_analysis(1).unwrap().unwrap();
         assert_eq!(analysis.analyzed_at, "2026-01-01T00:00:00.001Z");
         assert_eq!(analysis.bpm, Some(130.0));
+    }
+
+    // ===== 解析キュー投入 / 進捗 =====
+
+    /// app=None (API 単体起動) では解析ワーカに届かないので 503。
+    /// 静的ルート `/api/tracks/analyze` が `/api/tracks/{trackId}` に吸われないことも兼ねて確認する。
+    #[tokio::test]
+    async fn case_analyze_tracks_without_app_is_503() {
+        let (_dir, app) = setup();
+        let (status, body) = req(
+            app,
+            "POST",
+            "/api/tracks/analyze",
+            Some(json!({ "trackIds": [3, 4], "force": false })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body["error"].as_str().unwrap().contains("analyzer"));
+    }
+
+    /// ボディ検証 (空 / 上限超過) はワーカ有無より先に 400 を返す。
+    #[tokio::test]
+    async fn case_analyze_tracks_validates_body_before_503() {
+        let (_dir, app) = setup();
+        let (status, body) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/analyze",
+            Some(json!({ "trackIds": [] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "trackIds is empty");
+
+        let too_many: Vec<i64> = (1..=(handlers::ANALYZE_MAX_IDS as i64 + 1)).collect();
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/analyze",
+            Some(json!({ "trackIds": too_many })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // 重複は排除してから上限判定する (同じ ID を大量に並べても 400 にならない)。
+        let dup = vec![3i64; handlers::ANALYZE_MAX_IDS + 1];
+        let (status, _) = req(
+            app,
+            "POST",
+            "/api/tracks/analyze",
+            Some(json!({ "trackIds": dup })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// 振り分け: 不明 / 解析済み / ファイル無し / 投入対象。force で解析済みも投入対象になる。
+    #[test]
+    fn case_plan_analysis_partitions_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        let audio = dir.path().join("a.mp3");
+        std::fs::write(&audio, b"x").unwrap();
+        // track 1 (解析済み) と 3 (未解析) だけ実ファイルあり。4・5 はパス無し。
+        for tid in [1, 3] {
+            db.conn
+                .execute(
+                    "UPDATE tracks SET location_path = ?1 WHERE track_id = ?2",
+                    rusqlite::params![audio.to_string_lossy(), tid],
+                )
+                .unwrap();
+        }
+
+        let plan = handlers::plan_analysis(&db, &[999, 1, 2, 3, 4], false).unwrap();
+        assert_eq!(plan.queue, vec![3]);
+        assert_eq!(plan.already_analyzed, 2);
+        assert_eq!(plan.missing_file, vec![4]);
+        assert_eq!(plan.unknown, vec![999]);
+
+        let forced = handlers::plan_analysis(&db, &[1, 2, 3], true).unwrap();
+        assert_eq!(forced.queue, vec![1, 3]);
+        assert_eq!(forced.already_analyzed, 0);
+        assert_eq!(forced.missing_file, vec![2]);
+    }
+
+    /// `GET /api/analysis/status` は get_analysis_status と同じ DB 集計を返す。
+    /// 旧バージョンの解析は未解析扱い、ファイル欠落曲は母数から外れる。app=None なので pending は null。
+    #[tokio::test]
+    async fn case_analysis_status_counts_current_version() {
+        let (dir, app) = setup();
+        let (status, body) = req(app.clone(), "GET", "/api/analysis/status", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["analyzed"], 2);
+        assert_eq!(body["total"], 5);
+        assert!(body["pending"].is_null());
+
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        insert_analysis(&db, 3, 120.0, "1A", 0.5, "[0.5, 0.5]");
+        db.conn
+            .execute(
+                "UPDATE track_analysis SET version = 1 WHERE track_id = 2",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute("UPDATE tracks SET file_exists = 0 WHERE track_id = 5", [])
+            .unwrap();
+        let (status, body) = req(app, "GET", "/api/analysis/status", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["analyzed"], 2, "track 1, 3 (track 2 は旧バージョン)");
+        assert_eq!(body["total"], 4);
+    }
+
+    /// 解析投入は LAN の書き込み許可リスト外 (remote / sync とも 403)。進捗の GET は読める。
+    #[tokio::test]
+    async fn case_analyze_tracks_forbidden_from_lan() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        let tokens = crate::devices::ValidTokens::default();
+        tokens.insert("remote-token".into());
+        tokens.insert_with_role("sync-token".into(), crate::devices::DeviceRole::Sync);
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens,
+            pairings: crate::pairing::PairingRegistry::default(),
+        });
+
+        for token in ["remote-token", "sync-token"] {
+            let (status, _) = lan_req(
+                app.clone(),
+                Some(token),
+                "POST",
+                "/api/tracks/analyze",
+                Some(json!({ "trackIds": [3] })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{token}");
+        }
+
+        let (status, body) = lan_req(
+            app,
+            Some("remote-token"),
+            "GET",
+            "/api/analysis/status",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["analyzed"], 2);
     }
 }

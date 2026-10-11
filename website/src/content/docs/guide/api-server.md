@@ -65,6 +65,13 @@ GUI に即時反映します。書き戻しの処理はデスクトップ GUI �
 - **Key** — 実効キー（手動上書きがあればそれ、無ければ解析結果）を **InitialKey**（ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY）へ、
   Camelot ではなく音楽表記（`Am` など）で書きます。
 
+### 解析の実行
+
+- `POST /api/tracks/analyze`（`{trackIds, force?}`） — 指定曲の BPM / Key / Energy / 類似度解析をバックグラウンドキューへ投入し、`202` で `queued`（積んだ件数）などを返します。解析済みの曲は `force: true` でない限り積みません。1 リクエスト最大 1000 件。ループバック専用（LAN からは `403`）。
+- `GET /api/analysis/status` — 解析の進捗（`analyzed` / `total` / キュー残数 `pending`）。投入後のポーリングに使います。
+
+他のデバイスで計算済みの解析結果を取り込む同期用の `POST /api/analysis` とは別物です。進捗はデスクトップ GUI にも通常どおり表示されます。
+
 ### プレイリスト
 
 - `POST /api/playlists` — 新規作成

@@ -64,6 +64,13 @@ and `locationPath` in the response points to the new path (a failed move does no
 - **Key** — the effective key (the manual override if set, otherwise the analyzed key) is written to **InitialKey** (ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY)
   in musical notation (`Am`, etc.) rather than Camelot.
 
+### Running analysis
+
+- `POST /api/tracks/analyze` (`{trackIds, force?}`) — queue BPM / Key / Energy / similarity analysis for the given tracks in the background; responds `202` with `queued` (how many were queued) and more. Already-analyzed tracks are skipped unless `force: true`. Up to 1000 IDs per request. Loopback only (`403` from the LAN).
+- `GET /api/analysis/status` — analysis progress (`analyzed` / `total` / remaining queue `pending`). Poll it after queueing.
+
+This is distinct from `POST /api/analysis`, the sync endpoint that imports analysis results computed on another device. Progress still shows up in the desktop GUI as usual.
+
 ### Playlists
 
 - `POST /api/playlists` — create a new one

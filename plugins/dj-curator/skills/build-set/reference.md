@@ -12,7 +12,7 @@ GET/DELETE では `<path>` の後ろに `key=value` を並べると `curl -G --d
 - **ループバック（`127.0.0.1` / `::1`）からのリクエストはトークン不要で全エンドポイント利用可**。このスキルの既定（`http://127.0.0.1:8787`）はこれに当たる。
 - ループバック**以外**から（アプリで LAN 公開を有効にしていて、WSL2 非ミラー構成で `CRATEFORGE_API=http://<ホストIP>:8787` を使う場合など）は:
   - トークン必須: クエリ `token=<トークン>` またはヘッダ `X-API-Token: <トークン>`。無い/無効なら `401`（アプリ側にトークンが 1 つも無ければ `403`）。
-  - 書き込みは大きく制限される。許可されるのは `GET` 全般・`POST /api/tracks/lookup`・`POST /api/analysis/lookup`・`/api/remote/*`・`POST /api/tracks/{id}/rating`・`POST /api/tracks/tags/{add,remove}`・`PUT`/`DELETE /api/tracks/{id}/artwork` のみ。**プレイリスト作成/編集・`PATCH /api/tracks*`・genre-tags は `403`**（ペアリングで sync 役割を与えられたデバイスのトークンを除く）。
+  - 書き込みは大きく制限される。許可されるのは `GET` 全般・`POST /api/tracks/lookup`・`POST /api/analysis/lookup`・`/api/remote/*`・`POST /api/tracks/{id}/rating`・`POST /api/tracks/tags/{add,remove}`・`PUT`/`DELETE /api/tracks/{id}/artwork` のみ。**プレイリスト作成/編集・`PATCH /api/tracks*`・genre-tags は `403`**（ペアリングで sync 役割を与えられたデバイスのトークンを除く）。**解析の投入 `POST /api/tracks/analyze` は sync 役割でも `403`**（ループバック専用。進捗 `GET /api/analysis/status` は読める）。
   - この `401`/`403` は認証ミドルウェアが返すため `{ "error": ... }` ボディは付かない。
   - `crate-api.sh` はトークンを付与しない（GET なら `token=...` を `key=value` で渡せるが、書き込みは上記制限で通らない）。プレイリスト作成まで行うならループバックで届く構成にする。
 
@@ -119,6 +119,30 @@ distinct なアルバム一覧 → `{ album, albumArtist, trackCount, sampleTrac
 クエリ: `limit`(既定500), `offset`, `sort`, `order`。返り値: `Track[]`。
 **`sort` 未指定なら登録順（＝キュレーション順）**で返る。プレイリスト内の曲の並び＝セットの流れをそのまま分析に使える。
 注意: プレイリストへの**追加日時は保持していない**（「少しずつ足した vs 一気に作った」の時系列は復元不可）。
+
+## 解析の実行（この PC で BPM / Key / Energy / 類似度を計算）
+
+GUI を開かずに、未解析の曲を Crateforge のバックグラウンド解析ワーカへ投入できる。
+**`POST /api/analysis`（他デバイスで計算済みの解析結果のアップロード。サーバー間同期用）とは別物**なので混同しないこと。
+解析は 1 曲あたり数秒かかり、ワーカは 1 本で逐次処理する。投入したら `GET /api/analysis/status` をポーリングして完了を待つ。
+
+### `POST /api/tracks/analyze`
+ボディ `{ "trackIds": [i64,...], "force"?: bool }`（`force` 既定 false。true なら解析済みも再解析）。
+→ `202` + `{ "queued": n, "alreadyAnalyzed": n, "missingFileTrackIds": [i64,...], "unknownTrackIds": [i64,...] }`。
+- `trackIds` は入力順のまま重複排除する。空なら `400`、重複排除後 **1000 件超も `400`**（それ以上は分割して投げる）。
+- `queued` = 実際にキューへ積んだ曲数（`0` のこともある）。現行バージョンで解析済みの曲（`force=false` 時）は `alreadyAnalyzed` に数えて積まない。音源ファイルが無い曲は `missingFileTrackIds`、存在しない ID は `unknownTrackIds` で返して無視する。**全 ID が不明なら `404`**。
+- 解析ワーカが使えない（アプリ外で API だけ起動している等）と `503`。
+- 書き込み扱い: ループバックからのみ（LAN からは `403`）。
+- GUI 側には従来どおり進捗が表示される。
+```
+crate-api.sh POST /api/tracks/analyze '{"trackIds":[12,7,30]}'
+```
+
+### `GET /api/analysis/status`
+解析の進捗サマリ → `{ "analyzed": n, "total": n, "pending": n | null }`。
+- `analyzed` = 現行バージョンで解析済みの曲数、`total` = 音源ファイルが存在する曲の総数（GUI のバッジと同じ集計）。
+- `pending` = 解析ワーカのキュー待ち + 処理中の曲数（概数）。**`0` になれば投入分は処理済み**。ワーカが取得できない場合は `null`。
+- 未解析の曲を探すには `GET /api/tracks?analyzed=false`。
 
 ## 書き込み（プレイリスト）
 
@@ -234,5 +258,5 @@ crate-api.sh POST /api/tracks/tags/add '{"trackIds":[12,7],"tag":"mood:dreamy"}'
 - `GET /api/tracks/{trackId}/artwork` — アートワーク配信（`size` / `format` でリサイズ）。
 - `PUT` / `DELETE /api/tracks/{trackId}/artwork` — 埋め込みアートワークの設定/削除（実ファイルを書き換える）。
 - `POST /api/tracks/upload` / `PUT /api/tracks/upload/{uploadId}` — サーバー間同期用の音源アップロード。
-- `POST /api/analysis` — サーバー間同期用の解析結果アップロード（条件付き upsert）。
+- `POST /api/analysis` — サーバー間同期用の解析結果アップロード（条件付き upsert）。**解析の実行ではない**（実行は `POST /api/tracks/analyze`）。
 - `GET /api/playlists/{playlistId}/size-estimate` — 転送前のプレイリスト容量見積もり（`{ trackCount, totalBytes, missingFiles }`）。
