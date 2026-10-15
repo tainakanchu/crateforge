@@ -128,6 +128,12 @@ export async function onPlaybackAdvanced(
   );
 }
 
+/// キュー (再生順 / 現在位置) が変わったときに発火する (Up Next の再取得用)。
+/// バックエンドのキュー変更系コマンドとリモート API (/api/remote/*) が emit する。
+export async function onQueueChanged(cb: () => void): Promise<UnlistenFn> {
+  return listen("queue-changed", () => cb());
+}
+
 /// プレビュー曲が終端に達したとき (auto-advance せず停止したとき) に発火する。
 /// フロントは Esc と同じく exitPreview({ restore: true }) する。
 export async function onPreviewEnded(cb: () => void): Promise<UnlistenFn> {

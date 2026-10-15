@@ -65,6 +65,7 @@ The **Up Next** in the right rail is the queue of what will be played next.
   right after the currently playing track.
 - The **"×"** that appears on row hover removes from the queue, and you can reorder with **drag and drop**.
 - The header shows the **count, total time, and a shuffle badge**.
+- The list shows the first **100 tracks**; the rest are summarized as "+N more" at the bottom (the header count covers the whole queue).
 - Shuffle precomputes the actual play order (a permutation), so Up Next reflects exactly what will play next.
   Toggling shuffle updates Up Next to the new order immediately.
 - The queue (including the shuffle order), the current track and position, and shuffle / repeat / volume are saved

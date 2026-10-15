@@ -59,6 +59,20 @@ impl ApiState {
         }
     }
 
+    /// 実ファイルの埋め込みアートワークが変わりうる書き込み後の通知。
+    /// `library-changed` に `artworkChanged: true` を載せ、WebView 側は
+    /// このときだけアートワーク epoch を進めて `<img>` を取り直す
+    /// (無印の `library-changed` では取り直さない #213)。
+    pub(crate) fn notify_artwork_changed(&self) {
+        if let Some(app) = &self.app {
+            use tauri::Emitter;
+            let _ = app.emit(
+                "library-changed",
+                serde_json::json!({ "playlistId": null, "artworkChanged": true }),
+            );
+        }
+    }
+
     /// ペアリング要求が来たことを WebView へ通知する (承認ポップアップ表示用)。
     /// `notify_library_changed` と同じ AppHandle 経路で emit する。
     /// API サーバー単体起動 (テスト) では app=None なので何もしない。emit 失敗は無視。
