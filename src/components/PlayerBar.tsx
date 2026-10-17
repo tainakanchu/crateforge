@@ -6,6 +6,7 @@ import * as libraryApi from "../api/library";
 import type { Track } from "../types";
 import { Icon } from "./Icon";
 import { Cover } from "./Cover";
+import { CastDevicePicker } from "./CastDevicePicker";
 import { bpmColor } from "../lib/art";
 import * as audition from "../lib/audition";
 
@@ -368,7 +369,7 @@ export function PlayerBar() {
         </div>
       </div>
 
-      {/* right: replaygain + queue + volume */}
+      {/* right: replaygain + queue + 再生先 + volume */}
       <div className="cb-pr">
         <button
           className={"cb-pr-btn cb-tg" + (replayGain ? " on" : "")}
@@ -381,6 +382,7 @@ export function PlayerBar() {
         <button className="cb-pr-btn" title="Up Next" onClick={handleOpenQueue}>
           <Icon name="queue" size={16} />
         </button>
+        <CastDevicePicker />
         <button
           className="cb-pr-btn"
           title={volume === 0 ? "Unmute" : "Mute"}

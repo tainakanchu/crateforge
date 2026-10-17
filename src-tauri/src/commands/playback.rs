@@ -7,6 +7,7 @@ use crate::audio::{AudioPlayer, PlayReport, RepeatMode};
 use crate::commands::library::open_db;
 use crate::db::Database;
 use crate::models::{PlaybackState, Track};
+use crate::playback_target::PlaybackCoordinator;
 
 /// Preview / Audition モード。ON の間は playCount / lastPlayed / recent を汚さない。
 /// プロセス全体で共有するフラグ (Tauri managed state)。
@@ -32,6 +33,11 @@ fn preview_on(app: &AppHandle) -> bool {
     app.state::<PreviewMode>().get()
 }
 
+/// 再生操作の振り分け先 (Local / Cast)。中身は Arc なので clone して await を跨いで使う。
+fn coordinator(app: &AppHandle) -> PlaybackCoordinator {
+    app.state::<PlaybackCoordinator>().inner().clone()
+}
+
 /// 再生実績 (`PlayReport`) を DB に反映する。
 /// - 曲の半分以上 (上限 4 分) 聴いた → 「再生」(play_count +1, last_played 更新)
 /// - 長さ不明なら 4 分以上で「再生」
@@ -39,7 +45,7 @@ fn preview_on(app: &AppHandle) -> bool {
 /// - それ未満 → 誤操作とみなし無視
 /// - 再生開始時に preview だった曲 (`PlayReport.preview`) は一切反映しない
 ///   (フロントの「現在の preview フラグ」ではなくレポートに載った値で判断する)
-fn apply_report(db: &Database, report: Option<PlayReport>) {
+pub(crate) fn apply_report(db: &Database, report: Option<PlayReport>) {
     let Some(r) = report else {
         return;
     };
@@ -58,11 +64,21 @@ fn apply_report(db: &Database, report: Option<PlayReport>) {
     }
 }
 
+/// Cast 中は試聴 (Preview) を使えない (P0)。誤って Cast 先で試聴したりキューを
+/// 壊したりしないよう、ON にする要求はエラーで断る。
 #[tauri::command]
 pub fn set_preview_mode(
+    app: AppHandle,
     enabled: bool,
     preview: tauri::State<'_, PreviewMode>,
 ) -> Result<(), String> {
+    if enabled && coordinator(&app).is_casting() {
+        return Err(crate::cast::CastError::new(
+            crate::cast::CastErrorCode::PreviewActive,
+            "キャスト中は試聴 (Preview) を使えません",
+        )
+        .into());
+    }
     preview.set(enabled);
     Ok(())
 }
@@ -73,79 +89,44 @@ pub fn get_preview_mode(preview: tauri::State<'_, PreviewMode>) -> Result<bool, 
 }
 
 #[tauri::command]
-pub fn play_track(
+pub async fn play_track(
     app: AppHandle,
     track_id: i64,
-    player: tauri::State<'_, Mutex<AudioPlayer>>,
     analyzer: tauri::State<'_, crate::analyzer::Analyzer>,
-    preview: tauri::State<'_, PreviewMode>,
 ) -> Result<(), String> {
-    let db = open_db(&app)?;
-    let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("Track not found")?;
-
-    let path = track.location_path.as_deref().unwrap_or("");
-    if path.is_empty() {
-        return Err("No file path for this track".to_string());
-    }
-
-    let duration = track.total_time_ms.unwrap_or(0) as u64;
-    let gain_db = db
-        .get_analysis(track_id)
-        .ok()
-        .flatten()
-        .and_then(|a| a.replaygain_db);
-    // 再生開始時の preview を曲と一緒に AudioPlayer へ渡す。
-    // 差し替えで返る report は「前の曲」の開始時フラグを持つので、現在フラグでは判断しない。
-    let is_preview = preview.get();
-    let report = player
-        .lock()
-        .map_err(|e| e.to_string())?
-        .play(path, track_id, duration, gain_db, is_preview)?;
-    apply_report(&db, report);
-
-    if !is_preview {
-        db.add_recent_track(track_id).map_err(|e| e.to_string())?;
-    }
+    // 再生開始時の preview を曲と一緒に渡す。差し替えで返る report は「前の曲」の
+    // 開始時フラグを持つので、現在フラグでは判断しない。
+    let is_preview = preview_on(&app);
+    coordinator(&app).play_track(track_id, is_preview).await?;
     // 再生した曲 = よく使う曲なので、未解析なら裏で解析しておく。
     analyzer.submit(vec![track_id], false);
     Ok(())
 }
 
 #[tauri::command]
-pub fn pause(player: tauri::State<'_, Mutex<AudioPlayer>>) -> Result<(), String> {
-    player.lock().map_err(|e| e.to_string())?.pause();
-    Ok(())
+pub async fn pause(app: AppHandle) -> Result<(), String> {
+    Ok(coordinator(&app).pause().await?)
 }
 
 #[tauri::command]
-pub fn resume(player: tauri::State<'_, Mutex<AudioPlayer>>) -> Result<(), String> {
-    player.lock().map_err(|e| e.to_string())?.resume();
-    Ok(())
+pub async fn resume(app: AppHandle) -> Result<(), String> {
+    Ok(coordinator(&app).resume().await?)
 }
 
 #[tauri::command]
-pub fn stop(app: AppHandle, player: tauri::State<'_, Mutex<AudioPlayer>>) -> Result<(), String> {
-    let report = player.lock().map_err(|e| e.to_string())?.stop();
-    if let Ok(db) = open_db(&app) {
-        apply_report(&db, report);
-    }
-    Ok(())
+pub async fn stop(app: AppHandle) -> Result<(), String> {
+    Ok(coordinator(&app).stop().await?)
 }
 
 #[tauri::command]
-pub fn seek(player: tauri::State<'_, Mutex<AudioPlayer>>, position_ms: u64) -> Result<(), String> {
-    player.lock().map_err(|e| e.to_string())?.seek(position_ms);
-    Ok(())
+pub async fn seek(app: AppHandle, position_ms: u64) -> Result<(), String> {
+    Ok(coordinator(&app).seek(position_ms).await?)
 }
 
+/// 有効な再生先の再生状態 (Cast 中は Cast の位置 / 再生中 / 音量)。
 #[tauri::command]
-pub fn get_playback_state(
-    player: tauri::State<'_, Mutex<AudioPlayer>>,
-) -> Result<PlaybackState, String> {
-    Ok(player.lock().map_err(|e| e.to_string())?.get_state())
+pub fn get_playback_state(app: AppHandle) -> Result<PlaybackState, String> {
+    Ok(coordinator(&app).get_state())
 }
 
 #[tauri::command]
@@ -238,16 +219,24 @@ pub(crate) fn drop_tracks_from_playback(
 ) {
     use tauri::Emitter;
 
+    let coord = coordinator(app);
+    let casting = coord.is_casting();
     let stopped = match player.lock() {
         Ok(mut p) => {
             let hit_current = p.remove_tracks(track_ids);
-            if hit_current {
+            if hit_current && !casting {
                 let _ = p.stop();
             }
             hit_current
         }
         Err(_) => false,
     };
+    if stopped && casting {
+        // Cast 先の停止は非同期。Receiver の応答を待たずに UI へは停止を知らせる。
+        tauri::async_runtime::spawn(async move {
+            let _ = coord.stop().await;
+        });
+    }
     let track_id = if stopped {
         None
     } else {
@@ -280,17 +269,14 @@ pub fn get_queue(
 /// Up Next リストなどから、キュー順 (order) 上の指定位置にジャンプして再生する。
 /// 再生順 (order_pos) を保つので、その後の自動遷移も Up Next の表示通りに進む。
 #[tauri::command]
-pub fn play_queue_at(
-    app: AppHandle,
-    order_index: usize,
-    player: tauri::State<'_, Mutex<AudioPlayer>>,
-) -> Result<Option<i64>, String> {
-    let tid = player
+pub async fn play_queue_at(app: AppHandle, order_index: usize) -> Result<Option<i64>, String> {
+    let tid = app
+        .state::<Mutex<AudioPlayer>>()
         .lock()
         .map_err(|e| e.to_string())?
         .jump_to(order_index);
     if let Some(tid) = tid {
-        play_track_by_id(&app, tid)?;
+        play_track_by_id(&app, tid).await?;
         Ok(Some(tid))
     } else {
         Ok(None)
@@ -298,36 +284,33 @@ pub fn play_queue_at(
 }
 
 #[tauri::command]
-pub fn play_next(
-    app: AppHandle,
-    player: tauri::State<'_, Mutex<AudioPlayer>>,
-) -> Result<Option<i64>, String> {
-    let next_id = player
+pub async fn play_next(app: AppHandle) -> Result<Option<i64>, String> {
+    next_track(&app).await
+}
+
+/// 手動の「次へ」(Tauri コマンドと Remote API で共有)。キュー末尾なら停止する。
+pub(crate) async fn next_track(app: &AppHandle) -> Result<Option<i64>, String> {
+    let next_id = app
+        .state::<Mutex<AudioPlayer>>()
         .lock()
         .map_err(|e| e.to_string())?
         .advance_next(false);
     if let Some(tid) = next_id {
-        play_track_by_id(&app, tid)?;
+        play_track_by_id(app, tid).await?;
         Ok(Some(tid))
     } else {
-        let report = player.lock().map_err(|e| e.to_string())?.stop();
-        if let Ok(db) = open_db(&app) {
-            apply_report(&db, report);
-        }
+        coordinator(app).stop().await?;
         Ok(None)
     }
 }
 
 #[tauri::command]
-pub fn play_prev(
-    app: AppHandle,
-    player: tauri::State<'_, Mutex<AudioPlayer>>,
-) -> Result<Option<i64>, String> {
+pub async fn play_prev(app: AppHandle) -> Result<Option<i64>, String> {
     // iTunes 流儀: 3 秒以上再生していれば、前の曲ではなく現在の曲を頭から再生し直す。
     // (seek 非対応フォーマットでも確実に頭出しできるよう、シークではなく再生し直す)
+    // 位置は有効な再生先 (Cast 中は Cast) のものを使う。
     let restart = {
-        let p = player.lock().map_err(|e| e.to_string())?;
-        let st = p.get_state();
+        let st = coordinator(&app).get_state();
         if st.position_ms > 3000 {
             st.current_track_id
         } else {
@@ -335,12 +318,16 @@ pub fn play_prev(
         }
     };
     if let Some(tid) = restart {
-        play_track_by_id(&app, tid)?;
+        play_track_by_id(&app, tid).await?;
         return Ok(Some(tid));
     }
-    let prev_id = player.lock().map_err(|e| e.to_string())?.advance_prev();
+    let prev_id = app
+        .state::<Mutex<AudioPlayer>>()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .advance_prev();
     if let Some(tid) = prev_id {
-        play_track_by_id(&app, tid)?;
+        play_track_by_id(&app, tid).await?;
         Ok(Some(tid))
     } else {
         Ok(None)
@@ -368,10 +355,10 @@ pub fn set_repeat(
     Ok(())
 }
 
+/// 音量。Cast 中は Receiver の音量を変える (ローカルの音量とは独立)。
 #[tauri::command]
-pub fn set_volume(player: tauri::State<'_, Mutex<AudioPlayer>>, volume: f32) -> Result<(), String> {
-    player.lock().map_err(|e| e.to_string())?.set_volume(volume);
-    Ok(())
+pub async fn set_volume(app: AppHandle, volume: f32) -> Result<(), String> {
+    Ok(coordinator(&app).set_volume(volume).await?)
 }
 
 #[tauri::command]
@@ -407,6 +394,10 @@ pub fn advance_worker(app: AppHandle) {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
+        // Cast 中の曲終了は Coordinator が MEDIA_STATUS から立てたフラグで知る。
+        // (Cast 中の AudioPlayer は sink を持たないので is_finished() は立たない)
+        let cast_finished = coordinator(&app).take_finished();
+
         // --- ロックを取り、終了判定と次曲解決をこのブロックで完結させる ---
         // (DB アクセス・再生はロック外で行うため、ここで結論だけ取り出す)
         let player = app.state::<Mutex<AudioPlayer>>();
@@ -416,20 +407,10 @@ pub fn advance_worker(app: AppHandle) {
                 // ロックが poison しているなら他スレッドが panic 済み。次ループへ。
                 Err(_) => continue,
             };
-            if !guard.is_finished() {
+            if !cast_finished && !guard.is_finished() {
                 continue;
             }
-            // Preview 中はキューを進めず停止のみ。order_pos は触らない。
-            if preview_on(&app) {
-                let report = guard.stop();
-                AdvanceDecision::PreviewEnded { report }
-            } else {
-                // 自動終了による遷移なので auto=true。
-                match guard.advance_next(true) {
-                    Some(tid) => AdvanceDecision::PlayNext { _tid: tid },
-                    None => AdvanceDecision::QueueEnded,
-                }
-            }
+            decide_advance(&mut guard, preview_on(&app))
             // guard はここで drop され、ロックを解放する。
         };
 
@@ -447,25 +428,38 @@ pub fn advance_worker(app: AppHandle) {
             AdvanceDecision::PlayNext { .. } => {
                 // 次曲を再生。ファイル欠損などで失敗したらさらに次へ進む
                 // (無限ループ防止に、試行回数はキュー長を上限とする)。
-                let played = play_with_skip_on_error(&app);
+                // このスレッドは tokio のワーカーではないので block_on してよい。
+                let played = tauri::async_runtime::block_on(play_with_skip_on_error(&app));
                 let _ = app.emit("playback-advanced", AdvancePayload { track_id: played });
             }
             AdvanceDecision::QueueEnded => {
-                // キュー末尾 + repeat off: 停止しつつ最後の曲を再生実績へ反映。
-                let report = match player.lock() {
-                    Ok(mut g) => g.stop(),
-                    Err(_) => None,
-                };
-                if let Ok(db) = open_db(&app) {
-                    apply_report(&db, report);
-                }
+                // キュー末尾 + repeat off: 停止しつつ最後の曲を再生実績へ反映
+                // (Cast の実績は ItemEnded で反映済み)。
+                let coord = coordinator(&app);
+                let _ = tauri::async_runtime::block_on(coord.stop());
                 let _ = app.emit("playback-advanced", AdvancePayload { track_id: None });
             }
         }
     }
 }
 
+/// 曲が終わったときの行動を決める (キュー位置はここで進める)。
+fn decide_advance(player: &mut AudioPlayer, preview: bool) -> AdvanceDecision {
+    // Preview 中はキューを進めず停止のみ。order_pos は触らない。
+    if preview {
+        return AdvanceDecision::PreviewEnded {
+            report: player.stop(),
+        };
+    }
+    // 自動終了による遷移なので auto=true。
+    match player.advance_next(true) {
+        Some(tid) => AdvanceDecision::PlayNext { _tid: tid },
+        None => AdvanceDecision::QueueEnded,
+    }
+}
+
 /// `advance_worker` が 1 ループで取る行動。
+#[derive(Debug)]
 enum AdvanceDecision {
     /// プレビュー曲が終端 → 停止のみ (キューは動かさない)。
     PreviewEnded { report: Option<PlayReport> },
@@ -487,8 +481,10 @@ pub(crate) struct AdvancePayload {
 /// さらに次の曲へ進む。再生できた track_id を返す。全滅なら停止して None を返す。
 ///
 /// 無限ループ防止のため、試行回数はその時点のキュー長を上限とする。
-fn play_with_skip_on_error(app: &AppHandle) -> Option<i64> {
+/// Cast の接続断など曲に依らない失敗では、キューを空回しせずにそこで止める。
+async fn play_with_skip_on_error(app: &AppHandle) -> Option<i64> {
     let player = app.state::<Mutex<AudioPlayer>>();
+    let coord = coordinator(app);
 
     // その時点のキュー長を試行上限にする (repeat all で循環しても止まるように)、
     // と同時に呼び出し元で advance 済みの 1 曲目を取り出す。
@@ -499,8 +495,16 @@ fn play_with_skip_on_error(app: &AppHandle) -> Option<i64> {
 
     for _ in 0..max_attempts {
         let Some(id) = tid else { break };
-        if play_track_by_id(app, id).is_ok() {
-            return Some(id);
+        match coord.play_track(id, preview_on(app)).await {
+            Ok(()) => return Some(id),
+            Err(e) if !e.is_track_specific() => {
+                crate::logging::write_line(
+                    "warn",
+                    &format!("auto-advance stopped: {}", String::from(e)),
+                );
+                return None;
+            }
+            Err(_) => {}
         }
         // 失敗: 次の曲へ (auto=true で repeat を尊重)。
         tid = match player.lock() {
@@ -510,46 +514,15 @@ fn play_with_skip_on_error(app: &AppHandle) -> Option<i64> {
     }
 
     // 全滅: 停止する。
-    if let Ok(mut g) = player.lock() {
-        g.stop();
-    }
+    let _ = coord.stop().await;
     None
 }
 
-/// track_id の曲を実際に再生する。コマンドからもワーカースレッドからも呼べるよう、
-/// `tauri::State` ではなく `&AppHandle` を受け取り、AudioPlayer の managed state は
-/// 内部で `app.state` から取得する。
-///
-/// DB アクセス (トラック解決・解析取得) はロックの外で行い、`play` を呼ぶ瞬間だけ
-/// 短時間ロックする。ワーカーとのデッドロックを避けるため、ロックを保持したまま
-/// DB に触れない。
-fn play_track_by_id(app: &AppHandle, track_id: i64) -> Result<(), String> {
-    let db = open_db(app)?;
-    let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("Track not found")?;
-    let path = track.location_path.as_deref().unwrap_or("");
-    if path.is_empty() {
-        return Err("No file path for this track".to_string());
-    }
-    let duration = track.total_time_ms.unwrap_or(0) as u64;
-    let gain_db = db
-        .get_analysis(track_id)
-        .ok()
-        .flatten()
-        .and_then(|a| a.replaygain_db);
-    let is_preview = preview_on(app);
-    let player = app.state::<Mutex<AudioPlayer>>();
-    let report = player
-        .lock()
-        .map_err(|e| e.to_string())?
-        .play(path, track_id, duration, gain_db, is_preview)?;
-    apply_report(&db, report);
-    if !is_preview {
-        db.add_recent_track(track_id).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+/// track_id の曲を有効な再生先で再生する (preview はバックエンドの現在フラグ)。
+async fn play_track_by_id(app: &AppHandle, track_id: i64) -> Result<(), String> {
+    Ok(coordinator(app)
+        .play_track(track_id, preview_on(app))
+        .await?)
 }
 
 #[cfg(test)]
@@ -638,5 +611,61 @@ mod tests {
             }),
         );
         assert_eq!(counts(&db, 20), (0, 1));
+    }
+}
+
+#[cfg(test)]
+mod advance_tests {
+    use super::*;
+
+    fn casting_player(repeat: RepeatMode) -> AudioPlayer {
+        let mut p = AudioPlayer::new();
+        p.set_queue(vec![10, 20, 30], 2);
+        p.set_repeat(repeat);
+        // Cast で 3 曲目を再生中 (ローカルの sink は無い)。
+        p.set_external_current(30, 1_000);
+        p
+    }
+
+    /// Cast 中の AudioPlayer は sink を持たず、ローカルの終了判定で勝手に進まない。
+    #[test]
+    fn external_output_never_reports_finished() {
+        let mut p = casting_player(RepeatMode::Off);
+        assert!(!p.is_finished());
+        assert_eq!(p.get_state().current_track_id, Some(30));
+    }
+
+    /// Cast の曲終了から先は従来と同じ repeat / キュー規則で次を決める。
+    #[test]
+    fn decide_advance_follows_repeat_rules() {
+        let mut p = casting_player(RepeatMode::Off);
+        assert!(matches!(
+            decide_advance(&mut p, false),
+            AdvanceDecision::QueueEnded
+        ));
+
+        let mut p = casting_player(RepeatMode::One);
+        assert!(matches!(
+            decide_advance(&mut p, false),
+            AdvanceDecision::PlayNext { _tid: 30 }
+        ));
+
+        let mut p = casting_player(RepeatMode::All);
+        assert!(matches!(
+            decide_advance(&mut p, false),
+            AdvanceDecision::PlayNext { _tid: 10 }
+        ));
+        assert_eq!(p.order_pos(), Some(0));
+    }
+
+    #[test]
+    fn decide_advance_in_preview_keeps_queue_position() {
+        let mut p = AudioPlayer::new();
+        p.set_queue(vec![1, 2, 3], 0);
+        assert!(matches!(
+            decide_advance(&mut p, true),
+            AdvanceDecision::PreviewEnded { .. }
+        ));
+        assert_eq!(p.order_pos(), Some(0));
     }
 }

@@ -32,6 +32,7 @@ import { useUsbExportEvents } from "./hooks/useUsbExportEvents";
 import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
 import * as playbackApi from "./api/playback";
+import * as castApi from "./api/cast";
 import * as systemApi from "./api/system";
 import * as analysisApi from "./api/analysis";
 import * as ripperApi from "./api/ripper";
@@ -745,6 +746,54 @@ export default function App() {
     })();
     return () => {
       if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Google Cast 再生先の状態をストアへ反映する (初期取得 + cast-state-changed)。
+  // キャスト中は Audition を落とし、接続断はトーストで知らせる (PC へ自動では戻さない)。
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlistenState: (() => void) | undefined;
+    let unlistenDevices: (() => void) | undefined;
+    let cancelled = false;
+    const apply = (s: castApi.CastStatus) => {
+      const st = useStore.getState();
+      const prev = st.castStatus;
+      st.setCastStatus(s);
+      if (castApi.isCasting(s) && st.auditionMode) st.setAuditionMode(false);
+      if (
+        s.target.type === "googleCast" &&
+        s.connectionState === "disconnected" &&
+        prev.connectionState !== "disconnected"
+      ) {
+        st.pushToast(
+          "error",
+          `「${s.target.deviceName}」との接続が切れました。PC からは自動で再生しません — 再生先メニューから再接続するかローカルへ戻してください`,
+          8000,
+        );
+      }
+    };
+    (async () => {
+      try {
+        const s = await castApi.getCastStatus();
+        if (!cancelled) apply(s);
+      } catch {
+        /* バックエンド未対応 / 起動直後: 既定 (local) のまま */
+      }
+      const u1 = await castApi.onCastStateChanged(apply);
+      const u2 = await castApi.onCastDevicesChanged((d) => useStore.getState().setCastDevices(d));
+      if (cancelled) {
+        u1();
+        u2();
+      } else {
+        unlistenState = u1;
+        unlistenDevices = u2;
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unlistenState) unlistenState();
+      if (unlistenDevices) unlistenDevices();
     };
   }, []);
 

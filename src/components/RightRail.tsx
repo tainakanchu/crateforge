@@ -10,6 +10,7 @@ import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
 import * as audition from "../lib/audition";
+import { isCasting } from "../api/cast";
 import { buildSimilarReasons } from "../lib/similarReasons";
 import { effectiveKeyCamelot, formatKey } from "../lib/keyNotation";
 import {
@@ -106,6 +107,7 @@ export function RightRail({
   onOpenSettings,
 }: RightRailProps) {
   const {
+    castStatus,
     playback,
     tracks,
     crate,
@@ -745,6 +747,12 @@ export function RightRail({
     [crate],
   );
 
+  // キャスト中は Preview を使えない (押すと理由をトーストで出す)。
+  const previewBlocked = isCasting(castStatus);
+  const previewTitle = previewBlocked
+    ? audition.CAST_PREVIEW_BLOCKED_MESSAGE
+    : "Preview / 試聴 (playCount を増やさない)";
+
   // 単曲プレビュー (playCount / recent を汚さない)。
   const previewTrack = useCallback(async (track: Track) => {
     if (!track.fileExists) return;
@@ -1316,7 +1324,9 @@ export function RightRail({
                 <div className="cb-crow-actions">
                   <button
                     className="cb-cx cb-cact"
-                    title="Preview / 試聴 (playCount を増やさない)"
+                    title={previewTitle}
+                    aria-disabled={previewBlocked}
+                    style={previewBlocked ? { opacity: 0.4 } : undefined}
                     onClick={(e) => {
                       e.stopPropagation();
                       previewTrack(t);
@@ -1766,7 +1776,9 @@ export function RightRail({
                 <div className="cb-crow-actions">
                   <button
                     className="cb-cx cb-cact"
-                    title="Preview / 試聴 (playCount を増やさない)"
+                    title={previewTitle}
+                    aria-disabled={previewBlocked}
+                    style={previewBlocked ? { opacity: 0.4 } : undefined}
                     onClick={(e) => {
                       e.stopPropagation();
                       previewTrack(t);

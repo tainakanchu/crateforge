@@ -94,6 +94,15 @@ This repository is also a Claude Code **plugin marketplace**.
 The policy is that the AI **focuses on selecting the candidate pool**, while **a human finalizes the track order in the GUI**.
 For details, see the [dj-curator README](https://github.com/tainakanchu/crateforge/tree/main/plugins/dj-curator).
 
+## Media URL for Cast
+
+For [Google Cast playback](../playback/), there is an endpoint the cast device uses to fetch the audio: `GET /api/cast/media/{ticket}` (supports `HEAD` and `Range`).
+
+- It is **Cast-only** and is authenticated by a **short-lived Media Ticket** (bound to one track, with an expiry, revocable) rather than the LAN token.
+  An invalid, expired or revoked ticket returns `404`.
+- Tickets are revoked when you change track, disconnect, or quit the app. The LAN token is never handed to the cast device.
+- Requests to this path other than `GET` / `HEAD` still require the normal token.
+
 ## Remote web UI for iPad and others
 
 When you enable LAN exposure, you can open a **same-origin remote web UI** (`http://PC-IP:PORT/`) in a browser.

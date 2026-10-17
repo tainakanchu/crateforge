@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod api;
 pub mod artwork;
 pub mod backup;
+pub mod cast;
 pub mod convert;
 pub mod ffmpeg;
 pub mod fonts;

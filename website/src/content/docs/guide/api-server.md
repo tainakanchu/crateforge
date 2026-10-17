@@ -95,6 +95,15 @@ API 経由の変更は `library-changed` イベントで起動中アプリの UI
 AI は **候補プールの選定に集中** し、**曲順は GUI で人間が詰める** 方針です。
 詳細は [dj-curator の README](https://github.com/tainakanchu/crateforge/tree/main/plugins/dj-curator) を参照してください。
 
+## キャスト用メディア URL
+
+[Google Cast 再生](../playback/)のために、キャスト端末が音源を取得するエンドポイント `GET /api/cast/media/{ticket}` があります（`HEAD` と `Range` に対応）。
+
+- **Cast 専用** で、LAN トークンではなく **短命の Media Ticket**（1 曲に束縛・期限付き・失効可能）で認証します。
+  チケットが不正 / 期限切れ / 失効のときは `404` を返します。
+- チケットは曲の切り替え・切断・アプリ終了で失効します。LAN トークンはキャスト端末に渡りません。
+- このパスの `GET` / `HEAD` 以外のリクエストは、通常どおりトークンが必要です。
+
 ## iPad 等のリモコン Web UI
 
 LAN 公開を有効にすると、**同一オリジンのリモコン Web UI**（`http://PC-IP:PORT/`）をブラウザで開けます。

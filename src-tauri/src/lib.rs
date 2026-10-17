@@ -2,6 +2,7 @@ mod analyzer;
 mod api;
 mod artwork;
 mod audio;
+mod cast;
 mod cd_ripper;
 mod commands;
 mod converter;
@@ -17,6 +18,7 @@ mod metadata;
 mod models;
 mod organizer;
 mod pairing;
+mod playback_target;
 mod playlist_rules;
 mod proc;
 mod rbx_cli;
@@ -123,6 +125,8 @@ pub fn run() {
         .manage(api_server)
         .manage(pairing_registry)
         .manage(valid_tokens)
+        // Cast Receiver 用の Media Ticket。API サーバー (起動のたびに取り直す) と共有する。
+        .manage(cast::media_ticket::MediaTickets::default())
         .manage(commands::sync::SyncRuntime::default())
         .manage(commands::playback::PreviewMode::default())
         .manage(commands::playback_persist::PlaybackPersister::default())
@@ -138,6 +142,19 @@ pub fn run() {
 
             // バックグラウンド音声解析ワーカを起動して managed state に載せる。
             app.manage(analyzer::Analyzer::new(app.handle().clone()));
+
+            // 再生先 (Local / Google Cast) の振り分け窓口。再生系のコマンド・ワーカー・
+            // Remote API はすべてこれを経由するので、ワーカー起動より前に manage する。
+            // 起動時は常に Local (Cast へ自動接続しない)。
+            app.manage(playback_target::PlaybackCoordinator::new(
+                std::sync::Arc::new(playback_target::TauriEnv::new(app.handle().clone())),
+            ));
+            // Cast 端末の探索 (最初に一覧を開いたときに browse を始める)。
+            let discovery_handle = app.handle().clone();
+            app.manage(cast::discovery::CastDiscovery::new(move |devices| {
+                use tauri::Emitter;
+                let _ = discovery_handle.emit("cast-devices-changed", devices);
+            }));
 
             // 曲の自動送りを駆動するワーカースレッド。AudioPlayer の manage 後に起動する
             // (ワーカーが app.state::<Mutex<AudioPlayer>> を参照するため)。
@@ -288,6 +305,12 @@ pub fn run() {
             commands::output_device::list_output_devices,
             commands::output_device::set_output_device,
             commands::output_device::take_output_device_notices,
+            // 再生先 (Google Cast)
+            commands::cast::list_cast_devices,
+            commands::cast::refresh_cast_devices,
+            commands::cast::get_cast_status,
+            commands::cast::set_playback_target,
+            commands::cast::disconnect_cast,
             // ripping
             commands::ripping::detect_disc,
             commands::ripping::list_cd_drives,
@@ -376,6 +399,14 @@ pub fn run() {
             // 終了時に再生キュー / 再生位置を即時保存する (#159)。
             if let tauri::RunEvent::Exit = event {
                 commands::playback_persist::flush(app);
+                // Cast のチケットを失効させ、Receiver との接続を閉じる。
+                if let Some(coord) = app.try_state::<playback_target::PlaybackCoordinator>() {
+                    let coord = coord.inner().clone();
+                    tauri::async_runtime::block_on(coord.shutdown());
+                }
+                if let Some(d) = app.try_state::<cast::discovery::CastDiscovery>() {
+                    d.stop();
+                }
                 // 実行中の rbx-cli (USB 書き出し) を孤児にしない。
                 commands::usb_export::shutdown(app);
             }

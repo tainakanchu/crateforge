@@ -550,6 +550,7 @@ mod tests {
             app: None,
             tokens: ValidTokens::default(),
             pairings: PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

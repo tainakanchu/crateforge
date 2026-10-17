@@ -94,6 +94,15 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 方針是 AI **專注於候選池的篩選**，**曲序由人類用 GUI 細修**。
 詳情請參閱 [dj-curator 的 README](https://github.com/tainakanchu/crateforge/tree/main/plugins/dj-curator)。
 
+## 投放用媒體 URL
+
+為了 [Google Cast 投放播放](../playback/)，有一個供投放裝置取得音源的端點 `GET /api/cast/media/{ticket}`（支援 `HEAD` 與 `Range`）。
+
+- **僅供 Cast 使用**，不使用 LAN 權杖，而是以 **短效的 Media Ticket**（綁定單一曲目、有期限、可撤銷）驗證。
+  票證無效 / 過期 / 已撤銷時會回傳 `404`。
+- 票證會在切換曲目、中斷連線、結束應用程式時失效。LAN 權杖不會交給投放裝置。
+- 此路徑上 `GET` / `HEAD` 以外的請求，仍需要一般的權杖。
+
 ## iPad 等的遙控 Web UI
 
 啟用 LAN 公開後，可在瀏覽器開啟 **同源的遙控 Web UI**（`http://PC-IP:PORT/`）。
