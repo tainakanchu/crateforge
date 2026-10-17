@@ -63,6 +63,10 @@ export const ICON_PATHS: Record<string, string> = {
   sparkle: '<path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/>',
   checkCircle: '<circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-5"/>',
   xCircle: '<circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/>',
+  // 再生先 (Google Cast)
+  cast: '<path d="M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><path d="M2 12a9 9 0 018 8"/><path d="M2 16a5 5 0 014 4"/><path d="M2 20h.01"/>',
+  laptop: '<rect x="4" y="4" width="16" height="11" rx="2"/><path d="M2 19h20"/>',
+  refresh: '<path d="M21 12a9 9 0 11-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
   // Inbox / Triage (#118)
   inbox:
     '<path d="M4 6a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2z"/><path d="M4 12h4l2 3h4l2-3h4"/>',

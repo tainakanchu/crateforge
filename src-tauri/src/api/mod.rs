@@ -37,6 +37,9 @@ pub struct ApiState {
     pub tokens: crate::devices::ValidTokens,
     /// デバイスペアリング レジストリ。axum ハンドラと Tauri コマンドで Arc を共有する。
     pub pairings: crate::pairing::PairingRegistry,
+    /// Cast Receiver 用の Media Ticket (`/api/cast/media/{ticket}` の認可)。
+    /// Tauri の managed state と `Arc` を共有し、Cast Coordinator が発行・失効させる。
+    pub cast_tickets: crate::cast::media_ticket::MediaTickets,
 }
 
 impl ApiState {
@@ -135,6 +138,12 @@ pub(crate) fn is_public_path(path: &str) -> bool {
             | "/api/pair/start"
             | "/api/pair/poll"
     )
+}
+
+/// `/api/cast/media/{ticket}` 形式 (区切りを含まない 1 セグメント) か判定する。
+fn is_cast_media_path(path: &str) -> bool {
+    path.strip_prefix("/api/cast/media/")
+        .is_some_and(|t| !t.is_empty() && !t.contains('/'))
 }
 
 /// `/api/tracks/{id}/rating` 形式（レーティング更新の最小権限エンドポイント）か判定する。
@@ -331,6 +340,15 @@ async fn auth_guard(
     let uri = req.uri().clone();
     let path = uri.path().to_string();
     if is_public_path(&path) {
+        return next.run(req).await;
+    }
+
+    // Cast Receiver の音源取得は LAN トークンを持たないので、このパスの GET/HEAD に限り
+    // トークン検証を飛ばす。代わりにハンドラ (`handlers::cast_media`) が Media Ticket を必ず検証する。
+    // 他メソッドはここを通さず従来どおりトークン検証へ進める (→ 401/403)。
+    if is_cast_media_path(&path)
+        && (req.method() == axum::http::Method::GET || req.method() == axum::http::Method::HEAD)
+    {
         return next.run(req).await;
     }
 
@@ -545,6 +563,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/remote/volume", post(handlers::remote_volume))
         .route("/api/remote/shuffle", post(handlers::remote_shuffle))
         .route("/api/remote/repeat", post(handlers::remote_repeat))
+        // Cast Receiver 向け音源配信 (Media Ticket で認可。GET は HEAD も受ける)
+        .route("/api/cast/media/{ticket}", get(handlers::cast_media))
         // 認証ミドルウェアを全ルートに適用 (with_state の前に route_layer)。
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -635,11 +655,19 @@ pub fn start(
     }
 
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    // Media Ticket は managed state と共有する (未登録の構成では空のレジストリ = 全拒否)。
+    let cast_tickets = {
+        use tauri::Manager;
+        app.try_state::<crate::cast::media_ticket::MediaTickets>()
+            .map(|t| t.inner().clone())
+            .unwrap_or_default()
+    };
     let state = ApiState {
         app_data_dir,
         app: Some(app),
         tokens,
         pairings,
+        cast_tickets,
     };
     let svc = router(state).into_make_service_with_connect_info::<SocketAddr>();
     let handle = tauri::async_runtime::spawn(async move {
@@ -795,6 +823,7 @@ mod tests {
             app: None,
             tokens: crate::devices::ValidTokens::default(),
             pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
         (dir, app)
     }
@@ -2138,6 +2167,7 @@ mod tests {
             app: None,
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
 
         let lan_ip = SocketAddr::from(([192, 168, 1, 50], 54321));
@@ -2233,6 +2263,7 @@ mod tests {
             app: None,
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
 
         // remote は rating・first-class tags・artwork に到達できる。
@@ -2764,6 +2795,7 @@ mod tests {
             app: None,
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
         let body = Some(upload_metadata("1111222233334444", 1));
         let (status, _) = lan_req(
@@ -3008,6 +3040,7 @@ mod tests {
             app: None,
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
 
         for token in ["remote-token", "sync-token"] {
@@ -3032,5 +3065,166 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["analyzed"], 2);
+    }
+
+    /// Cast 用 Media Ticket: LAN トークン無しで GET/HEAD/Range が通るが、
+    /// チケット検証は必須で、他の API への権限にはならない。
+    #[tokio::test]
+    async fn cast_media_ticket_scoped_access() {
+        use axum::extract::ConnectInfo;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        let audio: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        let mp3 = dir.path().join("song.mp3");
+        let flac = dir.path().join("song.flac");
+        std::fs::write(&mp3, &audio).unwrap();
+        std::fs::write(&flac, b"fLaC").unwrap();
+        for (id, p) in [(1, &mp3), (2, &flac)] {
+            db.conn
+                .execute(
+                    "UPDATE tracks SET location_path = ?1 WHERE track_id = ?2",
+                    rusqlite::params![p.to_string_lossy(), id],
+                )
+                .unwrap();
+        }
+        let tokens = crate::devices::ValidTokens::default();
+        tokens.insert("remote-token".into());
+        let tickets = crate::cast::media_ticket::MediaTickets::default();
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens,
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: tickets.clone(),
+        });
+
+        async fn send(
+            app: &Router,
+            method: &str,
+            uri: &str,
+            range: Option<&str>,
+        ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+            let mut b = Request::builder().method(method).uri(uri);
+            if let Some(r) = range {
+                b = b.header("Range", r);
+            }
+            let mut req = b.body(Body::empty()).unwrap();
+            req.extensions_mut()
+                .insert(ConnectInfo(SocketAddr::from(([192, 168, 1, 77], 40000))));
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec();
+            (status, headers, body)
+        }
+
+        let t1 = tickets.issue(1, 1, 200_000);
+        let uri = format!("/api/cast/media/{t1}");
+
+        // 1. GET: トークン無しで原本を返す。
+        let (status, headers, body) = send(&app, "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, audio);
+        assert_eq!(headers["content-type"], "audio/mpeg");
+        assert_eq!(headers["access-control-allow-origin"], "*");
+        assert_eq!(headers["accept-ranges"], "bytes");
+
+        // 2. HEAD: 本文なし・長さだけ。
+        let (status, headers, body) = send(&app, "HEAD", &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.is_empty());
+        assert_eq!(headers["content-length"], "1000");
+
+        // 3. Range → 206 + Content-Range。チケットは消費されない。
+        let (status, headers, body) = send(&app, "GET", &uri, Some("bytes=10-19")).await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(headers["content-range"], "bytes 10-19/1000");
+        assert_eq!(body, &audio[10..20]);
+
+        // 4. 未知・不正形式・失効・期限切れはすべて 404 (区別しない)。
+        let unknown = format!("/api/cast/media/{}", "0".repeat(64));
+        assert_eq!(
+            send(&app, "GET", &unknown, None).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            send(&app, "GET", "/api/cast/media/not-a-ticket", None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        let revoked = tickets.issue(1, 2, 200_000);
+        tickets.revoke(&revoked);
+        assert_eq!(
+            send(&app, "GET", &format!("/api/cast/media/{revoked}"), None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        if let Some(past) = Instant::now().checked_sub(Duration::from_secs(4 * 3600)) {
+            let expired = tickets.issue_at(1, 3, 60_000, past);
+            assert_eq!(
+                send(&app, "GET", &format!("/api/cast/media/{expired}"), None)
+                    .await
+                    .0,
+                StatusCode::NOT_FOUND
+            );
+        }
+
+        // 5. チケットは発行された曲にしか効かない: 曲 2 (FLAC) は未対応形式、曲 3 はファイル無し。
+        let t2 = tickets.issue(2, 1, 0);
+        assert_eq!(
+            send(&app, "GET", &format!("/api/cast/media/{t2}"), None)
+                .await
+                .0,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        let t3 = tickets.issue(3, 1, 0);
+        assert_eq!(
+            send(&app, "GET", &format!("/api/cast/media/{t3}"), None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+
+        // 6. GET/HEAD 以外はトークン検証へ回り、拒否される。
+        let (status, _, _) = send(&app, "POST", &uri, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _, _) = send(&app, "DELETE", &uri, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // 7. チケットは他 API の認証にならない。
+        assert_eq!(
+            send(&app, "GET", "/api/tracks", None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            send(&app, "GET", &format!("/api/tracks?token={t1}"), None)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        // 空チケットはどのルートにも一致しない (認証を素通りする経路にはならない)。
+        assert_eq!(
+            send(&app, "GET", "/api/cast/media/", None).await.0,
+            StatusCode::NOT_FOUND
+        );
+
+        // 8. 通常の LAN トークン認証は従来どおり。
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("remote-token"),
+            "GET",
+            "/api/health",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
     }
 }

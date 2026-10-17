@@ -13,6 +13,7 @@ DJ 向けの解析（BPM / Key(Camelot) / Energy）・類似度選曲・フォ�
 - 🎵 **ファイル取り込み**: FLAC / MP3 / M4A / WAV / Ogg / Opus / AIFF などのタグを `lofty` で読み取り。
 - 📋 **プレイリスト編集**: 作成・名前変更・削除・フォルダ階層・複数選択追加・並び替え。
 - ▶ **ローカル再生**: `rodio` (symphonia) で各種フォーマットを直接デコード。
+- 📺 **キャスト再生**: 同じ LAN の Google Cast 端末 (Chromecast / Google TV / Cast スピーカー) へ再生先を切り替え。MP3 / AAC 対応。macOS では OS の AirPlay 出力でも鳴らせる見込み (動作は環境依存)。詳細は `docs/cast/design.md`。
 - 📦 **Nix 完結**: `flake.nix` で Rust/Node/GTK/WebKit/CD ツール/エンコーダ全部を宣言。
 - 🤖 **AI 選曲**: ローカル HTTP API を内蔵し、Claude Code プラグイン `dj-curator` から「インプット → コンセプト → DJ 選曲の叩き台」を生成（下記）。
 
@@ -312,6 +313,7 @@ DJ ソフトで読み取れない症状があれば issue に XML 断片を添�
 - ドラッグ&ドロップでのプレイリスト追加とプレイリスト内の手動並べ替えに対応しています (#162)。右クリックメニューからも同じ操作ができます。
 - WSL2 では物理 CD が直接見えないため usbipd 必須。
 - CD リッピング進捗の % 表示は cdparanoia の標準出力を解析していないため、現状はトラック単位の表示のみ。
+- キャスト再生 (Google Cast) は現状 MP3 / AAC のみ・デスクトップからの操作のみ。今後: P1 = モバイルからのキャスト操作 / iOS の AirPlay、P2 = 対応コーデック追加・アートワーク表示・DLNA。
 
 ## ライセンス
 

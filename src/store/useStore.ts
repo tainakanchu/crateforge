@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { LOCAL_CAST_STATUS, type CastDevice, type CastStatus } from "../api/cast";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type {
   Track,
@@ -295,6 +296,11 @@ interface AppState extends PersistedSettings {
   previewActive: boolean;
   previewReturn: { trackId: number | null; positionMs: number } | null;
 
+  // Google Cast 再生先 (P0) — 永続化しない (起動時は常にローカル)。
+  // castStatus: バックエンドの cast-state-changed をそのまま反映する。
+  castStatus: CastStatus;
+  castDevices: CastDevice[];
+
   // Inbox / Triage (#118) — セッション状態。done/later は localStorage (crateforge-triage)。
   triageMode: boolean;
   triageIndex: number;
@@ -423,6 +429,10 @@ interface AppState extends PersistedSettings {
   enterPreview: (ret: { trackId: number | null; positionMs: number }) => void;
   /** セッション状態だけクリア (バックエンド flag / 再生復帰は lib/audition.ts 側)。 */
   exitPreviewSession: () => void;
+
+  // Cast
+  setCastStatus: (s: CastStatus) => void;
+  setCastDevices: (d: CastDevice[]) => void;
 
   // Inbox / Triage
   setTriageMode: (on: boolean) => void;
@@ -674,6 +684,8 @@ export const useStore = create<AppState>()(
       similarBaseTrackId: null,
       pendingUpdate: null,
       previewActive: false,
+      castStatus: LOCAL_CAST_STATUS,
+      castDevices: [],
       previewReturn: null,
       triageMode: false,
       triageIndex: 0,
@@ -1037,6 +1049,9 @@ export const useStore = create<AppState>()(
         set({ previewActive: true, previewReturn }),
       exitPreviewSession: () =>
         set({ previewActive: false, previewReturn: null }),
+
+      setCastStatus: (castStatus) => set({ castStatus }),
+      setCastDevices: (castDevices) => set({ castDevices }),
 
       setTriageMode: (triageMode) => set({ triageMode }),
       setTriageIndex: (triageIndex) => set({ triageIndex }),

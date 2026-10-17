@@ -6547,3 +6547,133 @@ input {
   gap: 6px;
   color: var(--warn);
 }
+
+/* ============================================================
+   再生先 (Google Cast) picker — PlayerBar 右端のボタン + popover
+   PlayerBar (.cb-pr) は overflow: hidden なので popover は fixed で外に出す。
+   ============================================================ */
+.cb-castbtn {
+  position: relative;
+}
+.cb-castbtn.on {
+  color: var(--ac);
+}
+.cb-castdot {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--bg-side);
+}
+.cb-castdot.busy {
+  background: var(--warn);
+}
+.cb-castdot.bad {
+  background: #e0605a;
+}
+.cb-pop.cb-castpop {
+  position: fixed;
+  top: auto;
+  width: 300px;
+}
+.cb-castrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 9px;
+  border: none;
+  border-radius: 9px;
+  background: none;
+  color: var(--tx2);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.cb-castrow:hover:not(:disabled) {
+  background: #1f2429;
+}
+.cb-castrow:disabled {
+  cursor: default;
+}
+.cb-castrow.on {
+  color: var(--ac);
+}
+.cb-castrow .lbl {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cb-castrow .lbl .n {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--tx);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-castrow .lbl .s {
+  font-size: 11px;
+  color: var(--mut);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-castrow .lbl .s.busy {
+  color: var(--warn);
+}
+.cb-castrow .lbl .s.bad {
+  color: #e0605a;
+}
+.cb-castempty {
+  padding: 6px 9px 8px;
+  font-size: 12px;
+  color: var(--mut);
+  line-height: 1.5;
+}
+.cb-castempty ul {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+.cb-castnote {
+  margin: 0 12px 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--tx2);
+  background: var(--bg3);
+}
+.cb-castnote.bad {
+  color: var(--tx);
+  background: color-mix(in srgb, #e0605a 18%, var(--bg3));
+}
+.cb-castft-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.cb-castact {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--bd-strong);
+  background: var(--bg3);
+  color: var(--tx);
+  font-size: 12px;
+  cursor: pointer;
+}
+.cb-castact:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.cb-casthint {
+  font-size: 11px;
+  color: var(--mut);
+  line-height: 1.5;
+}
