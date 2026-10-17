@@ -10,6 +10,26 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.15.0] - 2026-10-17
+
+### 日本語
+
+#### デスクトップ
+- **Google Cast 端末で再生できるように**: プレイヤーバーの「再生先」ボタンから、同じ LAN の Chromecast / Google TV / Cast 対応スピーカーを選べるようにした。選ぶと、再生中の曲を途中の位置から引き継いでキャスト先で再生する。再生・一時停止・シーク・前後の曲・音量・キュー・シャッフル/リピート・自動送りは、ローカル再生のときと同じように使える。TV のリモコンで行った操作もデスクトップの表示に反映される。対応形式は MP3 と AAC（M4A/MP4）で、それ以外の曲は理由を表示して再生先を切り替えない。キャスト先との接続が切れても PC のスピーカーから勝手に鳴らすことはなく、「切断してローカルへ戻す」で最後の位置から戻せる。キャスト中は Preview（試聴）は使えない。キャストには内蔵 API サーバーの LAN 公開が必要で、無効のときは確認してから有効にする。アプリの起動時は、前回キャストしていても常に「このコンピューター」で再生する。(#230)
+- **macOS で AirPlay スピーカーを使うガイドを追加**: OS のサウンド出力で AirPlay スピーカーを選べば鳴らせる見込みの手順を、ガイドに追加した（実機での動作確認は未完了で、環境によって異なる）。(#230)
+
+#### API
+- **キャスト用メディア URL と再生先の状態**: `GET /api/cast/media/{ticket}` を追加した。Cast 端末専用で、曲ごとの短命チケットで認証し、HEAD / Range に対応する。通常の LAN トークンは端末へ渡さない。`GET /api/remote/state` には `playbackTarget` と `connectionState` を追加した（既存のフィールドはそのまま）。キャスト中は、`/api/remote/*` の再生操作がキャスト先に作用する。(#230)
+
+### English
+
+#### Desktop
+- **Play on Google Cast devices**: the new "再生先" (playback target) button in the player bar lets you pick a Chromecast, Google TV, or Cast-enabled speaker on the same LAN. Once selected, the currently playing track continues on the cast device from where it was. Play / pause, seek, previous / next, volume, the queue, shuffle / repeat, and auto-advance work just as they do for local playback. Actions taken with the TV remote are reflected in the desktop display as well. Supported formats are MP3 and AAC (M4A/MP4); for any other track, the reason is shown and the target is not switched. If the connection to the cast device drops, audio is never played from the PC's speakers on its own; "切断してローカルへ戻す" (disconnect and return to local) brings playback back from the last position. Preview (audition) is not available while casting. Casting requires the built-in API server to be exposed on the LAN; if it is off, you are asked to confirm before it is turned on. The app always starts with playback on "このコンピューター" (this computer), even if you were casting last time. (#230)
+- **Guide for using AirPlay speakers on macOS**: added instructions for choosing an AirPlay speaker as the OS sound output, which is expected to work (it has not been verified on real hardware yet and may vary by environment). (#230)
+
+#### API
+- **Media URL for casting and playback target state**: added `GET /api/cast/media/{ticket}`. It is for Cast devices only, authenticated with a short-lived per-track ticket, and supports HEAD and Range requests. The regular LAN token is never handed to the device. `GET /api/remote/state` now includes `playbackTarget` and `connectionState` (existing fields are unchanged). While casting, the playback actions under `/api/remote/*` act on the cast device. (#230)
+
 ## [v0.14.2] - 2026-10-11
 
 ### 日本語
