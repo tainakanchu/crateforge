@@ -90,7 +90,7 @@ find_build_tool() {
     return 0
   fi
   for root in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Android/Sdk" "$HOME/Library/Android/sdk"; do
-    [ -n "$root" ] && [ -d "$root/build-tools" ] || continue
+    if [ -z "$root" ] || [ ! -d "$root/build-tools" ]; then continue; fi
     latest="$(for d in "$root"/build-tools/*/; do
       [ -x "${d}${name}" ] && echo "${d}${name}"
     done | sort -V | tail -n 1)"
@@ -104,8 +104,8 @@ find_build_tool() {
 
 AAPT2="${AAPT2:-$(find_build_tool aapt2 || true)}"
 APKSIGNER="${APKSIGNER:-$(find_build_tool apksigner || true)}"
-[ -n "$AAPT2" ] && [ -x "$AAPT2" ] || die_usage "aapt2 not found (set AAPT2 or ANDROID_HOME with build-tools installed)"
-[ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ] || die_usage "apksigner not found (set APKSIGNER or ANDROID_HOME with build-tools installed)"
+if [ -z "$AAPT2" ] || [ ! -x "$AAPT2" ]; then die_usage "aapt2 not found (set AAPT2 or ANDROID_HOME with build-tools installed)"; fi
+if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then die_usage "apksigner not found (set APKSIGNER or ANDROID_HOME with build-tools installed)"; fi
 command -v python3 >/dev/null 2>&1 || die_usage "python3 not found"
 
 if command -v sha256sum >/dev/null 2>&1; then
