@@ -342,6 +342,9 @@ jobs:
           CRATEFORGE_SIGNING_KEY_ALIAS: ${{ inputs.signed && secrets.CRATEFORGE_ANDROID_KEY_ALIAS || '' }}
           CRATEFORGE_SIGNING_KEY_PASSWORD: ${{ inputs.signed && secrets.CRATEFORGE_ANDROID_KEY_PASSWORD || '' }}
           ABIS: ${{ steps.abis.outputs.value }}
+          # ビルド時の fingerprint 計算は prebuild 後のツリーで走り、clean checkout の値（= eas update が使う
+          # runtimeVersion）とずれる。clean checkout で解決した値を expo-updates に渡して埋め込ませる（EAS Build と同じ方式）。
+          EXPO_UPDATES_FINGERPRINT_OVERRIDE: ${{ steps.runtime.outputs.value }}
         run: ./gradlew :app:assembleRelease "-PreactNativeArchitectures=${ABIS}" -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64 --stacktrace
 
       - name: Verify APK

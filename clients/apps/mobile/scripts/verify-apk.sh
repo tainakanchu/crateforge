@@ -494,6 +494,16 @@ if rt_meta is not None:
     elif a and a[0] == "ref":
         vals = res_strings(a[1])
         rt_value = vals[0] if vals else None
+# fingerprint ポリシーのローカルビルドでは manifest に番兵 "file:fingerprint" が入り、
+# 実際の値は assets/fingerprint に埋め込まれる（expo-updates UpdatesConfiguration の
+# UPDATES_CONFIGURATION_RUNTIME_VERSION_READ_FINGERPRINT_FILE_SENTINEL）。
+if rt_value == "file:fingerprint":
+    try:
+        with zipfile.ZipFile(APK) as z:
+            rt_value = z.read("assets/fingerprint").decode("utf-8").strip() or None
+    except KeyError:
+        rt_value = None
+        fail("expo runtimeVersion is 'file:fingerprint' but assets/fingerprint is missing")
 if rt_value:
     ok(f"expo runtimeVersion = {rt_value}")
 else:

@@ -195,7 +195,8 @@ fi
   chmodSync(apksigner, 0o755);
   const apk = join(dir, "app-release.apk");
   const files = opts.zipFiles ?? ["AndroidManifest.xml", "classes.dex", "assets/index.android.bundle", "lib/arm64-v8a/libfoo.so"];
-  const py = `import sys, zipfile\nz = zipfile.ZipFile(sys.argv[1], 'w')\nfor n in sys.argv[2:]:\n    z.writestr(n, b'x')\nz.close()\n`;
+  // "name::content" で中身を指定できる（既定は b'x'）。
+  const py = `import sys, zipfile\nz = zipfile.ZipFile(sys.argv[1], 'w')\nfor n in sys.argv[2:]:\n    name, _, body = n.partition('::')\n    z.writestr(name, body.encode() if body else b'x')\nz.close()\n`;
   const r = spawnSync("python3", ["-c", py, apk, ...files]);
   assert.equal(r.status, 0, String(r.stderr));
   return { dir, apk, aapt2, apksigner };
@@ -281,6 +282,19 @@ for (const [name, opts, args, re] of FAIL_CASES) {
 test("literal runtimeVersion string in the manifest is accepted", { skip }, () => {
   const r = verify({ manifest: { runtimeLiteral: "lit-1" } }, ["--expect-runtime-version", "lit-1"]);
   assert.equal(r.status, 0, r.out);
+});
+
+test("file:fingerprint sentinel is resolved from assets/fingerprint", { skip }, () => {
+  const zipFiles = ["AndroidManifest.xml", "classes.dex", "assets/index.android.bundle", "lib/arm64-v8a/libfoo.so", "assets/fingerprint::fp-123"];
+  const ok = verify({ manifest: { runtimeLiteral: "file:fingerprint" }, zipFiles }, ["--expect-runtime-version", "fp-123"]);
+  assert.equal(ok.status, 0, ok.out);
+  assert.match(ok.out, /runtimeVersion = fp-123/);
+  const mismatch = verify({ manifest: { runtimeLiteral: "file:fingerprint" }, zipFiles }, ["--expect-runtime-version", "other"]);
+  assert.equal(mismatch.status, 1, mismatch.out);
+  assert.match(mismatch.out, /runtimeVersion mismatch/);
+  const missing = verify({ manifest: { runtimeLiteral: "file:fingerprint" } }, ["--expect-runtime-version", "fp-123"]);
+  assert.equal(missing.status, 1, missing.out);
+  assert.match(missing.out, /assets\/fingerprint is missing/);
 });
 
 test("usage errors exit 2", { skip }, () => {
