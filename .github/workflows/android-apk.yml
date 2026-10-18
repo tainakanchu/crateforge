@@ -113,8 +113,21 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: clients/pnpm-lock.yaml
+
+      # setup-node の `cache: pnpm` はリポジトリ直下 (pnpm@9.15.4 固定) で `pnpm store path` を解決するため、
+      # clients/ を pnpm 10 で入れた実際のストアと食い違い、post 処理の保存が失敗する。clients/ で解決して明示キャッシュする。
+      - name: Resolve pnpm store path
+        id: pnpm-store
+        working-directory: clients
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('clients/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
 
       # React Native の Gradle プラグインが JDK 17 の toolchain を要求する (foojay での自動取得は不可)。
       # 17 と 21 を入れ、最後に書いた 21 を JAVA_HOME にする。17 は JAVA_HOME_17_X64 経由で Gradle に渡す。
