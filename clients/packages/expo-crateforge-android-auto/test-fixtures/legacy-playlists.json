@@ -1,0 +1,41 @@
+[
+ {
+  "playlistId": 11,
+  "name": "Drive Mix",
+  "trackIds": [
+   103,
+   101,
+   999,
+   102
+  ],
+  "createdAt": 1700000100000,
+  "pinned": true
+ },
+ {
+  "playlistId": 12,
+  "name": "ジブリ",
+  "trackIds": [
+   201
+  ],
+  "createdAt": 1700000200000
+ },
+ {
+  "playlistId": "x",
+  "name": "Broken",
+  "trackIds": [
+   1
+  ]
+ },
+ {
+  "playlistId": 13,
+  "name": "Mixed Ids",
+  "trackIds": [
+   202,
+   "oops",
+   -1,
+   1.5,
+   204
+  ],
+  "createdAt": 1700000300000
+ }
+]

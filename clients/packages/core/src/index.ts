@@ -6,3 +6,5 @@ export * from "./store/player";
 export * from "./store/settings";
 export * from "./store/downloads";
 export * from "./playback/engine";
+export * from "./playback/nativeTypes";
+export * from "./playback/nativeBackend";

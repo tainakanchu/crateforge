@@ -7,10 +7,15 @@
 //   それ以外（圧縮DL）はサーバが ADTS AAC を返すので aac。
 // - fs 操作はすべて try/catch で握りつぶし、エラーは downloading マップ解除のみ行う（UI を壊さない）。
 //   ただしダウンロード失敗は原因切り分けのため console.warn でログだけは残す。
+// - 新規エントリ/プレイリストには接続中サーバーの serverId を記録する（Android Auto の
+//   ネイティブカタログが libraryScope に使う。旧データは serverId 無し＝legacy 扱い）。
+// - index.json / playlists.json を書き出した後は persist リスナーへ通知する。core は
+//   ネイティブモジュールを import しないので、同期の配線はアプリ側が setDownloadsPersistListener で行う。
 
 import { Directory, File, Paths } from "expo-file-system";
 import { create } from "zustand";
 
+import type { ApiClient } from "../lib/api/client";
 import type { DownloadedPlaylist, DownloadEntry, DownloadQuality, Track } from "../lib/types";
 import { useConnection } from "./connection";
 import { useSettings } from "./settings";
@@ -100,8 +105,17 @@ export interface DownloadsState {
   /** ローカル保存済みアルバムアートの file:// URI を返す。未取得なら null。 */
   getLocalArtworkUri: (trackId: number) => string | null;
 
-  /** 1 曲をダウンロードして保存・記録する。接続中の client と既定音質を使う。 */
-  downloadTrack: (track: Track) => Promise<void>;
+  /**
+   * 1 曲をダウンロードして保存・記録する。接続中の client を使い、音質は quality 省略時に
+   * 設定の既定音質。既にダウンロード済みなら何もしない。
+   */
+  downloadTrack: (track: Track, quality?: DownloadQuality) => Promise<void>;
+  /**
+   * ダウンロード済みの曲を指定音質で取り直す（端末非対応の原本を AAC に置き換える救済導線）。
+   * 新しいファイルの保存に成功してから旧ファイルを消すので、失敗しても既存の保存は残る。
+   * 戻り値は置き換えに成功したか（未保存・未接続・取得失敗は false）。
+   */
+  redownloadTrack: (trackId: number, quality: DownloadQuality) => Promise<boolean>;
   /** 複数曲を順番にダウンロード（既にあるものはスキップ）。 */
   downloadMany: (tracks: Track[]) => Promise<void>;
   /** album 名でライブラリから曲を引いて一括ダウンロード。 */
@@ -135,6 +149,26 @@ export interface DownloadsState {
   count: () => number;
 }
 
+/** index.json / playlists.json の書き出し成功後に呼ぶリスナー（アプリ側が登録）。 */
+let persistListener: (() => void) | null = null;
+
+/**
+ * index.json / playlists.json を書き出した直後に呼ばれるリスナーを登録する（null で解除）。
+ * Android ではネイティブカタログへの変更通知（notifyDownloadsChanged）を配線するのに使う。
+ */
+export function setDownloadsPersistListener(fn: (() => void) | null): void {
+  persistListener = fn;
+}
+
+/** persist リスナーへ通知する。リスナーの例外で永続化側を壊さない。 */
+function notifyPersisted(): void {
+  try {
+    persistListener?.();
+  } catch (e) {
+    console.warn("[downloads] persist listener failed:", e);
+  }
+}
+
 /** entries を index.json に書き出す（失敗は無視）。 */
 function persist(entries: Record<number, DownloadEntry>): void {
   try {
@@ -144,7 +178,9 @@ function persist(entries: Record<number, DownloadEntry>): void {
     f.write(JSON.stringify(Object.values(entries)));
   } catch {
     // 永続化失敗はメモリ上の状態で継続。
+    return;
   }
+  notifyPersisted();
 }
 
 /** playlists を playlists.json に書き出す（失敗は無視）。 */
@@ -156,7 +192,63 @@ function persistPlaylists(playlists: Record<number, DownloadedPlaylist>): void {
     f.write(JSON.stringify(Object.values(playlists)));
   } catch {
     // 永続化失敗はメモリ上の状態で継続。
+    return;
   }
+  notifyPersisted();
+}
+
+/** 接続中サーバーの serverId（不明なら undefined＝JSON にキーを出さない）。 */
+function currentServerId(): string | undefined {
+  return useConnection.getState().serverId ?? undefined;
+}
+
+/**
+ * 音源とアルバムアートを取得し、記録用のエントリを作る（state/永続化には触れない）。
+ * downloadTrack と redownloadTrack の共通部分。失敗は例外。
+ */
+async function fetchTrackFiles(
+  client: ApiClient,
+  track: Track,
+  quality: DownloadQuality,
+): Promise<DownloadEntry> {
+  ensureDir();
+  const url = client.downloadUrl(track.trackId, quality);
+  const ext = extFor(track, quality);
+  const dest = new File(downloadsDir(), `${track.trackId}.${ext}`);
+  const f = await File.downloadFileAsync(url, dest, { idempotent: true });
+
+  // アルバムアートをサムネとして保存（失敗しても音源DLは成功扱い）。
+  let artworkUri: string | null = null;
+  try {
+    ensureArtDir();
+    const key = albumArtKey(track);
+    const artFile = new File(artDir(), `${key}.webp`);
+    if (artFile.exists) {
+      // 同アルバムの既存ファイルを再利用（DLしない）。
+      artworkUri = artFile.uri;
+    } else {
+      const baseArtUrl = client.artworkUrl(track.trackId);
+      const artUrl =
+        baseArtUrl + (baseArtUrl.includes("?") ? "&" : "?") + "size=256&format=webp";
+      const artF = await File.downloadFileAsync(artUrl, artFile, { idempotent: true });
+      artworkUri = artF.uri;
+    }
+  } catch {
+    // アート取得失敗は artworkUri を null のまま続行。
+  }
+
+  const entry: DownloadEntry = {
+    trackId: track.trackId,
+    track,
+    localUri: f.uri,
+    quality,
+    bytes: f.size ?? 0,
+    createdAt: Date.now(),
+    artworkUri,
+  };
+  const serverId = currentServerId();
+  if (serverId) entry.serverId = serverId;
+  return entry;
 }
 
 /**
@@ -218,49 +310,15 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
   getLocalUri: (trackId) => get().entries[trackId]?.localUri ?? null,
   getLocalArtworkUri: (trackId) => get().entries[trackId]?.artworkUri ?? null,
 
-  downloadTrack: async (track) => {
+  downloadTrack: async (track, qualityOverride) => {
     if (get().isDownloaded(track.trackId)) return;
     const client = useConnection.getState().client;
     if (!client) return;
-    const quality = useSettings.getState().downloadQuality;
+    const quality = qualityOverride ?? useSettings.getState().downloadQuality;
 
     set((s) => ({ downloading: { ...s.downloading, [track.trackId]: true } }));
     try {
-      ensureDir();
-      const url = client.downloadUrl(track.trackId, quality);
-      const ext = extFor(track, quality);
-      const dest = new File(downloadsDir(), `${track.trackId}.${ext}`);
-      const f = await File.downloadFileAsync(url, dest, { idempotent: true });
-
-      // アルバムアートをサムネとして保存（失敗しても音源DLは成功扱い）。
-      let artworkUri: string | null = null;
-      try {
-        ensureArtDir();
-        const key = albumArtKey(track);
-        const artFile = new File(artDir(), `${key}.webp`);
-        if (artFile.exists) {
-          // 同アルバムの既存ファイルを再利用（DLしない）。
-          artworkUri = artFile.uri;
-        } else {
-          const baseArtUrl = client.artworkUrl(track.trackId);
-          const artUrl =
-            baseArtUrl + (baseArtUrl.includes("?") ? "&" : "?") + "size=256&format=webp";
-          const artF = await File.downloadFileAsync(artUrl, artFile, { idempotent: true });
-          artworkUri = artF.uri;
-        }
-      } catch {
-        // アート取得失敗は artworkUri を null のまま続行。
-      }
-
-      const entry: DownloadEntry = {
-        trackId: track.trackId,
-        track,
-        localUri: f.uri,
-        quality,
-        bytes: f.size ?? 0,
-        createdAt: Date.now(),
-        artworkUri,
-      };
+      const entry = await fetchTrackFiles(client, track, quality);
       set((s) => {
         const entries = { ...s.entries, [track.trackId]: entry };
         persist(entries);
@@ -276,6 +334,43 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
         delete downloading[track.trackId];
         return { downloading };
       });
+    }
+  },
+
+  redownloadTrack: async (trackId, quality) => {
+    const old = get().entries[trackId];
+    if (!old || get().downloading[trackId]) return false;
+    const client = useConnection.getState().client;
+    if (!client) return false;
+
+    set((s) => ({ downloading: { ...s.downloading, [trackId]: true } }));
+    try {
+      const entry = await fetchTrackFiles(client, old.track, quality);
+      // 新ファイルの保存に成功してから旧ファイルを消す（同じパスなら上書き済みなので残す）。
+      if (old.localUri !== entry.localUri) {
+        try {
+          const f = new File(old.localUri);
+          if (f.exists) f.delete();
+        } catch {
+          // 旧ファイルが既に無くても置き換えは成功扱い。
+        }
+      }
+      set((s) => {
+        const entries = { ...s.entries, [trackId]: entry };
+        persist(entries);
+        const downloading = { ...s.downloading };
+        delete downloading[trackId];
+        return { entries, downloading };
+      });
+      return true;
+    } catch (e) {
+      console.warn("[downloads] redownloadTrack failed:", trackId, e);
+      set((s) => {
+        const downloading = { ...s.downloading };
+        delete downloading[trackId];
+        return { downloading };
+      });
+      return false;
     }
   },
 
@@ -301,17 +396,18 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
     // 先にコレクションを記録（DL途中でも一覧に出るように）。
     set((s) => {
       const current = s.playlists[playlistId];
-      const playlists = {
-        ...s.playlists,
-        [playlistId]: {
-          playlistId,
-          name,
-          trackIds: tracks.map((t) => t.trackId),
-          createdAt: current?.createdAt ?? Date.now(),
-          // 通常の一括DLで既存 pin を解除しない。解除は明示的な remove だけで行う。
-          pinned: pinned || current?.pinned === true,
-        },
+      const record: DownloadedPlaylist = {
+        playlistId,
+        name,
+        trackIds: tracks.map((t) => t.trackId),
+        createdAt: current?.createdAt ?? Date.now(),
+        // 通常の一括DLで既存 pin を解除しない。解除は明示的な remove だけで行う。
+        pinned: pinned || current?.pinned === true,
       };
+      // serverId は接続中のものを優先し、不明なら既存の記録を引き継ぐ。
+      const serverId = currentServerId() ?? current?.serverId;
+      if (serverId) record.serverId = serverId;
+      const playlists = { ...s.playlists, [playlistId]: record };
       persistPlaylists(playlists);
       return { playlists };
     });

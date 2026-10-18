@@ -13,6 +13,7 @@
     "expo-build-properties": "~56.0.19",
     "expo-camera": "~56.0.8",
     "expo-constants": "~56.0.18",
+    "expo-crateforge-android-auto": "workspace:*",
     "expo-crateforge-mdns": "workspace:*",
     "expo-device": "~56.0.4",
     "expo-file-system": "~56.0.8",

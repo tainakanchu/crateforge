@@ -1,0 +1,46 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.tainakanchu.crateforge.auto'
+version = '0.1.0'
+
+// Media3 は expo-audio 56（1.9.0 でコンパイル）と同一 APK に同居するため 1.9 系最新パッチに揃える
+// （design.md §2.2 / D3）。Gradle の解決で expo-audio 側も 1.9.4 になる。
+def media3Version = '1.9.4'
+
+android {
+  namespace 'com.tainakanchu.crateforge.auto'
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+    consumerProguardFiles 'consumer-rules.pro'
+  }
+  testOptions {
+    unitTests {
+      includeAndroidResources = true
+      all {
+        maxHeapSize = '2g'
+        systemProperty 'crateforge.fixtures', file('../test-fixtures').absolutePath
+      }
+    }
+  }
+}
+
+repositories {
+  google()
+  mavenCentral()
+}
+
+dependencies {
+  implementation "androidx.media3:media3-exoplayer:$media3Version"
+  implementation "androidx.media3:media3-session:$media3Version"
+
+  testImplementation 'junit:junit:4.13.2'
+  testImplementation 'org.robolectric:robolectric:4.17'
+  testImplementation 'androidx.test:core:1.6.1'
+  testImplementation 'com.google.truth:truth:1.4.4'
+  testImplementation "androidx.media3:media3-test-utils:$media3Version"
+  testImplementation "androidx.media3:media3-test-utils-robolectric:$media3Version"
+}
