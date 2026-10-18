@@ -54,6 +54,68 @@ jest.mock("expo-audio", () => {
   };
 });
 
+// --- expo-crateforge-android-auto（Android Auto / ネイティブ再生）---
+// 既定は「モジュール無し」（isAvailable=false）＝従来の expo-audio 経路。
+// ネイティブ経路のテストは jest.requireMock で isAvailable 等を上書きする。
+jest.mock("expo-crateforge-android-auto", () => {
+  const emptyState = () => ({
+    revision: 0,
+    queueVersion: 0,
+    queueLength: 0,
+    index: -1,
+    orderPos: -1,
+    currentTrackId: null,
+    currentScope: null,
+    isPlaying: false,
+    isBuffering: false,
+    positionMs: 0,
+    durationMs: 0,
+    isSeekable: false,
+    shuffle: false,
+    repeat: "off",
+    rate: 1,
+    sleepTimerMs: null,
+    sleepTimerEndsAtEpochMs: null,
+    stopAtTrackEnd: false,
+    lastError: null,
+    settingsInitialized: false,
+  });
+  const ok = () => jest.fn(async () => undefined);
+  return {
+    isAvailable: jest.fn(() => false),
+    connect: jest.fn(async () => emptyState()),
+    getState: jest.fn(async () => emptyState()),
+    getQueue: jest.fn(async () => ({ queueVersion: 0, items: [], order: [], orderPos: -1, index: -1 })),
+    setQueue: ok(),
+    playAt: ok(),
+    play: ok(),
+    pause: ok(),
+    stop: ok(),
+    seekTo: ok(),
+    skipNext: ok(),
+    skipPrevious: ok(),
+    setShuffle: ok(),
+    setRepeat: ok(),
+    setRate: ok(),
+    enqueue: ok(),
+    removeQueueAt: ok(),
+    moveQueueItem: ok(),
+    moveUpNext: ok(),
+    clearQueue: ok(),
+    setSleepTimer: ok(),
+    setStopAtTrackEnd: ok(),
+    clearError: ok(),
+    migrateLegacySettings: jest.fn(async () => false),
+    setConnection: ok(),
+    clearConnection: ok(),
+    setBrowsePreferences: ok(),
+    notifyDownloadsChanged: jest.fn(async () => ({ downloads: 0, playlists: 0, skipped: 0, error: null })),
+    refreshServerLibrary: ok(),
+    addStateListener: jest.fn(() => ({ remove: jest.fn() })),
+    addProgressListener: jest.fn(() => ({ remove: jest.fn() })),
+  };
+});
+
 // --- expo-file-system (new File/Directory/Paths API) ---
 jest.mock("expo-file-system", () => {
   class MockFile {

@@ -1,0 +1,407 @@
+name: Android APK (reusable)
+
+# Android Auto 対応 APK (clients/apps/mobile) を GitHub Actions 上で
+#   expo prebuild + Gradle assembleRelease
+# だけでビルドする再利用ワークフロー。EAS Build は使わない（docs/android-auto/design.md §7）。
+#
+# 呼び出し元:
+#   - mobile.yml  (PR / main push)   signed: false … 秘密情報は一切渡さない。debug 署名の検証用 APK。
+#   - release.yml (tag v* / 手動)    signed: true  … Secrets の本番鍵で署名。
+#
+# fork の PR では signed: false 固定（呼び出し側が secrets を渡さない）。さらに本ワークフロー側でも
+# pull_request 系イベントでの signed: true を拒否する二重の安全網を入れている。
+
+on:
+  workflow_call:
+    inputs:
+      signed:
+        description: "true = Secrets の本番鍵で署名 (release)。false = 鍵なし (PR 検証)。"
+        type: boolean
+        required: false
+        default: false
+      version:
+        description: "期待するリリースタグ (vX.Y.Z)。空なら tag 実行時のみ github.ref_name を、それ以外は検証しない。ルート package.json の version と一致しなければ失敗。"
+        type: string
+        required: false
+        default: ""
+      cert-sha256:
+        description: "署名証明書の期待 SHA-256 (repository variable CRATEFORGE_ANDROID_CERT_SHA256)。空なら強制せず警告のみ。"
+        type: string
+        required: false
+        default: ""
+      abis:
+        description: "ビルドする ABI (カンマ区切り)。空なら signed: arm64-v8a,armeabi-v7a / unsigned: arm64-v8a。"
+        type: string
+        required: false
+        default: ""
+    secrets:
+      CRATEFORGE_ANDROID_KEYSTORE_BASE64:
+        description: "release keystore (.jks/.keystore) を base64 化した文字列"
+        required: false
+      CRATEFORGE_ANDROID_KEYSTORE_PASSWORD:
+        description: "keystore のパスワード"
+        required: false
+      CRATEFORGE_ANDROID_KEY_ALIAS:
+        description: "署名鍵の alias"
+        required: false
+      CRATEFORGE_ANDROID_KEY_PASSWORD:
+        description: "署名鍵のパスワード"
+        required: false
+    outputs:
+      version-name:
+        description: "APK の versionName (= ルート package.json の version)"
+        value: ${{ jobs.build.outputs.version-name }}
+      version-code:
+        description: "APK の versionCode"
+        value: ${{ jobs.build.outputs.version-code }}
+      apk-name:
+        description: "成果物 APK のファイル名 (crateforge-android-<version>.apk)"
+        value: ${{ jobs.build.outputs.apk-name }}
+      cert-sha256:
+        description: "APK 署名証明書の SHA-256 (小文字 hex)"
+        value: ${{ jobs.build.outputs.cert-sha256 }}
+
+permissions:
+  contents: read
+
+env:
+  # GitHub ubuntu-24.04 ランナーイメージの Android SDK の場所（env コンテキストで参照するため明示）。
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  # RN 0.85 / Expo SDK 56 が prebuild で生成する Android ビルド設定に合わせる
+  # (react-native/gradle/libs.versions.toml の ndkVersion / buildTools、compileSdk 36)。
+  ANDROID_PLATFORM: "36"
+  ANDROID_BUILD_TOOLS: "36.0.0"
+  ANDROID_NDK_VERSION: "27.1.12297006"
+  ANDROID_CMAKE_VERSION: "3.22.1"
+  EXPO_NO_TELEMETRY: "1"
+  CI: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # RN の release ビルドは 15–25 分 + NDK/CMake 取得。詰まったときに 6h 占有しないための上限。
+    timeout-minutes: 90
+    outputs:
+      version-name: ${{ steps.version.outputs.name }}
+      version-code: ${{ steps.version.outputs.code }}
+      apk-name: ${{ steps.stage.outputs.apk-name }}
+      cert-sha256: ${{ steps.verify.outputs.cert-sha256 }}
+    steps:
+      - name: Refuse signing in pull request contexts
+        if: ${{ inputs.signed && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') }}
+        run: |
+          echo "::error::signed builds are never allowed for pull request events (secrets must not be exposed to PR code)"
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # clients/ の pnpm-lock.yaml は pnpm 10.x で維持している（lockfileVersion 9.0 / 手元は 10.28.0）。
+      # ルート package.json は desktop 用に pnpm@9.15.4 を packageManager で固定しているため、
+      # action に version を渡すと「Multiple versions of pnpm specified」で失敗する。
+      # package_json_file を packageManager の無い clients/package.json に向けて衝突を避け、
+      # モバイル系ジョブでは pnpm 10.28.0 を明示する。desktop の release.yml / ci.yml は無変更。
+      - name: Setup pnpm (clients/ uses pnpm 10)
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+          package_json_file: clients/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # setup-node の `cache: pnpm` はリポジトリ直下 (pnpm@9.15.4 固定) で `pnpm store path` を解決するため、
+      # clients/ を pnpm 10 で入れた実際のストアと食い違い、post 処理の保存が失敗する。clients/ で解決して明示キャッシュする。
+      - name: Resolve pnpm store path
+        id: pnpm-store
+        working-directory: clients
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('clients/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      # React Native の Gradle プラグインが JDK 17 の toolchain を要求する (foojay での自動取得は不可)。
+      # 17 と 21 を入れ、最後に書いた 21 を JAVA_HOME にする。17 は JAVA_HOME_17_X64 経由で Gradle に渡す。
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            21
+
+      # PR (fork 含む) ではキャッシュを読むだけ。tag / main の実行がキャッシュを育てる。
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Cache Android NDK / CMake
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ANDROID_HOME }}/ndk/${{ env.ANDROID_NDK_VERSION }}
+            ${{ env.ANDROID_HOME }}/cmake/${{ env.ANDROID_CMAKE_VERSION }}
+          key: android-sdk-ndk${{ env.ANDROID_NDK_VERSION }}-cmake${{ env.ANDROID_CMAKE_VERSION }}-${{ runner.os }}
+
+      - name: Install Android SDK components
+        run: |
+          set -eu
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager" ]; then
+            sdkmanager="$(command -v sdkmanager)"
+          fi
+          # `yes | sdkmanager` は SIGPIPE を pipefail が拾うため、pipefail を切って実行する。
+          set +o pipefail
+          yes | "$sdkmanager" --licenses > /dev/null
+          set -o pipefail
+          "$sdkmanager" --install \
+            "platforms;android-${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK_VERSION}" \
+            "cmake;${ANDROID_CMAKE_VERSION}" > /dev/null
+          {
+            echo "AAPT2=$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}/aapt2"
+            echo "APKSIGNER=$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}/apksigner"
+          } >> "$GITHUB_ENV"
+
+      - name: Compute versionName / versionCode
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "$INPUT_VERSION" ]; then
+            args=(--tag "$INPUT_VERSION")
+          elif [ "$REF_TYPE" = "tag" ]; then
+            args=(--tag "$REF_NAME")
+          fi
+          out="$(node clients/apps/mobile/scripts/android-version.mjs "${args[@]}")"
+          printf '%s\n' "$out" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Install JS dependencies
+        working-directory: clients
+        run: pnpm install --frozen-lockfile
+
+      # OTA 整合 (design R5): APK に埋め込まれる runtimeVersion は、clean checkout で解決した
+      # fingerprint と一致しなければならない。prebuild 前（android/ が無い状態）で控えておく。
+      - name: Resolve expected expo runtimeVersion (clean checkout)
+        id: runtime
+        working-directory: clients/apps/mobile
+        env:
+          SIGNED: ${{ inputs.signed }}
+        run: |
+          set -u
+          raw="$(pnpm exec expo-updates runtimeversion:resolve --platform android 2>/dev/null || true)"
+          rt="$(printf '%s\n' "$raw" | node -e '
+            const lines = require("fs").readFileSync(0, "utf8").split("\n").map((l) => l.trim()).filter(Boolean).reverse();
+            for (const l of lines) {
+              try {
+                const j = JSON.parse(l);
+                if (typeof j === "string") { console.log(j); process.exit(0); }
+                if (j && typeof j.runtimeVersion === "string") { console.log(j.runtimeVersion); process.exit(0); }
+              } catch {}
+            }
+            if (lines.length) console.log(lines[0]);
+          ')"
+          if [ -z "$rt" ]; then
+            if [ "$SIGNED" = "true" ]; then
+              echo "::error::could not resolve the expected expo runtimeVersion"
+              exit 1
+            fi
+            echo "::warning::could not resolve the expected expo runtimeVersion; the OTA consistency check is skipped"
+          else
+            echo "expected runtimeVersion: $rt"
+            echo "value=$rt" >> "$GITHUB_OUTPUT"
+          fi
+
+      # android/ は CNG (Continuous Native Generation) の生成物でコミットしない。
+      # 同じ入力から 2 回 `prebuild --clean` して完全に同じ内容になること（再現性）を確認する。
+      - name: Expo prebuild (android) x2 and compare
+        working-directory: clients/apps/mobile
+        run: |
+          set -eu
+          snapshot() {
+            (cd android && find . -type f -not -path './.gradle/*' -not -path '*/build/*' -print0 | sort -z | xargs -0 sha256sum)
+          }
+          pnpm exec expo prebuild --platform android --clean --no-install
+          snapshot > "$RUNNER_TEMP/prebuild-1.sha256"
+          pnpm exec expo prebuild --platform android --clean --no-install
+          snapshot > "$RUNNER_TEMP/prebuild-2.sha256"
+          if ! diff -u "$RUNNER_TEMP/prebuild-1.sha256" "$RUNNER_TEMP/prebuild-2.sha256"; then
+            echo "::error::expo prebuild --clean is not reproducible (two runs differ)"
+            exit 1
+          fi
+          echo "prebuild reproducible: $(wc -l < "$RUNNER_TEMP/prebuild-1.sha256") files identical across two runs"
+
+      # prebuild は apps/mobile/package.json の scripts を `expo run:*` に書き換える。
+      # そのままだと fingerprint (runtimeVersion) が変わり OTA 不一致になるので必ず戻す。
+      - name: Restore apps/mobile/package.json rewritten by prebuild
+        run: |
+          set -eu
+          git checkout -- clients/apps/mobile/package.json
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "::warning::tracked files still differ after prebuild:"
+            git status --porcelain --untracked-files=no
+          fi
+
+      - name: Kotlin unit tests (expo-crateforge-android-auto)
+        working-directory: clients/apps/mobile/android
+        run: ./gradlew :expo-crateforge-android-auto:testDebugUnitTest -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64 --stacktrace
+
+      - name: Upload Kotlin test reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-kotlin-test-reports-${{ inputs.signed && 'release' || 'pr' }}
+          path: |
+            clients/packages/expo-crateforge-android-auto/android/build/test-results
+            clients/packages/expo-crateforge-android-auto/android/build/reports/tests
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # 署名付きビルドのときだけ keystore を復元する。値はログに出ない (Secrets は自動マスク)。
+      # 早期に alias とパスワードを keytool で検査し、期待証明書と違えば 20 分ビルドする前に落とす。
+      - name: Restore release keystore and pre-check it
+        if: ${{ inputs.signed }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CRATEFORGE_ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.CRATEFORGE_ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CRATEFORGE_ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.CRATEFORGE_ANDROID_KEY_PASSWORD }}
+          EXPECT_CERT: ${{ inputs.cert-sha256 }}
+        run: |
+          set -eu
+          missing=0
+          for n in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!n}" ]; then
+              echo "::error::signed build requested but secret for $n is empty (CRATEFORGE_ANDROID_* secrets are not configured / not passed)"
+              missing=1
+            fi
+          done
+          [ "$missing" = 0 ] || exit 1
+
+          umask 077
+          ks="$RUNNER_TEMP/release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$ks"
+          [ -s "$ks" ] || { echo "::error::decoded keystore is empty (is the secret valid base64?)"; exit 1; }
+
+          if ! listing="$(keytool -list -v -keystore "$ks" -storepass:env STORE_PASSWORD -alias "$KEY_ALIAS" 2>&1)"; then
+            echo "::error::keytool could not open the keystore with alias '$KEY_ALIAS' (wrong keystore password or alias)"
+            exit 1
+          fi
+          cert="$(printf '%s\n' "$listing" | grep -m1 -E '^[[:space:]]*SHA256:' | sed -E 's/^[[:space:]]*SHA256:[[:space:]]*//' | tr -d ':' | tr 'A-F' 'a-f')"
+          echo "keystore signing certificate SHA-256: ${cert:-unknown}"
+          if [ -n "$EXPECT_CERT" ]; then
+            want="$(printf '%s' "$EXPECT_CERT" | tr -d ': ' | tr 'A-F' 'a-f')"
+            if [ "$cert" != "$want" ]; then
+              echo "::error::keystore certificate ($cert) does not match repository variable CRATEFORGE_ANDROID_CERT_SHA256 ($want)"
+              exit 1
+            fi
+          else
+            echo "::warning::repository variable CRATEFORGE_ANDROID_CERT_SHA256 is not set; the signing certificate identity is not enforced"
+          fi
+          echo "CRATEFORGE_SIGNING_STORE_FILE=$ks" >> "$GITHUB_ENV"
+
+      - name: Resolve ABIs
+        id: abis
+        env:
+          INPUT_ABIS: ${{ inputs.abis }}
+          SIGNED: ${{ inputs.signed }}
+        run: |
+          set -eu
+          if [ -n "$INPUT_ABIS" ]; then
+            abis="$INPUT_ABIS"
+          elif [ "$SIGNED" = "true" ]; then
+            abis="arm64-v8a,armeabi-v7a"
+          else
+            abis="arm64-v8a"
+          fi
+          echo "value=$abis" >> "$GITHUB_OUTPUT"
+
+      - name: Gradle assembleRelease
+        working-directory: clients/apps/mobile/android
+        env:
+          CRATEFORGE_VERSION_NAME: ${{ steps.version.outputs.name }}
+          CRATEFORGE_VERSION_CODE: ${{ steps.version.outputs.code }}
+          CRATEFORGE_SIGNING_REQUIRED: ${{ inputs.signed && 'true' || 'false' }}
+          CRATEFORGE_SIGNING_STORE_PASSWORD: ${{ inputs.signed && secrets.CRATEFORGE_ANDROID_KEYSTORE_PASSWORD || '' }}
+          CRATEFORGE_SIGNING_KEY_ALIAS: ${{ inputs.signed && secrets.CRATEFORGE_ANDROID_KEY_ALIAS || '' }}
+          CRATEFORGE_SIGNING_KEY_PASSWORD: ${{ inputs.signed && secrets.CRATEFORGE_ANDROID_KEY_PASSWORD || '' }}
+          ABIS: ${{ steps.abis.outputs.value }}
+          # ビルド時の fingerprint 計算は prebuild 後のツリーで走り、clean checkout の値（= eas update が使う
+          # runtimeVersion）とずれる。clean checkout で解決した値を expo-updates に渡して埋め込ませる（EAS Build と同じ方式）。
+          EXPO_UPDATES_FINGERPRINT_OVERRIDE: ${{ steps.runtime.outputs.value }}
+        run: ./gradlew :app:assembleRelease "-PreactNativeArchitectures=${ABIS}" -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64 --stacktrace
+
+      - name: Verify APK
+        id: verify
+        env:
+          SIGNED: ${{ inputs.signed }}
+          EXPECT_CERT: ${{ inputs.cert-sha256 }}
+          EXPECT_RUNTIME: ${{ steps.runtime.outputs.value }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          ABIS: ${{ steps.abis.outputs.value }}
+        run: |
+          set -euo pipefail
+          apk=clients/apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          args=(--expect-version-name "$VERSION_NAME" --expect-version-code "$VERSION_CODE" --expect-abis "$ABIS")
+          if [ -n "$EXPECT_RUNTIME" ]; then args+=(--expect-runtime-version "$EXPECT_RUNTIME"); fi
+          if [ "$SIGNED" = "true" ]; then
+            args+=(--reject-debug-cert)
+            if [ -n "$EXPECT_CERT" ]; then args+=(--expect-cert "$EXPECT_CERT"); fi
+          fi
+          bash clients/apps/mobile/scripts/verify-apk.sh "$apk" "${args[@]}" | tee "$RUNNER_TEMP/verify-apk.log"
+          cert="$(grep -m1 '^cert SHA-256:' "$RUNNER_TEMP/verify-apk.log" | sed -E 's/^cert SHA-256:[[:space:]]*//')"
+          echo "cert-sha256=$cert" >> "$GITHUB_OUTPUT"
+
+      - name: Stage release files
+        id: stage
+        env:
+          SIGNED: ${{ inputs.signed }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          set -eu
+          out="$RUNNER_TEMP/out"
+          mkdir -p "$out"
+          if [ "$SIGNED" = "true" ]; then
+            name="crateforge-android-${VERSION_NAME}.apk"
+          else
+            # 鍵なしビルドは debug 署名。配布物と取り違えないようファイル名で区別する。
+            name="crateforge-android-${VERSION_NAME}-debug-signed.apk"
+          fi
+          cp clients/apps/mobile/android/app/build/outputs/apk/release/app-release.apk "$out/$name"
+          (cd "$out" && sha256sum "$name" > "$name.sha256" && cat "$name.sha256")
+          echo "apk-name=$name" >> "$GITHUB_OUTPUT"
+          echo "out-dir=$out" >> "$GITHUB_OUTPUT"
+
+      # 署名済み APK は release.yml の release-android ジョブが `android-apk` を取得して Release に添付する。
+      # 名前を `crateforge-` で始めない: desktop の release ジョブ (pattern: crateforge-*) に混ざらないように。
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.signed && 'android-apk' || 'android-apk-debug-signed' }}
+          path: |
+            ${{ steps.stage.outputs.out-dir }}/${{ steps.stage.outputs.apk-name }}
+            ${{ steps.stage.outputs.out-dir }}/${{ steps.stage.outputs.apk-name }}.sha256
+          if-no-files-found: error
+          retention-days: ${{ inputs.signed && 30 || 7 }}
+          compression-level: 0
+
+      - name: Remove release keystore
+        if: ${{ always() && inputs.signed }}
+        run: rm -f "$RUNNER_TEMP/release.jks"

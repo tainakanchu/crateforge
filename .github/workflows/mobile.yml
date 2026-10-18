@@ -1,0 +1,170 @@
+name: Mobile CI
+
+# clients/ (モバイル / TV / 共有パッケージ) 用の PR・main push チェック。
+# ci.yml は desktop 専用のまま。ここでは次を確認する。
+#   js      : core / mobile / tv の型チェックとテスト、Android Auto 用 Expo モジュール・config plugin・
+#             スクリプトの node テスト、iOS prebuild の回帰（UIBackgroundModes=audio が保たれる）、
+#             TV の Android prebuild の回帰（expo-audio のサービスが従来どおり残る）
+#   android : android-apk.yml を signed: false で呼び、prebuild x2 + Kotlin ユニットテスト +
+#             assembleRelease (arm64-v8a) + APK 検査
+#
+# 秘密情報: pull_request イベントでは fork のコードにも secrets は渡らず、本ワークフローは
+# そもそも secrets を一切参照しない。署名付きビルドは release.yml（tag v*）だけが行う。
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "clients/**"
+      - ".github/workflows/mobile.yml"
+      - ".github/workflows/android-apk.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "clients/**"
+      - ".github/workflows/mobile.yml"
+      - ".github/workflows/android-apk.yml"
+  workflow_dispatch:
+
+# 同一 ref で実行中の古いチェックはキャンセルする。
+concurrency:
+  group: mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  js:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CI: "1"
+      EXPO_NO_TELEMETRY: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # clients/ は pnpm 10.x で lockfile を維持している。ルート package.json は desktop 用に
+      # pnpm@9.15.4 を固定しているので、version を渡す場合は packageManager の無い
+      # clients/package.json を package_json_file に指定して衝突（Multiple versions of pnpm）を避ける。
+      - name: Setup pnpm (clients/ uses pnpm 10)
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+          package_json_file: clients/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # setup-node の `cache: pnpm` はリポジトリ直下 (pnpm@9.15.4 固定) で `pnpm store path` を解決するため、
+      # clients/ を pnpm 10 で入れた実際のストアと食い違い、post 処理の保存が失敗する。clients/ で解決して明示キャッシュする。
+      - name: Resolve pnpm store path
+        id: pnpm-store
+        working-directory: clients
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('clients/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install JS dependencies
+        working-directory: clients
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (core)
+        working-directory: clients
+        run: pnpm -C packages/core exec tsc --noEmit
+
+      - name: Typecheck (expo-crateforge-android-auto)
+        working-directory: clients
+        run: pnpm -C packages/expo-crateforge-android-auto exec tsc --noEmit
+
+      - name: Typecheck (mobile)
+        working-directory: clients
+        run: pnpm -C apps/mobile typecheck
+
+      - name: Typecheck (tv)
+        working-directory: clients
+        run: pnpm -C apps/tv typecheck
+
+      - name: Test (mobile)
+        working-directory: clients
+        run: pnpm -C apps/mobile test --ci
+
+      - name: Test (tv)
+        working-directory: clients
+        run: pnpm -C apps/tv test --ci
+
+      # Node 22 の `node --test <dir>` はディレクトリを再帰しないため、ファイルを列挙して渡す。
+      - name: Node tests (config plugin, version/APK scripts)
+        working-directory: clients
+        run: |
+          set -euo pipefail
+          mapfile -t tests < <(find packages/expo-crateforge-android-auto/plugin/__tests__ apps/mobile/scripts/__tests__ \
+            -maxdepth 1 -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \) | sort)
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "::error::no node test files found"
+            exit 1
+          fi
+          printf 'running %s\n' "${tests[@]}"
+          node --test "${tests[@]}"
+
+      - name: ShellCheck (verify-apk.sh)
+        run: shellcheck -x clients/apps/mobile/scripts/verify-apk.sh
+
+      # iOS 回帰（自動化できる範囲）: Android Auto 追加で iOS のネイティブ設定が変わっていないこと。
+      # prebuild は apps/mobile/package.json を書き換えるので、終わったら必ず戻す。
+      - name: iOS prebuild regression check
+        working-directory: clients/apps/mobile
+        run: |
+          set -euo pipefail
+          pnpm exec expo prebuild --platform ios --clean --no-install
+          git checkout -- package.json
+          plist="$(find ios -maxdepth 2 -name Info.plist | head -n 1)"
+          test -n "$plist"
+          python3 - "$plist" <<'EOF'
+          import plistlib, sys
+          with open(sys.argv[1], "rb") as f:
+              info = plistlib.load(f)
+          modes = info.get("UIBackgroundModes")
+          assert modes == ["audio"], f"UIBackgroundModes must be exactly ['audio'], got {modes!r}"
+          print("iOS Info.plist UIBackgroundModes =", modes)
+          EOF
+          if grep -rIl -e 'android-auto' -e 'AndroidAuto' ios; then
+            echo "::error::Android Auto artefacts leaked into the iOS project"
+            exit 1
+          fi
+          echo "iOS prebuild OK"
+
+      # TV 回帰: TV は expo-crateforge-android-auto に依存しない。expo-audio の
+      # foreground service は従来どおり残り、Android Auto のサービスは入らないこと。
+      - name: TV Android prebuild regression check
+        working-directory: clients/apps/tv
+        run: |
+          set -euo pipefail
+          pnpm exec expo prebuild --platform android --clean --no-install
+          git checkout -- package.json
+          manifest=android/app/src/main/AndroidManifest.xml
+          grep -q 'expo.modules.audio.service.AudioControlsService' "$manifest" \
+            || { echo "::error::TV manifest lost expo-audio AudioControlsService"; exit 1; }
+          if grep -q 'CrateforgeMediaLibraryService' "$manifest"; then
+            echo "::error::Android Auto service leaked into the TV manifest"
+            exit 1
+          fi
+          echo "TV prebuild OK"
+
+  android:
+    # fork の PR を含め secrets は渡さない (signed: false)。
+    permissions:
+      contents: read
+    uses: ./.github/workflows/android-apk.yml
+    with:
+      signed: false

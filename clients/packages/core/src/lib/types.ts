@@ -113,6 +113,11 @@ export interface Health {
   name: string;
   version: string;
   trackCount: number;
+  /**
+   * サーバー（ライブラリ）の安定識別子（16 桁 HEX）。旧サーバーは返さない。
+   * Android Auto のネイティブカタログで libraryScope として使う。
+   */
+  serverId?: string;
 }
 
 /** `/api/stats`。 */
@@ -178,6 +183,8 @@ export interface DownloadEntry {
   createdAt: number;
   /** ローカルに保存したアルバムアートの file:// URI。未取得または失敗なら null/undefined。 */
   artworkUri?: string | null;
+  /** 保存時に接続していたサーバーの serverId（/api/health）。旧データ・不明時は未定義。 */
+  serverId?: string;
 }
 
 /** オフライン保存したプレイリスト。メンバーはトラックメタに無いので保存時に記録する。 */
@@ -189,6 +196,8 @@ export interface DownloadedPlaylist {
   createdAt: number;
   /** true のとき、再接続時にサーバー側メンバーと同期する。旧データでは未定義。 */
   pinned?: boolean;
+  /** 保存時に接続していたサーバーの serverId（/api/health）。旧データ・不明時は未定義。 */
+  serverId?: string;
 }
 
 /** `GET /api/tracks/{id}/similar` のクエリ。 */
