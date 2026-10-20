@@ -1868,40 +1868,26 @@ pub async fn delete_track_artwork(
 /// 原本バイトをデコードし、アスペクト比維持で最大辺 ≤ size に縮小して再エンコードする。
 /// format 既定は webp (ロスレス, pure Rust)、"jpeg" 指定で JPEG (品質 82)。
 /// size 既定は 512。デコード/エンコードに失敗したら `None` (呼び出し側で原本へフォールバック)。
+/// 縮小 + エンコードの実処理はデスクトップの `artwork://` と共有 (`crate::artwork::resize_encode`)。
 fn resize_artwork(
     bytes: &[u8],
     size: Option<u32>,
     format: Option<&str>,
 ) -> Option<(Vec<u8>, &'static str)> {
-    use image::codecs::jpeg::JpegEncoder;
-    use image::ImageFormat;
+    use crate::artwork::ThumbFormat;
 
-    let img = image::load_from_memory(bytes).ok()?;
     // 要求サイズは安全上限 (2048) でクランプ。loopback は無認証で叩けるため、
     // ?size=50000 のような巨大値で thumbnail が width*height*4 バイトを確保して
-    // OOM/abort するのを防ぐ。
+    // OOM/abort するのを防ぐ。元画像より大きい指定では拡大しない (resize_encode 側)。
     let edge = size.unwrap_or(512).clamp(1, 2048);
-    // 元画像より大きい指定では拡大しない (最大辺が edge を超える時だけ縮小。アスペクト比は維持)。
-    let thumb = if img.width().max(img.height()) > edge {
-        img.thumbnail(edge, edge)
+    let fmt = if matches!(format, Some("jpeg") | Some("jpg")) {
+        // JPEG は品質 82 で固定。
+        ThumbFormat::Jpeg(82)
     } else {
-        img
+        // 既定: webp (VP8L ロスレス)。
+        ThumbFormat::WebpLossless
     };
-
-    let want_jpeg = matches!(format, Some("jpeg") | Some("jpg"));
-    let mut out = std::io::Cursor::new(Vec::new());
-    if want_jpeg {
-        // JPEG は品質 82 で固定 (アルファは write_with_encoder が RGB へ畳む)。
-        let encoder = JpegEncoder::new_with_quality(&mut out, 82);
-        thumb.write_with_encoder(encoder).ok()?;
-        Some((out.into_inner(), "image/jpeg"))
-    } else {
-        // 既定: webp (image-webp による VP8L ロスレス, C ライブラリ不要)。
-        // write_to が ImageFormat::WebP に対し WebPEncoder::new_lossless を選び、
-        // 必要な色変換 (Rgb8/Rgba8 へ) も自動で行う。
-        thumb.write_to(&mut out, ImageFormat::WebP).ok()?;
-        Some((out.into_inner(), "image/webp"))
-    }
+    crate::artwork::resize_encode(bytes, edge, fmt)
 }
 
 /// ブラウザがネイティブ再生できる拡張子かどうかを判定する。

@@ -1866,6 +1866,7 @@ export function RightRail({
           <>
             <div className="cb-nowart" style={{ background: artGradient(now.album) }}>
               <span className="g">{leadingGlyph(now.name)}</span>
+              {/* 大きく出すヒーローなので size を渡さず原本を読む (1 枚だけなので負荷は小さい)。 */}
               <ArtworkImg path={now.fileExists ? now.locationPath : null} />
               <div className="ov">
                 {now.bpm != null && (

@@ -436,7 +436,8 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
   }, [trackIds, onSaved, bumpArtworkEpoch]);
 
   // 単曲のときだけ現在のジャケットをプレビュー (?v= でキャッシュバスト)。
-  const baseArt = single ? artworkUrl(tracks[0].locationPath) : null;
+  // プレビュー枠は 88px なので縮小サムネイルで足りる。
+  const baseArt = single ? artworkUrl(tracks[0].locationPath, 88) : null;
   const artUrl = baseArt
     ? `${baseArt}${baseArt.includes("?") ? "&" : "?"}v=${artVersion}`
     : null;

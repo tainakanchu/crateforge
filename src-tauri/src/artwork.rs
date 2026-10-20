@@ -3,7 +3,14 @@
 //! iTunes XML はアートワークを含まないため、トラックの実ファイルに埋め込まれた
 //! 先頭の picture を読む。`artwork://localhost/<percent-encoded path>` のカスタム
 //! URI スキーム経由でフロントの `<img>` から遅延ロードされる (lib.rs で登録)。
+//! `?s=<px>` 付きの要求は [`thumb`] が縮小済みサムネイルをディスクキャッシュして返す。
+//!
+//! 縮小 + 再エンコード ([`resize_encode`] ほか) はデスクトップの `artwork://` と
+//! 内蔵 API (`GET /api/tracks/{id}/artwork?size=`、モバイルのサムネ) で共有する。
 
+pub mod thumb;
+
+use image::DynamicImage;
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::picture::{MimeType, Picture, PictureType};
@@ -25,6 +32,69 @@ pub fn extract_picture(path: &str) -> Option<(Vec<u8>, String)> {
         .map(|m| m.as_str().to_string())
         .unwrap_or_else(|| "image/jpeg".to_string());
     Some((pic.data().to_vec(), mime))
+}
+
+/// 縮小後の出力フォーマット。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThumbFormat {
+    /// webp (image-webp による VP8L ロスレス, C ライブラリ不要)。アルファを保持できる。
+    /// image 0.25 の webp エンコーダはロスレスのみ。
+    WebpLossless,
+    /// JPEG (引数は品質 1..=100)。アルファは捨てて RGB8 に落とす。
+    Jpeg(u8),
+}
+
+/// 画像バイト列をデコードする (形式はマジックバイトから推定)。失敗時は `None`。
+pub fn decode_image(bytes: &[u8]) -> Option<DynamicImage> {
+    image::load_from_memory(bytes).ok()
+}
+
+/// アスペクト比を維持して最大辺 ≤ edge に縮小する。元画像の方が小さければ拡大せずそのまま返す。
+pub fn shrink_to(img: DynamicImage, edge: u32) -> DynamicImage {
+    let edge = edge.max(1);
+    if img.width().max(img.height()) > edge {
+        img.thumbnail(edge, edge)
+    } else {
+        img
+    }
+}
+
+/// 画像を指定フォーマットでエンコードして `(バイト列, MIME)` を返す。失敗時は `None`。
+pub fn encode_image(img: &DynamicImage, format: ThumbFormat) -> Option<(Vec<u8>, &'static str)> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    match format {
+        ThumbFormat::Jpeg(quality) => {
+            // JPEG はアルファ / 16bit 非対応なので、RGB8 / L8 以外は RGB8 に揃えてから渡す。
+            let encoder =
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
+            match img {
+                DynamicImage::ImageRgb8(_) | DynamicImage::ImageLuma8(_) => {
+                    img.write_with_encoder(encoder).ok()?
+                }
+                _ => DynamicImage::ImageRgb8(img.to_rgb8())
+                    .write_with_encoder(encoder)
+                    .ok()?,
+            }
+            Some((out.into_inner(), "image/jpeg"))
+        }
+        ThumbFormat::WebpLossless => {
+            // write_to が ImageFormat::WebP に対し WebPEncoder::new_lossless を選び、
+            // 必要な色変換 (Rgb8/Rgba8 へ) も自動で行う。
+            img.write_to(&mut out, image::ImageFormat::WebP).ok()?;
+            Some((out.into_inner(), "image/webp"))
+        }
+    }
+}
+
+/// 原本バイトをデコード → 最大辺 ≤ edge に縮小 → 指定フォーマットで再エンコードする。
+/// デコード/エンコードに失敗したら `None` (呼び出し側で原本へフォールバックする想定)。
+pub fn resize_encode(
+    bytes: &[u8],
+    edge: u32,
+    format: ThumbFormat,
+) -> Option<(Vec<u8>, &'static str)> {
+    let img = shrink_to(decode_image(bytes)?, edge);
+    encode_image(&img, format)
 }
 
 /// 埋め込み用に画像を PNG/JPEG へ正規化して `(バイト列, MIME)` を返す。
