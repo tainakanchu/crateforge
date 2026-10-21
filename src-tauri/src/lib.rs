@@ -154,6 +154,12 @@ pub fn run() {
                 logging::install(&dir);
             }
 
+            // artwork:// サムネイルのディスクキャッシュを容量上限まで掃除する。
+            // バックグラウンドスレッドで少し待ってから走るので起動はブロックしない。
+            if let Ok(dir) = app.path().app_cache_dir() {
+                artwork::thumb::spawn_startup_trim(dir.join(artwork::thumb::CACHE_DIR_NAME));
+            }
+
             // バックグラウンド音声解析ワーカを起動して managed state に載せる。
             app.manage(analyzer::Analyzer::new(app.handle().clone()));
 
