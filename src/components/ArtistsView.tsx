@@ -351,7 +351,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                           onDoubleClick={() => artistTracks(a).then((ts) => playTracks(ts))}
                         >
                           <span className="glyph">{leadingGlyph(a.name)}</span>
-                          <ArtworkImg path={a.artworkLocationPath} />
+                          <ArtworkImg path={a.artworkLocationPath} size={cardW} />
                           <span className="grad" />
                           <div className="kbtag">
                             {a.albumCount > 1 && (
@@ -516,7 +516,7 @@ function ArtistExpansion({
                       style={{ background: artGradient(al.album) }}
                     >
                       <span className="glyph">{leadingGlyph(al.album)}</span>
-                      <ArtworkImg path={al.coverFileExists ? al.coverLocationPath : null} />
+                      <ArtworkImg path={al.coverFileExists ? al.coverLocationPath : null} size={38} />
                     </div>
                     <div className="art-alb-meta">
                       <div className="t">{al.album}</div>

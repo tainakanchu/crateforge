@@ -315,7 +315,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                         onContextMenu={(e) => openTrackMenu(e, t)}
                       >
                         <span className="glyph">{leadingGlyph(t.album || t.name || "")}</span>
-                        <ArtworkImg path={t.fileExists ? t.locationPath : null} />
+                        <ArtworkImg path={t.fileExists ? t.locationPath : null} size={cardW} />
                         <span className="grad" />
                         {t.bpm != null && (
                           <div className="kbtag">
