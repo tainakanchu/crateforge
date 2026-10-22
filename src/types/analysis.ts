@@ -16,9 +16,20 @@ export interface TrackAnalysis {
   energy: number | null;
   loudnessLufs: number | null;
   replaygainDb: number | null;
-  vector: number[];
+  /**
+   * 類似度計算用の特徴ベクトル。get_analysis（1 曲）では入るが、一覧 get_all_analyses では
+   * 送らない（36k 曲分で IPC が十数 MB になるため, #213）。空かどうかは hasAnalysisVector で判定する。
+   */
+  vector?: number[];
+  /** 一覧 get_all_analyses でのみ入る。特徴ベクトルが空でないか。 */
+  hasVector?: boolean;
   /** 波形オーバービュー（0..1 のピーク列）。一覧取得では空、get_analysis でのみ充填。 */
   peaks: number[];
+}
+
+/** 特徴ベクトルを持つか（一覧の hasVector / 1 曲取得の vector のどちらでも判定できる）。 */
+export function hasAnalysisVector(a: Pick<TrackAnalysis, "vector" | "hasVector">): boolean {
+  return a.hasVector ?? (a.vector != null && a.vector.length > 0);
 }
 
 export interface AnalysisStatus {

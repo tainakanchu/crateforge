@@ -1,9 +1,52 @@
+use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::analyzer::similarity::{rank_similar, smooth_order, SimilarOpts};
+use crate::analyzer::similarity::{smooth_order, SimilarOpts};
 use crate::analyzer::Analyzer;
 use crate::commands::library::open_db;
 use crate::models::{AnalysisStatus, SimilarHit, TrackAnalysis};
+
+/// `get_all_analyses` の 1 行。[`TrackAnalysis`] から特徴ベクトルだけを除いたもの (#213)。
+/// フロントはベクトルを「空かどうか」(未解析判定) にしか使わないため、36k 曲分の
+/// ベクトル (IPC で十数 MB) を送らず `has_vector` で代替する。類似度計算は Rust 側で完結する。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisSummary {
+    pub track_id: i64,
+    pub version: i64,
+    pub analyzed_at: String,
+    pub bpm: Option<f64>,
+    pub key_camelot: Option<String>,
+    pub key_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_camelot_user: Option<String>,
+    pub energy: Option<f64>,
+    pub loudness_lufs: Option<f64>,
+    pub replaygain_db: Option<f64>,
+    /// 特徴ベクトルが空でないか (旧 `vector.length > 0`)。
+    pub has_vector: bool,
+    /// 一覧では常に空 (従来どおり)。
+    pub peaks: Vec<f32>,
+}
+
+impl From<&TrackAnalysis> for AnalysisSummary {
+    fn from(a: &TrackAnalysis) -> Self {
+        AnalysisSummary {
+            track_id: a.track_id,
+            version: a.version,
+            analyzed_at: a.analyzed_at.clone(),
+            bpm: a.bpm,
+            key_camelot: a.key_camelot.clone(),
+            key_name: a.key_name.clone(),
+            key_camelot_user: a.key_camelot_user.clone(),
+            energy: a.energy,
+            loudness_lufs: a.loudness_lufs,
+            replaygain_db: a.replaygain_db,
+            has_vector: !a.vector.is_empty(),
+            peaks: a.peaks.clone(),
+        }
+    }
+}
 
 /// 指定トラックの解析をバックグラウンドキューへ投入する。
 /// `force` で解析済みでも再解析する。進捗は `analysis-progress` イベントで届く。
@@ -32,11 +75,13 @@ pub fn get_analysis_status(app: AppHandle) -> Result<AnalysisStatus, String> {
     Ok(AnalysisStatus { analyzed, total })
 }
 
-/// 解析済みの全曲を返す (フロントが key/energy 列をまとめて引く / 類似度の母集合)。
+/// 解析済みの全曲を返す (フロントが key/energy 列をまとめて引く)。
+/// 特徴ベクトルは送らず `hasVector` のみ ([`AnalysisSummary`])。
 #[tauri::command(async)]
-pub fn get_all_analyses(app: AppHandle) -> Result<Vec<TrackAnalysis>, String> {
+pub fn get_all_analyses(app: AppHandle) -> Result<Vec<AnalysisSummary>, String> {
     let db = open_db(&app)?;
-    db.get_all_analysis().map_err(|e| e.to_string())
+    let all = db.get_all_analysis_cached().map_err(|e| e.to_string())?;
+    Ok(all.iter().map(AnalysisSummary::from).collect())
 }
 
 /// `track_id` に似た曲を距離昇順で返す。
@@ -52,25 +97,13 @@ pub fn get_similar(
     energy_tol: Option<f64>,
 ) -> Result<Vec<SimilarHit>, String> {
     let db = open_db(&app)?;
-    let base = match db.get_analysis(track_id).map_err(|e| e.to_string())? {
-        Some(b) if !b.vector.is_empty() => b,
-        _ => return Ok(Vec::new()),
-    };
-    let all = db.get_all_analysis().map_err(|e| e.to_string())?;
     let opts = SimilarOpts {
         bpm_tol,
         key_compatible: key_compatible.unwrap_or(false),
         energy_tol,
     };
-    let ranked = rank_similar(&base, &all, &opts, limit.unwrap_or(25));
-
-    let mut hits = Vec::with_capacity(ranked.len());
-    for (tid, distance) in ranked {
-        if let Ok(Some(track)) = db.get_track_by_track_id(tid) {
-            hits.push(SimilarHit { track, distance });
-        }
-    }
-    Ok(hits)
+    db.similar_hits(track_id, &opts, limit.unwrap_or(25))
+        .map_err(|e| e.to_string())
 }
 
 /// crate 等の track_id 列を貪欲最近傍で「滑らかな並び」に並べ替えて返す。
