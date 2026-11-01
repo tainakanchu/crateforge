@@ -115,6 +115,15 @@ export default defineConfig({
                 "zh-TW": "格式轉換",
               },
             },
+            {
+              slug: "guide/usb-export",
+              label: "USB 書き出し（CDJ）",
+              badge: { text: { ja: "実験的", en: "Experimental", "zh-TW": "實驗性" }, variant: "caution" },
+              translations: {
+                en: "USB export (CDJ)",
+                "zh-TW": "USB 匯出（CDJ）",
+              },
+            },
           ],
         },
       ],

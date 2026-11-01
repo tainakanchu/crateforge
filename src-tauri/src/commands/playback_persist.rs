@@ -116,11 +116,21 @@ fn plan(
 
 /// スナップショットを取り、必要なら保存する。`force` は位置の間引きを無視する (終了時)。
 fn persist_once(app: &AppHandle, force: bool) {
-    let snap = {
+    let mut snap = {
         let player = app.state::<Mutex<AudioPlayer>>();
         let Ok(p) = player.lock() else { return };
         p.snapshot()
     };
+    // Cast 中の AudioPlayer は位置を持たないので、Cast の位置で保存する
+    // (次回起動時はその位置からローカルで一時停止状態に復元される)。
+    if snap.track_id.is_some() {
+        if let Some(pos) = app
+            .try_state::<crate::playback_target::PlaybackCoordinator>()
+            .and_then(|c| c.cast_position())
+        {
+            snap.position_ms = pos;
+        }
+    }
     let preview_active = app.state::<PreviewMode>().get();
     let persister = app.state::<PlaybackPersister>();
     let Ok(mut inner) = persister.inner.lock() else {

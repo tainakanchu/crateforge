@@ -16,19 +16,23 @@ import { SmartPlaylistEditor } from "./components/SmartPlaylistEditor";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { PairingApprovalDialog } from "./components/PairingApprovalDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
-import { DiscDetectedBanner } from "./components/DiscDetectedBanner";
+import { DiscDetectedDialog } from "./components/DiscDetectedDialog";
 import { Toaster } from "./components/Toaster";
 import { RipStatusBar } from "./components/RipStatusBar";
 import { DropImportOverlay } from "./components/DropImportOverlay";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 import { SyncProvisionDialog } from "./components/SyncProvisionDialog";
+import { UsbExportDialog } from "./components/UsbExportDialog";
+import { UsbExportStatusBar } from "./components/UsbExportStatusBar";
 import { TriagePanel } from "./components/TriagePanel";
 import { SetHistoryView } from "./components/SetHistoryView";
 import { useStore, markSetWorkspaceHydrationDone } from "./store/useStore";
 import { useDiscWatcher } from "./hooks/useDiscWatcher";
+import { useUsbExportEvents } from "./hooks/useUsbExportEvents";
 import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
 import * as playbackApi from "./api/playback";
+import * as castApi from "./api/cast";
 import * as systemApi from "./api/system";
 import * as analysisApi from "./api/analysis";
 import * as ripperApi from "./api/ripper";
@@ -154,7 +158,7 @@ export default function App() {
   const runAutoExportCallbackRef = useRef<() => Promise<void>>(async () => {});
   const [reloadCount, setReloadCount] = useState(0);
   const [ripOpen, setRipOpen] = useState(false);
-  // 検出バナーから開いたときに RipDialog へ渡すドライブ (検出元)
+  // 検出ダイアログから開いたときに RipDialog へ渡すドライブ (検出元)
   const [ripInitialDevice, setRipInitialDevice] = useState<string | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [editorTracks, setEditorTracks] = useState<Track[] | null>(null);
@@ -166,6 +170,10 @@ export default function App() {
   const [installing, setInstalling] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [syncProvisionOpen, setSyncProvisionOpen] = useState(false);
+  // USB 書き出しダイアログ (開いているときは初期選択のプレイリスト ID 群)。
+  const [usbExportIds, setUsbExportIds] = useState<number[] | null>(null);
+  // 書き出しの進捗はダイアログを閉じていても store に集める。
+  useUsbExportEvents();
   const [helpOpen, setHelpOpen] = useState(false);
   const { detectedDisc, dismiss: dismissDisc } = useDiscWatcher({
     enabled: !ripOpen && ripStatus?.phase !== "ripping",
@@ -780,6 +788,54 @@ export default function App() {
     };
   }, []);
 
+  // Google Cast 再生先の状態をストアへ反映する (初期取得 + cast-state-changed)。
+  // キャスト中は Audition を落とし、接続断はトーストで知らせる (PC へ自動では戻さない)。
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlistenState: (() => void) | undefined;
+    let unlistenDevices: (() => void) | undefined;
+    let cancelled = false;
+    const apply = (s: castApi.CastStatus) => {
+      const st = useStore.getState();
+      const prev = st.castStatus;
+      st.setCastStatus(s);
+      if (castApi.isCasting(s) && st.auditionMode) st.setAuditionMode(false);
+      if (
+        s.target.type === "googleCast" &&
+        s.connectionState === "disconnected" &&
+        prev.connectionState !== "disconnected"
+      ) {
+        st.pushToast(
+          "error",
+          `「${s.target.deviceName}」との接続が切れました。PC からは自動で再生しません — 再生先メニューから再接続するかローカルへ戻してください`,
+          8000,
+        );
+      }
+    };
+    (async () => {
+      try {
+        const s = await castApi.getCastStatus();
+        if (!cancelled) apply(s);
+      } catch {
+        /* バックエンド未対応 / 起動直後: 既定 (local) のまま */
+      }
+      const u1 = await castApi.onCastStateChanged(apply);
+      const u2 = await castApi.onCastDevicesChanged((d) => useStore.getState().setCastDevices(d));
+      if (cancelled) {
+        u1();
+        u2();
+      } else {
+        unlistenState = u1;
+        unlistenDevices = u2;
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unlistenState) unlistenState();
+      if (unlistenDevices) unlistenDevices();
+    };
+  }, []);
+
   // 出力デバイスの通知 (#170): 起動時に保存済みデバイスが見つからなかった / 再生中に
   // 抜かれてシステム既定へ切り替えた、をトーストで知らせる (非ブロッキング)。
   // 起動直後の通知はイベントより先に積まれているので、マウント時にも取り出す。
@@ -1252,6 +1308,7 @@ export default function App() {
       <Sidebar
         onPlaylistsChanged={triggerReload}
         onEditSmart={(id, name) => setSmartEditor({ playlistId: id, name })}
+        onUsbExport={(ids) => setUsbExportIds(ids)}
       />
       <div className="cb-main">
         <UpdateBanner />
@@ -1260,6 +1317,11 @@ export default function App() {
           onOpenRipDialog={() => setRipOpen(true)}
           onOpenRulesPanel={() => setRulesOpen(true)}
           onOpenSyncProvision={() => setSyncProvisionOpen(true)}
+          onOpenUsbExport={() =>
+            setUsbExportIds(
+              viewMode === "playlist" && selectedPlaylistId != null ? [selectedPlaylistId] : [],
+            )
+          }
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenHelp={() => setHelpOpen(true)}
         />
@@ -1324,6 +1386,13 @@ export default function App() {
       )}
       <PlayerBar />
       <RipStatusBar onOpenLog={() => setRipOpen(true)} />
+      <UsbExportStatusBar
+        hidden={usbExportIds != null}
+        onOpen={() =>
+          // 実行中 / 最後の書き出しの選択で開く (ダイアログ側も最後の設定を優先して表示する)。
+          setUsbExportIds(useStore.getState().usbExportLastOptions?.playlistIds ?? [])
+        }
+      />
       <RipDialog
         open={ripOpen}
         initialDevice={ripInitialDevice}
@@ -1362,9 +1431,15 @@ export default function App() {
           onLibraryChanged={triggerReload}
         />
       )}
+      {usbExportIds && (
+        <UsbExportDialog
+          initialPlaylistIds={usbExportIds}
+          onClose={() => setUsbExportIds(null)}
+        />
+      )}
       {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
       {detectedDisc && (
-        <DiscDetectedBanner
+        <DiscDetectedDialog
           disc={detectedDisc}
           onRip={() => { setRipInitialDevice(detectedDisc.device); dismissDisc(); setRipOpen(true); }}
           onDismiss={dismissDisc}

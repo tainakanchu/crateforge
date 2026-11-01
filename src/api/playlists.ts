@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { Playlist, Track, SortField, SortOrder, SmartCriteria } from "../types";
+import type {
+  Playlist,
+  Track,
+  SortField,
+  SortOrder,
+  SmartCriteria,
+  SmartRestoreReport,
+} from "../types";
 
 export async function getPlaylists(): Promise<Playlist[]> {
   return invoke("get_playlists");
@@ -63,6 +70,15 @@ export async function removeTrackFromPlaylist(
   return invoke("remove_track_from_playlist", { playlistId, trackId });
 }
 
+/// 複数曲をまとめてプレイリストから外す (1 トランザクション)。各 ID につき最初の
+/// 出現 1 つだけを外す (単曲版と同じ意味)。外した行数を返す。
+export async function removeTracksFromPlaylist(
+  playlistId: number,
+  trackIds: number[],
+): Promise<number> {
+  return invoke("remove_tracks_from_playlist", { playlistId, trackIds });
+}
+
 export async function reorderPlaylistTracks(
   playlistId: number,
   orderedTrackIds: number[],
@@ -88,6 +104,16 @@ export async function updateSmartCriteria(
 
 export async function getSmartCriteria(playlistId: number): Promise<SmartCriteria | null> {
   return invoke("get_smart_criteria", { playlistId });
+}
+
+/// 既存ライブラリ向け: iTunes XML (複数可・先頭のファイルを優先) のスマートプレイリスト条件を、
+/// Persistent ID が一致するプレイリストへ復元する。曲・プレイリスト自体は取り込まない。
+/// `overwrite` が false なら既に条件があるプレイリストは変更しない。
+export async function restoreItunesSmartPlaylists(
+  paths: string[],
+  overwrite: boolean,
+): Promise<SmartRestoreReport> {
+  return invoke("restore_itunes_smart_playlists", { paths, overwrite });
 }
 
 /// スマートプレイリストの曲をライブ評価で取得する。`query` は通常プレイリストと同じく

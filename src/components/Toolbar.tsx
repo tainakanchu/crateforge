@@ -4,6 +4,7 @@ import * as libraryApi from "../api/library";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import { ColumnPicker } from "./ColumnPicker";
+import { SmartRestoreDialog } from "./SmartRestoreDialog";
 import type { LibraryStats, SortField, ViewMode } from "../types";
 import { ALBUM_SORT_FIELDS, ARTIST_SORT_FIELDS } from "../types";
 import { AUDIO_EXTENSIONS } from "../lib/audioExtensions";
@@ -13,6 +14,7 @@ interface ToolbarProps {
   onOpenRipDialog: () => void;
   onOpenRulesPanel: () => void;
   onOpenSyncProvision: () => void;
+  onOpenUsbExport: () => void;
   onOpenSettings: () => void;
   onOpenHelp: () => void;
 }
@@ -103,6 +105,7 @@ export function Toolbar({
   onOpenRipDialog,
   onOpenRulesPanel,
   onOpenSyncProvision,
+  onOpenUsbExport,
   onOpenSettings,
   onOpenHelp,
 }: ToolbarProps) {
@@ -136,9 +139,12 @@ export function Toolbar({
   } = useStore();
 
   const [importing, setImporting] = useState(false);
+  // iTunes XML からスマートプレイリストを復元するダイアログ。
+  const [smartRestoreOpen, setSmartRestoreOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
   const [importingFolders, setImportingFolders] = useState(false);
+  const [checkingFiles, setCheckingFiles] = useState(false);
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
   const [status, setStatusRaw] = useState("");
   const statusTimerRef = useRef<number | null>(null);
@@ -447,6 +453,39 @@ export function Toolbar({
     }
   }, [autoExportEnabled, setAutoExport]);
 
+  // ライブラリ全曲の実ファイル有無を確認し直す (リンク切れ再チェック)。
+  // 状態が変わった曲があれば Rust 側が library-changed を送るので、一覧はそちらで再読み込みされる。
+  const handleRescanFiles = useCallback(async () => {
+    setCheckingFiles(true);
+    setStatus("リンク切れを確認中…");
+    const unlisten = await libraryApi.onFileCheckProgress(({ done, total }) => {
+      setStatus(`リンク切れを確認中 ${done.toLocaleString()}/${total.toLocaleString()}…`);
+    });
+    try {
+      const r = await libraryApi.rescanFileExistence();
+      // 前回からの変化 (新たに欠損 / 復帰) があれば括弧書きで添える。
+      const changes = [
+        r.newlyMissing > 0 ? `新たに ${r.newlyMissing.toLocaleString()} 曲` : "",
+        r.newlyFound > 0 ? `${r.newlyFound.toLocaleString()} 曲が復帰` : "",
+      ]
+        .filter(Boolean)
+        .join(" / ");
+      setStatus(
+        r.missing > 0
+          ? `${r.missing.toLocaleString()} 曲のファイルが見つかりません` +
+              (changes ? `（${changes}）` : "") +
+              " — 検索で missing:yes と入力すると一覧できます"
+          : `全 ${r.checked.toLocaleString()} 曲のファイルを確認しました（リンク切れなし）` +
+              (changes ? `（${changes}）` : ""),
+      );
+    } catch (err) {
+      setStatus(`リンク切れの再チェックに失敗: ${err}`);
+    } finally {
+      unlisten();
+      setCheckingFiles(false);
+    }
+  }, [setStatus]);
+
   // iTunes 互換 XML の自動エクスポートを ON/OFF。ON 時にパス未設定なら出力先を聞く。
   const handleToggleAutoExport = useCallback(async () => {
     if (autoExportEnabled) {
@@ -521,6 +560,13 @@ export function Toolbar({
       showLabel: true,
     },
     {
+      id: "usbExport",
+      label: "USB に書き出し",
+      icon: "upload",
+      title: "プレイリストを CDJ 用 USB (rekordbox 互換) に書き出す",
+      onClick: onOpenUsbExport,
+    },
+    {
       id: "import",
       label: "Import XML",
       icon: "download",
@@ -528,6 +574,15 @@ export function Toolbar({
       onClick: handleImport,
       disabled: importing,
       primary: true,
+    },
+    {
+      id: "restoreSmart",
+      label: "iTunes XML からスマートプレイリストを復元…",
+      icon: "sliders",
+      title:
+        "iTunes XML からスマートプレイリストを復元…\n" +
+        "取り込み済みのプレイリストに iTunes の条件だけを設定し直す (曲・プレイリストは取り込まない)",
+      onClick: () => setSmartRestoreOpen(true),
     },
     {
       id: "importFiles",
@@ -587,6 +642,16 @@ export function Toolbar({
       onClick: handleToggleAutoExport,
       on: autoExportEnabled,
     },
+    {
+      id: "rescanFiles",
+      label: "リンク切れを再チェック",
+      icon: "warning",
+      title:
+        "全曲のファイルが今もあるか確認し直す (外付けドライブの接続後など)\n" +
+        "見つからない曲は検索で missing:yes と入力すると一覧できます",
+      onClick: handleRescanFiles,
+      disabled: checkingFiles || (stats?.trackCount ?? 0) === 0,
+    },
   ];
 
 
@@ -603,7 +668,7 @@ export function Toolbar({
               type="text"
               placeholder={
                 'Search… artist:"daft punk"  genre:house  year:2015-2020  rating:4-5  ' +
-                "bpm:120-128  key:compat:8A  tag:mood:dreamy  analyzed:no  (/ or Ctrl+F)"
+                "bpm:120-128  key:compat:8A  tag:mood:dreamy  analyzed:no  missing:yes  (/ or Ctrl+F)"
               }
               value={localSearch}
               onChange={handleSearchChange}
@@ -903,6 +968,16 @@ export function Toolbar({
             clear all
           </button>
         </div>
+      )}
+
+      {smartRestoreOpen && (
+        <SmartRestoreDialog
+          onClose={() => setSmartRestoreOpen(false)}
+          onRestored={() => {
+            setStatus("iTunes XML からスマートプレイリストを復元しました");
+            onLibraryChanged();
+          }}
+        />
       )}
     </>
   );

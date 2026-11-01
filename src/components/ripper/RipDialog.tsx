@@ -14,7 +14,7 @@ import { primeRipChime } from "../../lib/ripChime";
 
 interface RipDialogProps {
   open: boolean;
-  // 検出バナーから開いたときの検出元ドライブ。null なら保存済み/自動検出に従う。
+  // 検出ダイアログから開いたときの検出元ドライブ。null なら保存済み/自動検出に従う。
   initialDevice?: string | null;
   onClose: () => void;
   onLibraryChanged: () => void;
@@ -66,7 +66,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
   }, [isOpen]);
 
   // 開くたびにドライブを検出し、初期ドライブを決める。
-  // 優先順: 検出バナーの検出元 > 保存済み (ripDevice) > 検出した先頭 > 既定値
+  // 優先順: 検出ダイアログの検出元 > 保存済み (ripDevice) > 検出した先頭 > 既定値
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;

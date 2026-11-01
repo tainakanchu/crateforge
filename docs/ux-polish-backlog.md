@@ -52,8 +52,10 @@
 ## ⏳ 残タスク（未着手 / 部分のみ）
 
 - **スマートプレイリストの該当件数プレビュー**（条件をデバウンスで count「N件マッチ」）— 未着手。
-- **AlbumView / CoversView のキーボード操作**（onContextMenu/矢印/選択）と **AlbumView の仮想化**
-  （500組超で重い、`useVirtualizer`）— 未着手（第3弾）。
+- **AlbumView / CoversView のキーボード操作**（矢印/選択）— 未着手（第3弾）。右クリック
+  (`onContextMenu`) は対応済み。なお **AlbumsView の仮想化は実装済み**（`useVirtualizer` で
+  グリッド行＋展開行を行単位に仮想化、overscan 6、列数は ResizeObserver の幅から算出）。
+  CoversView という独立コンポーネントは現存せず、アート前面のブラウズは `AlbumsView` に統合されている。
 - **サイドバー幅のリサイズ**（現状 202px 固定）— 未着手。
 - **プレイリスト表示中の検索 scope**（現状は強制 library へ）— 未着手。
 - **ConvertDialog の失敗ファイル一覧 / 変換中キャンセル**（要バックエンド協調）— 未着手。

@@ -42,6 +42,83 @@ Under **Settings → General → Output device** you can choose the audio output
   If it is not found, playback uses the **system default** and a toast tells you so (the choice is kept, so reconnecting the device and restarting brings it back).
 - If the chosen device is disconnected during playback, Crateforge switches to the system default automatically and notifies you.
 
+## Cast playback (Google Cast)
+
+Crateforge can send music to **Google Cast devices** on the same LAN (Chromecast, Google TV, and Cast-enabled speakers).
+The device uses Google's standard Default Media Receiver; the PC serves the audio and handles the controls.
+
+### How to use
+
+1. Click the **"再生先" (Playback target) button** (the cast icon) in the player bar.
+2. Pick a device from the list. **"このコンピューター" (This computer)** at the top of the list is normal local playback.
+3. Once connected, the current track **continues on the cast device from the same position** (playing stays playing, paused stays paused).
+4. To go back to local playback, choose **"このコンピューター"** in the list or press **"切断してローカルへ戻す" (Disconnect and return to local)**.
+   Casting stops and the track is loaded on the PC from the same position, **paused**.
+
+If a device does not show up, press **"再検索" (Search again)**.
+While casting, the button is highlighted, and states such as connecting / reconnecting / disconnected are shown in the list header and under the device name.
+
+### Supported devices
+
+- Google Cast built-in TVs and speakers, Chromecast, Google TV
+- **Not supported**: AirPlay devices such as HomePod (they cannot be reached through Cast; on macOS see "AirPlay (macOS)" below), Miracast / screen mirroring
+
+### Requirements
+
+- The PC and the cast device must be on the **same LAN**.
+- Crateforge's **built-in API server must be running with "LAN exposure" enabled**, so the cast device can fetch the audio from the PC.
+  If it is off when you pick a device, a **confirmation dialog** appears and LAN exposure is turned on only if you agree (it is never exposed without asking).
+  You can turn it off again at any time in [Settings → AI integration / API](../api-server/).
+- mDNS (multicast) must get through. In the following cases the device may not be found or may fail to connect:
+  - The router has **AP isolation** on, or the PC is on a different network such as a guest Wi-Fi
+  - A firewall blocks **UDP 5353 (mDNS)** or **inbound connections on the API port (default 8787)**
+  - With a VPN or multiple network adapters, an interface different from the device's network may be chosen and the connection can fail.
+    In that case, turn the VPN off or use only the network the device is on.
+
+### Supported formats
+
+The following formats can be cast for now:
+
+- **MP3**
+- **AAC** (in an M4A / MP4 container)
+
+Anything else, such as FLAC / ALAC / WAV / AIFF / Opus, shows the error "this track's format is not supported for casting" and the playback target does not change
+(if a track is already playing locally, it keeps playing).
+
+### While casting
+
+- **Queue, shuffle, repeat and auto-advance** continue just like local playback. When a track ends, the next one starts on the cast device.
+- Play history such as play counts is recorded from the time actually played on the cast device.
+- **Preview / Audition are disabled** (they cannot be started while casting; conversely, you cannot change the playback target during a Preview, so end it with `Esc` and choose again).
+- If communication with the cast device is lost, Crateforge tries to reconnect a few times automatically. If that fails, it shows **"切断" (Disconnected)**.
+  It **never switches to the PC speakers automatically** (so sound never suddenly comes out of the wrong speakers).
+  Pick the device again to reconnect, or return to local. Returning to local loads the track from the last position, paused.
+- The app **always starts on local output**. Even if you were casting last time, it does not reconnect automatically.
+- Play / pause, seek and volume in the player bar keep working while casting (volume is the cast device's volume).
+
+### Security
+
+The cast device is never given your LAN API token. Instead, it gets a **dedicated URL that is valid for a single track, only for a short time, and can be revoked at any moment**.
+The URL is revoked when you change track, disconnect, or quit the app.
+
+Casting still **requires LAN exposure**, and is **intended for trusted LANs such as your home or studio**.
+It is not designed for use over the internet or on public Wi-Fi shared with strangers.
+
+### AirPlay (macOS)
+
+> Behavior depends on your environment. This procedure is based on the design analysis; it has not yet been verified on real hardware.
+
+Crateforge does not implement AirPlay itself. On macOS you play to an AirPlay speaker by making it the OS sound output.
+
+1. In **System Settings → Sound → Output** (or Control Center), choose the AirPlay speaker.
+2. Keep Crateforge's **Settings → General → Output device** on **System default**.
+   When the OS default output changes, Crateforge follows within a few seconds.
+3. If the AirPlay device is listed there, you can also select it directly.
+
+:::note
+AirPlay devices do not appear in the playback target list. AirPlay can add latency on the OS side, and depending on your setup you may hear dropouts or delay.
+:::
+
 ## Audition / Preview
 
 Press `A` to enter **Audition mode**: the waveform gets taller, 25 / 50 / 75% markers appear, and you can move around inside a track quickly.

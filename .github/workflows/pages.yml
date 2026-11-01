@@ -8,16 +8,23 @@ on:
       - "site/**"
       - "website/**"
       - ".github/workflows/pages.yml"
+  pull_request:
+    paths:
+      - "site/**"
+      - "website/**"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
+# Workflow-level: read-only so fork PRs work without pages: write.
+# Deploy job elevates pages/id-token permissions below.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  # Keep deploy (push/workflow_dispatch) in its own group so PR builds never
+  # share the Pages deploy slot. Cancel superseded PR builds only.
+  group: pages-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'deploy' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -55,17 +62,24 @@ jobs:
           cp -r site/. _site/
           cp -r website/dist/. _site/docs/
 
+      # Pages artifact upload is deploy-only (needs pages: write).
       - name: Setup Pages
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
 
   deploy:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

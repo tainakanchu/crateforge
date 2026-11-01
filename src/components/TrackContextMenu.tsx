@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import * as libraryApi from "../api/library";
+import { useStore } from "../store/useStore";
+import { AUDIO_EXTENSIONS } from "../lib/audioExtensions";
 import { Icon, Stars } from "./Icon";
-import type { Playlist } from "../types";
+import type { Playlist, Track } from "../types";
 
 interface TrackContextMenuProps {
   x: number;
@@ -19,6 +23,11 @@ interface TrackContextMenuProps {
   showRemoveFromPlaylist: boolean;
   /** 「Finder / エクスプローラで表示」の対象パス。null なら項目を無効表示にする */
   revealPath: string | null;
+  /**
+   * 「ファイルの場所を指定…」の対象曲（単曲メニューのときだけ渡す）。null なら項目を出さない。
+   * リンク切れの曲だけでなく、ファイルがある曲も別の場所へ付け替えられる。
+   */
+  relocateTrack: Track | null;
   /** 「ライブラリから削除…」の対象曲数（選択件数。1 以上で項目を出す） */
   deleteCount: number;
   onClose: () => void;
@@ -60,6 +69,38 @@ function folderPath(playlists: Playlist[], p: Playlist): string {
 /** macOS は Finder、他 OS はファイルマネージャ。UI では両方を出して迷わせない。 */
 const REVEAL_LABEL = "Finder / エクスプローラで表示";
 
+/** パス文字列の親フォルダ（区切りが無ければ null）。OS 依存の区切り両方に対応する。 */
+function parentDir(path: string): string | null {
+  const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return i > 0 ? path.slice(0, i) : null;
+}
+
+/**
+ * 「ファイルの場所を指定…」: ファイル選択ダイアログで新しい場所を選ばせ、曲の location を付け替える。
+ * メニューは先に閉じる (アンマウントされる) ので、hooks ではなく store を直接触る。
+ * 一覧の再読み込みは Rust 側が送る library-changed に任せる。
+ */
+async function pickAndRelocate(track: Track): Promise<void> {
+  const { pushToast } = useStore.getState();
+  // 今のファイルがあるなら同じフォルダから開く (無いフォルダを渡すとダイアログが失敗しうる)。
+  const defaultPath =
+    track.fileExists && track.locationPath ? parentDir(track.locationPath) ?? undefined : undefined;
+  try {
+    const picked = await open({
+      title: `「${track.name || "(unknown)"}」のファイルを選択`,
+      multiple: false,
+      directory: false,
+      defaultPath,
+      filters: [{ name: "Audio files", extensions: [...AUDIO_EXTENSIONS] }],
+    });
+    if (typeof picked !== "string") return;
+    const t = await libraryApi.relocateTrackFile(track.trackId, picked);
+    pushToast("success", `「${t.name || "(unknown)"}」のファイルの場所を更新しました`);
+  } catch (err) {
+    pushToast("error", `ファイルの場所を更新できませんでした: ${err}`);
+  }
+}
+
 const FLY_W = 240;
 const FLY_H = 360;
 
@@ -73,6 +114,7 @@ export function TrackContextMenu({
   recentPlaylists,
   showRemoveFromPlaylist,
   revealPath,
+  relocateTrack,
   deleteCount,
   onClose,
   onPlay,
@@ -117,6 +159,7 @@ export function TrackContextMenu({
     const ids = ["play", "rating", "crate", "playnext", "queue", "analyze", "similar", "convert", "info"];
     // ファイルが無い曲では「表示」できないので、キーボード移動の対象からも外す。
     if (revealPath) ids.push("reveal");
+    if (relocateTrack) ids.push("relocate");
     if (showRemoveFromPlaylist) ids.push("remove");
     if (deleteCount > 0) ids.push("delete");
     for (const p of recentPlaylists) ids.push(`recent:${p.playlistId}`);
@@ -124,7 +167,7 @@ export function TrackContextMenu({
     ids.push("addtag");
     for (const t of genreTags) ids.push(`tag:${t}`);
     return ids;
-  }, [revealPath, showRemoveFromPlaylist, deleteCount, recentPlaylists, genreTags]);
+  }, [revealPath, relocateTrack, showRemoveFromPlaylist, deleteCount, recentPlaylists, genreTags]);
 
   const idxOf = useCallback((id: string) => navIds.indexOf(id), [navIds]);
   const activeId = navIds[activeIndex] ?? navIds[0];
@@ -172,6 +215,10 @@ export function TrackContextMenu({
     [onSetRating],
   );
 
+  const onRelocate = useCallback(() => {
+    if (relocateTrack) void pickAndRelocate(relocateTrack);
+  }, [relocateTrack]);
+
   const activateId = useCallback(
     (id: string) => {
       if (id === "play") return run(onPlay)();
@@ -184,6 +231,7 @@ export function TrackContextMenu({
       if (id === "info") return run(onGetInfo)();
       if (id === "remove") return run(onRemoveFromPlaylist)();
       if (id === "reveal") return run(onReveal)();
+      if (id === "relocate") return run(onRelocate)();
       // 削除は確認モーダルを開くだけなので、メニューは閉じずに呼び出し側へ委ねる。
       if (id === "delete") return run(onDelete)();
       if (id === "addtag") return run(onAddTag)();
@@ -194,7 +242,7 @@ export function TrackContextMenu({
         return run(() => onRemoveTag(id.slice(4)))();
       }
     },
-    [run, onPlay, onAddToCrate, onPlayNext, onEnqueue, onAnalyze, onFindSimilar, onConvert, onGetInfo, onRemoveFromPlaylist, onReveal, onDelete, onAddTag, onAddToPlaylist, onRemoveTag],
+    [run, onPlay, onAddToCrate, onPlayNext, onEnqueue, onAnalyze, onFindSimilar, onConvert, onGetInfo, onRemoveFromPlaylist, onReveal, onRelocate, onDelete, onAddTag, onAddToPlaylist, onRemoveTag],
   );
 
   const openSubmenu = useCallback(() => {
@@ -420,6 +468,21 @@ export function TrackContextMenu({
       ) : (
         <div className="context-menu-item disabled" title="ファイルが見つかりません">
           <Icon name="folderOpen" size={14} /> {REVEAL_LABEL}
+        </div>
+      )}
+      {/* ファイルの場所を指定（単曲のみ）。リンク切れの曲は警告アイコンで目立たせる */}
+      {relocateTrack && (
+        <div
+          {...itemProps("relocate")}
+          onClick={run(onRelocate)}
+          title={
+            relocateTrack.fileExists
+              ? "この曲のファイルを別の場所のファイルに付け替える"
+              : "ファイルが見つかりません — 新しい場所のファイルを指定する"
+          }
+        >
+          <Icon name={relocateTrack.fileExists ? "folder" : "warning"} size={14} />
+          ファイルの場所を指定…
         </div>
       )}
       {showRemoveFromPlaylist && (

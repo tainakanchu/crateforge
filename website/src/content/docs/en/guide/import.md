@@ -16,8 +16,13 @@ From **"📥 Import XML"** in the toolbar, select an `iTunes Library.xml` (Apple
 - The import is performed as a **full replacement of the library** (merging diffs into an existing XML is not supported).
 
 :::note
-Smart Playlist criteria (`Smart Info`) are **not preserved** on either import or export.
-You can recreate imported Smart Playlists with Crateforge's [Smart Playlist](../smart-playlists/) feature.
+iTunes Smart Playlists are imported by converting their criteria (`Smart Criteria` / `Smart Info`) into
+Crateforge [Smart Playlist](../smart-playlists/) rules (including "Playlist is", nested rule groups and item limits).
+Rules that cannot be converted, such as relative dates ("in the last N days"), are dropped; if no rule remains,
+the playlist is kept as a static snapshot instead. Exported XML contains the evaluated track list (the criteria themselves are not exported).
+
+For a library you have already imported, **"iTunes XML からスマートプレイリストを復元…" (restore smart playlists from iTunes XML)** in the toolbar sets the criteria again
+without re-importing the XML (also select an older library XML to resolve references to old IDs by name).
 :::
 
 ### Where the Library.xml is
@@ -91,6 +96,20 @@ Deleting actual files is **limited to files inside the organize folder (library 
   Uncheck the box in that case and remove the tracks from the library (database) only.
 :::
 
+## Fixing missing files (broken links)
+
+Tracks whose files can no longer be found — because an external drive or NAS was disconnected, or the files were
+moved in Finder — are shown as missing ("見つかりません").
+
+- **"リンク切れを再チェック" (Re-check missing files)** (on the right of the toolbar, or inside the **⋯** menu
+  when the window is narrow) — checks again whether every track's file still exists. Tracks whose files have
+  disappeared become missing, and tracks whose files are back (for example after reconnecting the drive) return
+  to normal. Progress and the result ("N 曲のファイルが見つかりません" — N files not found) are shown below the toolbar.
+- Type **`missing:yes`** in the search box to list only the missing tracks (`missing:no` lists tracks whose files exist).
+- Right-click a track → **"ファイルの場所を指定…" (Locate file…)** (single selection) — pick the file at its new
+  location in the file dialog and the track is repointed to it. Play counts, ratings, playlists and analysis
+  results are kept. You can repoint tracks that are not missing, too.
+
 ## Exporting iTunes-compatible XML
 
 With **"📤 Export XML"** in the toolbar, you can export an `iTunes Library.xml` (Apple plist format).
@@ -117,7 +136,7 @@ From **"💿 Rip CD"** in the toolbar, you can import a physical CD (track info 
 
 1. Choose the **Drive** and click "🔍 Detect Disc". Connected CD drives (e.g. `E:` on Windows, `/dev/sr0` / `/dev/cdrom` on Linux) are listed automatically, and the drive that was last read successfully is remembered as the next default. If yours isn't listed, pick "その他…" (Other) to type it manually (fallback defaults when nothing is detected: Linux: `/dev/cdrom`, macOS: `disk1`, Windows: `D:`)
 
-   While the app is running, CD drives are watched automatically: inserting a disc shows a "CD を検出しました" (CD detected) banner, and clicking "取り込む" (Import) opens Rip CD with that drive selected.
+   While the app is running, CD drives are watched automatically: inserting a disc shows a "CD を検出しました" (CD detected) dialog, and clicking "取り込む" (Import) opens Rip CD with that drive selected.
 2. The TOC is read and candidate albums from MusicBrainz are displayed automatically
 3. Re-pick the release if needed, and select the tracks
 4. Specify the **Format** (FLAC / ALAC / MP3 / WAV) and the **Output** folder, then click "▶ Start Ripping"
@@ -128,3 +147,7 @@ From **"💿 Rip CD"** in the toolbar, you can import a physical CD (track info 
 Under WSL2, a physical CD isn't visible directly, so you need to attach the drive to WSL2 with `usbipd-win`.
 The Windows build does not bundle `discid` (libdiscid), but "Detect Disc" still works because it reads the TOC directly via the OS IOCTL and computes the MusicBrainz Disc ID in-house. Entering the TOC manually is a fallback for environments where neither libdiscid nor IOCTL is available.
 :::
+
+## Using your tracks on a CDJ
+
+Playlists of the tracks you imported can be exported to a USB stick for CDJ / XDJ players, optionally with your Traktor cues and grids. See [USB export (CDJ / rekordbox-compatible)](../usb-export/).

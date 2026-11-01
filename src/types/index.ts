@@ -11,3 +11,4 @@ export * from "./smart";
 export * from "./setWorkspace";
 export * from "./gig";
 export * from "./setHistory";
+export * from "./usbExport";

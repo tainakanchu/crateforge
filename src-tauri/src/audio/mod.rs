@@ -82,7 +82,17 @@ pub struct AudioPlayer {
     /// `set_track_played` でフロントから「曲が終わった」と通知された後、
     /// `is_finished()` で次曲に進めるべきか判定するための sentinel。
     finished_for_advance: bool,
+    /// 停止時に `PlayReport` を返さない (Cast 側で既に実績を計上済みの曲をローカルへ
+    /// 引き継いだとき、同じ曲を二重に数えないため)。曲が替わると false に戻る。
+    suppress_report: bool,
+    /// 外部出力 (Google Cast) モード。ON の間はローカルで鳴らさない (`play` を断る)。
+    /// `set_external_current` で ON、`leave_external` でだけ OFF になる (停止では外れない)。
+    external: bool,
 }
+
+/// 外部出力モード中に `play` / `load_paused` を呼んだときのエラー。
+/// Playback Coordinator はこの状態をロック下で判定して Cast へ振り替える。
+pub const EXTERNAL_OUTPUT_ACTIVE: &str = "EXTERNAL_OUTPUT_ACTIVE: 外部出力 (Cast) で再生中です";
 
 // MixerDeviceSink internally holds a cpal Stream which is !Send on some platforms
 // but we guarantee single-threaded access via Mutex
@@ -118,6 +128,8 @@ impl AudioPlayer {
             shuffle: false,
             repeat: RepeatMode::Off,
             finished_for_advance: false,
+            suppress_report: false,
+            external: false,
         }
     }
 
@@ -168,6 +180,9 @@ impl AudioPlayer {
         preview: bool,
         start_paused: bool,
     ) -> Result<Option<PlayReport>, String> {
+        if self.external {
+            return Err(EXTERNAL_OUTPUT_ACTIVE.to_string());
+        }
         let report = self.stop_internal();
 
         let device = self._device.as_ref().ok_or("No audio output available")?;
@@ -284,7 +299,8 @@ impl AudioPlayer {
     /// 現在の sink を止めて状態をクリアし、停止直前まで再生していた曲の
     /// 実績 (`PlayReport`) を返す。再生していなければ None。
     fn stop_internal(&mut self) -> Option<PlayReport> {
-        let report = self.current_track_id.map(|tid| {
+        let suppress = self.suppress_report;
+        let report = self.current_track_id.filter(|_| !suppress).map(|tid| {
             let played = self.accumulated_position_ms
                 + self
                     .play_started_at
@@ -312,7 +328,80 @@ impl AudioPlayer {
         self.accumulated_position_ms = 0;
         self.finished_for_advance = false;
         self.current_preview = false;
+        self.suppress_report = false;
         report
+    }
+
+    /// 外部出力 (Google Cast) で再生中の曲を記録する。ローカルの sink は止め、
+    /// それまでの実績を返す。sink を持たないので `is_finished()` は常に false で、
+    /// 曲送りの判断は Playback Coordinator (Cast の MEDIA_STATUS) に任せる。
+    /// キュー (queue / order / order_pos) には触れない。
+    pub fn set_external_current(&mut self, track_id: i64, duration_ms: u64) -> Option<PlayReport> {
+        let report = self.stop_internal();
+        self.external = true;
+        self.current_track_id = Some(track_id);
+        self.duration_ms = duration_ms;
+        report
+    }
+
+    /// 曲を持たずに外部出力モードへ入る (Cast へ切り替えたとき何も読み込んでいなかった場合)。
+    pub fn enter_external(&mut self) -> Option<PlayReport> {
+        let report = self.stop_internal();
+        self.external = true;
+        report
+    }
+
+    /// ローカルの sink (rodio) を持っているか。
+    pub fn has_local_sink(&self) -> bool {
+        self.sink.is_some()
+    }
+
+    /// 外部出力モードか (このロックの下で判定すれば Coordinator の切替と競合しない)。
+    pub fn is_external(&self) -> bool {
+        self.external
+    }
+
+    /// 外部出力モードを抜ける (Cast → このコンピューター)。現在曲の記録は残す。
+    pub fn leave_external(&mut self) {
+        self.external = false;
+    }
+
+    /// ローカルの曲が鳴り終わったが、まだ自動送り (`is_finished`) に拾われていないか。
+    pub fn finish_pending(&self) -> bool {
+        !self.finished_for_advance && self.sink.as_ref().is_some_and(|s| s.empty())
+    }
+
+    /// 次の停止時に再生実績を返さない (Cast 側で計上済みの曲を引き継いだ直後に呼ぶ)。
+    pub fn suppress_next_report(&mut self) {
+        self.suppress_report = true;
+    }
+
+    /// テスト用: デコードせずに「曲を読み込んだ (一時停止中)」状態を作る。
+    #[cfg(test)]
+    pub(crate) fn fake_loaded(
+        &mut self,
+        track_id: i64,
+        path: &str,
+        duration_ms: u64,
+        position_ms: u64,
+    ) {
+        self.stop_internal();
+        self.current_track_id = Some(track_id);
+        self.current_path = Some(path.to_string());
+        self.duration_ms = duration_ms;
+        self.accumulated_position_ms = position_ms;
+    }
+
+    /// テスト用: 現在曲が preview で再生開始されたことにする。
+    #[cfg(test)]
+    pub(crate) fn fake_preview(&mut self) {
+        self.current_preview = true;
+    }
+
+    /// テスト用: ローカルで読み込んだ曲のパス (外部出力中・停止中は None)。
+    #[cfg(test)]
+    pub(crate) fn current_path(&self) -> Option<&str> {
+        self.current_path.as_deref()
     }
 
     pub fn seek(&mut self, position_ms: u64) {
@@ -1273,5 +1362,47 @@ mod tests {
         assert!(v.get("currentTrackId").is_some());
         assert!(v.get("positionMs").is_some());
         assert!(v.get("durationMs").is_some());
+    }
+}
+
+#[cfg(test)]
+mod external_tests {
+    use super::*;
+
+    #[test]
+    fn external_mode_refuses_local_playback_until_left() {
+        let mut p = AudioPlayer::new();
+        p.set_external_current(7, 1_000);
+        assert!(p.is_external());
+        assert_eq!(
+            p.play("/nonexistent.mp3", 8, 1_000, None, false)
+                .unwrap_err(),
+            EXTERNAL_OUTPUT_ACTIVE
+        );
+        // 停止しても外部出力モードは外れない (Cast 中の停止でローカルが鳴り出さない)。
+        p.stop();
+        assert!(p.is_external());
+        assert!(p
+            .load_paused("/nonexistent.mp3", 8, 1_000, None, 0)
+            .is_err());
+        p.leave_external();
+        assert!(!p.is_external());
+        // 抜けた後は通常のエラー (ファイル無し / デバイス無し) になる。
+        assert_ne!(
+            p.play("/nonexistent.mp3", 8, 1_000, None, false)
+                .unwrap_err(),
+            EXTERNAL_OUTPUT_ACTIVE
+        );
+    }
+
+    #[test]
+    fn suppressed_report_is_dropped_once() {
+        let mut p = AudioPlayer::new();
+        p.fake_loaded(1, "/a.mp3", 200_000, 150_000);
+        p.suppress_next_report();
+        assert!(p.stop().is_none());
+        // 次の曲からは通常どおり返す。
+        p.fake_loaded(2, "/b.mp3", 200_000, 150_000);
+        assert_eq!(p.stop().map(|r| r.played_ms), Some(150_000));
     }
 }

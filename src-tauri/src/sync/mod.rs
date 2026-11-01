@@ -1029,6 +1029,7 @@ mod tests {
             file_size_bytes: None,
             codec: None,
             key_camelot_user: None,
+            grouping: None,
         }
     }
 
@@ -1214,6 +1215,7 @@ mod tests {
             app: None,
             tokens: ValidTokens::default(),
             pairings: PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1352,6 +1354,7 @@ mod tests {
             app: None,
             tokens: ValidTokens::default(),
             pairings: PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
         let (base_url, server) = serve(app).await;
 
@@ -1492,6 +1495,7 @@ mod tests {
             app: None,
             tokens: ValidTokens::default(),
             pairings: PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
         let (base_url, server) = serve(app).await;
 
@@ -1631,6 +1635,7 @@ mod tests {
             app: None,
             tokens: ValidTokens::default(),
             pairings: PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
         let (base_url, server) = serve(app).await;
 

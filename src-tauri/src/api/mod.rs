@@ -37,6 +37,9 @@ pub struct ApiState {
     pub tokens: crate::devices::ValidTokens,
     /// デバイスペアリング レジストリ。axum ハンドラと Tauri コマンドで Arc を共有する。
     pub pairings: crate::pairing::PairingRegistry,
+    /// Cast Receiver 用の Media Ticket (`/api/cast/media/{ticket}` の認可)。
+    /// Tauri の managed state と `Arc` を共有し、Cast Coordinator が発行・失効させる。
+    pub cast_tickets: crate::cast::media_ticket::MediaTickets,
 }
 
 impl ApiState {
@@ -149,6 +152,12 @@ pub(crate) fn is_public_path(path: &str) -> bool {
             | "/api/pair/start"
             | "/api/pair/poll"
     )
+}
+
+/// `/api/cast/media/{ticket}` 形式 (区切りを含まない 1 セグメント) か判定する。
+fn is_cast_media_path(path: &str) -> bool {
+    path.strip_prefix("/api/cast/media/")
+        .is_some_and(|t| !t.is_empty() && !t.contains('/'))
 }
 
 /// `/api/tracks/{id}/rating` 形式（レーティング更新の最小権限エンドポイント）か判定する。
@@ -348,6 +357,15 @@ async fn auth_guard(
         return next.run(req).await;
     }
 
+    // Cast Receiver の音源取得は LAN トークンを持たないので、このパスの GET/HEAD に限り
+    // トークン検証を飛ばす。代わりにハンドラ (`handlers::cast_media`) が Media Ticket を必ず検証する。
+    // 他メソッドはここを通さず従来どおりトークン検証へ進める (→ 401/403)。
+    if is_cast_media_path(&path)
+        && (req.method() == axum::http::Method::GET || req.method() == axum::http::Method::HEAD)
+    {
+        return next.run(req).await;
+    }
+
     // LAN リクエスト: トークンを検証する。
     // 有効トークン集合 (legacy 共有トークン + デバイス別トークン) が空 = トークン
     // 未設定なので、従来どおり FORBIDDEN とする。
@@ -449,7 +467,12 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/tracks/by-ids", post(handlers::tracks_by_ids))
         .route("/api/tracks/lookup", post(handlers::tracks_lookup))
+        // 解析キュー投入 (この PC で解析を走らせる)。静的セグメントなので
+        // `/api/tracks/{trackId}` より優先解決される。`POST /api/analysis` (結果アップロード) とは別物。
+        // LAN からは書き込み許可リストに入れていないため 403 (ループバック専用)。
+        .route("/api/tracks/analyze", post(handlers::analyze_tracks))
         .route("/api/analysis/lookup", post(handlers::analysis_lookup))
+        .route("/api/analysis/status", get(handlers::get_analysis_status))
         .route(
             "/api/analysis",
             post(handlers::upload_analyses).layer(axum::extract::DefaultBodyLimit::max(
@@ -554,6 +577,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/remote/volume", post(handlers::remote_volume))
         .route("/api/remote/shuffle", post(handlers::remote_shuffle))
         .route("/api/remote/repeat", post(handlers::remote_repeat))
+        // Cast Receiver 向け音源配信 (Media Ticket で認可。GET は HEAD も受ける)
+        .route("/api/cast/media/{ticket}", get(handlers::cast_media))
         // 認証ミドルウェアを全ルートに適用 (with_state の前に route_layer)。
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -644,11 +669,19 @@ pub fn start(
     }
 
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    // Media Ticket は managed state と共有する (未登録の構成では空のレジストリ = 全拒否)。
+    let cast_tickets = {
+        use tauri::Manager;
+        app.try_state::<crate::cast::media_ticket::MediaTickets>()
+            .map(|t| t.inner().clone())
+            .unwrap_or_default()
+    };
     let state = ApiState {
         app_data_dir,
         app: Some(app),
         tokens,
         pairings,
+        cast_tickets,
     };
     let svc = router(state).into_make_service_with_connect_info::<SocketAddr>();
     let handle = tauri::async_runtime::spawn(async move {
@@ -804,6 +837,7 @@ mod tests {
             app: None,
             tokens: crate::devices::ValidTokens::default(),
             pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
         (dir, app)
     }
@@ -1978,9 +2012,11 @@ mod tests {
                 op: SmartOp::Contains,
                 value: "House".into(),
             }],
+            groups: vec![],
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         };
         db.set_smart_criteria(100, &criteria).unwrap();
 
@@ -1991,6 +2027,49 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0]["field"], "genre");
         assert_eq!(rules[0]["value"], "House");
+    }
+
+    // ===== ケース: スマートプレイリストの曲目編集 (追加・削除・全置換) → 409 =====
+    #[tokio::test]
+    async fn case_smart_playlist_tracks_write_is_conflict() {
+        use crate::models::{SmartCriteria, SmartOp, SmartRule};
+
+        let (dir, app) = setup();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        db.set_smart_criteria(
+            100,
+            &SmartCriteria {
+                match_all: true,
+                rules: vec![SmartRule {
+                    field: "genre".into(),
+                    op: SmartOp::Contains,
+                    value: "House".into(),
+                }],
+                groups: vec![],
+                limit: None,
+                sort_by: None,
+                sort_desc: false,
+                then_by: Vec::new(),
+            },
+        )
+        .unwrap();
+        let before = db.get_static_playlist_track_ids(100).unwrap();
+
+        for (method, uri, body) in [
+            ("PUT", "/api/playlists/100/tracks", Some(json!({ "trackIds": [3, 2] }))),
+            ("POST", "/api/playlists/100/tracks", Some(json!({ "trackIds": [4] }))),
+            ("DELETE", "/api/playlists/100/tracks/1", None),
+        ] {
+            let (status, resp) = req(app.clone(), method, uri, body).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{method} {uri}");
+            assert_eq!(
+                resp["error"],
+                crate::db::playlists::SMART_PLAYLIST_EDIT_ERROR,
+                "{method} {uri}"
+            );
+        }
+        // 保存行は一切変わらない。
+        assert_eq!(db.get_static_playlist_track_ids(100).unwrap(), before);
     }
 
     // ===== ケース: GET /api/playlists/{playlistId} — 存在しない → 404 =====
@@ -2147,6 +2226,7 @@ mod tests {
             app: None,
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
 
         let lan_ip = SocketAddr::from(([192, 168, 1, 50], 54321));
@@ -2242,6 +2322,7 @@ mod tests {
             app: None,
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
 
         // remote は rating・first-class tags・artwork に到達できる。
@@ -2773,6 +2854,7 @@ mod tests {
             app: None,
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
         let body = Some(upload_metadata("1111222233334444", 1));
         let (status, _) = lan_req(
@@ -2889,5 +2971,319 @@ mod tests {
         let analysis = db.get_analysis(1).unwrap().unwrap();
         assert_eq!(analysis.analyzed_at, "2026-01-01T00:00:00.001Z");
         assert_eq!(analysis.bpm, Some(130.0));
+    }
+
+    // ===== 解析キュー投入 / 進捗 =====
+
+    /// app=None (API 単体起動) では解析ワーカに届かないので 503。
+    /// 静的ルート `/api/tracks/analyze` が `/api/tracks/{trackId}` に吸われないことも兼ねて確認する。
+    #[tokio::test]
+    async fn case_analyze_tracks_without_app_is_503() {
+        let (_dir, app) = setup();
+        let (status, body) = req(
+            app,
+            "POST",
+            "/api/tracks/analyze",
+            Some(json!({ "trackIds": [3, 4], "force": false })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body["error"].as_str().unwrap().contains("analyzer"));
+    }
+
+    /// ボディ検証 (空 / 上限超過) はワーカ有無より先に 400 を返す。
+    #[tokio::test]
+    async fn case_analyze_tracks_validates_body_before_503() {
+        let (_dir, app) = setup();
+        let (status, body) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/analyze",
+            Some(json!({ "trackIds": [] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "trackIds is empty");
+
+        let too_many: Vec<i64> = (1..=(handlers::ANALYZE_MAX_IDS as i64 + 1)).collect();
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/analyze",
+            Some(json!({ "trackIds": too_many })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // 重複は排除してから上限判定する (同じ ID を大量に並べても 400 にならない)。
+        let dup = vec![3i64; handlers::ANALYZE_MAX_IDS + 1];
+        let (status, _) = req(
+            app,
+            "POST",
+            "/api/tracks/analyze",
+            Some(json!({ "trackIds": dup })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// 振り分け: 不明 / 解析済み / ファイル無し / 投入対象。force で解析済みも投入対象になる。
+    #[test]
+    fn case_plan_analysis_partitions_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        let audio = dir.path().join("a.mp3");
+        std::fs::write(&audio, b"x").unwrap();
+        // track 1 (解析済み) と 3 (未解析) だけ実ファイルあり。4・5 はパス無し。
+        for tid in [1, 3] {
+            db.conn
+                .execute(
+                    "UPDATE tracks SET location_path = ?1 WHERE track_id = ?2",
+                    rusqlite::params![audio.to_string_lossy(), tid],
+                )
+                .unwrap();
+        }
+
+        let plan = handlers::plan_analysis(&db, &[999, 1, 2, 3, 4], false).unwrap();
+        assert_eq!(plan.queue, vec![3]);
+        assert_eq!(plan.already_analyzed, 2);
+        assert_eq!(plan.missing_file, vec![4]);
+        assert_eq!(plan.unknown, vec![999]);
+
+        let forced = handlers::plan_analysis(&db, &[1, 2, 3], true).unwrap();
+        assert_eq!(forced.queue, vec![1, 3]);
+        assert_eq!(forced.already_analyzed, 0);
+        assert_eq!(forced.missing_file, vec![2]);
+    }
+
+    /// `GET /api/analysis/status` は get_analysis_status と同じ DB 集計を返す。
+    /// 旧バージョンの解析は未解析扱い、ファイル欠落曲は母数から外れる。app=None なので pending は null。
+    #[tokio::test]
+    async fn case_analysis_status_counts_current_version() {
+        let (dir, app) = setup();
+        let (status, body) = req(app.clone(), "GET", "/api/analysis/status", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["analyzed"], 2);
+        assert_eq!(body["total"], 5);
+        assert!(body["pending"].is_null());
+
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        insert_analysis(&db, 3, 120.0, "1A", 0.5, "[0.5, 0.5]");
+        db.conn
+            .execute(
+                "UPDATE track_analysis SET version = 1 WHERE track_id = 2",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute("UPDATE tracks SET file_exists = 0 WHERE track_id = 5", [])
+            .unwrap();
+        let (status, body) = req(app, "GET", "/api/analysis/status", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["analyzed"], 2, "track 1, 3 (track 2 は旧バージョン)");
+        assert_eq!(body["total"], 4);
+    }
+
+    /// 解析投入は LAN の書き込み許可リスト外 (remote / sync とも 403)。進捗の GET は読める。
+    #[tokio::test]
+    async fn case_analyze_tracks_forbidden_from_lan() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        let tokens = crate::devices::ValidTokens::default();
+        tokens.insert("remote-token".into());
+        tokens.insert_with_role("sync-token".into(), crate::devices::DeviceRole::Sync);
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens,
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
+        });
+
+        for token in ["remote-token", "sync-token"] {
+            let (status, _) = lan_req(
+                app.clone(),
+                Some(token),
+                "POST",
+                "/api/tracks/analyze",
+                Some(json!({ "trackIds": [3] })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{token}");
+        }
+
+        let (status, body) = lan_req(
+            app,
+            Some("remote-token"),
+            "GET",
+            "/api/analysis/status",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["analyzed"], 2);
+    }
+
+    /// Cast 用 Media Ticket: LAN トークン無しで GET/HEAD/Range が通るが、
+    /// チケット検証は必須で、他の API への権限にはならない。
+    #[tokio::test]
+    async fn cast_media_ticket_scoped_access() {
+        use axum::extract::ConnectInfo;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        let audio: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        let mp3 = dir.path().join("song.mp3");
+        let flac = dir.path().join("song.flac");
+        std::fs::write(&mp3, &audio).unwrap();
+        std::fs::write(&flac, b"fLaC").unwrap();
+        for (id, p) in [(1, &mp3), (2, &flac)] {
+            db.conn
+                .execute(
+                    "UPDATE tracks SET location_path = ?1 WHERE track_id = ?2",
+                    rusqlite::params![p.to_string_lossy(), id],
+                )
+                .unwrap();
+        }
+        let tokens = crate::devices::ValidTokens::default();
+        tokens.insert("remote-token".into());
+        let tickets = crate::cast::media_ticket::MediaTickets::default();
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens,
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: tickets.clone(),
+        });
+
+        async fn send(
+            app: &Router,
+            method: &str,
+            uri: &str,
+            range: Option<&str>,
+        ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+            let mut b = Request::builder().method(method).uri(uri);
+            if let Some(r) = range {
+                b = b.header("Range", r);
+            }
+            let mut req = b.body(Body::empty()).unwrap();
+            req.extensions_mut()
+                .insert(ConnectInfo(SocketAddr::from(([192, 168, 1, 77], 40000))));
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec();
+            (status, headers, body)
+        }
+
+        let t1 = tickets.issue(1, 1, 200_000);
+        let uri = format!("/api/cast/media/{t1}");
+
+        // 1. GET: トークン無しで原本を返す。
+        let (status, headers, body) = send(&app, "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, audio);
+        assert_eq!(headers["content-type"], "audio/mpeg");
+        assert_eq!(headers["access-control-allow-origin"], "*");
+        assert_eq!(headers["accept-ranges"], "bytes");
+
+        // 2. HEAD: 本文なし・長さだけ。
+        let (status, headers, body) = send(&app, "HEAD", &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.is_empty());
+        assert_eq!(headers["content-length"], "1000");
+
+        // 3. Range → 206 + Content-Range。チケットは消費されない。
+        let (status, headers, body) = send(&app, "GET", &uri, Some("bytes=10-19")).await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(headers["content-range"], "bytes 10-19/1000");
+        assert_eq!(body, &audio[10..20]);
+
+        // 4. 未知・不正形式・失効・期限切れはすべて 404 (区別しない)。
+        let unknown = format!("/api/cast/media/{}", "0".repeat(64));
+        assert_eq!(
+            send(&app, "GET", &unknown, None).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            send(&app, "GET", "/api/cast/media/not-a-ticket", None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        let revoked = tickets.issue(1, 2, 200_000);
+        tickets.revoke(&revoked);
+        assert_eq!(
+            send(&app, "GET", &format!("/api/cast/media/{revoked}"), None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        if let Some(past) = Instant::now().checked_sub(Duration::from_secs(4 * 3600)) {
+            let expired = tickets.issue_at(1, 3, 60_000, past);
+            assert_eq!(
+                send(&app, "GET", &format!("/api/cast/media/{expired}"), None)
+                    .await
+                    .0,
+                StatusCode::NOT_FOUND
+            );
+        }
+
+        // 5. チケットは発行された曲にしか効かない: 曲 2 (FLAC) は未対応形式、曲 3 はファイル無し。
+        let t2 = tickets.issue(2, 1, 0);
+        assert_eq!(
+            send(&app, "GET", &format!("/api/cast/media/{t2}"), None)
+                .await
+                .0,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        let t3 = tickets.issue(3, 1, 0);
+        assert_eq!(
+            send(&app, "GET", &format!("/api/cast/media/{t3}"), None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+
+        // 6. GET/HEAD 以外はトークン検証へ回り、拒否される。
+        let (status, _, _) = send(&app, "POST", &uri, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _, _) = send(&app, "DELETE", &uri, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // 7. チケットは他 API の認証にならない。
+        assert_eq!(
+            send(&app, "GET", "/api/tracks", None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            send(&app, "GET", &format!("/api/tracks?token={t1}"), None)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        // 空チケットはどのルートにも一致しない (認証を素通りする経路にはならない)。
+        assert_eq!(
+            send(&app, "GET", "/api/cast/media/", None).await.0,
+            StatusCode::NOT_FOUND
+        );
+
+        // 8. 通常の LAN トークン認証は従来どおり。
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("remote-token"),
+            "GET",
+            "/api/health",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
     }
 }

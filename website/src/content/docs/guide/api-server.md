@@ -65,6 +65,13 @@ GUI に即時反映します。書き戻しの処理はデスクトップ GUI �
 - **Key** — 実効キー（手動上書きがあればそれ、無ければ解析結果）を **InitialKey**（ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY）へ、
   Camelot ではなく音楽表記（`Am` など）で書きます。
 
+### 解析の実行
+
+- `POST /api/tracks/analyze`（`{trackIds, force?}`） — 指定曲の BPM / Key / Energy / 類似度解析をバックグラウンドキューへ投入し、`202` で `queued`（積んだ件数）などを返します。解析済みの曲は `force: true` でない限り積みません。1 リクエスト最大 1000 件。ループバック専用（LAN からは `403`）。
+- `GET /api/analysis/status` — 解析の進捗（`analyzed` / `total` / キュー残数 `pending`）。投入後のポーリングに使います。
+
+他のデバイスで計算済みの解析結果を取り込む同期用の `POST /api/analysis` とは別物です。進捗はデスクトップ GUI にも通常どおり表示されます。
+
 ### プレイリスト
 
 - `POST /api/playlists` — 新規作成
@@ -87,6 +94,15 @@ API 経由の変更は `library-changed` イベントで起動中アプリの UI
 
 AI は **候補プールの選定に集中** し、**曲順は GUI で人間が詰める** 方針です。
 詳細は [dj-curator の README](https://github.com/tainakanchu/crateforge/tree/main/plugins/dj-curator) を参照してください。
+
+## キャスト用メディア URL
+
+[Google Cast 再生](../playback/)のために、キャスト端末が音源を取得するエンドポイント `GET /api/cast/media/{ticket}` があります（`HEAD` と `Range` に対応）。
+
+- **Cast 専用** で、LAN トークンではなく **短命の Media Ticket**（1 曲に束縛・期限付き・失効可能）で認証します。
+  チケットが不正 / 期限切れ / 失効のときは `404` を返します。
+- チケットは曲の切り替え・切断・アプリ終了で失効します。LAN トークンはキャスト端末に渡りません。
+- このパスの `GET` / `HEAD` 以外のリクエストは、通常どおりトークンが必要です。
 
 ## iPad 等のリモコン Web UI
 

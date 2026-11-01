@@ -42,6 +42,8 @@ export interface Track {
   channels?: number | null;
   fileSizeBytes?: number | null;
   codec?: string | null;
+  /** グルーピング（iTunes の Grouping）。旧デスクトップ版のサーバーからは欠けるので optional。 */
+  grouping?: string | null;
 }
 
 /** プレイリスト（フォルダ含む）。 */
@@ -57,9 +59,56 @@ export interface Playlist {
   trackCount: number;
 }
 
-/** `GET /api/playlists/{id}` は Playlist に smartCriteria を足した形（criteria は不定形なので unknown）。 */
+/** スマートプレイリストの比較演算。 */
+export type SmartOp =
+  | "is"
+  | "isNot"
+  | "contains"
+  | "notContains"
+  | "startsWith"
+  | "endsWith"
+  | "gt"
+  | "lt"
+  | "gte"
+  | "lte"
+  | "exists"
+  | "notExists";
+
+/** スマートプレイリストの 1 条件。`field: "playlist"` は value に参照先プレイリストの persistentId。 */
+export interface SmartRule {
+  field: string;
+  op: SmartOp;
+  value: string;
+}
+
+/** 入れ子の条件グループ。 */
+export interface SmartGroup {
+  matchAll: boolean;
+  rules: SmartRule[];
+  groups?: SmartGroup[];
+}
+
+/** スマートプレイリストの条件（models.rs SmartCriteria）。groups は旧サーバーでは欠ける。 */
+/** 並び替えの 1 キー（第 2 キー以降）。 */
+export interface SmartSortKey {
+  field: string;
+  desc: boolean;
+}
+
+export interface SmartCriteria {
+  matchAll: boolean;
+  rules: SmartRule[];
+  groups?: SmartGroup[];
+  limit: number | null;
+  sortBy: string | null;
+  sortDesc: boolean;
+  /** sortBy で同順位のときに順に使う第 2 キー以降（Rules 由来。空なら省略される）。 */
+  thenBy?: SmartSortKey[];
+}
+
+/** `GET /api/playlists/{id}` は Playlist に smartCriteria を足した形（スマートでなければ null）。 */
 export interface PlaylistDetail extends Playlist {
-  smartCriteria: unknown | null;
+  smartCriteria: SmartCriteria | null;
 }
 
 /** ジャンルタグの頻度。 */

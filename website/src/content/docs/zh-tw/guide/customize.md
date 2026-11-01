@@ -74,12 +74,14 @@ description: 欄的新增 / 排序 / 寬度，列高、封面、右側欄的調�
 | `key:compat:8A` | 與 8A 和聲相容的鍵（8A / 8B / 7A / 9A） |
 | `energy:60-100` | 能量（0〜1 或 0〜100 皆可） |
 | `analyzed:yes` / `analyzed:no` | 已解析 / 未解析 |
+| `missing:yes` / `missing:no` | 找不到檔案（失效連結）/ 檔案存在 |
 
 範例：`artist:"daft punk" year:2001 key:compat:8A analyzed:yes`
 
 文字類的欄位指定同樣會套用自由文字搜尋的字體差異吸收。
 無法解讀的值（例如 `key:compat:99Z`）會照舊當成自由文字處理。
 `bpm:` / `key:` / `energy:` / `analyzed:` 參照的是[解析](../dj-analysis/)資料。
+`missing:` 依據匯入時或上次執行「重新檢查失效連結」時檔案是否存在來判定（請參閱[修復找不到的檔案](../import/)）。
 
 ### 在播放清單之內搜尋
 

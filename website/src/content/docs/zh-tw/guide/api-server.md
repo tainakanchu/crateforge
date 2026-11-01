@@ -64,6 +64,13 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 - **Key** — 將實際採用的調性（有手動覆寫則用覆寫值，否則用解析結果）寫入 **InitialKey**（ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY），
   使用音樂記法（例如 `Am`）而非 Camelot。
 
+### 執行解析
+
+- `POST /api/tracks/analyze`（`{trackIds, force?}`） — 將指定曲目的 BPM / Key / Energy / 相似度解析排入背景佇列，以 `202` 回傳 `queued`（排入件數）等資訊。已解析的曲目除非 `force: true` 否則不會排入。每次請求最多 1000 筆。僅限 loopback（從 LAN 會回 `403`）。
+- `GET /api/analysis/status` — 解析進度（`analyzed` / `total` / 佇列剩餘 `pending`）。排入後用來輪詢。
+
+這與同步用、匯入其他裝置已計算之解析結果的 `POST /api/analysis` 不同。進度仍會照常顯示在桌面 GUI。
+
 ### 播放清單
 
 - `POST /api/playlists` — 新增建立
@@ -86,6 +93,15 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 
 方針是 AI **專注於候選池的篩選**，**曲序由人類用 GUI 細修**。
 詳情請參閱 [dj-curator 的 README](https://github.com/tainakanchu/crateforge/tree/main/plugins/dj-curator)。
+
+## 投放用媒體 URL
+
+為了 [Google Cast 投放播放](../playback/)，有一個供投放裝置取得音源的端點 `GET /api/cast/media/{ticket}`（支援 `HEAD` 與 `Range`）。
+
+- **僅供 Cast 使用**，不使用 LAN 權杖，而是以 **短效的 Media Ticket**（綁定單一曲目、有期限、可撤銷）驗證。
+  票證無效 / 過期 / 已撤銷時會回傳 `404`。
+- 票證會在切換曲目、中斷連線、結束應用程式時失效。LAN 權杖不會交給投放裝置。
+- 此路徑上 `GET` / `HEAD` 以外的請求，仍需要一般的權杖。
 
 ## iPad 等的遙控 Web UI
 

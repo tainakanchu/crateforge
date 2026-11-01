@@ -2,6 +2,7 @@ mod analyzer;
 mod api;
 mod artwork;
 mod audio;
+mod cast;
 mod cd_ripper;
 mod commands;
 mod converter;
@@ -17,13 +18,17 @@ mod metadata;
 mod models;
 mod organizer;
 mod pairing;
+mod playback_target;
 mod playlist_rules;
 mod proc;
+mod rbx_cli;
 mod smart;
 mod smtc;
 mod sync;
 mod text_fold;
+mod traktor_nml;
 mod updater;
+mod usb_export;
 
 use std::sync::Mutex;
 
@@ -60,16 +65,30 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         // 埋め込みジャケットを `artwork://localhost/<percent-encoded path>` で配信。
         // <img> から遅延ロードされ、WebView がレスポンスをキャッシュする。
-        .register_asynchronous_uri_scheme_protocol("artwork", |_ctx, request, responder| {
+        // `?s=<px>` を付けると段階 (64/128/256/512/1024) に丸めた縮小版を返し、
+        // `<app_cache_dir>/artwork-thumbs` にディスクキャッシュする (artwork::thumb)。
+        // s 無しは従来どおり原本。Windows では `http://artwork.localhost/...` になるが
+        // path / query の形は同じ。
+        .register_asynchronous_uri_scheme_protocol("artwork", |ctx, request, responder| {
             // convertFileSrc は `/<encodeURIComponent(path)>` を作る。先頭スラッシュは
             // 1 個だけ剥がす (絶対パスの先頭 `/` を誤って消さないため)。
             let raw = request.uri().path();
             let path_enc = raw.strip_prefix('/').unwrap_or(raw).to_string();
-            std::thread::spawn(move || {
+            let bucket = artwork::thumb::parse_size_query(request.uri().query());
+            let cache_dir = bucket.and_then(|_| {
+                ctx.app_handle()
+                    .path()
+                    .app_cache_dir()
+                    .ok()
+                    .map(|d| d.join(artwork::thumb::CACHE_DIR_NAME))
+            });
+            // スレッドを 1 リクエストごとに立てず、tokio の blocking プールに載せる。
+            // 重い処理 (抽出・縮小) の同時実行数は artwork::thumb 側のセマフォで絞る。
+            tauri::async_runtime::spawn(async move {
                 let path = percent_encoding::percent_decode_str(&path_enc)
                     .decode_utf8_lossy()
                     .into_owned();
-                let resp = match artwork::extract_picture(&path) {
+                let resp = match artwork::thumb::load(path, bucket, cache_dir).await {
                     Some((data, mime)) => tauri::http::Response::builder()
                         .status(200)
                         .header(tauri::http::header::CONTENT_TYPE, mime)
@@ -120,10 +139,14 @@ pub fn run() {
         .manage(api_server)
         .manage(pairing_registry)
         .manage(valid_tokens)
+        // Cast Receiver 用の Media Ticket。API サーバー (起動のたびに取り直す) と共有する。
+        .manage(cast::media_ticket::MediaTickets::default())
         .manage(commands::sync::SyncRuntime::default())
         .manage(commands::playback::PreviewMode::default())
         .manage(commands::playback_persist::PlaybackPersister::default())
         .manage(commands::output_device::OutputDeviceNotices::default())
+        // USB 書き出し (rbx-cli) の単一実行ガード。
+        .manage(usb_export::UsbExportRuntime::default())
         .setup(|app| {
             // クラッシュ痕跡を残すためのファイルロガー + panic フックを最初に仕込む
             // (GUI 起動で stderr が残らない。panic=abort でも abort 前にフックが走る)。
@@ -131,8 +154,27 @@ pub fn run() {
                 logging::install(&dir);
             }
 
+            // artwork:// サムネイルのディスクキャッシュを容量上限まで掃除する。
+            // バックグラウンドスレッドで少し待ってから走るので起動はブロックしない。
+            if let Ok(dir) = app.path().app_cache_dir() {
+                artwork::thumb::spawn_startup_trim(dir.join(artwork::thumb::CACHE_DIR_NAME));
+            }
+
             // バックグラウンド音声解析ワーカを起動して managed state に載せる。
             app.manage(analyzer::Analyzer::new(app.handle().clone()));
+
+            // 再生先 (Local / Google Cast) の振り分け窓口。再生系のコマンド・ワーカー・
+            // Remote API はすべてこれを経由するので、ワーカー起動より前に manage する。
+            // 起動時は常に Local (Cast へ自動接続しない)。
+            app.manage(playback_target::PlaybackCoordinator::new(
+                std::sync::Arc::new(playback_target::TauriEnv::new(app.handle().clone())),
+            ));
+            // Cast 端末の探索 (最初に一覧を開いたときに browse を始める)。
+            let discovery_handle = app.handle().clone();
+            app.manage(cast::discovery::CastDiscovery::new(move |devices| {
+                use tauri::Emitter;
+                let _ = discovery_handle.emit("cast-devices-changed", devices);
+            }));
 
             // 曲の自動送りを駆動するワーカースレッド。AudioPlayer の manage 後に起動する
             // (ワーカーが app.state::<Mutex<AudioPlayer>> を参照するため)。
@@ -206,6 +248,8 @@ pub fn run() {
             commands::library::import_files,
             commands::library::import_folders,
             commands::library::refresh_tech_metadata,
+            commands::library::rescan_file_existence,
+            commands::library::relocate_track_file,
             commands::library::get_tracks,
             commands::library::get_tracks_by_ids,
             commands::library::search_tracks,
@@ -247,11 +291,13 @@ pub fn run() {
             commands::playlists::delete_playlist,
             commands::playlists::add_tracks_to_playlist,
             commands::playlists::remove_track_from_playlist,
+            commands::playlists::remove_tracks_from_playlist,
             commands::playlists::reorder_playlist_tracks,
             commands::playlists::create_smart_playlist,
             commands::playlists::update_smart_criteria,
             commands::playlists::get_smart_criteria,
             commands::playlists::get_smart_playlist_tracks,
+            commands::playlists::restore_itunes_smart_playlists,
             // playback
             commands::playback::play_track,
             commands::playback::pause,
@@ -280,6 +326,12 @@ pub fn run() {
             commands::output_device::list_output_devices,
             commands::output_device::set_output_device,
             commands::output_device::take_output_device_notices,
+            // 再生先 (Google Cast)
+            commands::cast::list_cast_devices,
+            commands::cast::refresh_cast_devices,
+            commands::cast::get_cast_status,
+            commands::cast::set_playback_target,
+            commands::cast::disconnect_cast,
             // ripping
             commands::ripping::detect_disc,
             commands::ripping::list_cd_drives,
@@ -294,6 +346,18 @@ pub fn run() {
             // ffmpeg (resolution / on-demand download)
             commands::ffmpeg::get_ffmpeg_status,
             commands::ffmpeg::download_ffmpeg,
+            // USB 書き出し (rekordbox 互換 / CDJ 向け、外部 rbx-cli)
+            commands::usb_export::get_rbx_cli_status,
+            commands::usb_export::download_rbx_cli,
+            commands::usb_export::set_rbx_cli_path,
+            commands::usb_export::get_traktor_nml_status,
+            commands::usb_export::set_traktor_nml_path,
+            commands::usb_export::usb_list_devices,
+            commands::usb_export::usb_eject,
+            commands::usb_export::usb_export_plan,
+            commands::usb_export::usb_export_start,
+            commands::usb_export::usb_export_cancel,
+            commands::usb_export::usb_export_status,
             // audio analysis
             commands::analysis::analyze_tracks,
             commands::analysis::get_analysis,
@@ -356,6 +420,16 @@ pub fn run() {
             // 終了時に再生キュー / 再生位置を即時保存する (#159)。
             if let tauri::RunEvent::Exit = event {
                 commands::playback_persist::flush(app);
+                // Cast のチケットを失効させ、Receiver との接続を閉じる。
+                if let Some(coord) = app.try_state::<playback_target::PlaybackCoordinator>() {
+                    let coord = coord.inner().clone();
+                    tauri::async_runtime::block_on(coord.shutdown());
+                }
+                if let Some(d) = app.try_state::<cast::discovery::CastDiscovery>() {
+                    d.stop();
+                }
+                // 実行中の rbx-cli (USB 書き出し) を孤児にしない。
+                commands::usb_export::shutdown(app);
             }
         });
 }

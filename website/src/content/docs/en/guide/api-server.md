@@ -64,6 +64,13 @@ and `locationPath` in the response points to the new path (a failed move does no
 - **Key** — the effective key (the manual override if set, otherwise the analyzed key) is written to **InitialKey** (ID3v2 TKEY / MP4 initialkey / Vorbis INITIALKEY)
   in musical notation (`Am`, etc.) rather than Camelot.
 
+### Running analysis
+
+- `POST /api/tracks/analyze` (`{trackIds, force?}`) — queue BPM / Key / Energy / similarity analysis for the given tracks in the background; responds `202` with `queued` (how many were queued) and more. Already-analyzed tracks are skipped unless `force: true`. Up to 1000 IDs per request. Loopback only (`403` from the LAN).
+- `GET /api/analysis/status` — analysis progress (`analyzed` / `total` / remaining queue `pending`). Poll it after queueing.
+
+This is distinct from `POST /api/analysis`, the sync endpoint that imports analysis results computed on another device. Progress still shows up in the desktop GUI as usual.
+
 ### Playlists
 
 - `POST /api/playlists` — create a new one
@@ -86,6 +93,15 @@ This repository is also a Claude Code **plugin marketplace**.
 
 The policy is that the AI **focuses on selecting the candidate pool**, while **a human finalizes the track order in the GUI**.
 For details, see the [dj-curator README](https://github.com/tainakanchu/crateforge/tree/main/plugins/dj-curator).
+
+## Media URL for Cast
+
+For [Google Cast playback](../playback/), there is an endpoint the cast device uses to fetch the audio: `GET /api/cast/media/{ticket}` (supports `HEAD` and `Range`).
+
+- It is **Cast-only** and is authenticated by a **short-lived Media Ticket** (bound to one track, with an expiry, revocable) rather than the LAN token.
+  An invalid, expired or revoked ticket returns `404`.
+- Tickets are revoked when you change track, disconnect, or quit the app. The LAN token is never handed to the cast device.
+- Requests to this path other than `GET` / `HEAD` still require the normal token.
 
 ## Remote web UI for iPad and others
 

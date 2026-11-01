@@ -94,7 +94,7 @@ impl Database {
                     t.disc_number, t.disc_count, t.track_number, t.track_count, t.file_exists,
                     t.last_played, t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels,
                     t.file_size_bytes, t.codec,
-                    t.key_camelot_user
+                    t.key_camelot_user, t.grouping
              FROM tracks t
              WHERE t.file_exists = 1
                AND t.location_path IS NOT NULL
@@ -884,7 +884,9 @@ impl Database {
             let Some(pid) = playlist.persistent_id.as_deref() else {
                 continue;
             };
-            let tracks = self.get_playlist_tracks(playlist.playlist_id, i64::MAX, 0, None, None)?;
+            // WRITE-BACK の三者比較に使うので、保存済みの曲目 (playlist_tracks) を読む。
+            // スマートプレイリストの評価結果は編集可能な曲目ではない (writeback 側でも除外する)。
+            let tracks = self.get_static_playlist_tracks(playlist.playlist_id)?;
             let track_persistent_ids = tracks
                 .into_iter()
                 .filter_map(|track| track.persistent_id)
@@ -1074,6 +1076,7 @@ mod tests {
             file_size_bytes: None,
             codec: None,
             key_camelot_user: None,
+            grouping: None,
         }
     }
 

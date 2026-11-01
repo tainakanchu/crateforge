@@ -62,6 +62,10 @@ pub struct Track {
     /// 実効キーは「上書き ?? 解析値」。同期ワイヤ互換のため欠落時は None。
     #[serde(default)]
     pub key_camelot_user: Option<String>,
+    /// グルーピング (iTunes の "Grouping" / タグの TIT1・GRP1・©grp)。未設定なら None。
+    /// 同期ワイヤ互換のため欠落時は None。
+    #[serde(default)]
+    pub grouping: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -489,26 +493,70 @@ pub struct TechMetaRefreshSummary {
     pub failed: usize,
 }
 
+/// リンク切れ再チェック (全曲の実ファイル有無の再確認) の結果。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileCheckSummary {
+    /// 確認した曲数 (= ライブラリの全曲数)。
+    pub checked: usize,
+    /// 確認後にファイルが見つからない曲数 (今回から欠損になった曲も含む)。
+    pub missing: usize,
+    /// 前回まではあったのに、今回見つからなくなった曲数。
+    pub newly_missing: usize,
+    /// 前回まではリンク切れだったのに、今回見つかった曲数。
+    pub newly_found: usize,
+}
+
 // === Smart playlists ===
 
-/// スマートプレイリストの条件 (フラットなルール列 + 全/いずれか一致)。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// スマートプレイリストの条件。トップレベルのルール列 + 入れ子の条件グループを
+/// 全/いずれか一致で組み合わせる (iTunes のサブ条件と同じ考え方)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SmartCriteria {
     /// true = すべての条件に一致 (AND)、false = いずれか (OR)。
     pub match_all: bool,
     pub rules: Vec<SmartRule>,
+    /// 入れ子の条件グループ。旧データ (フラットなルール列のみ) にも無いので `default`。
+    #[serde(default)]
+    pub groups: Vec<SmartGroup>,
     /// 上限曲数 (None で無制限)。
     pub limit: Option<usize>,
     /// 並び替えフィールド (UI 側 SortField 名)。
     pub sort_by: Option<String>,
     #[serde(default)]
     pub sort_desc: bool,
+    /// 第 2 キー以降の並び替え (`sort_by` で同順位のときに順に使う)。Rules (YAML) の
+    /// 複数キーソート用。旧データ・UI 作成分には無いので `default`、空なら出力しない。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub then_by: Vec<SmartSortKey>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 並び替えの 1 キー (第 2 キー以降)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartSortKey {
+    pub field: String,
+    #[serde(default)]
+    pub desc: bool,
+}
+
+/// 入れ子の条件グループ。自身のルール列と子グループを `match_all` で組み合わせる。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartGroup {
+    pub match_all: bool,
+    #[serde(default)]
+    pub rules: Vec<SmartRule>,
+    #[serde(default)]
+    pub groups: Vec<SmartGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SmartRule {
+    /// フィールド名。`"playlist"` は「プレイリストに含まれる」条件で、
+    /// `value` に参照先プレイリストの persistent_id を入れる。
     pub field: String,
     pub op: SmartOp,
     pub value: String,
@@ -521,6 +569,10 @@ pub enum SmartOp {
     IsNot,
     Contains,
     NotContains,
+    /// 前方一致 (文字列)。
+    StartsWith,
+    /// 後方一致 (文字列)。
+    EndsWith,
     Gt,
     Lt,
     Gte,

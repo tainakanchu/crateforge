@@ -5,7 +5,23 @@ use rusqlite::{params, OptionalExtension, Result};
 use super::tracks::row_to_track;
 use super::Database;
 use crate::itunes_xml::parser::RawPlaylist;
-use crate::models::{Playlist, SmartCriteria, Track, TrackAnalysis};
+use crate::models::{Playlist, SmartCriteria, Track};
+
+/// スマートプレイリストの曲目を直接編集しようとしたときのエラー (コマンド / API 共通)。
+/// 曲目は条件のライブ評価で決まり、`playlist_tracks` に書いても無視されるため拒否する。
+pub const SMART_PLAYLIST_EDIT_ERROR: &str =
+    "スマートプレイリストの曲目は条件で決まるため、曲の追加・削除・並べ替えはできません";
+
+/// 階層操作 (プレイリストルールの upsert) 用のプレイリスト行。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaylistNode {
+    pub playlist_id: i64,
+    pub persistent_id: Option<String>,
+    pub parent_persistent_id: Option<String>,
+    pub name: String,
+    pub is_folder: bool,
+    pub sort_order: i64,
+}
 
 /// プレイリスト曲順の全置換結果。入力不備もトランザクション内で判定する。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,8 +42,6 @@ impl Database {
         claimed_playlist_ids: &mut HashSet<i64>,
     ) -> Result<()> {
         let xml_playlist_id = raw.get_int("Playlist ID").unwrap_or(0);
-        let is_smart =
-            raw.get_str("Smart Info").is_some() || raw.get_str("Smart Criteria").is_some();
 
         let distinguished = raw.get_int("Distinguished Kind");
         let master = raw.get_bool("Master");
@@ -121,15 +135,16 @@ impl Database {
                 )?;
 
                 match self.conn.execute(
+                    // is_smart は 0 で入れ、iTunes の Smart Criteria を変換・保存できた行だけ
+                    // 取り込み後のパス (itunes_xml::smart_restore) が 1 にする。
                     "INSERT INTO playlists (playlist_id, persistent_id, parent_persistent_id, name, is_folder, is_smart, is_user_created, sort_order)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6)",
                     params![
                         playlist_id,
                         persistent_id,
                         raw.get_str("Parent Persistent ID"),
                         raw.get_str("Name").unwrap_or("Untitled"),
                         raw.get_bool("Folder") as i32,
-                        is_smart as i32,
                         sort_order,
                     ],
                 ) {
@@ -258,7 +273,53 @@ impl Database {
     /// プレイリスト内検索つきのトラック取得。`query` が Some のときは、ライブラリ検索と
     /// **同じ DSL** (フリーテキスト + `artist:` `bpm:` `key:compat:` などのフィールド指定) で
     /// プレイリストの中だけを絞り込む。None なら従来どおり全曲を返す。
+    /// スマートプレイリスト (criteria あり) はライブ評価の結果を返す。
     pub fn get_playlist_tracks_filtered(
+        &self,
+        playlist_id: i64,
+        query: Option<&str>,
+        limit: i64,
+        offset: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<Vec<Track>> {
+        if self.get_smart_criteria(playlist_id)?.is_some() {
+            return self.get_smart_playlist_tracks_filtered(
+                playlist_id,
+                query,
+                limit,
+                offset,
+                sort_field,
+                sort_order,
+            );
+        }
+        self.get_static_playlist_tracks_filtered(
+            playlist_id,
+            query,
+            limit,
+            offset,
+            sort_field,
+            sort_order,
+        )
+    }
+
+    /// `playlist_tracks` の静的メンバーを全件 (sort_index 順) 返す。スマートでも評価しない。
+    pub fn get_static_playlist_tracks(&self, playlist_id: i64) -> Result<Vec<Track>> {
+        self.get_static_playlist_tracks_filtered(playlist_id, None, i64::MAX, 0, None, None)
+    }
+
+    /// プレイリストのメンバー (track_id) を順に返す。スマートプレイリストはライブ評価
+    /// (criteria の並び + limit) の結果、それ以外は `playlist_tracks` の sort_index 順。
+    pub fn get_playlist_track_ids(&self, playlist_id: i64) -> Result<Vec<i64>> {
+        if self.get_smart_criteria(playlist_id)?.is_some() {
+            return self.playlist_resolver()?.track_ids(playlist_id);
+        }
+        self.get_static_playlist_track_ids(playlist_id)
+    }
+
+    /// `playlist_tracks` の静的メンバーを読む (criteria の有無を見ない)。
+    /// スマート側のフォールバックからはこちらを呼び、相互再帰を避ける。
+    fn get_static_playlist_tracks_filtered(
         &self,
         playlist_id: i64,
         query: Option<&str>,
@@ -303,7 +364,7 @@ impl Database {
                     t.track_number, t.track_count, t.file_exists, t.last_played,
                     t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes,
                     t.codec,
-                    t.key_camelot_user
+                    t.key_camelot_user, t.grouping
              FROM tracks t
              INNER JOIN playlist_tracks pt ON t.track_id = pt.track_id
              WHERE pt.playlist_id = ?{}
@@ -316,7 +377,9 @@ impl Database {
         rows.collect()
     }
 
-    pub fn get_playlist_track_ids(&self, playlist_id: i64) -> Result<Vec<i64>> {
+    /// `playlist_tracks` に保存された静的メンバー (sort_index 順)。スマートプレイリストでも
+    /// 評価せず保存行をそのまま返す (曲目を書き戻す同期経路など、編集可能な実体が要る所で使う)。
+    pub fn get_static_playlist_track_ids(&self, playlist_id: i64) -> Result<Vec<i64>> {
         let mut stmt = self.conn.prepare(
             "SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY sort_index ASC",
         )?;
@@ -495,86 +558,161 @@ impl Database {
 
     pub fn remove_track_from_playlist(&self, playlist_id: i64, track_id: i64) -> Result<()> {
         // 同一トラックが複数回入っている場合は最小 sort_index の 1 行のみ削除し、後ろを詰める。
-        let sort_index: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT MIN(sort_index) FROM playlist_tracks
-                 WHERE playlist_id = ?1 AND track_id = ?2",
-                params![playlist_id, track_id],
-                |row| row.get(0),
-            )
-            .ok();
-        let Some(sort_index) = sort_index else {
-            return Ok(());
-        };
-        self.conn.execute(
-            "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND sort_index = ?2",
-            params![playlist_id, sort_index],
-        )?;
-        self.conn.execute(
-            "UPDATE playlist_tracks SET sort_index = sort_index - 1
-             WHERE playlist_id = ?1 AND sort_index > ?2",
-            params![playlist_id, sort_index],
-        )?;
+        self.remove_tracks_from_playlist(playlist_id, &[track_id])?;
         Ok(())
     }
 
-    /// 指定名のルートフォルダ (parent_persistent_id IS NULL) とその子孫を全削除。
-    /// 該当フォルダが存在しなければ false を返す (no-op)。プレイリストルールの
-    /// `removeExistingNamespace` 用。
-    pub fn delete_playlist_subtree_by_root_name(&self, root_name: &str) -> Result<bool> {
-        use std::collections::VecDeque;
+    /// 複数曲をまとめてプレイリストから外す (1 トランザクション)。
+    ///
+    /// 意味は `track_ids` の順に `remove_track_from_playlist` を呼ぶのと同じ:
+    /// ID 1 つにつき、その曲の最小 sort_index の 1 行だけを削除し、後ろを詰める
+    /// (同じ ID を 2 回渡せば 2 つ目の出現も外れる)。入っていない ID は無視する。
+    /// 詰め直しは最後に 1 回だけ行い、既存の sort_index の飛びはそのまま保つ。
+    /// 実際に削除した行数を返す。
+    pub fn remove_tracks_from_playlist(&self, playlist_id: i64, track_ids: &[i64]) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        // 削除した行の (元の) sort_index。詰め直しの量を数えるのに使う。
+        let mut removed: Vec<i64> = Vec::new();
+        {
+            let mut pick = tx.prepare(
+                "SELECT rowid, sort_index FROM playlist_tracks
+                 WHERE playlist_id = ?1 AND track_id = ?2
+                 ORDER BY sort_index, rowid LIMIT 1",
+            )?;
+            // sort_index が重複していても対象の 1 行だけを消すよう rowid で削除する。
+            let mut del = tx.prepare("DELETE FROM playlist_tracks WHERE rowid = ?1")?;
+            for tid in track_ids {
+                let hit: Option<(i64, i64)> = pick
+                    .query_row(params![playlist_id, tid], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .optional()?;
+                let Some((rowid, sort_index)) = hit else {
+                    continue;
+                };
+                del.execute(params![rowid])?;
+                removed.push(sort_index);
+            }
+        }
+        if removed.is_empty() {
+            return Ok(0);
+        }
+        removed.sort_unstable();
+        {
+            // 残った各行を「自分より前で消えた行の数」だけ前へ詰める。
+            let mut sel = tx.prepare(
+                "SELECT rowid, sort_index FROM playlist_tracks
+                 WHERE playlist_id = ?1 AND sort_index > ?2",
+            )?;
+            let rows = sel
+                .query_map(params![playlist_id, removed[0]], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                })?
+                .collect::<Result<Vec<_>>>()?;
+            let mut upd =
+                tx.prepare("UPDATE playlist_tracks SET sort_index = ?1 WHERE rowid = ?2")?;
+            for (rowid, sort_index) in rows {
+                let shift = removed.partition_point(|&d| d < sort_index) as i64;
+                if shift > 0 {
+                    upd.execute(params![sort_index - shift, rowid])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(removed.len())
+    }
 
-        let root: Option<(i64, Option<String>)> = self
+    /// 階層操作用に全プレイリストの最小限の列を読む (sort_order, playlist_id 順)。
+    pub fn get_playlist_nodes(&self) -> Result<Vec<PlaylistNode>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT playlist_id, persistent_id, parent_persistent_id, name, is_folder, sort_order
+             FROM playlists ORDER BY sort_order, playlist_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(PlaylistNode {
+                playlist_id: r.get(0)?,
+                persistent_id: r.get::<_, Option<String>>(1)?.filter(|p| !p.is_empty()),
+                parent_persistent_id: r.get::<_, Option<String>>(2)?.filter(|p| !p.is_empty()),
+                name: r.get(3)?,
+                is_folder: r.get::<_, Option<i32>>(4)?.unwrap_or(0) != 0,
+                sort_order: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// プレイリスト (フォルダなら子孫も含めて) を `playlist_tracks` ごと削除し、削除した行数を返す。
+    /// 自前のトランザクションは張らない (プレイリストルールの適用トランザクションの中で呼ぶ)。
+    pub fn delete_playlist_subtree(&self, playlist_id: i64) -> Result<usize> {
+        let root_pid: Option<String> = self
             .conn
             .query_row(
-                "SELECT playlist_id, persistent_id FROM playlists
-                 WHERE parent_persistent_id IS NULL AND name = ?1 AND is_folder = 1",
-                rusqlite::params![root_name],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)),
+                "SELECT persistent_id FROM playlists WHERE playlist_id = ?1",
+                params![playlist_id],
+                |r| r.get(0),
             )
-            .ok();
+            .optional()?
+            .flatten();
 
-        let Some((root_id, root_pid)) = root else {
-            return Ok(false);
-        };
-
-        let mut to_delete: Vec<i64> = vec![root_id];
-        let mut queue: VecDeque<String> = VecDeque::new();
-        if let Some(pid) = root_pid {
-            queue.push_back(pid);
-        }
-
-        while let Some(pid) = queue.pop_front() {
+        let mut to_delete: Vec<i64> = vec![playlist_id];
+        let mut queue: Vec<String> = root_pid.into_iter().filter(|p| !p.is_empty()).collect();
+        // 壊れた親子関係 (循環) でも止まるよう、訪問済みの PID は辿らない。
+        let mut seen: HashSet<String> = queue.iter().cloned().collect();
+        {
             let mut stmt = self.conn.prepare(
                 "SELECT playlist_id, persistent_id FROM playlists WHERE parent_persistent_id = ?1",
             )?;
-            let rows = stmt.query_map(rusqlite::params![pid], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
-            })?;
-            for row in rows {
-                let (id, pid_opt) = row?;
-                to_delete.push(id);
-                if let Some(p) = pid_opt {
-                    queue.push_back(p);
+            while let Some(pid) = queue.pop() {
+                let rows = stmt
+                    .query_map(params![pid], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>>>()?;
+                for (id, child_pid) in rows {
+                    if id == playlist_id || to_delete.contains(&id) {
+                        continue;
+                    }
+                    to_delete.push(id);
+                    if let Some(p) = child_pid.filter(|p| !p.is_empty()) {
+                        if seen.insert(p.clone()) {
+                            queue.push(p);
+                        }
+                    }
                 }
             }
         }
 
-        let tx = self.conn.unchecked_transaction()?;
         for id in &to_delete {
-            tx.execute(
+            self.conn.execute(
                 "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
-                rusqlite::params![id],
+                params![id],
             )?;
-            tx.execute(
-                "DELETE FROM playlists WHERE playlist_id = ?1",
-                rusqlite::params![id],
-            )?;
+            self.conn
+                .execute("DELETE FROM playlists WHERE playlist_id = ?1", params![id])?;
         }
-        tx.commit()?;
+        Ok(to_delete.len())
+    }
 
-        Ok(true)
+    /// `playlist_tracks` を入力順で全置換する (存在確認なし・自前のトランザクションなし)。
+    /// スマートプレイリストの評価結果をスナップショットとして書き込むのに使う。
+    pub fn overwrite_playlist_tracks(&self, playlist_id: i64, track_ids: &[i64]) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+            params![playlist_id],
+        )?;
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES (?1, ?2, ?3)",
+        )?;
+        for (i, tid) in track_ids.iter().enumerate() {
+            stmt.execute(params![playlist_id, tid, i as i64])?;
+        }
+        Ok(())
+    }
+
+    pub fn set_playlist_sort_order(&self, playlist_id: i64, sort_order: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE playlists SET sort_order = ?1 WHERE playlist_id = ?2",
+            params![sort_order, playlist_id],
+        )?;
+        Ok(())
     }
 
     pub fn reorder_playlist_tracks(
@@ -653,6 +791,11 @@ impl Database {
         Ok(json.and_then(|s| serde_json::from_str::<SmartCriteria>(&s).ok()))
     }
 
+    /// スマート条件を持つ (= 曲目がライブ評価で決まる) プレイリストか。
+    pub fn has_smart_criteria(&self, playlist_id: i64) -> Result<bool> {
+        Ok(self.get_smart_criteria(playlist_id)?.is_some())
+    }
+
     pub fn set_smart_criteria(&self, playlist_id: i64, criteria: &SmartCriteria) -> Result<()> {
         let json = serde_json::to_string(criteria).unwrap_or_else(|_| "{}".to_string());
         self.conn.execute(
@@ -690,8 +833,9 @@ impl Database {
     }
 
     /// プレイリスト内検索つきのスマートプレイリスト評価。`query` は通常プレイリストと同じ
-    /// DSL で、criteria にマッチした曲へさらに AND で効く (criteria の limit を適用した
-    /// **後** に絞り込む = 「今表示されている曲の中から探す」挙動)。
+    /// DSL で、criteria にマッチした曲へさらに AND で効く (criteria の並び + limit を適用した
+    /// **後** に絞り込む = 「今表示されている曲の中から探す」挙動)。UI の並び替えも
+    /// limit で選ばれた曲の表示順を変えるだけで、どの曲が選ばれるかには影響しない。
     pub fn get_smart_playlist_tracks_filtered(
         &self,
         playlist_id: i64,
@@ -701,8 +845,10 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
-        let Some(criteria) = self.get_smart_criteria(playlist_id)? else {
-            return self.get_playlist_tracks_filtered(
+        let mut resolver = self.playlist_resolver()?;
+        let Some(mut matched) = resolver.smart_tracks(playlist_id)? else {
+            // criteria が無い (iTunes 由来の未変換など) なら静的スナップショット表示。
+            return self.get_static_playlist_tracks_filtered(
                 playlist_id,
                 query,
                 limit,
@@ -712,41 +858,9 @@ impl Database {
             );
         };
 
-        let all = self.get_all_tracks()?;
-        let amap: HashMap<i64, TrackAnalysis> = self
-            .get_all_analysis()?
-            .into_iter()
-            .map(|a| (a.track_id, a))
-            .collect();
-
-        // テキスト比較の字体ゆれ吸収レベル (検索と同じ設定を共有)。
-        let level = crate::text_fold::FoldLevel::from_state(
-            self.get_state("search_fold_level")
-                .ok()
-                .flatten()
-                .as_deref(),
-        );
-
-        let mut matched: Vec<Track> = all
-            .into_iter()
-            .filter(|t| crate::smart::track_matches(t, amap.get(&t.track_id), &criteria, level))
-            .collect();
-
-        // 並び替え: UI のソート優先、無ければ criteria のソート、無ければ name 昇順。
-        let (field, desc) = match sort_field {
-            Some(f) => (f.to_string(), matches!(sort_order, Some("desc"))),
-            None => (
-                criteria
-                    .sort_by
-                    .clone()
-                    .unwrap_or_else(|| "name".to_string()),
-                criteria.sort_desc,
-            ),
-        };
-        crate::smart::sort_tracks(&mut matched, &field, desc);
-
-        if let Some(lim) = criteria.limit {
-            matched.truncate(lim);
+        // UI のソート指定があれば表示順だけ並べ替える ("playlistOrder" は criteria の並びのまま)。
+        if let Some(field) = sort_field.filter(|f| *f != "playlistOrder") {
+            crate::smart::sort_tracks(&mut matched, field, matches!(sort_order, Some("desc")));
         }
 
         // プレイリスト内検索: 同じ DSL の結果 (track_id 集合) と積を取る。
@@ -831,9 +945,11 @@ mod tests {
                 op: SmartOp::Is,
                 value: "House".to_string(),
             }],
+            groups: vec![],
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         };
         db.set_smart_criteria(10, &criteria).unwrap();
 
@@ -854,6 +970,79 @@ mod tests {
         assert_eq!(ids(Some("year:2005")), vec![4]);
         // criteria に合わない曲は内部検索でも出ない。
         assert_eq!(ids(Some("artist:aphex")), Vec::<i64>::new());
+    }
+
+    /// プレイリスト P(20) の (track_id, sort_index) を sort_index 順で返す。
+    fn pl_rows(db: &Database) -> Vec<(i64, i64)> {
+        let mut stmt = db
+            .conn
+            .prepare(
+                "SELECT track_id, sort_index FROM playlist_tracks
+                 WHERE playlist_id = 20 ORDER BY sort_index, rowid",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    /// P(20) = [1, 2, 3, 2, 4, 5] (track 2 が 2 回入っている)。別プレイリスト Q(21) にも同じ曲。
+    fn removal_db() -> Database {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO playlists (playlist_id, name) VALUES (20, 'P'), (21, 'Q');
+                 INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES
+                   (20,1,0), (20,2,1), (20,3,2), (20,2,3), (20,4,4), (20,5,5),
+                   (21,1,0), (21,3,1);",
+            )
+            .unwrap();
+        db
+    }
+
+    /// 複数曲の一括削除: 各 ID の最初の出現だけを外し、残りを 0 始まりに詰め直す。
+    /// 他のプレイリストには触れない。
+    #[test]
+    fn remove_tracks_from_playlist_batch() {
+        let db = removal_db();
+        let n = db.remove_tracks_from_playlist(20, &[3, 2, 5, 99]).unwrap();
+        assert_eq!(n, 3, "入っていない ID (99) は数えない");
+        assert_eq!(pl_rows(&db), vec![(1, 0), (2, 1), (4, 2)]);
+
+        let q: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = 21",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(q, 2);
+    }
+
+    /// 一括削除は単曲削除を順に呼んだのと同じ結果になる (重複 ID は出現を 1 つずつ外す)。
+    #[test]
+    fn remove_tracks_batch_matches_sequential_single_removal() {
+        let batch = removal_db();
+        let seq = removal_db();
+        let ids = [2, 4, 2, 1];
+        assert_eq!(batch.remove_tracks_from_playlist(20, &ids).unwrap(), 4);
+        for id in ids {
+            seq.remove_track_from_playlist(20, id).unwrap();
+        }
+        assert_eq!(pl_rows(&batch), pl_rows(&seq));
+        assert_eq!(pl_rows(&batch), vec![(3, 0), (5, 1)]);
+    }
+
+    /// 空入力・該当なしは何も変えない。
+    #[test]
+    fn remove_tracks_from_playlist_noop() {
+        let db = removal_db();
+        let before = pl_rows(&db);
+        assert_eq!(db.remove_tracks_from_playlist(20, &[]).unwrap(), 0);
+        assert_eq!(db.remove_tracks_from_playlist(20, &[42]).unwrap(), 0);
+        assert_eq!(pl_rows(&db), before);
     }
 
     /// 回帰防止: row_to_track を共有する全 SELECT の列が一致していること。

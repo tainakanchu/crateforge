@@ -6,6 +6,8 @@ import * as libraryApi from "../api/library";
 import type { Track } from "../types";
 import { Icon } from "./Icon";
 import { Cover } from "./Cover";
+import { CastDevicePicker } from "./CastDevicePicker";
+import { WaveBars } from "./WaveBars";
 import { bpmColor } from "../lib/art";
 import * as audition from "../lib/audition";
 
@@ -109,7 +111,11 @@ export function PlayerBar() {
     };
   }, [playback.currentTrackId]);
 
-  const bars = peaks.length > 0 ? peaks.map((p) => 4 + p * 22) : waveHeights;
+  // 参照が変わると波形 canvas を描き直すので、peaks / waveHeights が変わるときだけ作り直す。
+  const bars = useMemo(
+    () => (peaks.length > 0 ? peaks.map((p) => 4 + p * 22) : waveHeights),
+    [peaks, waveHeights],
+  );
 
   const progress =
     playback.durationMs > 0 ? playback.positionMs / playback.durationMs : 0;
@@ -325,17 +331,12 @@ export function PlayerBar() {
             onPointerUp={handleWavePointerUp}
             onPointerCancel={() => setDragRatio(null)}
           >
-            {bars.map((h, i) => {
-              // ドラッグ中はプレビュー位置、通常は再生位置で塗り分け。
-              const activeRatio = dragRatio !== null ? dragRatio : progress;
-              return (
-                <i
-                  key={i}
-                  className={i / bars.length < activeRatio ? "on" : ""}
-                  style={{ height: h }}
-                />
-              );
-            })}
+            {/* ドラッグ中はプレビュー位置、通常は再生位置で塗り分け (canvas は再描画せず clip のみ更新)。 */}
+            <WaveBars
+              bars={bars}
+              audition={auditionMode}
+              ratio={dragRatio !== null ? dragRatio : progress}
+            />
             {auditionMode &&
               JUMP_MARKERS.map((r) => (
                 <button
@@ -368,7 +369,7 @@ export function PlayerBar() {
         </div>
       </div>
 
-      {/* right: replaygain + queue + volume */}
+      {/* right: replaygain + queue + 再生先 + volume */}
       <div className="cb-pr">
         <button
           className={"cb-pr-btn cb-tg" + (replayGain ? " on" : "")}
@@ -381,6 +382,7 @@ export function PlayerBar() {
         <button className="cb-pr-btn" title="Up Next" onClick={handleOpenQueue}>
           <Icon name="queue" size={16} />
         </button>
+        <CastDevicePicker />
         <button
           className="cb-pr-btn"
           title={volume === 0 ? "Unmute" : "Mute"}

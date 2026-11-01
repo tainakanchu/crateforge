@@ -311,6 +311,14 @@ input {
   scrollbar-width: thin;
   scrollbar-color: var(--bd-strong) transparent;
 }
+/* 縮めてよいのは検索ボックスだけ。他を縮めると日本語ラベルのセグメント
+   (min-content が1文字幅) が1文字ずつ折り返して縦書き状に崩れる。 */
+.cb-tb-row > * {
+  flex-shrink: 0;
+}
+.cb-tb-row > .cb-sbox {
+  flex-shrink: 1;
+}
 .cb-tb-row::-webkit-scrollbar {
   height: 6px;
 }
@@ -360,6 +368,7 @@ input {
   gap: 2px;
 }
 .cb-segb {
+  white-space: nowrap;
   padding: 7px 13px;
   border-radius: 7px;
   color: var(--mut);
@@ -2568,28 +2577,38 @@ input {
   height: 28px;
   display: flex;
   align-items: center;
-  gap: 2px;
+  /* バー寸法は WaveBars (canvas) が getComputedStyle で読む。 */
+  --wave-gap: 2px;
+  --wave-radius: 2px;
+  --wave-min-h: 0px;
   cursor: pointer;
   position: relative;
 }
-.cb-wave i {
-  flex: 1;
-  border-radius: 2px;
-  background: var(--bd);
-  min-width: 0;
+/* 波形は canvas に 1 度だけ描く。非アクティブ層 (下) とアクティブ層 (.cb-wave-on, 上) の 2 枚重ね。 */
+.cb-wave-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* canvas はこの color でバーを塗る */
+  color: var(--bd);
   pointer-events: none;
 }
-.cb-wave i.on {
-  background: var(--ac);
+/* 進捗は clip-path (インライン style) で右側を切り落とすだけ。再描画は不要。 */
+.cb-wave-on {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.cb-wave-on .cb-wave-canvas {
+  color: var(--ac);
 }
 /* Audition mode: taller waveform + jump markers */
 .cb-wave.audition {
   height: 44px;
-  gap: 1px;
-}
-.cb-wave.audition i {
-  border-radius: 1px;
-  min-height: 4px;
+  --wave-gap: 1px;
+  --wave-radius: 1px;
+  --wave-min-h: 4px;
 }
 .cb-wave-mark {
   position: absolute;
@@ -2842,6 +2861,7 @@ input {
   gap: 2px;
 }
 .cb-segb2 {
+  white-space: nowrap;
   padding: 5px 10px;
   border-radius: 6px;
   font-size: 11.5px;
@@ -3212,20 +3232,6 @@ input {
 .update-banner-current {
   color: var(--tx2);
 }
-.disc-detected-banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 18px;
-  background: rgba(108, 161, 181, 0.12);
-  border-bottom: 1px solid rgba(108, 161, 181, 0.35);
-  color: var(--tx);
-  font-size: 12px;
-}
-.disc-detected-banner-text {
-  flex: 1;
-}
-
 /* ============================================================
    Modals (Rip / Rules / Track Info / generic)
    ============================================================ */
@@ -4826,6 +4832,14 @@ input {
   background: rgba(224, 87, 60, 0.15);
   color: #f0b3a6;
 }
+.rules-msg.warn {
+  background: rgba(224, 163, 60, 0.14);
+  color: var(--warn);
+}
+.rules-warnings {
+  margin: 0;
+  padding-left: 16px;
+}
 .rules-body {
   min-height: 0;
 }
@@ -6291,4 +6305,393 @@ input {
 }
 .set-history-bind-pick:hover {
   background: var(--hover);
+}
+
+/* ============================================================
+   USB 書き出し (rbx-cli) — UsbExportDialog / UsbExportStatusBar
+   ============================================================ */
+.usb-modal {
+  width: 680px;
+  max-width: calc(100vw - 32px);
+}
+.usb-modal .modal-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.usb-body {
+  max-height: min(70vh, 640px);
+  overflow-y: auto;
+}
+.usb-badge {
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(224, 163, 60, 0.14);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 600;
+}
+.usb-gap {
+  margin-top: 18px;
+}
+.usb-gap-sm {
+  margin-top: 10px;
+}
+.usb-playlist-list {
+  max-height: 220px;
+}
+.usb-playlist {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--bg2);
+  cursor: pointer;
+  font-size: 12px;
+}
+.usb-playlist:last-child {
+  border-bottom: 0;
+}
+.usb-playlist:hover {
+  background: var(--hover);
+}
+.usb-playlist.implied {
+  color: var(--tx2);
+  cursor: default;
+}
+.usb-playlist .sync-playlist-name {
+  flex: 1;
+  min-width: 0;
+}
+.usb-playlist > svg {
+  flex-shrink: 0;
+  color: var(--mut);
+}
+.usb-devices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.usb-device {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--bd);
+  border-radius: 9px;
+  background: var(--bg2);
+  cursor: pointer;
+}
+.usb-device:hover {
+  background: var(--hover);
+}
+.usb-device > svg {
+  flex-shrink: 0;
+  color: var(--ac);
+}
+.usb-device-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.usb-device-copy strong {
+  font-size: 12.5px;
+}
+.usb-device-copy span {
+  color: var(--mut);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usb-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 9px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.usb-check input {
+  margin-top: 2px;
+}
+.usb-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--mut);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.usb-advanced {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--bd);
+  border-radius: 9px;
+  background: var(--bg2);
+}
+.usb-advanced .sync-field:last-child {
+  margin-bottom: 0;
+}
+.usb-number {
+  max-width: 120px;
+}
+.usb-detail {
+  margin-top: 6px;
+  color: var(--mut);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+.usb-fine {
+  margin: 10px 0 0;
+  color: var(--mut);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.usb-fine.usb-experimental {
+  margin: 0 0 10px;
+  color: var(--warn);
+}
+.usb-rbx-prompt p {
+  margin: 8px 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--tx2);
+}
+.usb-plan-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--bg2);
+  font-size: 12px;
+}
+.usb-plan-grid > div {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+.usb-plan-grid .k {
+  flex: 0 0 104px;
+  color: var(--mut);
+}
+.usb-plan-grid .v {
+  flex: 1;
+  min-width: 0;
+  color: var(--tx);
+  overflow-wrap: anywhere;
+}
+.usb-plan-grid .v.mono {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.usb-bad {
+  color: #ef9d9d !important;
+}
+.usb-examples {
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--tx2);
+}
+.usb-examples summary {
+  cursor: pointer;
+}
+.usb-examples ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  max-height: 140px;
+  overflow-y: auto;
+  color: var(--mut);
+  overflow-wrap: anywhere;
+}
+.usb-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 9px 11px;
+  border: 1px solid rgba(224, 163, 60, 0.35);
+  border-radius: 8px;
+  background: rgba(224, 163, 60, 0.08);
+  color: #e9c98d;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.usb-phases {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+}
+.usb-phases li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg2);
+  color: var(--mut);
+}
+.usb-phases li.done {
+  color: #72cb98;
+}
+.usb-phases li.current {
+  background: var(--ac-16);
+  color: var(--ac-hi);
+}
+/* CD 取り込みのカードが出ているときは、その上に積む。 */
+.usb-status-bar--stacked {
+  bottom: 178px;
+}
+.rip-status-bar--running .rip-status-bar__head {
+  color: var(--ac);
+}
+.toaster.toaster--above-two {
+  bottom: 254px;
+}
+.usb-rbx-prompt .sync-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warn);
+}
+
+/* ============================================================
+   再生先 (Google Cast) picker — PlayerBar 右端のボタン + popover
+   PlayerBar (.cb-pr) は overflow: hidden なので popover は fixed で外に出す。
+   ============================================================ */
+.cb-castbtn {
+  position: relative;
+}
+.cb-castbtn.on {
+  color: var(--ac);
+}
+.cb-castdot {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--bg-side);
+}
+.cb-castdot.busy {
+  background: var(--warn);
+}
+.cb-castdot.bad {
+  background: #e0605a;
+}
+.cb-pop.cb-castpop {
+  position: fixed;
+  top: auto;
+  width: 300px;
+}
+.cb-castrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 9px;
+  border: none;
+  border-radius: 9px;
+  background: none;
+  color: var(--tx2);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.cb-castrow:hover:not(:disabled) {
+  background: #1f2429;
+}
+.cb-castrow:disabled {
+  cursor: default;
+}
+.cb-castrow.on {
+  color: var(--ac);
+}
+.cb-castrow .lbl {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cb-castrow .lbl .n {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--tx);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-castrow .lbl .s {
+  font-size: 11px;
+  color: var(--mut);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-castrow .lbl .s.busy {
+  color: var(--warn);
+}
+.cb-castrow .lbl .s.bad {
+  color: #e0605a;
+}
+.cb-castempty {
+  padding: 6px 9px 8px;
+  font-size: 12px;
+  color: var(--mut);
+  line-height: 1.5;
+}
+.cb-castempty ul {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+.cb-castnote {
+  margin: 0 12px 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--tx2);
+  background: var(--bg3);
+}
+.cb-castnote.bad {
+  color: var(--tx);
+  background: color-mix(in srgb, #e0605a 18%, var(--bg3));
+}
+.cb-castft-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.cb-castact {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--bd-strong);
+  background: var(--bg3);
+  color: var(--tx);
+  font-size: 12px;
+  cursor: pointer;
+}
+.cb-castact:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.cb-casthint {
+  font-size: 11px;
+  color: var(--mut);
+  line-height: 1.5;
 }

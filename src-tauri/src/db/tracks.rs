@@ -441,7 +441,7 @@ fn compatible_camelot_keys(base: &str) -> Option<Vec<String>> {
 }
 
 /// 検索トークンがフィールド指定 (`bpm:` `key:` `energy:` `artist:` `album:` `albumartist:`
-/// `genre:` `year:` `rating:` `comment:` `analyzed:` `tag:`) なら (SQL 句, バインド値) を返す。
+/// `genre:` `year:` `rating:` `comment:` `analyzed:` `missing:` `tag:`) なら (SQL 句, バインド値) を返す。
 /// `key:` は Camelot (8A) / Open Key (1m) / Classic (Am, F#m, Db) のどれでも指定でき、
 /// `key:compat:8A` の形でハーモニック互換キー一括指定もできる。
 /// 解釈できないキー/値なら None を返し、呼び出し側でフリーテキストとして扱う。
@@ -531,6 +531,16 @@ fn parse_field_filter(
                 format!(
                     "{op} (SELECT 1 FROM track_analysis a WHERE a.track_id = {prefix}track_id)"
                 ),
+                Vec::new(),
+            ))
+        }
+        // missing:yes → 実ファイルが見つからない (リンク切れ) 曲、missing:no → ある曲。
+        // file_exists は取り込み時とリンク切れ再チェックで更新される。
+        "missing" => {
+            let yes = parse_bool(val)?;
+            let op = if yes { "=" } else { "<>" };
+            Some((
+                format!("(COALESCE({prefix}file_exists, 1) {op} 0)"),
                 Vec::new(),
             ))
         }
@@ -815,6 +825,7 @@ impl Database {
         let xml_codec = raw
             .get_str("Kind")
             .and_then(crate::metadata::tech::codec_from_itunes_kind);
+        let xml_grouping = raw.get_str("Grouping").filter(|g| !g.trim().is_empty());
 
         if let Some((track_id, local_modified, local_path)) = matched {
             claimed_track_ids.insert(track_id);
@@ -840,7 +851,7 @@ impl Database {
                          total_time_ms = ?10, track_number = ?11, track_count = ?12,
                          disc_number = ?13, disc_count = ?14, compilation = ?15,
                          track_type = ?16, date_added = ?17, date_modified = ?18,
-                         search_text = ?19
+                         search_text = ?19, grouping = ?21
                      WHERE track_id = ?20",
                     params![
                         raw.get_str("Name"),
@@ -863,20 +874,31 @@ impl Database {
                         raw.get_date("Date Modified"),
                         search_text,
                         track_id,
+                        xml_grouping,
                     ],
                 )?;
             }
 
             // 技術メタデータ (#171) は未取得 (NULL) の列だけ XML の値で埋める。
             // 実ファイルから読んだ値の方が正確なので上書きはしない。
+            // グルーピングも未設定 (NULL/空) のときだけ XML の値で埋める (XML が新しくない再取り込みでも
+            // 既存ライブラリに後付けできるように)。
             self.conn.execute(
                 "UPDATE tracks SET
                      bitrate_kbps = COALESCE(bitrate_kbps, ?1),
                      sample_rate_hz = COALESCE(sample_rate_hz, ?2),
                      file_size_bytes = COALESCE(file_size_bytes, ?3),
-                     codec = COALESCE(codec, ?4)
+                     codec = COALESCE(codec, ?4),
+                     grouping = COALESCE(NULLIF(grouping, ''), ?6)
                  WHERE track_id = ?5",
-                params![xml_bitrate, xml_sample_rate, xml_size, xml_codec, track_id],
+                params![
+                    xml_bitrate,
+                    xml_sample_rate,
+                    xml_size,
+                    xml_codec,
+                    track_id,
+                    xml_grouping
+                ],
             )?;
 
             // 整理済みのローカルファイルが現在も存在する場合だけ、アプリ側の場所を正とする。
@@ -933,8 +955,8 @@ impl Database {
                  date_added, date_modified, bpm, comments, location_raw, location_path,
                  track_type, disabled, compilation, disc_number, disc_count,
                  track_number, track_count, file_exists, last_played, search_text,
-                 bitrate_kbps, sample_rate_hz, file_size_bytes, codec)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33)",
+                 bitrate_kbps, sample_rate_hz, file_size_bytes, codec, grouping)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)",
                 params![
                     track_id,
                     persistent_id,
@@ -969,6 +991,7 @@ impl Database {
                     xml_sample_rate,
                     xml_size,
                     xml_codec,
+                    xml_grouping,
                 ],
             ) {
                 Ok(_) => {
@@ -1167,7 +1190,7 @@ impl Database {
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM tracks ORDER BY {} LIMIT ?1 OFFSET ?2",
             order_by
         );
@@ -1178,7 +1201,7 @@ impl Database {
 
     /// 空白区切りの各トークンを AND で結合した検索。
     /// フィールド指定 (`artist:` `album:` `albumartist:` `genre:` `year:` `rating:`
-    /// `comment:` `analyzed:` `bpm:` `key:` `energy:`) はその条件に、それ以外は
+    /// `comment:` `analyzed:` `missing:` `bpm:` `key:` `energy:`) はその条件に、それ以外は
     /// name/artist/album/album_artist/genre/comments のいずれかへの部分一致 (OR) になり、
     /// トークン同士は AND。値は `artist:"daft punk"` のように引用符で囲める。
     pub fn search_tracks(
@@ -1220,7 +1243,7 @@ impl Database {
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM tracks
              WHERE {}
              ORDER BY {} LIMIT ? OFFSET ?",
@@ -1294,7 +1317,7 @@ impl Database {
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM tracks WHERE persistent_id = ?1",
         )?;
         let mut out = Vec::with_capacity(persistent_ids.len());
@@ -1317,7 +1340,7 @@ impl Database {
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM tracks ORDER BY track_id ASC",
         )?;
         let rows = stmt.query_map([], row_to_track)?;
@@ -1450,6 +1473,57 @@ impl Database {
         Ok(())
     }
 
+    /// 手動で指定したファイルへトラックの場所を付け替え、`file_exists = 1` にする
+    /// (リンク切れ曲の「ファイルの場所を指定…」)。1 行も一致しなければ false。
+    /// 場所はメタデータ (XML の LWW 時計の対象) ではないので date_modified は進めない。
+    pub fn relink_track_location(&self, track_id: i64, path: &str, url: &str) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE tracks SET location_path = ?1, location_raw = ?2, file_exists = 1
+             WHERE track_id = ?3",
+            params![path, url, track_id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// リンク切れ再チェック用に、全曲の `(track_id, location_path, file_exists)` を返す。
+    /// file_exists が NULL の行 (直 SQL 挿入など) は `None` にして、必ず書き直させる。
+    pub fn track_locations_for_file_check(
+        &self,
+    ) -> Result<Vec<(i64, Option<String>, Option<bool>)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT track_id, location_path, file_exists FROM tracks ORDER BY track_id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get::<_, Option<i64>>(2)?.map(|v| v != 0),
+            ))
+        })?;
+        rows.collect()
+    }
+
+    /// `file_exists` を `(track_id, 確認時の location_path, 有無)` の組でまとめて更新する。
+    /// 確認中に自動整理や手動の付け替えで場所が変わった行は、古いパスでの判定なので書かない。
+    /// 数万曲でも 1 トランザクションで済ませる。更新できた行数を返す。
+    pub fn set_file_exists_bulk(&self, updates: &[(i64, Option<String>, bool)]) -> Result<usize> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let mut changed = 0usize;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE tracks SET file_exists = ?1 WHERE track_id = ?2 AND location_path IS ?3",
+            )?;
+            for (track_id, location_path, exists) in updates {
+                changed += stmt.execute(params![*exists as i32, track_id, location_path])?;
+            }
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// rating は XML インポートの更新対象外なので、時計を進めなくても値は保護される。
     /// 進めると逆に XML 側の正当な更新まで止まるため据え置く。結果として
     /// 同期の書き戻しでは rating 衝突の新旧を判定できず、既定は手元の値になる。
@@ -1494,6 +1568,30 @@ impl Database {
             params![bpm, track_id],
         )?;
         Ok(())
+    }
+
+    /// グルーピングを設定する (ファイル取り込み時のタグ値)。
+    pub fn set_track_grouping(&self, track_id: i64, grouping: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tracks SET grouping = ?1 WHERE track_id = ?2",
+            params![grouping, track_id],
+        )?;
+        Ok(())
+    }
+
+    /// persistent_id で曲を引き、グルーピングが未設定 (NULL/空) のときだけ埋める。
+    /// 埋めたら true (iTunes XML からの後付け用)。
+    pub fn fill_track_grouping_by_persistent_id(
+        &self,
+        persistent_id: &str,
+        grouping: &str,
+    ) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE tracks SET grouping = ?1
+             WHERE persistent_id = ?2 AND (grouping IS NULL OR grouping = '')",
+            params![grouping, persistent_id],
+        )?;
+        Ok(n > 0)
     }
 
     /// 技術メタデータ列 (#171) だけを更新する。ユーザー編集の対象列 (曲名等) には触れない。
@@ -1673,7 +1771,7 @@ impl Database {
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM (
                SELECT *, ({key}) AS album_key FROM tracks
              ) WHERE album_key = ?1
@@ -1800,7 +1898,7 @@ impl Database {
                     t.track_number, t.track_count, t.file_exists, t.last_played,
                     t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes,
                     t.codec,
-                    t.key_camelot_user
+                    t.key_camelot_user, t.grouping
              FROM tracks t
              INNER JOIN recent_tracks rt ON t.track_id = rt.track_id
              ORDER BY rt.played_at DESC
@@ -1989,7 +2087,7 @@ const TRACK_BY_TRACK_ID_SQL: &str =
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM tracks WHERE track_id = ?1";
 
 pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
@@ -2033,6 +2131,7 @@ pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
         codec: row.get("codec")?,
         // SELECT * 経由 (列順がスキーマ順) でも引けるよう列名で取る。
         key_camelot_user: row.get("key_camelot_user")?,
+        grouping: row.get("grouping")?,
     })
 }
 
@@ -2561,6 +2660,40 @@ mod tests {
         assert_eq!(ids(&db, "bpm:120-128"), vec![1]);
         assert_eq!(ids(&db, "key:8a"), vec![1]);
         assert_eq!(ids(&db, "energy:75-85"), vec![1]);
+    }
+
+    /// missing: yes/no で file_exists (リンク切れ) を絞り込む。値は analyzed: と同じ真偽表記。
+    #[test]
+    fn fielded_missing_operator() {
+        let db = fielded_db();
+        db.conn
+            .execute(
+                "UPDATE tracks SET file_exists = 0 WHERE track_id IN (2, 4)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(ids(&db, "missing:yes"), vec![2, 4]);
+        assert_eq!(ids(&db, "missing:no"), vec![1, 3]);
+        for q in [
+            "missing:true",
+            "missing:1",
+            "missing:y",
+            "missing:on",
+            "MISSING:YES",
+        ] {
+            assert_eq!(ids(&db, q), vec![2, 4], "{q}");
+        }
+        for q in ["missing:false", "missing:0", "missing:n", "missing:off"] {
+            assert_eq!(ids(&db, q), vec![1, 3], "{q}");
+        }
+        // 他の条件と AND で組み合わせられる。
+        assert_eq!(ids(&db, "missing:yes artist:\"daft punk\""), vec![2]);
+        assert_eq!(ids(&db, "missing:no analyzed:no"), vec![3]);
+        // 解釈できない値はフリーテキスト扱い (どの曲にも一致しない)。
+        assert!(ids(&db, "missing:maybe").is_empty());
+        // ID だけ返す経路 (スマートプレイリスト内検索) でも同じ。
+        let set = db.search_track_ids("missing:yes").unwrap();
+        assert_eq!(set, HashSet::from([2, 4]));
     }
 
     /// key:compat:<camelot> がハーモニック互換キー (同キー / 平行調 / ホイール ±1) を

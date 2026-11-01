@@ -5,6 +5,7 @@
 // フロントの setPreviewMode の呼び出し順は統計結果に影響しない。
 
 import * as playbackApi from "../api/playback";
+import { isCasting } from "../api/cast";
 import { useStore } from "../store/useStore";
 import type { Track } from "../types";
 
@@ -13,10 +14,25 @@ export type PreviewReturn = {
   positionMs: number;
 };
 
-/** Audition モード (UI 強調 + ジャンプキー) をトグル。 */
+/** キャスト中は Audition / Preview を使えない理由 (P0: Cast 先で誤って試聴しない)。 */
+export const CAST_PREVIEW_BLOCKED_MESSAGE = "キャスト中は試聴 (Preview) を使えません";
+
+/**
+ * キャスト中なら理由をトーストで出して true を返す。
+ * Audition / Preview の入口はすべてここを通す (バックエンドも set_preview_mode を拒否する)。
+ */
+export function blockedByCast(): boolean {
+  const { castStatus, pushToast } = useStore.getState();
+  if (!isCasting(castStatus)) return false;
+  pushToast("info", CAST_PREVIEW_BLOCKED_MESSAGE);
+  return true;
+}
+
+/** Audition モード (UI 強調 + ジャンプキー) をトグル。キャスト中は ON にできない。 */
 export function toggleAuditionMode(): boolean {
   const { auditionMode, setAuditionMode } = useStore.getState();
   const next = !auditionMode;
+  if (next && blockedByCast()) return false;
   setAuditionMode(next);
   return next;
 }
@@ -29,6 +45,7 @@ export function toggleAuditionMode(): boolean {
  */
 export async function startPreview(track: Track): Promise<void> {
   if (!track.fileExists) return;
+  if (blockedByCast()) return;
   const state = useStore.getState();
   const { playback, previewActive, enterPreview } = state;
 

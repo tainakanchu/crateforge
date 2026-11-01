@@ -10,6 +10,82 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.15.0] - 2026-10-17
+
+### 日本語
+
+#### デスクトップ
+- **Google Cast 端末で再生できるように**: プレイヤーバーの「再生先」ボタンから、同じ LAN の Chromecast / Google TV / Cast 対応スピーカーを選べるようにした。選ぶと、再生中の曲を途中の位置から引き継いでキャスト先で再生する。再生・一時停止・シーク・前後の曲・音量・キュー・シャッフル/リピート・自動送りは、ローカル再生のときと同じように使える。TV のリモコンで行った操作もデスクトップの表示に反映される。対応形式は MP3 と AAC（M4A/MP4）で、それ以外の曲は理由を表示して再生先を切り替えない。キャスト先との接続が切れても PC のスピーカーから勝手に鳴らすことはなく、「切断してローカルへ戻す」で最後の位置から戻せる。キャスト中は Preview（試聴）は使えない。キャストには内蔵 API サーバーの LAN 公開が必要で、無効のときは確認してから有効にする。アプリの起動時は、前回キャストしていても常に「このコンピューター」で再生する。(#230)
+- **macOS で AirPlay スピーカーを使うガイドを追加**: OS のサウンド出力で AirPlay スピーカーを選べば鳴らせる見込みの手順を、ガイドに追加した（実機での動作確認は未完了で、環境によって異なる）。(#230)
+
+#### API
+- **キャスト用メディア URL と再生先の状態**: `GET /api/cast/media/{ticket}` を追加した。Cast 端末専用で、曲ごとの短命チケットで認証し、HEAD / Range に対応する。通常の LAN トークンは端末へ渡さない。`GET /api/remote/state` には `playbackTarget` と `connectionState` を追加した（既存のフィールドはそのまま）。キャスト中は、`/api/remote/*` の再生操作がキャスト先に作用する。(#230)
+
+### English
+
+#### Desktop
+- **Play on Google Cast devices**: the new "再生先" (playback target) button in the player bar lets you pick a Chromecast, Google TV, or Cast-enabled speaker on the same LAN. Once selected, the currently playing track continues on the cast device from where it was. Play / pause, seek, previous / next, volume, the queue, shuffle / repeat, and auto-advance work just as they do for local playback. Actions taken with the TV remote are reflected in the desktop display as well. Supported formats are MP3 and AAC (M4A/MP4); for any other track, the reason is shown and the target is not switched. If the connection to the cast device drops, audio is never played from the PC's speakers on its own; "切断してローカルへ戻す" (disconnect and return to local) brings playback back from the last position. Preview (audition) is not available while casting. Casting requires the built-in API server to be exposed on the LAN; if it is off, you are asked to confirm before it is turned on. The app always starts with playback on "このコンピューター" (this computer), even if you were casting last time. (#230)
+- **Guide for using AirPlay speakers on macOS**: added instructions for choosing an AirPlay speaker as the OS sound output, which is expected to work (it has not been verified on real hardware yet and may vary by environment). (#230)
+
+#### API
+- **Media URL for casting and playback target state**: added `GET /api/cast/media/{ticket}`. It is for Cast devices only, authenticated with a short-lived per-track ticket, and supports HEAD and Range requests. The regular LAN token is never handed to the device. `GET /api/remote/state` now includes `playbackTarget` and `connectionState` (existing fields are unchanged). While casting, the playback actions under `/api/remote/*` act on the cast device. (#230)
+
+## [v0.14.2] - 2026-10-11
+
+### 日本語
+
+#### デスクトップ
+- **複数選択した曲をまとめてプレイリストから外せるように**: 曲を複数選んで右クリック →「Remove from this playlist」を押しても、右クリックした 1 曲しか外れなかったのを修正。選択中の曲をまとめて外す。Albums 表示で曲を右クリックしたときの「Add to Crate」「Get Info」がアルバム全曲を対象にしていたのも、その曲だけを対象にするよう修正。スマートプレイリストやフォルダでは効かない「外す」項目を出さないようにした。(#225)
+
+#### API
+- **ローカル API から解析を実行できるように**: `POST /api/tracks/analyze` で指定した曲の BPM / キー / エナジー / 類似度の解析をキューに積めるようにした。`GET /api/analysis/status` で解析済み件数と残りの件数を確認できる。dj-curator プラグイン（v0.4.3）は、選曲中に未解析の曲が多いとこれを使って解析してから選ぶ。既存の `POST /api/analysis`（他の端末で計算した解析結果のアップロード）とは別物。(#226)
+
+### English
+
+#### Desktop
+- **Remove multiple selected tracks from a playlist at once**: selecting several tracks, right-clicking, and choosing "Remove from this playlist" removed only the track you right-clicked. It now removes the whole selection. In the Albums view, "Add to Crate" and "Get Info" from a single track's context menu acted on the whole album; they now act on that track only. The "remove" item is no longer shown for smart playlists and folders, where it did nothing. (#225)
+
+#### API
+- **Run analysis from the local API**: `POST /api/tracks/analyze` queues BPM / key / energy / similarity analysis for the given tracks, and `GET /api/analysis/status` reports how many tracks are analyzed and how many are still pending. The dj-curator plugin (v0.4.3) uses this to analyze unanalyzed tracks before picking. This is separate from the existing `POST /api/analysis`, which uploads analysis results computed on another device. (#226)
+
+## [v0.14.1] - 2026-10-11
+
+### 日本語
+
+#### デスクトップ
+- **リンク切れの曲を探して直せるように**: ツールバーの「リンク切れを再チェック」で全曲のファイルが今もあるかを確認し直せるようにした（外付けドライブを付け直した後など）。消えた曲・戻ってきた曲の両方を反映する。検索に `missing:yes` / `missing:no` を追加し、リンク切れの曲だけを一覧できる。曲の右クリック「ファイルの場所を指定…」で、移動したファイルを選んで付け直せる。(#224)
+- **狭いウィンドウでのツールバー崩れを修正**: ウィンドウを狭くすると、プレイリスト表示中の「このプレイリスト / ライブラリ全体」の切り替えが 1 文字ずつ縦に折り返して崩れていたのを修正。入りきらない分は横スクロールで表示する。(#223)
+
+### English
+
+#### Desktop
+- **Find and fix missing files**: the new "リンク切れを再チェック" (re-check missing files) toolbar action re-checks whether every track's file still exists (for example after reconnecting an external drive), marking both newly missing and restored tracks. The search now supports `missing:yes` / `missing:no` to list only missing tracks, and the track context menu has "ファイルの場所を指定…" (locate file) to point a track at its moved file. (#224)
+- **Fixed the toolbar breaking in narrow windows**: in a narrow window, the "このプレイリスト / ライブラリ全体" (this playlist / whole library) search scope switch wrapped one character per line and broke the toolbar layout. Items that don't fit now scroll horizontally. (#223)
+
+## [v0.14.0] - 2026-10-10
+
+### 日本語
+
+#### デスクトップ
+- **USB 書き出し（CDJ / rekordbox 互換、実験的）**: プレイリストやフォルダを、CDJ / XDJ で読める rekordbox 互換の USB に書き出せるようにした（Device Library と OneLibrary、解析・波形・キー、アートワーク）。2 回目以降は同期として、変わった曲だけを書き換える。Traktor の `collection.nml` があれば、ホットキュー・メモリーキュー・ループ・ビートグリッドも一緒に書き出す。書き出しは外部ツール rbx-cli（GPL、初回にダウンロード、別プロセスで実行）が行う。CDJ / XDJ の実機ではまだ検証できていないので、現場で使う前に手持ちのプレーヤーで確認してほしい。(#221)
+
+### English
+
+#### Desktop
+- **USB export for CDJ (rekordbox-compatible, experimental)**: playlists and folders can now be exported to a rekordbox-compatible USB drive that CDJ / XDJ players can read (Device Library and OneLibrary, with analysis, waveforms, key, and artwork). Later exports work as a sync and rewrite only the tracks that changed. If you have a Traktor `collection.nml`, hot cues, memory cues, loops, and beat grids are exported too. The export is done by the external tool rbx-cli (GPL, downloaded on first use, run as a separate process). It has not been verified on real CDJ / XDJ hardware yet, so please test it on your own players before using it at a gig. (#221)
+
+## [v0.13.4] - 2026-10-06
+
+### 日本語
+
+#### デスクトップ
+- **CD 検出時の表示崩れを修正**: CD を入れたときの「CD を検出しました」の通知が、画面の端に崩れた状態で表示されていたのを修正。画面中央のダイアログで出るようにし、トラック数・総再生時間・ドライブも表示するようにした。Esc か背景クリックで閉じられる。(#219)
+
+### English
+
+#### Desktop
+- **Fixed the broken CD detection notice**: the "CD を検出しました" (CD detected) notice shown when inserting a disc rendered in a broken state at the edge of the window. It now appears as a centered dialog that also shows the track count, total length, and drive, and can be closed with Esc or by clicking the backdrop. (#219)
+
 ## [v0.13.3] - 2026-10-05
 
 ### 日本語

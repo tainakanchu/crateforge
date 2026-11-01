@@ -230,8 +230,10 @@ async fn resync_selection(
         .map(|track| required_pid(track).map(str::to_string))
         .collect::<Result<Vec<_>, _>>()?;
     let local_playlist = db.get_playlist_by_persistent_id(&selection.remote_pid)?;
+    // ローカル側は保存済みの曲目 (playlist_tracks) を三者比較して書き戻す対象なので、
+    // 仮にローカルで条件を付けていても評価結果ではなく静的な行を読む。
     let local_tracks = match &local_playlist {
-        Some(playlist) => db.get_playlist_tracks(playlist.playlist_id, i64::MAX, 0, None, None)?,
+        Some(playlist) => db.get_static_playlist_tracks(playlist.playlist_id)?,
         None => Vec::new(),
     };
     let local_pids = local_tracks
@@ -851,6 +853,7 @@ mod tests {
             file_size_bytes: None,
             codec: None,
             key_camelot_user: None,
+            grouping: None,
         }
     }
 
@@ -1365,6 +1368,7 @@ mod tests {
             app: None,
             tokens: ValidTokens::default(),
             pairings: PairingRegistry::default(),
+            cast_tickets: Default::default(),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

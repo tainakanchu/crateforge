@@ -53,6 +53,15 @@ fn gen_token() -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// API サーバーの停止 / LAN 公開 OFF を Cast に伝える (Receiver が音源を取れなくなるので
+/// チケットを失効させて切断する)。再起動後も LAN で待受中なら何もしない。
+fn notify_cast(app: &AppHandle) {
+    if let Some(c) = app.try_state::<crate::playback_target::PlaybackCoordinator>() {
+        let c = c.inner().clone();
+        tauri::async_runtime::spawn(async move { c.on_media_server_changed().await });
+    }
+}
+
 /// app_data_dir を取得する (setup / コマンド双方から使う想定)。
 fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     app.path()
@@ -197,11 +206,15 @@ pub fn set_api_server_config(
                 let mut guard = server.lock().map_err(|e| e.to_string())?;
                 *guard = Some(ctrl);
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                notify_cast(&app);
+                return Err(e);
+            }
         }
     }
 
     // 4. 反映後の状態を返す。
+    notify_cast(&app);
     get_api_server_status(app, server)
 }
 
@@ -291,10 +304,14 @@ pub fn set_api_lan_enabled(
                 let mut guard = server.lock().map_err(|e| e.to_string())?;
                 *guard = Some(ctrl);
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                notify_cast(&app);
+                return Err(e);
+            }
         }
     }
 
+    notify_cast(&app);
     get_api_server_status(app, server)
 }
 
@@ -349,10 +366,14 @@ pub fn regenerate_api_token(
                 let mut guard = server.lock().map_err(|e| e.to_string())?;
                 *guard = Some(ctrl);
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                notify_cast(&app);
+                return Err(e);
+            }
         }
     }
 
+    notify_cast(&app);
     get_api_server_status(app, server)
 }
 
