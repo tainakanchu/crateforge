@@ -526,6 +526,19 @@ pub struct SmartCriteria {
     pub sort_by: Option<String>,
     #[serde(default)]
     pub sort_desc: bool,
+    /// 第 2 キー以降の並び替え (`sort_by` で同順位のときに順に使う)。Rules (YAML) の
+    /// 複数キーソート用。旧データ・UI 作成分には無いので `default`、空なら出力しない。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub then_by: Vec<SmartSortKey>,
+}
+
+/// 並び替えの 1 キー (第 2 キー以降)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartSortKey {
+    pub field: String,
+    #[serde(default)]
+    pub desc: bool,
 }
 
 /// 入れ子の条件グループ。自身のルール列と子グループを `match_all` で組み合わせる。

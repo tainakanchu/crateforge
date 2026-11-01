@@ -176,6 +176,7 @@ impl Decoder {
                 limit: None,
                 sort_by: None,
                 sort_desc: false,
+                then_by: Vec::new(),
             },
             Folded::Group(g) => SmartCriteria {
                 match_all: g.match_all,
@@ -184,6 +185,7 @@ impl Decoder {
                 limit: None,
                 sort_by: None,
                 sort_desc: false,
+                then_by: Vec::new(),
             },
             Folded::Const(true) if self.dropped == 0 => {
                 // 元から実質無条件 (例: 「メディアの種類がミュージック」だけ)。全曲に一致させてよい。
@@ -196,6 +198,7 @@ impl Decoder {
                     limit: None,
                     sort_by: None,
                     sort_desc: false,
+                    then_by: Vec::new(),
                 }
             }
             Folded::Const(true) | Folded::Dropped => {

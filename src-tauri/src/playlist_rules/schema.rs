@@ -26,6 +26,7 @@ pub struct RulesFile {
 pub struct OptionsInput {
     pub remove_existing_namespace: Option<bool>,
     pub fail_on_missing_playlist: Option<bool>,
+    #[allow(dead_code)]
     pub dedupe_track_ids: Option<bool>,
     pub case_sensitive_contains: Option<bool>,
 }
@@ -214,11 +215,14 @@ pub struct RangeEntry {
 
 // ---- Effective options ----
 
+/// 実効オプション。`dedupeTrackIds` はスマートプレイリストでは意味を持たない
+/// (メンバーは常に重複なし) ので受け取るだけで使わない。
 #[derive(Debug, Clone, Copy)]
 pub struct BuildOptions {
+    /// true (既定): namespace 配下でルールに無いノードを削除する。false: 残す (純粋な upsert)。
     pub remove_existing_namespace: bool,
     pub fail_on_missing_playlist: bool,
-    pub dedupe_track_ids: bool,
+    /// スマート条件は常に大小無視なので、true なら警告を出すだけ。
     pub case_sensitive_contains: bool,
 }
 
@@ -228,7 +232,6 @@ impl BuildOptions {
         BuildOptions {
             remove_existing_namespace: i.remove_existing_namespace.unwrap_or(true),
             fail_on_missing_playlist: i.fail_on_missing_playlist.unwrap_or(true),
-            dedupe_track_ids: i.dedupe_track_ids.unwrap_or(true),
             case_sensitive_contains: i.case_sensitive_contains.unwrap_or(false),
         }
     }
@@ -239,6 +242,7 @@ pub fn parse_rules_yaml(yaml: &str) -> Result<RulesFile, String> {
 }
 
 /// v1 でサポートする Track フィールド名一覧 (camelCase)。React 側補完用。
+/// すべて `smart::FIELDS` に含まれる (スマート条件で評価できる) こと。
 #[allow(dead_code)]
 pub const SUPPORTED_FIELDS: &[&str] = &[
     "trackId",

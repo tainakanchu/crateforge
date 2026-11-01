@@ -567,6 +567,7 @@ mod tests {
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         };
         db.set_smart_criteria(13, &local).unwrap();
 
@@ -782,6 +783,7 @@ mod tests {
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         };
         db.set_smart_criteria(jpop.playlist_id, &local).unwrap();
         super::super::parser::import_library(&path, &db).unwrap();

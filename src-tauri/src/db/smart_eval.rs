@@ -259,16 +259,9 @@ impl PlaylistResolver<'_> {
                 smart::track_matches(t, lib.analysis.get(&t.track_id), criteria, &ctx)
             })
             .collect();
-        // criteria 自身の並び (無ければ name 昇順)。limit はこの並びで切る。
-        let field = criteria.sort_by.as_deref().unwrap_or("name");
-        matched.sort_by(|&a, &b| {
-            let ord = smart::compare_tracks(&lib.tracks[a], &lib.tracks[b], field);
-            if criteria.sort_desc {
-                ord.reverse()
-            } else {
-                ord
-            }
-        });
+        // criteria 自身の並び (無ければ name 昇順、第 2 キー以降は then_by)。limit はこの並びで切る。
+        matched
+            .sort_by(|&a, &b| smart::compare_by_criteria(&lib.tracks[a], &lib.tracks[b], criteria));
         if let Some(limit) = criteria.limit {
             matched.truncate(limit);
         }
@@ -300,6 +293,7 @@ mod tests {
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         }
     }
 

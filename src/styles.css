@@ -4832,6 +4832,14 @@ input {
   background: rgba(224, 87, 60, 0.15);
   color: #f0b3a6;
 }
+.rules-msg.warn {
+  background: rgba(224, 163, 60, 0.14);
+  color: var(--warn);
+}
+.rules-warnings {
+  margin: 0;
+  padding-left: 16px;
+}
 .rules-body {
   min-height: 0;
 }

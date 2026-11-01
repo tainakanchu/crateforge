@@ -27,6 +27,12 @@ export interface SmartGroup {
   groups?: SmartGroup[];
 }
 
+/// 並び替えの 1 キー (第 2 キー以降)。
+export interface SmartSortKey {
+  field: string;
+  desc: boolean;
+}
+
 export interface SmartCriteria {
   matchAll: boolean;
   rules: SmartRule[];
@@ -35,6 +41,8 @@ export interface SmartCriteria {
   limit: number | null;
   sortBy: string | null;
   sortDesc: boolean;
+  /// sortBy で同順位のときに順に使う第 2 キー以降 (Rules の複数キーソート由来。空なら省略される)。
+  thenBy?: SmartSortKey[];
 }
 
 // ===== iTunes XML からのスマートプレイリスト復元 =====
