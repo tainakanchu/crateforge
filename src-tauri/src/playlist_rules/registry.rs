@@ -1,95 +1,94 @@
-//! 既存プレイリスト + 生成プレイリストの track-id セットを引けるレジストリ。
+//! `inPlaylist { source: existing }` の参照先を引く索引 (フルパス優先、次に一意な名前)。
+//!
+//! 対象は namespace ルートフォルダの外にある既存プレイリスト・フォルダ。namespace の中は
+//! このルールセット自身が作るものなので、`source: generated` で参照してもらう。
 
 use std::collections::{HashMap, HashSet};
 
-use super::models::GeneratedPlaylist;
-use super::schema::{BuildOptions, PlaylistRef, PlaylistSource};
+use crate::db::playlists::PlaylistNode;
 
-pub struct ExistingPlaylist {
-    pub name: String,
-    pub full_path: String,
-    pub track_ids: Vec<i64>,
+pub struct ExistingIndex {
+    /// "親/子/名前" → persistent_id。
+    by_full_path: HashMap<String, String>,
+    /// 名前 → persistent_id (同名が複数あれば複数)。
+    by_name: HashMap<String, Vec<String>>,
+    /// namespace の中にだけあるパス / 名前 (エラーメッセージを分かりやすくする用)。
+    in_namespace: HashSet<String>,
+    namespace: String,
 }
 
-pub struct PlaylistRegistry {
-    existing_by_full_path: HashMap<String, HashSet<i64>>,
-    existing_by_name: HashMap<String, Vec<HashSet<i64>>>,
-    generated_by_path: HashMap<String, HashSet<i64>>,
-    options: BuildOptions,
+/// 親チェーンを辿って "親/子/名前" を作る。壊れたデータで循環していても止まる。
+fn full_path(node: &PlaylistNode, by_pid: &HashMap<&str, &PlaylistNode>) -> String {
+    let mut parts = vec![node.name.as_str()];
+    let mut parent = node.parent_persistent_id.as_deref();
+    let mut depth = 0;
+    while let Some(pid) = parent {
+        let Some(p) = by_pid.get(pid) else { break };
+        depth += 1;
+        if depth > 64 {
+            break;
+        }
+        parts.push(p.name.as_str());
+        parent = p.parent_persistent_id.as_deref();
+    }
+    parts.reverse();
+    parts.join("/")
 }
 
-impl PlaylistRegistry {
-    pub fn new(existing: Vec<ExistingPlaylist>, options: BuildOptions) -> Self {
+impl ExistingIndex {
+    /// `namespace_pids` = namespace ルートフォルダ (複数あれば全部) とその子孫の persistent_id。
+    pub fn build(
+        nodes: &[PlaylistNode],
+        namespace_pids: &HashSet<String>,
+        namespace: &str,
+    ) -> Self {
+        let by_pid: HashMap<&str, &PlaylistNode> = nodes
+            .iter()
+            .filter_map(|n| n.persistent_id.as_deref().map(|p| (p, n)))
+            .collect();
         let mut by_full_path = HashMap::new();
-        let mut by_name: HashMap<String, Vec<HashSet<i64>>> = HashMap::new();
-
-        for p in existing {
-            let set: HashSet<i64> = p.track_ids.into_iter().collect();
-            by_full_path.insert(p.full_path.clone(), set.clone());
-            by_name.entry(p.name).or_default().push(set);
-        }
-
-        PlaylistRegistry {
-            existing_by_full_path: by_full_path,
-            existing_by_name: by_name,
-            generated_by_path: HashMap::new(),
-            options,
-        }
-    }
-
-    pub fn resolve(&self, r: &PlaylistRef) -> Option<&HashSet<i64>> {
-        match r.source {
-            PlaylistSource::Existing => self.resolve_existing(&r.name),
-            PlaylistSource::Generated => self.generated_by_path.get(&r.name),
-        }
-    }
-
-    fn resolve_existing(&self, name: &str) -> Option<&HashSet<i64>> {
-        // Try full path first.
-        if let Some(s) = self.existing_by_full_path.get(name) {
-            return Some(s);
-        }
-
-        // Fall back to bare name.
-        match self.existing_by_name.get(name) {
-            Some(list) if list.len() == 1 => Some(&list[0]),
-            Some(list) if list.len() > 1 => {
-                // Ambiguous; caller path will receive an error elsewhere.
-                // For now, return None and let downstream handle it.
-                let _ = list;
-                None
+        let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
+        let mut in_namespace = HashSet::new();
+        for n in nodes {
+            let Some(pid) = n.persistent_id.as_ref() else {
+                continue;
+            };
+            let path = full_path(n, &by_pid);
+            if namespace_pids.contains(pid) {
+                in_namespace.insert(path);
+                in_namespace.insert(n.name.clone());
+                continue;
             }
-            _ => None,
+            by_full_path.entry(path).or_insert_with(|| pid.clone());
+            by_name.entry(n.name.clone()).or_default().push(pid.clone());
+        }
+        ExistingIndex {
+            by_full_path,
+            by_name,
+            in_namespace,
+            namespace: namespace.to_string(),
         }
     }
 
-    /// fail_on_missing_playlist が true なら見つからない existing 参照を Err に。
-    pub fn check_existing(&self, name: &str) -> Result<(), String> {
-        if !self.options.fail_on_missing_playlist {
-            return Ok(());
+    /// 参照先の persistent_id。見つからない・曖昧なら理由を Err で返す。
+    pub fn resolve(&self, name: &str) -> Result<String, String> {
+        if let Some(pid) = self.by_full_path.get(name) {
+            return Ok(pid.clone());
         }
-        if self.existing_by_full_path.contains_key(name) {
-            return Ok(());
-        }
-        match self.existing_by_name.get(name) {
-            Some(list) if list.len() == 1 => Ok(()),
+        match self.by_name.get(name).map(Vec::as_slice) {
+            Some([only]) => Ok(only.clone()),
             Some(list) if list.len() > 1 => Err(format!(
                 "Multiple existing playlists matched name \"{}\"; use nested path when available",
                 name
+            )),
+            _ if self.in_namespace.contains(name) => Err(format!(
+                "Referenced existing playlist \"{}\" is inside namespace \"{}\"; reference it with source: generated",
+                name, self.namespace
             )),
             _ => Err(format!(
                 "Referenced existing playlist not found: \"{}\"",
                 name
             )),
         }
-    }
-
-    pub fn register_generated(&mut self, p: &GeneratedPlaylist) {
-        self.generated_by_path
-            .insert(p.path.clone(), p.track_ids.iter().copied().collect());
-    }
-
-    pub fn has_generated(&self, path: &str) -> bool {
-        self.generated_by_path.contains_key(path)
     }
 }

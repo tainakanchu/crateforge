@@ -48,9 +48,89 @@ fn rating_to_stars(r: i64) -> f64 {
     (r.clamp(0, 100) as f64 / 10.0).round() / 2.0
 }
 
+/// bool の列は 1 / 0 の数値として扱う (Rules の `equals: true` は `is "1"` に変換される)。
+fn ob(v: bool) -> FieldVal {
+    FieldVal::Num(if v { 1.0 } else { 0.0 })
+}
+
+/// 条件で評価できるフィールド名 ([`field_value`] の分岐と一致させる)。
+/// ここに無い名前は常に「値なし」として扱われる。
+pub const FIELDS: &[&str] = &[
+    "trackId",
+    "name",
+    "artist",
+    "albumArtist",
+    "album",
+    "genre",
+    "grouping",
+    "composer",
+    "comments",
+    "year",
+    "bpm",
+    "rating",
+    "playCount",
+    "skipCount",
+    "trackNumber",
+    "discNumber",
+    "dateAdded",
+    "dateModified",
+    "lastPlayed",
+    "location",
+    "kind",
+    "compilation",
+    "disabled",
+    "podcast",
+    "bitrate",
+    "sampleRate",
+    "bitDepth",
+    "channels",
+    "fileSize",
+    "codec",
+    "key",
+    "keyCamelot",
+    "energy",
+];
+
+/// 並び替えに使えるフィールド名 ([`compare_field`] の分岐と一致させる)。
+/// ここに無い名前は name 順になる。
+pub const SORT_FIELDS: &[&str] = &[
+    "trackId",
+    "name",
+    "artist",
+    "album",
+    "albumArtist",
+    "genre",
+    "grouping",
+    "composer",
+    "comments",
+    "bpm",
+    "rating",
+    "playCount",
+    "skipCount",
+    "year",
+    "totalTimeMs",
+    "trackNumber",
+    "discNumber",
+    "dateAdded",
+    "dateModified",
+    "lastPlayed",
+    "location",
+    "kind",
+    "compilation",
+    "disabled",
+    "podcast",
+    "bitrate",
+    "sampleRate",
+    "bitDepth",
+    "channels",
+    "fileSize",
+    "codec",
+];
+
 /// 条件で使えるフィールド (フロントの選択肢と一致させる)。
 fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
     match field {
+        "trackId" => FieldVal::Num(t.track_id as f64),
         "name" => os(&t.name),
         "artist" => os(&t.artist),
         "albumArtist" => os(&t.album_artist),
@@ -70,8 +150,20 @@ fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
         "playCount" => on(t.play_count),
         "skipCount" => on(t.skip_count),
         "trackNumber" => on(t.track_number),
+        "discNumber" => on(t.disc_number),
         "dateAdded" => os(&t.date_added),
+        "dateModified" => os(&t.date_modified),
         "lastPlayed" => os(&t.last_played),
+        // 実ファイルのパス (無ければ XML 由来の生 location)。
+        "location" => match os(&t.location_path) {
+            FieldVal::None => os(&t.location_raw),
+            v => v,
+        },
+        "kind" => os(&t.track_type),
+        "compilation" => ob(t.compilation),
+        "disabled" => ob(t.disabled),
+        // Podcast 判定は保持していないので常に値なし (Rules の旧評価器と同じ)。
+        "podcast" => FieldVal::None,
         // 技術メタデータ (#171)。
         "bitrate" => on(t.bitrate_kbps),
         "sampleRate" => on(t.sample_rate_hz),
@@ -255,22 +347,45 @@ fn lower(v: &Option<String>) -> String {
     v.as_deref().unwrap_or("").to_lowercase()
 }
 
-/// 2 曲を指定フィールドで比較する (昇順。同値は track_id で安定化)。
-pub fn compare_tracks(a: &Track, b: &Track, field: &str) -> Ordering {
-    let ord = match field {
+/// location の比較用 (実ファイルのパス優先、無ければ生 location)。
+fn location_key(t: &Track) -> String {
+    t.location_path
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or(t.location_raw.as_deref())
+        .unwrap_or("")
+        .to_lowercase()
+}
+
+/// 2 曲を 1 フィールドだけで比較する (昇順、同値なら Equal。未知のフィールドは name 順)。
+fn compare_field(a: &Track, b: &Track, field: &str) -> Ordering {
+    match field {
+        "trackId" => a.track_id.cmp(&b.track_id),
+        "name" => lower(&a.name).cmp(&lower(&b.name)),
         "artist" => lower(&a.artist).cmp(&lower(&b.artist)),
         "album" => lower(&a.album).cmp(&lower(&b.album)),
         "albumArtist" => lower(&a.album_artist).cmp(&lower(&b.album_artist)),
         "genre" => lower(&a.genre).cmp(&lower(&b.genre)),
         "grouping" => lower(&a.grouping).cmp(&lower(&b.grouping)),
+        "composer" => lower(&a.composer).cmp(&lower(&b.composer)),
+        "comments" => lower(&a.comments).cmp(&lower(&b.comments)),
         "bpm" => a.bpm.cmp(&b.bpm),
         "rating" => a.rating.cmp(&b.rating),
         "playCount" => a.play_count.cmp(&b.play_count),
+        "skipCount" => a.skip_count.cmp(&b.skip_count),
         "year" => a.year.cmp(&b.year),
         "totalTimeMs" => a.total_time_ms.cmp(&b.total_time_ms),
         "trackNumber" => a.track_number.cmp(&b.track_number),
+        "discNumber" => a.disc_number.cmp(&b.disc_number),
         "dateAdded" => a.date_added.cmp(&b.date_added),
+        "dateModified" => a.date_modified.cmp(&b.date_modified),
         "lastPlayed" => a.last_played.cmp(&b.last_played),
+        "location" => location_key(a).cmp(&location_key(b)),
+        "kind" => lower(&a.track_type).cmp(&lower(&b.track_type)),
+        "compilation" => a.compilation.cmp(&b.compilation),
+        "disabled" => a.disabled.cmp(&b.disabled),
+        // 常に値なし = 全曲同順位。
+        "podcast" => Ordering::Equal,
         "bitrate" => a.bitrate_kbps.cmp(&b.bitrate_kbps),
         "sampleRate" => a.sample_rate_hz.cmp(&b.sample_rate_hz),
         "bitDepth" => a.bit_depth.cmp(&b.bit_depth),
@@ -278,12 +393,28 @@ pub fn compare_tracks(a: &Track, b: &Track, field: &str) -> Ordering {
         "fileSize" => a.file_size_bytes.cmp(&b.file_size_bytes),
         "codec" => lower(&a.codec).cmp(&lower(&b.codec)),
         _ => lower(&a.name).cmp(&lower(&b.name)),
-    };
-    if ord == Ordering::Equal {
-        a.track_id.cmp(&b.track_id)
-    } else {
-        ord
     }
+}
+
+/// 2 曲を指定フィールドで比較する (昇順。同値は track_id で安定化)。
+pub fn compare_tracks(a: &Track, b: &Track, field: &str) -> Ordering {
+    compare_field(a, b, field).then_with(|| a.track_id.cmp(&b.track_id))
+}
+
+/// criteria 自身の並び (`sort_by` + `sort_desc`、同順位なら `then_by` を順に) で比較する。
+/// `sort_by` が無ければ name 昇順。最後は track_id で安定化する (第 1 キーが降順なら
+/// track_id も降順 = `then_by` が空なら従来の `compare_tracks(..).reverse()` と同じ)。
+pub fn compare_by_criteria(a: &Track, b: &Track, c: &SmartCriteria) -> Ordering {
+    let field = c.sort_by.as_deref().unwrap_or("name");
+    let dir = |ord: Ordering, desc: bool| if desc { ord.reverse() } else { ord };
+    let mut ord = dir(compare_field(a, b, field), c.sort_desc);
+    for key in &c.then_by {
+        if ord != Ordering::Equal {
+            break;
+        }
+        ord = dir(compare_field(a, b, &key.field), key.desc);
+    }
+    ord.then_with(|| dir(a.track_id.cmp(&b.track_id), c.sort_desc))
 }
 
 /// マッチ済みトラックを指定フィールドで並び替える (NULL/空は末尾)。
@@ -381,6 +512,7 @@ mod tests {
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         };
         let half = track(1, "A", None, Some(70));
         assert!(matches_lvl(
@@ -449,6 +581,7 @@ mod tests {
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         };
         assert!(matches_lvl(&t, None, &all, FoldLevel::Standard));
 
@@ -463,6 +596,7 @@ mod tests {
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         };
         assert!(matches_lvl(&t, None, &any, FoldLevel::Standard)); // genre matches
     }
@@ -480,6 +614,7 @@ mod tests {
                 limit: None,
                 sort_by: None,
                 sort_desc: false,
+                then_by: Vec::new(),
             },
             FoldLevel::Standard
         ));
@@ -494,6 +629,7 @@ mod tests {
                 limit: None,
                 sort_by: None,
                 sort_desc: false,
+                then_by: Vec::new(),
             },
             FoldLevel::Standard
         ));
@@ -511,6 +647,7 @@ mod tests {
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         };
         // Standard: 繁体字 "國" が簡体字 "国" に畳まれて一致。
         assert!(matches_lvl(&t, None, &crit, FoldLevel::Standard));
@@ -530,6 +667,7 @@ mod tests {
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         };
         assert!(matches_lvl(&t, None, &crit, FoldLevel::Off));
     }
@@ -556,6 +694,7 @@ mod tests {
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         }
     }
 
@@ -797,5 +936,83 @@ mod tests {
         assert_eq!(c.rules.len(), 1);
         let op: SmartOp = serde_json::from_str("\"startsWith\"").unwrap();
         assert_eq!(op, SmartOp::StartsWith);
+    }
+
+    /// Rules から来るフィールド (trackId / discNumber / dateModified / location / kind /
+    /// compilation / disabled / podcast) も評価できる。
+    #[test]
+    fn rules_fields_are_evaluable() {
+        let mut t = track(7, "A", None, None);
+        t.disc_number = Some(2);
+        t.date_modified = Some("2024-05-01T00:00:00Z".into());
+        t.location_raw = Some("file:///raw/song.mp3".into());
+        t.track_type = Some("MPEG audio file".into());
+        t.compilation = true;
+        let m = |t: &Track, field: &str, op, v: &str| {
+            matches_lvl(
+                t,
+                None,
+                &crit(true, vec![rule(field, op, v)], vec![]),
+                FoldLevel::Standard,
+            )
+        };
+        assert!(m(&t, "trackId", SmartOp::Is, "7"));
+        assert!(m(&t, "discNumber", SmartOp::Gte, "2"));
+        assert!(m(&t, "dateModified", SmartOp::StartsWith, "2024-05"));
+        // location_path が無ければ生 location を見る。
+        assert!(m(&t, "location", SmartOp::Contains, "/raw/"));
+        t.location_path = Some("/music/real.flac".into());
+        assert!(m(&t, "location", SmartOp::EndsWith, ".flac"));
+        assert!(!m(&t, "location", SmartOp::Contains, "/raw/"));
+        assert!(m(&t, "kind", SmartOp::Contains, "mpeg"));
+        // bool は 1 / 0。
+        assert!(m(&t, "compilation", SmartOp::Is, "1"));
+        assert!(m(&t, "disabled", SmartOp::Is, "0"));
+        assert!(m(&t, "disabled", SmartOp::Exists, ""));
+        // podcast は常に値なし。
+        assert!(m(&t, "podcast", SmartOp::NotExists, ""));
+        assert!(!m(&t, "podcast", SmartOp::Is, "1"));
+        for f in FIELDS {
+            assert!(
+                SORT_FIELDS.contains(f) || ["key", "keyCamelot", "energy"].contains(f),
+                "{f} は並び替えにも使えること"
+            );
+        }
+    }
+
+    /// then_by: 第 1 キーが同順位なら第 2 キー以降で並べる。
+    #[test]
+    fn compare_by_criteria_uses_then_by() {
+        let mut v = [
+            track(1, "B", Some(120), Some(80)),
+            track(2, "A", Some(120), Some(60)),
+            track(3, "A", Some(128), Some(80)),
+            track(4, "A", Some(120), Some(80)),
+        ];
+        let mut c = crit(true, vec![], vec![]);
+        c.sort_by = Some("artist".into());
+        c.then_by = vec![
+            crate::models::SmartSortKey {
+                field: "bpm".into(),
+                desc: true,
+            },
+            crate::models::SmartSortKey {
+                field: "rating".into(),
+                desc: false,
+            },
+        ];
+        v.sort_by(|a, b| compare_by_criteria(a, b, &c));
+        assert_eq!(
+            v.iter().map(|t| t.track_id).collect::<Vec<_>>(),
+            vec![3, 2, 4, 1]
+        );
+        // then_by が空なら従来どおり (第 1 キー降順は track_id も降順)。
+        c.then_by.clear();
+        c.sort_desc = true;
+        v.sort_by(|a, b| compare_by_criteria(a, b, &c));
+        assert_eq!(
+            v.iter().map(|t| t.track_id).collect::<Vec<_>>(),
+            vec![1, 4, 3, 2]
+        );
     }
 }

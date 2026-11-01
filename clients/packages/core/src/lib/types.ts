@@ -89,6 +89,12 @@ export interface SmartGroup {
 }
 
 /** スマートプレイリストの条件（models.rs SmartCriteria）。groups は旧サーバーでは欠ける。 */
+/** 並び替えの 1 キー（第 2 キー以降）。 */
+export interface SmartSortKey {
+  field: string;
+  desc: boolean;
+}
+
 export interface SmartCriteria {
   matchAll: boolean;
   rules: SmartRule[];
@@ -96,6 +102,8 @@ export interface SmartCriteria {
   limit: number | null;
   sortBy: string | null;
   sortDesc: boolean;
+  /** sortBy で同順位のときに順に使う第 2 キー以降（Rules 由来。空なら省略される）。 */
+  thenBy?: SmartSortKey[];
 }
 
 /** `GET /api/playlists/{id}` は Playlist に smartCriteria を足した形（スマートでなければ null）。 */

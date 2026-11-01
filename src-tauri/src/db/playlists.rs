@@ -12,6 +12,17 @@ use crate::models::{Playlist, SmartCriteria, Track};
 pub const SMART_PLAYLIST_EDIT_ERROR: &str =
     "スマートプレイリストの曲目は条件で決まるため、曲の追加・削除・並べ替えはできません";
 
+/// 階層操作 (プレイリストルールの upsert) 用のプレイリスト行。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaylistNode {
+    pub playlist_id: i64,
+    pub persistent_id: Option<String>,
+    pub parent_persistent_id: Option<String>,
+    pub name: String,
+    pub is_folder: bool,
+    pub sort_order: i64,
+}
+
 /// プレイリスト曲順の全置換結果。入力不備もトランザクション内で判定する。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplacePlaylistTracksResult {
@@ -609,62 +620,99 @@ impl Database {
         Ok(removed.len())
     }
 
-    /// 指定名のルートフォルダ (parent_persistent_id IS NULL) とその子孫を全削除。
-    /// 該当フォルダが存在しなければ false を返す (no-op)。プレイリストルールの
-    /// `removeExistingNamespace` 用。
-    pub fn delete_playlist_subtree_by_root_name(&self, root_name: &str) -> Result<bool> {
-        use std::collections::VecDeque;
+    /// 階層操作用に全プレイリストの最小限の列を読む (sort_order, playlist_id 順)。
+    pub fn get_playlist_nodes(&self) -> Result<Vec<PlaylistNode>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT playlist_id, persistent_id, parent_persistent_id, name, is_folder, sort_order
+             FROM playlists ORDER BY sort_order, playlist_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(PlaylistNode {
+                playlist_id: r.get(0)?,
+                persistent_id: r.get::<_, Option<String>>(1)?.filter(|p| !p.is_empty()),
+                parent_persistent_id: r.get::<_, Option<String>>(2)?.filter(|p| !p.is_empty()),
+                name: r.get(3)?,
+                is_folder: r.get::<_, Option<i32>>(4)?.unwrap_or(0) != 0,
+                sort_order: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+            })
+        })?;
+        rows.collect()
+    }
 
-        let root: Option<(i64, Option<String>)> = self
+    /// プレイリスト (フォルダなら子孫も含めて) を `playlist_tracks` ごと削除し、削除した行数を返す。
+    /// 自前のトランザクションは張らない (プレイリストルールの適用トランザクションの中で呼ぶ)。
+    pub fn delete_playlist_subtree(&self, playlist_id: i64) -> Result<usize> {
+        let root_pid: Option<String> = self
             .conn
             .query_row(
-                "SELECT playlist_id, persistent_id FROM playlists
-                 WHERE parent_persistent_id IS NULL AND name = ?1 AND is_folder = 1",
-                rusqlite::params![root_name],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)),
+                "SELECT persistent_id FROM playlists WHERE playlist_id = ?1",
+                params![playlist_id],
+                |r| r.get(0),
             )
-            .ok();
+            .optional()?
+            .flatten();
 
-        let Some((root_id, root_pid)) = root else {
-            return Ok(false);
-        };
-
-        let mut to_delete: Vec<i64> = vec![root_id];
-        let mut queue: VecDeque<String> = VecDeque::new();
-        if let Some(pid) = root_pid {
-            queue.push_back(pid);
-        }
-
-        while let Some(pid) = queue.pop_front() {
+        let mut to_delete: Vec<i64> = vec![playlist_id];
+        let mut queue: Vec<String> = root_pid.into_iter().filter(|p| !p.is_empty()).collect();
+        // 壊れた親子関係 (循環) でも止まるよう、訪問済みの PID は辿らない。
+        let mut seen: HashSet<String> = queue.iter().cloned().collect();
+        {
             let mut stmt = self.conn.prepare(
                 "SELECT playlist_id, persistent_id FROM playlists WHERE parent_persistent_id = ?1",
             )?;
-            let rows = stmt.query_map(rusqlite::params![pid], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
-            })?;
-            for row in rows {
-                let (id, pid_opt) = row?;
-                to_delete.push(id);
-                if let Some(p) = pid_opt {
-                    queue.push_back(p);
+            while let Some(pid) = queue.pop() {
+                let rows = stmt
+                    .query_map(params![pid], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>>>()?;
+                for (id, child_pid) in rows {
+                    if id == playlist_id || to_delete.contains(&id) {
+                        continue;
+                    }
+                    to_delete.push(id);
+                    if let Some(p) = child_pid.filter(|p| !p.is_empty()) {
+                        if seen.insert(p.clone()) {
+                            queue.push(p);
+                        }
+                    }
                 }
             }
         }
 
-        let tx = self.conn.unchecked_transaction()?;
         for id in &to_delete {
-            tx.execute(
+            self.conn.execute(
                 "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
-                rusqlite::params![id],
+                params![id],
             )?;
-            tx.execute(
-                "DELETE FROM playlists WHERE playlist_id = ?1",
-                rusqlite::params![id],
-            )?;
+            self.conn
+                .execute("DELETE FROM playlists WHERE playlist_id = ?1", params![id])?;
         }
-        tx.commit()?;
+        Ok(to_delete.len())
+    }
 
-        Ok(true)
+    /// `playlist_tracks` を入力順で全置換する (存在確認なし・自前のトランザクションなし)。
+    /// スマートプレイリストの評価結果をスナップショットとして書き込むのに使う。
+    pub fn overwrite_playlist_tracks(&self, playlist_id: i64, track_ids: &[i64]) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+            params![playlist_id],
+        )?;
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES (?1, ?2, ?3)",
+        )?;
+        for (i, tid) in track_ids.iter().enumerate() {
+            stmt.execute(params![playlist_id, tid, i as i64])?;
+        }
+        Ok(())
+    }
+
+    pub fn set_playlist_sort_order(&self, playlist_id: i64, sort_order: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE playlists SET sort_order = ?1 WHERE playlist_id = ?2",
+            params![sort_order, playlist_id],
+        )?;
+        Ok(())
     }
 
     pub fn reorder_playlist_tracks(
@@ -901,6 +949,7 @@ mod tests {
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         };
         db.set_smart_criteria(10, &criteria).unwrap();
 

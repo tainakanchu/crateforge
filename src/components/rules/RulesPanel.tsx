@@ -13,13 +13,14 @@ import type {
 
 const DEFAULT_TEMPLATE = `# Declarative playlist rules
 # Spec: https://github.com/tainakanchu/itunes-playlist-builder/blob/master/doc.md
+# Each rule becomes a smart playlist under the namespace folder. Re-applying updates
+# them in place (same path = same playlist), so references keep working.
 namespace: "_Generated"
 
 options:
+  # Remove playlists/folders under the namespace that are no longer in the rules.
   removeExistingNamespace: true
   failOnMissingPlaylist: false
-  dedupeTrackIds: true
-  caseSensitiveContains: false
 
 playlists:
   - name: "Base/Favorites/4stars+"
@@ -119,7 +120,7 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
   const handleApply = useCallback(async () => {
     if (
       !confirm(
-        "Apply rules to the library?\n\nThis will create the namespace folder and all generated playlists in your library. If `removeExistingNamespace` is true (default), the existing namespace subtree will be replaced.",
+        "Apply rules to the library?\n\nEach rule is saved as a smart playlist under the namespace folder. Playlists at the same path are updated in place (their IDs and references are kept). If `removeExistingNamespace` is true (default), playlists and folders under the namespace that are not in the rules will be removed.",
       )
     ) {
       return;
@@ -232,10 +233,11 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
 
           {applyResult && (
             <div className="rules-msg ok" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <Icon name="checkCircle" size={14} style={{ flexShrink: 0 }} /> Applied: {applyResult.generatedPlaylistCount} playlists, {applyResult.generatedFolderCount} folders
-              {applyResult.removedExisting && " (replaced existing namespace)"}
+              <Icon name="checkCircle" size={14} style={{ flexShrink: 0 }} /> Applied: {applyResult.generatedPlaylistCount} smart playlists, {applyResult.generatedFolderCount} folders
+              {" "}({formatChanges(applyResult)})
             </div>
           )}
+          {applyResult && <Warnings warnings={applyResult.warnings} />}
 
           <div className="rules-split">
             <div className="rules-editor">
@@ -262,13 +264,20 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
                 </div>
               ) : (
                 <>
-                  <div className="rules-stats">
-                    <span><strong>{preview.playlistCount}</strong> playlists</span>
+                  <div className="rules-stats" style={{ flexWrap: "wrap" }}>
+                    <span><strong>{preview.playlistCount}</strong> smart playlists</span>
                     <span>·</span>
                     <span><strong>{preview.folderCount}</strong> folders</span>
                     <span>·</span>
                     <span><strong>{preview.referencedTrackCount}</strong> tracks</span>
+                    {!applyResult && (
+                      <>
+                        <span>·</span>
+                        <span>Apply will {formatChanges(preview)}</span>
+                      </>
+                    )}
                   </div>
+                  {!applyResult && <Warnings warnings={preview.warnings} />}
                   <pre className="rules-tree">{renderTree(preview.tree)}</pre>
                 </>
               )}
@@ -276,6 +285,28 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/// 作成 / 更新 / 削除の件数 ("2 created, 5 updated, 1 removed")。
+function formatChanges(r: { createdCount: number; updatedCount: number; removedCount: number }): string {
+  return `${r.createdCount} created, ${r.updatedCount} updated, ${r.removedCount} removed`;
+}
+
+/// 変換・適用時の警告 (スマート条件で再現しきれない指定など)。
+function Warnings({ warnings }: { warnings: string[] }) {
+  if (warnings.length === 0) return null;
+  return (
+    <div className="rules-msg warn">
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <Icon name="warning" size={13} style={{ flexShrink: 0 }} /> {warnings.length} warning{warnings.length > 1 ? "s" : ""}
+      </div>
+      <ul className="rules-warnings">
+        {warnings.map((w, i) => (
+          <li key={i}>{w}</li>
+        ))}
+      </ul>
     </div>
   );
 }

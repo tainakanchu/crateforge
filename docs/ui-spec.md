@@ -213,7 +213,14 @@ viewMode により切替:
 - 完了後は ✅ メッセージと `Close` ボタンのみ表示。
 
 ### 3.7 RulesPanel (モーダル — ⚙️ Playlist Rules)
-**目的**: YAML で書いた宣言的ルールから、レーティング/BPM/ジャンル/含有プレイリストなどの条件でプレイリスト群を自動生成・更新する。
+**目的**: YAML で書いた宣言的ルールで、レーティング/BPM/ジャンル/含有プレイリストなどを条件にした**スマートプレイリスト**群を定義・更新する。
+- 各ルール (generator の展開分も含む) は `namespace` ルートフォルダ配下の 1 つのスマートプレイリストになる。条件はスマート条件 (`smart_criteria`) として保存され、開くたびにライブ評価される。
+- `inPlaylist { source: generated }` は生成済みプレイリストへの参照 (persistent_id) になるので、親ルールの定義や曲のメタデータを変えると、参照している側にも再適用なしで伝わる (例: `Favorite SONGS = rating ≥ 60`、`Favorite J-POP = Favorite SONGS に含まれる AND genre = J-POP`)。`source: existing` は namespace 外の既存プレイリスト・フォルダ (フォルダは子孫の和集合) を指す。
+- 適用は**パスで upsert** する: 同じパス・同じ種類 (フォルダ / プレイリスト) の既存ノードは playlist_id / persistent_id を保ったまま条件だけ更新するので、namespace 外のスマートプレイリストからの参照も切れない。種類が変わったノードは作り直す (警告)。並びは YAML の順。
+- `removeExistingNamespace: true` (既定) なら、namespace 配下でルールに無いノードを削除する (prune)。`false` なら残す (純粋な upsert。ルートフォルダを増やすことはない)。同名のルートフォルダが複数ある場合は最初の 1 つを使い、警告を出す。
+- スマート条件で再現しきれない指定は**警告**として表示する: `caseSensitiveContains: true` (スマート条件は常に大小無視)、10 の倍数でない rating (スマート側は半星で比較)、未知のフィールド、演算子の無い条件、解決できない existing 参照 (`failOnMissingPlaylist: false` のとき。その条件は「一致しない」扱い) など。`dedupeTrackIds` はスマートでは意味を持たないので無視する。
+- rating は Rules では 0-100 で書き、スマート条件には星 (値 ÷ 20) で保存される。複数キーの `sort` は第 1 キー + `thenBy` (第 2 キー以降) として保存される。
+- 適用時には評価結果を `playlist_tracks` にもスナップショットとして書く (サイドバーの曲数などが適用時点の状態と一致する)。
 
 **レイアウト**: 横並び 2 ペイン
 - 左: CodeMirror (YAML、ダークテーマ、行番号 / ハイライト / 折りたたみ / 自動補完)
@@ -222,13 +229,14 @@ viewMode により切替:
 **ツールバー** (上部):
 - 📂 Open / 💾 Save / 💾 Save As… (YAML ファイル入出力)
 - ✓ Validate (構文チェックのみ)
-- 👁 Preview (primary、ライブラリに対して評価しツリー生成)
+- 👁 Preview (primary、Apply と同じ処理を DB トランザクション内で実行してロールバックし、結果のツリーを表示。件数は Apply と一致し、DB は変わらない)
 - ▶ Apply to Library (preview 後のみ有効、確認ダイアログあり)
 
 **プレビュー**:
-- 統計: `N playlists · M folders · K tracks`
-- ASCII ツリー (├ └ │) でフォルダ階層を表示、各プレイリスト行末に `(track count)`。
-- 適用結果: `✅ Applied: X playlists, Y folders (replaced existing namespace)`。
+- 統計: `N smart playlists · M folders · K tracks · Apply will A created, U updated, R removed`
+- ASCII ツリー (├ └ │) でフォルダ階層を表示 (YAML の順)、各プレイリスト行末に `(track count)` (ライブ評価のメンバー数)。
+- 警告があれば `⚠ N warnings` と一覧を表示 (Preview 時、Apply 後とも)。
+- 適用結果: `✅ Applied: X smart playlists, Y folders (A created, U updated, R removed)`。
 
 **永続化**:
 - YAML 編集中はセッションストレージに自動保存 (`rules-yaml-draft`)。
@@ -266,7 +274,7 @@ viewMode により切替:
 
 **宣言的プレイリスト**:
 - Rules を開く → YAML 編集 → Validate → Preview → Apply。
-- `namespace` 配下のフォルダ階層を毎回置換するモデル (`removeExistingNamespace`)。
+- ルールはスマートプレイリストを定義する。`namespace` 配下をパスで upsert し (ID を保つ)、`removeExistingNamespace` (既定 true) ならルールに無いノードを削除する。
 
 ### 4.2 キーボードショートカット (グローバル)
 - `/` — 検索フォーカス

@@ -2,7 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as playlistsApi from "../api/playlists";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
-import type { Playlist, SmartCriteria, SmartGroup, SmartOp, SmartRule } from "../types";
+import type {
+  Playlist,
+  SmartCriteria,
+  SmartGroup,
+  SmartOp,
+  SmartRule,
+  SmartSortKey,
+} from "../types";
 
 interface SmartPlaylistEditorProps {
   /// null = 新規作成、数値 = 既存スマートプレイリストの編集。
@@ -32,12 +39,21 @@ const FIELDS: { value: string; label: string; type: FieldType }[] = [
   { value: "energy", label: "Energy (0–1)", type: "num" },
   { value: "playCount", label: "Plays", type: "num" },
   { value: "skipCount", label: "Skips", type: "num" },
+  { value: "trackNumber", label: "Track #", type: "num" },
+  { value: "discNumber", label: "Disc #", type: "num" },
+  { value: "trackId", label: "Track ID", type: "num" },
+  // bool は 1 / 0 で比較する (Rules の equals: true は is 1 になる)。
+  { value: "compilation", label: "Compilation (1/0)", type: "num" },
+  { value: "disabled", label: "Disabled (1/0)", type: "num" },
+  { value: "kind", label: "Kind", type: "str" },
+  { value: "location", label: "Location", type: "str" },
   // 技術メタデータ (#171)。codec は "MP3" / "AAC" / "ALAC" / "FLAC" などの表示名。
   { value: "bitrate", label: "Bitrate (kbps)", type: "num" },
   { value: "sampleRate", label: "Sample Rate (Hz)", type: "num" },
   { value: "bitDepth", label: "Bit Depth", type: "num" },
   { value: "codec", label: "Codec", type: "str" },
   { value: "dateAdded", label: "Date Added", type: "date" },
+  { value: "dateModified", label: "Date Modified", type: "date" },
   { value: "lastPlayed", label: "Last Played", type: "date" },
 ];
 
@@ -78,6 +94,15 @@ const SORTS = [
   ["album", "Album"],
   ["name", "Name"],
 ] as const;
+
+/// 並び替えフィールドの表示名 (選択肢に無いもの = Rules 由来などはフィールド名のまま)。
+function sortLabel(field: string): string {
+  return (
+    SORTS.find(([v]) => v === field)?.[1] ??
+    FIELDS.find((f) => f.value === field)?.label ??
+    field
+  );
+}
 
 /// グループの入れ子の上限 (バックエンドは任意の深さを受け付ける。UI は見やすさ優先で 3 段まで)。
 const MAX_GROUP_DEPTH = 3;
@@ -189,6 +214,10 @@ function RuleRow({ rule, onChange, onRemove, removeDisabled, playlistOptions }: 
             {f.label}
           </option>
         ))}
+        {/* 選択肢に無いフィールド (Rules 由来など) も値を失わないよう表示する。 */}
+        {!FIELDS.some((f) => f.value === rule.field) && (
+          <option value={rule.field}>{rule.field}</option>
+        )}
       </select>
       <select
         className="rip-input"
@@ -398,6 +427,8 @@ export function SmartPlaylistEditor({
   const [limit, setLimit] = useState<string>("");
   const [sortBy, setSortBy] = useState("");
   const [sortDesc, setSortDesc] = useState(true);
+  // 第 2 キー以降の並び替え (Rules 由来)。UI では編集しないが保存時にそのまま残す。
+  const [thenBy, setThenBy] = useState<SmartSortKey[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // 編集モード時に最初のフォーカスを当てる参照。
@@ -429,6 +460,7 @@ export function SmartPlaylistEditor({
         setLimit(c.limit != null ? String(c.limit) : "");
         setSortBy(c.sortBy ?? "");
         setSortDesc(c.sortDesc);
+        setThenBy(c.thenBy ?? []);
       })
       .catch(() => {});
     return () => {
@@ -461,6 +493,7 @@ export function SmartPlaylistEditor({
       limit: limit.trim() ? Math.max(0, parseInt(limit, 10) || 0) || null : null,
       sortBy: sortBy || null,
       sortDesc,
+      ...(thenBy.length > 0 ? { thenBy } : {}),
     };
     try {
       if (creating) {
@@ -475,7 +508,7 @@ export function SmartPlaylistEditor({
     } finally {
       setBusy(false);
     }
-  }, [creating, name, root, limit, sortBy, sortDesc, playlistId, onSaved, onClose]);
+  }, [creating, name, root, limit, sortBy, sortDesc, thenBy, playlistId, onSaved, onClose]);
 
   // Esc で閉じる / Ctrl+Enter または Cmd+Enter で保存（handleSave 定義後に登録）。
   useEffect(() => {
@@ -556,6 +589,9 @@ export function SmartPlaylistEditor({
                     {l}
                   </option>
                 ))}
+                {sortBy && !SORTS.some(([v]) => v === sortBy) && (
+                  <option value={sortBy}>{sortLabel(sortBy)}</option>
+                )}
               </select>
             </label>
             <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -579,6 +615,12 @@ export function SmartPlaylistEditor({
               曲
             </label>
           </div>
+          {thenBy.length > 0 && (
+            <div style={{ fontSize: 12, color: "var(--tx2)" }}>
+              同順位の並び (then by):{" "}
+              {thenBy.map((k) => `${sortLabel(k.field)} ${k.desc ? "↓" : "↑"}`).join(", ")}
+            </div>
+          )}
 
           {error && <div className="rip-error">{error}</div>}
         </div>

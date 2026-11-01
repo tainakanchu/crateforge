@@ -2002,6 +2002,7 @@ mod tests {
             limit: None,
             sort_by: None,
             sort_desc: false,
+            then_by: Vec::new(),
         };
         db.set_smart_criteria(100, &criteria).unwrap();
 
@@ -2034,6 +2035,7 @@ mod tests {
                 limit: None,
                 sort_by: None,
                 sort_desc: false,
+                then_by: Vec::new(),
             },
         )
         .unwrap();
