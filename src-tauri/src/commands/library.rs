@@ -144,7 +144,12 @@ pub async fn rescan_file_existence(app: AppHandle) -> Result<FileCheckSummary, S
     .await
     .map_err(|e| format!("file check task panicked: {}", e))??;
     if summary.newly_missing > 0 || summary.newly_found > 0 {
-        let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+        // 見つかり直したファイルは埋め込みアートワークが取れるようになるので、
+        // そのときだけ artworkChanged を立ててジャケットを取り直させる (#213)。
+        let _ = app.emit(
+            "library-changed",
+            serde_json::json!({ "playlistId": null, "artworkChanged": summary.newly_found > 0 }),
+        );
     }
     Ok(summary)
 }
@@ -156,7 +161,11 @@ pub async fn rescan_file_existence(app: AppHandle) -> Result<FileCheckSummary, S
 pub fn relocate_track_file(app: AppHandle, track_id: i64, path: String) -> Result<Track, String> {
     let db = get_db(&app)?;
     let track = importer::relocate_track(&db, track_id, &path)?;
-    let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null }));
+    // 参照先ファイルが変わり埋め込みアートワークも変わりうるので artworkChanged を立てる (#213)。
+    let _ = app.emit(
+        "library-changed",
+        serde_json::json!({ "playlistId": null, "artworkChanged": true }),
+    );
     Ok(track)
 }
 
