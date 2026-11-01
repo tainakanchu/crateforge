@@ -3713,7 +3713,7 @@
     },
     {
       "name": "rustls",
-      "version": "0.23.40",
+      "version": "0.23.45",
       "kind": "rust",
       "license": "Apache-2.0 OR ISC OR MIT",
       "repository": "https://github.com/rustls/rustls",
@@ -3729,7 +3729,7 @@
     },
     {
       "name": "rustls-webpki",
-      "version": "0.103.13",
+      "version": "0.103.16",
       "kind": "rust",
       "license": "ISC",
       "repository": "https://github.com/rustls/webpki",
