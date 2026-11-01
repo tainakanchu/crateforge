@@ -1380,7 +1380,8 @@ pub async fn list_playlists(
 }
 
 /// `GET /api/playlists/{playlistId}` — プレイリスト単体のメタ + スマート条件。
-/// `smartCriteria` はアプリのルール機能で設定された場合のみ非 null (iTunes インポートでは null)。
+/// `smartCriteria` はスマートプレイリストのときだけ非 null (アプリで作成したもの、または
+/// iTunes XML の Smart Criteria を変換できたもの)。
 pub async fn get_playlist(
     State(state): State<ApiState>,
     Path(playlist_id): Path<i64>,
@@ -1408,7 +1409,8 @@ pub struct PlaylistTracksQuery {
     pub order: Option<String>,
 }
 
-/// `GET /api/playlists/:playlistId/tracks` — プレイリスト内の曲。
+/// `GET /api/playlists/:playlistId/tracks` — プレイリスト内の曲。スマートプレイリストは
+/// ライブ評価の結果 (federation の取り寄せ・モバイルもこの曲目を受け取る)。
 pub async fn playlist_tracks(
     State(state): State<ApiState>,
     Path(playlist_id): Path<i64>,
@@ -1565,6 +1567,18 @@ pub async fn delete_playlist(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// スマートプレイリストの曲目は直接編集させない → 409。曲目は条件のライブ評価で決まり、
+/// `playlist_tracks` に書いても無視されるため (黙って成功させない)。
+fn ensure_tracks_editable(db: &crate::db::Database, playlist_id: i64) -> Result<(), ApiError> {
+    if db.has_smart_criteria(playlist_id)? {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            crate::db::playlists::SMART_PLAYLIST_EDIT_ERROR,
+        ));
+    }
+    Ok(())
+}
+
 /// `POST /api/playlists/:playlistId/tracks` — 曲を追加 → { added: n }。
 pub async fn add_tracks(
     State(state): State<ApiState>,
@@ -1572,6 +1586,7 @@ pub async fn add_tracks(
     ExtractJson(body): ExtractJson<ByIdsBody>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
+    ensure_tracks_editable(&db, playlist_id)?;
     let added = db.add_tracks_to_playlist(playlist_id, &body.track_ids)?;
     // 追加成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
     state.notify_library_changed(Some(playlist_id));
@@ -1584,6 +1599,7 @@ pub async fn remove_track(
     Path((playlist_id, track_id)): Path<(i64, i64)>,
 ) -> Result<StatusCode, ApiError> {
     let db = state.db()?;
+    ensure_tracks_editable(&db, playlist_id)?;
     db.remove_track_from_playlist(playlist_id, track_id)?;
     // 削除成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
     state.notify_library_changed(Some(playlist_id));
@@ -1600,6 +1616,7 @@ pub async fn replace_playlist_tracks(
     use crate::db::playlists::ReplacePlaylistTracksResult;
 
     let db = state.db()?;
+    ensure_tracks_editable(&db, playlist_id)?;
     match db.replace_playlist_tracks(playlist_id, &body.track_ids)? {
         ReplacePlaylistTracksResult::Replaced => {
             state.notify_library_changed(Some(playlist_id));

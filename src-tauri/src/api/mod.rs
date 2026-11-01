@@ -1998,6 +1998,7 @@ mod tests {
                 op: SmartOp::Contains,
                 value: "House".into(),
             }],
+            groups: vec![],
             limit: None,
             sort_by: None,
             sort_desc: false,
@@ -2011,6 +2012,48 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0]["field"], "genre");
         assert_eq!(rules[0]["value"], "House");
+    }
+
+    // ===== ケース: スマートプレイリストの曲目編集 (追加・削除・全置換) → 409 =====
+    #[tokio::test]
+    async fn case_smart_playlist_tracks_write_is_conflict() {
+        use crate::models::{SmartCriteria, SmartOp, SmartRule};
+
+        let (dir, app) = setup();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        db.set_smart_criteria(
+            100,
+            &SmartCriteria {
+                match_all: true,
+                rules: vec![SmartRule {
+                    field: "genre".into(),
+                    op: SmartOp::Contains,
+                    value: "House".into(),
+                }],
+                groups: vec![],
+                limit: None,
+                sort_by: None,
+                sort_desc: false,
+            },
+        )
+        .unwrap();
+        let before = db.get_static_playlist_track_ids(100).unwrap();
+
+        for (method, uri, body) in [
+            ("PUT", "/api/playlists/100/tracks", Some(json!({ "trackIds": [3, 2] }))),
+            ("POST", "/api/playlists/100/tracks", Some(json!({ "trackIds": [4] }))),
+            ("DELETE", "/api/playlists/100/tracks/1", None),
+        ] {
+            let (status, resp) = req(app.clone(), method, uri, body).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{method} {uri}");
+            assert_eq!(
+                resp["error"],
+                crate::db::playlists::SMART_PLAYLIST_EDIT_ERROR,
+                "{method} {uri}"
+            );
+        }
+        // 保存行は一切変わらない。
+        assert_eq!(db.get_static_playlist_track_ids(100).unwrap(), before);
     }
 
     // ===== ケース: GET /api/playlists/{playlistId} — 存在しない → 404 =====

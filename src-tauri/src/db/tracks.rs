@@ -825,6 +825,7 @@ impl Database {
         let xml_codec = raw
             .get_str("Kind")
             .and_then(crate::metadata::tech::codec_from_itunes_kind);
+        let xml_grouping = raw.get_str("Grouping").filter(|g| !g.trim().is_empty());
 
         if let Some((track_id, local_modified, local_path)) = matched {
             claimed_track_ids.insert(track_id);
@@ -850,7 +851,7 @@ impl Database {
                          total_time_ms = ?10, track_number = ?11, track_count = ?12,
                          disc_number = ?13, disc_count = ?14, compilation = ?15,
                          track_type = ?16, date_added = ?17, date_modified = ?18,
-                         search_text = ?19
+                         search_text = ?19, grouping = ?21
                      WHERE track_id = ?20",
                     params![
                         raw.get_str("Name"),
@@ -873,20 +874,31 @@ impl Database {
                         raw.get_date("Date Modified"),
                         search_text,
                         track_id,
+                        xml_grouping,
                     ],
                 )?;
             }
 
             // 技術メタデータ (#171) は未取得 (NULL) の列だけ XML の値で埋める。
             // 実ファイルから読んだ値の方が正確なので上書きはしない。
+            // グルーピングも未設定 (NULL/空) のときだけ XML の値で埋める (XML が新しくない再取り込みでも
+            // 既存ライブラリに後付けできるように)。
             self.conn.execute(
                 "UPDATE tracks SET
                      bitrate_kbps = COALESCE(bitrate_kbps, ?1),
                      sample_rate_hz = COALESCE(sample_rate_hz, ?2),
                      file_size_bytes = COALESCE(file_size_bytes, ?3),
-                     codec = COALESCE(codec, ?4)
+                     codec = COALESCE(codec, ?4),
+                     grouping = COALESCE(NULLIF(grouping, ''), ?6)
                  WHERE track_id = ?5",
-                params![xml_bitrate, xml_sample_rate, xml_size, xml_codec, track_id],
+                params![
+                    xml_bitrate,
+                    xml_sample_rate,
+                    xml_size,
+                    xml_codec,
+                    track_id,
+                    xml_grouping
+                ],
             )?;
 
             // 整理済みのローカルファイルが現在も存在する場合だけ、アプリ側の場所を正とする。
@@ -943,8 +955,8 @@ impl Database {
                  date_added, date_modified, bpm, comments, location_raw, location_path,
                  track_type, disabled, compilation, disc_number, disc_count,
                  track_number, track_count, file_exists, last_played, search_text,
-                 bitrate_kbps, sample_rate_hz, file_size_bytes, codec)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33)",
+                 bitrate_kbps, sample_rate_hz, file_size_bytes, codec, grouping)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)",
                 params![
                     track_id,
                     persistent_id,
@@ -979,6 +991,7 @@ impl Database {
                     xml_sample_rate,
                     xml_size,
                     xml_codec,
+                    xml_grouping,
                 ],
             ) {
                 Ok(_) => {
@@ -1177,7 +1190,7 @@ impl Database {
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM tracks ORDER BY {} LIMIT ?1 OFFSET ?2",
             order_by
         );
@@ -1230,7 +1243,7 @@ impl Database {
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM tracks
              WHERE {}
              ORDER BY {} LIMIT ? OFFSET ?",
@@ -1273,7 +1286,7 @@ impl Database {
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM tracks WHERE track_id = ?1",
         )?;
 
@@ -1307,7 +1320,7 @@ impl Database {
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM tracks WHERE persistent_id = ?1",
         )?;
         let mut out = Vec::with_capacity(persistent_ids.len());
@@ -1330,7 +1343,7 @@ impl Database {
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM tracks ORDER BY track_id ASC",
         )?;
         let rows = stmt.query_map([], row_to_track)?;
@@ -1560,6 +1573,30 @@ impl Database {
         Ok(())
     }
 
+    /// グルーピングを設定する (ファイル取り込み時のタグ値)。
+    pub fn set_track_grouping(&self, track_id: i64, grouping: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tracks SET grouping = ?1 WHERE track_id = ?2",
+            params![grouping, track_id],
+        )?;
+        Ok(())
+    }
+
+    /// persistent_id で曲を引き、グルーピングが未設定 (NULL/空) のときだけ埋める。
+    /// 埋めたら true (iTunes XML からの後付け用)。
+    pub fn fill_track_grouping_by_persistent_id(
+        &self,
+        persistent_id: &str,
+        grouping: &str,
+    ) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE tracks SET grouping = ?1
+             WHERE persistent_id = ?2 AND (grouping IS NULL OR grouping = '')",
+            params![grouping, persistent_id],
+        )?;
+        Ok(n > 0)
+    }
+
     /// 技術メタデータ列 (#171) だけを更新する。ユーザー編集の対象列 (曲名等) には触れない。
     /// ファイルから読めなかった項目 (None) は既存値を残す (`COALESCE(新, 旧)`)。
     /// 1 行も一致しなければ false。
@@ -1737,7 +1774,7 @@ impl Database {
                     track_type, disabled, compilation, disc_number, disc_count,
                     track_number, track_count, file_exists, last_played,
                     bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user
+                    key_camelot_user, grouping
              FROM (
                SELECT *, ({key}) AS album_key FROM tracks
              ) WHERE album_key = ?1
@@ -1864,7 +1901,7 @@ impl Database {
                     t.track_number, t.track_count, t.file_exists, t.last_played,
                     t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes,
                     t.codec,
-                    t.key_camelot_user
+                    t.key_camelot_user, t.grouping
              FROM tracks t
              INNER JOIN recent_tracks rt ON t.track_id = rt.track_id
              ORDER BY rt.played_at DESC
@@ -2086,6 +2123,7 @@ pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
         codec: row.get("codec")?,
         // SELECT * 経由 (列順がスキーマ順) でも引けるよう列名で取る。
         key_camelot_user: row.get("key_camelot_user")?,
+        grouping: row.get("grouping")?,
     })
 }
 

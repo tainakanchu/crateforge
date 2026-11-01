@@ -2,6 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+use crate::db::smart_eval::PlaylistResolver;
 use crate::db::Database;
 use crate::models::{ExportResult, Playlist, Track};
 
@@ -47,8 +48,11 @@ pub fn export_library(db: &Database, output_path: &str) -> Result<ExportResult, 
     buf.push_str("<key>Playlists</key>\n");
     push_indent(&mut buf, 1);
     buf.push_str("<array>\n");
+    // スマートプレイリストは評価結果 (ライブのメンバー) を書き出す。参照先の評価を共有するため
+    // 解決器は書き出し全体で 1 つ使う。
+    let mut resolver = db.playlist_resolver().map_err(|e| e.to_string())?;
     for playlist in &playlists {
-        write_playlist(&mut buf, db, playlist, 2)?;
+        write_playlist(&mut buf, &mut resolver, playlist, 2)?;
     }
     push_indent(&mut buf, 1);
     buf.push_str("</array>\n");
@@ -123,6 +127,11 @@ fn write_track(buf: &mut String, t: &Track, indent: usize) {
     }
     if let Some(ref s) = t.genre {
         push_kv_str(buf, inner, "Genre", s);
+    }
+    if let Some(ref s) = t.grouping {
+        if !s.is_empty() {
+            push_kv_str(buf, inner, "Grouping", s);
+        }
     }
     if let Some(n) = t.year {
         push_kv_int(buf, inner, "Year", n);
@@ -215,7 +224,7 @@ fn write_track(buf: &mut String, t: &Track, indent: usize) {
 
 fn write_playlist(
     buf: &mut String,
-    db: &Database,
+    resolver: &mut PlaylistResolver<'_>,
     p: &Playlist,
     indent: usize,
 ) -> Result<(), String> {
@@ -237,8 +246,8 @@ fn write_playlist(
     }
 
     if !p.is_folder {
-        let track_ids = db
-            .get_playlist_track_ids(p.playlist_id)
+        let track_ids = resolver
+            .track_ids(p.playlist_id)
             .map_err(|e| e.to_string())?;
         push_indent(buf, inner);
         buf.push_str("<key>Playlist Items</key>\n");
@@ -394,5 +403,56 @@ mod tests {
             "orphan .tmp files remain: {:?}",
             tmp_files
         );
+    }
+
+    /// スマートプレイリストは評価結果 (ライブのメンバー) を Playlist Items に書き出す。
+    #[test]
+    fn export_writes_evaluated_smart_members() {
+        use crate::models::{SmartCriteria, SmartOp, SmartRule};
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks (track_id, name, genre, grouping, file_exists) VALUES
+                   (1, 'a', 'House', 'Idol', 1), (2, 'b', 'Techno', NULL, 1), (3, 'c', 'House', NULL, 1);
+                 INSERT INTO playlists (playlist_id, persistent_id, name, sort_order) VALUES
+                   (10, 'AAAA00000000000A', 'Base', 1), (11, 'AAAA00000000000B', 'Smart', 2);
+                 INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES
+                   (10, 1, 0), (10, 2, 1), (11, 2, 0);",
+            )
+            .unwrap();
+        db.set_smart_criteria(
+            11,
+            &SmartCriteria {
+                match_all: true,
+                rules: vec![
+                    SmartRule {
+                        field: "playlist".into(),
+                        op: SmartOp::Is,
+                        value: "AAAA00000000000A".into(),
+                    },
+                    SmartRule {
+                        field: "genre".into(),
+                        op: SmartOp::Is,
+                        value: "House".into(),
+                    },
+                ],
+                groups: vec![],
+                limit: None,
+                sort_by: None,
+                sort_desc: false,
+            },
+        )
+        .unwrap();
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let out = tmp_dir.path().join("out.xml");
+        export_library(&db, &out.to_string_lossy()).unwrap();
+        let content = fs::read_to_string(&out).unwrap();
+        let smart = &content[content.find("<string>Smart</string>").unwrap()..];
+        let items = &smart[..smart.find("</array>").unwrap()];
+        // 静的な行 (2) ではなく、Base ∩ House = 1 だけ。
+        assert!(items.contains("<key>Track ID</key><integer>1</integer>"), "{items}");
+        assert!(!items.contains("<integer>2</integer>"), "{items}");
+        assert!(content.contains("<key>Grouping</key><string>Idol</string>"));
     }
 }

@@ -5,7 +5,12 @@ use rusqlite::{params, OptionalExtension, Result};
 use super::tracks::row_to_track;
 use super::Database;
 use crate::itunes_xml::parser::RawPlaylist;
-use crate::models::{Playlist, SmartCriteria, Track, TrackAnalysis};
+use crate::models::{Playlist, SmartCriteria, Track};
+
+/// スマートプレイリストの曲目を直接編集しようとしたときのエラー (コマンド / API 共通)。
+/// 曲目は条件のライブ評価で決まり、`playlist_tracks` に書いても無視されるため拒否する。
+pub const SMART_PLAYLIST_EDIT_ERROR: &str =
+    "スマートプレイリストの曲目は条件で決まるため、曲の追加・削除・並べ替えはできません";
 
 /// プレイリスト曲順の全置換結果。入力不備もトランザクション内で判定する。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,8 +31,6 @@ impl Database {
         claimed_playlist_ids: &mut HashSet<i64>,
     ) -> Result<()> {
         let xml_playlist_id = raw.get_int("Playlist ID").unwrap_or(0);
-        let is_smart =
-            raw.get_str("Smart Info").is_some() || raw.get_str("Smart Criteria").is_some();
 
         let distinguished = raw.get_int("Distinguished Kind");
         let master = raw.get_bool("Master");
@@ -121,15 +124,16 @@ impl Database {
                 )?;
 
                 match self.conn.execute(
+                    // is_smart は 0 で入れ、iTunes の Smart Criteria を変換・保存できた行だけ
+                    // 取り込み後のパス (itunes_xml::smart_restore) が 1 にする。
                     "INSERT INTO playlists (playlist_id, persistent_id, parent_persistent_id, name, is_folder, is_smart, is_user_created, sort_order)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6)",
                     params![
                         playlist_id,
                         persistent_id,
                         raw.get_str("Parent Persistent ID"),
                         raw.get_str("Name").unwrap_or("Untitled"),
                         raw.get_bool("Folder") as i32,
-                        is_smart as i32,
                         sort_order,
                     ],
                 ) {
@@ -258,7 +262,53 @@ impl Database {
     /// プレイリスト内検索つきのトラック取得。`query` が Some のときは、ライブラリ検索と
     /// **同じ DSL** (フリーテキスト + `artist:` `bpm:` `key:compat:` などのフィールド指定) で
     /// プレイリストの中だけを絞り込む。None なら従来どおり全曲を返す。
+    /// スマートプレイリスト (criteria あり) はライブ評価の結果を返す。
     pub fn get_playlist_tracks_filtered(
+        &self,
+        playlist_id: i64,
+        query: Option<&str>,
+        limit: i64,
+        offset: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<Vec<Track>> {
+        if self.get_smart_criteria(playlist_id)?.is_some() {
+            return self.get_smart_playlist_tracks_filtered(
+                playlist_id,
+                query,
+                limit,
+                offset,
+                sort_field,
+                sort_order,
+            );
+        }
+        self.get_static_playlist_tracks_filtered(
+            playlist_id,
+            query,
+            limit,
+            offset,
+            sort_field,
+            sort_order,
+        )
+    }
+
+    /// `playlist_tracks` の静的メンバーを全件 (sort_index 順) 返す。スマートでも評価しない。
+    pub fn get_static_playlist_tracks(&self, playlist_id: i64) -> Result<Vec<Track>> {
+        self.get_static_playlist_tracks_filtered(playlist_id, None, i64::MAX, 0, None, None)
+    }
+
+    /// プレイリストのメンバー (track_id) を順に返す。スマートプレイリストはライブ評価
+    /// (criteria の並び + limit) の結果、それ以外は `playlist_tracks` の sort_index 順。
+    pub fn get_playlist_track_ids(&self, playlist_id: i64) -> Result<Vec<i64>> {
+        if self.get_smart_criteria(playlist_id)?.is_some() {
+            return self.playlist_resolver()?.track_ids(playlist_id);
+        }
+        self.get_static_playlist_track_ids(playlist_id)
+    }
+
+    /// `playlist_tracks` の静的メンバーを読む (criteria の有無を見ない)。
+    /// スマート側のフォールバックからはこちらを呼び、相互再帰を避ける。
+    fn get_static_playlist_tracks_filtered(
         &self,
         playlist_id: i64,
         query: Option<&str>,
@@ -303,7 +353,7 @@ impl Database {
                     t.track_number, t.track_count, t.file_exists, t.last_played,
                     t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes,
                     t.codec,
-                    t.key_camelot_user
+                    t.key_camelot_user, t.grouping
              FROM tracks t
              INNER JOIN playlist_tracks pt ON t.track_id = pt.track_id
              WHERE pt.playlist_id = ?{}
@@ -316,7 +366,9 @@ impl Database {
         rows.collect()
     }
 
-    pub fn get_playlist_track_ids(&self, playlist_id: i64) -> Result<Vec<i64>> {
+    /// `playlist_tracks` に保存された静的メンバー (sort_index 順)。スマートプレイリストでも
+    /// 評価せず保存行をそのまま返す (曲目を書き戻す同期経路など、編集可能な実体が要る所で使う)。
+    pub fn get_static_playlist_track_ids(&self, playlist_id: i64) -> Result<Vec<i64>> {
         let mut stmt = self.conn.prepare(
             "SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY sort_index ASC",
         )?;
@@ -691,6 +743,11 @@ impl Database {
         Ok(json.and_then(|s| serde_json::from_str::<SmartCriteria>(&s).ok()))
     }
 
+    /// スマート条件を持つ (= 曲目がライブ評価で決まる) プレイリストか。
+    pub fn has_smart_criteria(&self, playlist_id: i64) -> Result<bool> {
+        Ok(self.get_smart_criteria(playlist_id)?.is_some())
+    }
+
     pub fn set_smart_criteria(&self, playlist_id: i64, criteria: &SmartCriteria) -> Result<()> {
         let json = serde_json::to_string(criteria).unwrap_or_else(|_| "{}".to_string());
         self.conn.execute(
@@ -728,8 +785,9 @@ impl Database {
     }
 
     /// プレイリスト内検索つきのスマートプレイリスト評価。`query` は通常プレイリストと同じ
-    /// DSL で、criteria にマッチした曲へさらに AND で効く (criteria の limit を適用した
-    /// **後** に絞り込む = 「今表示されている曲の中から探す」挙動)。
+    /// DSL で、criteria にマッチした曲へさらに AND で効く (criteria の並び + limit を適用した
+    /// **後** に絞り込む = 「今表示されている曲の中から探す」挙動)。UI の並び替えも
+    /// limit で選ばれた曲の表示順を変えるだけで、どの曲が選ばれるかには影響しない。
     pub fn get_smart_playlist_tracks_filtered(
         &self,
         playlist_id: i64,
@@ -739,8 +797,10 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
-        let Some(criteria) = self.get_smart_criteria(playlist_id)? else {
-            return self.get_playlist_tracks_filtered(
+        let mut resolver = self.playlist_resolver()?;
+        let Some(mut matched) = resolver.smart_tracks(playlist_id)? else {
+            // criteria が無い (iTunes 由来の未変換など) なら静的スナップショット表示。
+            return self.get_static_playlist_tracks_filtered(
                 playlist_id,
                 query,
                 limit,
@@ -750,41 +810,9 @@ impl Database {
             );
         };
 
-        let all = self.get_all_tracks()?;
-        let amap: HashMap<i64, TrackAnalysis> = self
-            .get_all_analysis()?
-            .into_iter()
-            .map(|a| (a.track_id, a))
-            .collect();
-
-        // テキスト比較の字体ゆれ吸収レベル (検索と同じ設定を共有)。
-        let level = crate::text_fold::FoldLevel::from_state(
-            self.get_state("search_fold_level")
-                .ok()
-                .flatten()
-                .as_deref(),
-        );
-
-        let mut matched: Vec<Track> = all
-            .into_iter()
-            .filter(|t| crate::smart::track_matches(t, amap.get(&t.track_id), &criteria, level))
-            .collect();
-
-        // 並び替え: UI のソート優先、無ければ criteria のソート、無ければ name 昇順。
-        let (field, desc) = match sort_field {
-            Some(f) => (f.to_string(), matches!(sort_order, Some("desc"))),
-            None => (
-                criteria
-                    .sort_by
-                    .clone()
-                    .unwrap_or_else(|| "name".to_string()),
-                criteria.sort_desc,
-            ),
-        };
-        crate::smart::sort_tracks(&mut matched, &field, desc);
-
-        if let Some(lim) = criteria.limit {
-            matched.truncate(lim);
+        // UI のソート指定があれば表示順だけ並べ替える ("playlistOrder" は criteria の並びのまま)。
+        if let Some(field) = sort_field.filter(|f| *f != "playlistOrder") {
+            crate::smart::sort_tracks(&mut matched, field, matches!(sort_order, Some("desc")));
         }
 
         // プレイリスト内検索: 同じ DSL の結果 (track_id 集合) と積を取る。
@@ -869,6 +897,7 @@ mod tests {
                 op: SmartOp::Is,
                 value: "House".to_string(),
             }],
+            groups: vec![],
             limit: None,
             sort_by: None,
             sort_desc: false,

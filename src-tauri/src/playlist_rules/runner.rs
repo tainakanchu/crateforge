@@ -97,6 +97,11 @@ fn load_existing_playlists(db: &Database) -> Result<Vec<ExistingPlaylist>, Strin
         .filter_map(|p| p.persistent_id.clone().map(|pid| (pid, p)))
         .collect();
 
+    // スマートプレイリストはライブ評価のメンバーを使う。全プレイリスト分を 1 回の評価パスで
+    // 解決する (プレイリストごとに全曲を読み直さない)。
+    let mut resolver = db
+        .playlist_resolver()
+        .map_err(|e| format!("Failed to load playlists: {}", e))?;
     let mut out = Vec::with_capacity(playlists.len());
     for p in &playlists {
         if p.is_folder {
@@ -104,8 +109,8 @@ fn load_existing_playlists(db: &Database) -> Result<Vec<ExistingPlaylist>, Strin
             continue;
         }
         let full_path = build_full_path(p, &by_pid);
-        let track_ids = db
-            .get_playlist_track_ids(p.playlist_id)
+        let track_ids = resolver
+            .track_ids(p.playlist_id)
             .map_err(|e| format!("Failed to load playlist tracks: {}", e))?;
         out.push(ExistingPlaylist {
             name: p.name.clone(),

@@ -16,8 +16,13 @@ From **"📥 Import XML"** in the toolbar, select an `iTunes Library.xml` (Apple
 - The import is performed as a **full replacement of the library** (merging diffs into an existing XML is not supported).
 
 :::note
-Smart Playlist criteria (`Smart Info`) are **not preserved** on either import or export.
-You can recreate imported Smart Playlists with Crateforge's [Smart Playlist](../smart-playlists/) feature.
+iTunes Smart Playlists are imported by converting their criteria (`Smart Criteria` / `Smart Info`) into
+Crateforge [Smart Playlist](../smart-playlists/) rules (including "Playlist is", nested rule groups and item limits).
+Rules that cannot be converted, such as relative dates ("in the last N days"), are dropped; if no rule remains,
+the playlist is kept as a static snapshot instead. Exported XML contains the evaluated track list (the criteria themselves are not exported).
+
+For a library you have already imported, **"iTunes XML からスマートプレイリストを復元…" (restore smart playlists from iTunes XML)** in the toolbar sets the criteria again
+without re-importing the XML (also select an older library XML to resolve references to old IDs by name).
 :::
 
 ### Where the Library.xml is

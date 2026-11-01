@@ -1,7 +1,17 @@
 use tauri::AppHandle;
 
 use crate::commands::library::open_db;
+use crate::db::playlists::SMART_PLAYLIST_EDIT_ERROR;
+use crate::db::Database;
 use crate::models::{Playlist, SmartCriteria, Track};
+
+/// スマートプレイリストの曲目は直接編集させない (書いても条件の評価で無視されるため)。
+fn ensure_tracks_editable(db: &Database, playlist_id: i64) -> Result<(), String> {
+    if db.has_smart_criteria(playlist_id).map_err(|e| e.to_string())? {
+        return Err(SMART_PLAYLIST_EDIT_ERROR.to_string());
+    }
+    Ok(())
+}
 
 #[tauri::command]
 pub fn get_playlists(app: AppHandle) -> Result<Vec<Playlist>, String> {
@@ -41,6 +51,20 @@ pub fn get_smart_criteria(
     let db = open_db(&app)?;
     db.get_smart_criteria(playlist_id)
         .map_err(|e| e.to_string())
+}
+
+/// 既存ライブラリ向け: iTunes XML (複数可・先頭優先) のスマートプレイリスト条件を、
+/// `Playlist Persistent ID` が一致するプレイリストへ復元する。曲・プレイリスト自体は取り込まない。
+/// `overwrite` が false なら既に条件があるプレイリストは変更しない。あわせて曲の Grouping を
+/// (DB 側が空の曲だけ) XML の値で埋める。
+#[tauri::command(async)]
+pub fn restore_itunes_smart_playlists(
+    app: AppHandle,
+    paths: Vec<String>,
+    overwrite: bool,
+) -> Result<crate::itunes_xml::smart_restore::SmartRestoreReport, String> {
+    let db = open_db(&app)?;
+    crate::itunes_xml::smart_restore::restore_from_files(&db, &paths, overwrite)
 }
 
 #[tauri::command(async)]
@@ -123,6 +147,7 @@ pub fn add_tracks_to_playlist(
     track_ids: Vec<i64>,
 ) -> Result<usize, String> {
     let db = open_db(&app)?;
+    ensure_tracks_editable(&db, playlist_id)?;
     db.add_tracks_to_playlist(playlist_id, &track_ids)
         .map_err(|e| e.to_string())
 }
@@ -134,6 +159,7 @@ pub fn remove_track_from_playlist(
     track_id: i64,
 ) -> Result<(), String> {
     let db = open_db(&app)?;
+    ensure_tracks_editable(&db, playlist_id)?;
     db.remove_track_from_playlist(playlist_id, track_id)
         .map_err(|e| e.to_string())
 }
@@ -146,6 +172,7 @@ pub fn remove_tracks_from_playlist(
     track_ids: Vec<i64>,
 ) -> Result<usize, String> {
     let db = open_db(&app)?;
+    ensure_tracks_editable(&db, playlist_id)?;
     db.remove_tracks_from_playlist(playlist_id, &track_ids)
         .map_err(|e| e.to_string())
 }
@@ -157,6 +184,37 @@ pub fn reorder_playlist_tracks(
     ordered_track_ids: Vec<i64>,
 ) -> Result<(), String> {
     let db = open_db(&app)?;
+    ensure_tracks_editable(&db, playlist_id)?;
     db.reorder_playlist_tracks(playlist_id, &ordered_track_ids)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// スマート条件のあるプレイリストは曲目の編集コマンドを拒否する。通常プレイリストは通す。
+    #[test]
+    fn smart_playlist_tracks_are_not_editable() {
+        let db = Database::open_memory().unwrap();
+        let normal = db.create_playlist("Normal", None, false).unwrap();
+        let smart = db
+            .create_smart_playlist(
+                "Smart",
+                &SmartCriteria {
+                    match_all: true,
+                    rules: vec![],
+                    groups: vec![],
+                    limit: None,
+                    sort_by: None,
+                    sort_desc: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(ensure_tracks_editable(&db, normal.playlist_id), Ok(()));
+        assert_eq!(
+            ensure_tracks_editable(&db, smart.playlist_id),
+            Err(SMART_PLAYLIST_EDIT_ERROR.to_string())
+        );
+    }
 }

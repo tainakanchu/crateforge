@@ -812,6 +812,7 @@ mod tests {
                         op: SmartOp::Is,
                         value: "Bravo".into(),
                     }],
+                    groups: vec![],
                     limit: None,
                     sort_by: None,
                     sort_desc: false,

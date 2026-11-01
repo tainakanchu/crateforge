@@ -277,6 +277,7 @@ pub fn run() {
             commands::playlists::update_smart_criteria,
             commands::playlists::get_smart_criteria,
             commands::playlists::get_smart_playlist_tracks,
+            commands::playlists::restore_itunes_smart_playlists,
             // playback
             commands::playback::play_track,
             commands::playback::pause,
