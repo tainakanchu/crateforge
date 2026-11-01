@@ -38,7 +38,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       # 依存なしの素の Node スクリプト。pnpm install 不要。
       - name: Check docs vs. implementation
