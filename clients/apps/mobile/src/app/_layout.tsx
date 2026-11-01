@@ -13,12 +13,13 @@ import * as Updates from "expo-updates";
 
 import { PALETTE } from "@/constants/brand";
 import { createFilePersister } from "@/lib/queryPersister";
-import { useConnection, usePlayer, useDownloads, useSettings, createAudioEngine, initPlayback } from "@crateforge/core";
+import { useConnection, usePlayer, useDownloads, useSettings } from "@crateforge/core";
 import MiniPlayer from "@/components/MiniPlayer";
 import PlaybackErrorToast from "@/components/PlaybackErrorToast";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { usePendingEdits } from "@/store/pendingEdits";
 import { flushPending } from "@/features/triage/syncPending";
+import { onDownloadsHydrated, setupPlayback } from "@/playback/setupPlayback";
 
 // ライブラリは頻繁に変わらないので staleTime を長めに取り、タブ/モード切替のたびの
 // 再取得を抑える。全曲取得（曲/アーティストモード）は重いので特に効く。
@@ -53,14 +54,15 @@ async function checkForOtaUpdate(): Promise<void> {
 
 export default function RootLayout() {
   useEffect(() => {
-    usePlayer.getState().setEngine(createAudioEngine());
-    void initPlayback();
+    // 再生バックエンドの差し込み（Android はネイティブ Media3、iOS 等は expo-audio）。hydrate より前に行う。
+    setupPlayback();
     // 接続判定（Gate）の前にダウンロード/設定を読み込む。オフライン許可判定が DL の有無に依存するため。
     void (async () => {
       await Promise.all([
-        useDownloads.getState().hydrate(),
+        // 読み込み後、ネイティブモードなら Android Auto のカタログへ取り込みを促す。
+        useDownloads.getState().hydrate().then(onDownloadsHydrated),
         useSettings.getState().hydrate(),
-        // shuffle / repeat の復元（再生ストア）。
+        // shuffle / repeat の復元（再生ストア。ネイティブモードでは初回移行のみでキューは上書きしない）。
         usePlayer.getState().hydrate(),
         usePendingEdits.getState().hydrate(),
       ]);

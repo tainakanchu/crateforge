@@ -1,6 +1,6 @@
 ---
 title: 行動裝置
-description: 行動用戶端的連線（QR / 手動）、瀏覽、裝置播放與背景播放、遙控、離線下載 / 瀏覽 / 播放。
+description: 行動用戶端的連線（QR / 手動）、瀏覽、裝置播放與背景播放、遙控、離線下載 / 瀏覽 / 播放，以及 Android APK 與 Android Auto。
 ---
 
 Crateforge 的行動用戶端可透過[內建 API 伺服器](../api-server/)，
@@ -58,7 +58,54 @@ Crateforge 的行動用戶端可透過[內建 API 伺服器](../api-server/)，
 - 即使在離線的收藏中，專輯列也會顯示封面圖與專輯演出者（多位混合時顯示 "Various Artists"）。
 - 演出者頁面也會從已下載的內容以專輯顯示重現。
 
+## Android 與 Android Auto
+
+Android 版以 **GitHub Releases 上的已簽署 APK** 發佈（不在 Google Play 發佈）。
+Android Auto 支援與一般手機版包含在同一個 APK 中。在 Android Auto 上，可從車載螢幕瀏覽、搜尋並播放
+**已下載的曲目 / 播放清單 / 演出者 / 專輯**（支援透過 Google App 的 Google Assistant / Gemini 語音操作，尚未在實機驗證），
+LAN 可連線時也能播放桌面端的音樂庫。
+手機、通知與車載共用**同一個播放器與佇列**，因此手機上的操作會反映到車載，車載上的操作也會反映到手機。
+
+### 安裝
+
+1. 從 [GitHub Releases](https://github.com/tainakanchu/crateforge/releases) 取得 `crateforge-android-<version>.apk`（以及 `.apk.sha256`）。
+2. 確認 SHA-256（`sha256sum -c crateforge-android-<version>.apk.sha256`）。簽署憑證可用
+   `apksigner verify --print-certs` 確認，必須與 Release 說明中的簽署憑證 SHA-256 一致。
+3. 開啟 APK 進行安裝。若 Android 要求**允許從此來源安裝（Android 系統設定）**，請允許。
+4. 在手機上先開啟 Crateforge 一次，連線到桌面端，並下載需要的曲目。
+
+### Android Auto 端的設定（與系統權限是不同的設定）
+
+**步驟 3 的系統權限與 Android Auto 的「Unknown sources（未知來源）」是兩個不同的設定。** 只開啟前者，應用程式不一定會出現在車載啟動器中。
+
+1. 開啟手機的 Android Auto 設定（找不到時，請在設定中搜尋「Android Auto」）。
+2. 點按最下方的 **「版本」10 次**以啟用開發人員模式。
+3. 從右上角的選單開啟 **「開發人員設定（Developer settings）」**，將 **「未知來源（Unknown sources）」** 設為 ON。
+4. 重新連接車機（或 DHU），在啟動器或「自訂啟動器」中確認「Crateforge」。
+
+### 更新時的注意事項
+
+- 新的 APK 可直接**覆蓋安裝**（已下載的曲目與設定會保留）。若簽署憑證與先前不同則無法覆蓋。
+- **更新後請先在手機上開啟應用程式一次。** 在此之前，車載無法使用 LAN 串流（**已下載的曲目即使不開啟應用程式也能在車載播放**）。
+- Android 不再使用 EAS 建置。可從舊的 EAS 版更新到 GitHub 版，但無法反向更新。
+
+### 疑難排解
+
+- **啟動器中沒有出現**：確認 Android Auto 的 Unknown sources 為 ON 且已啟用開發人員模式、重新連線或重啟 Android Auto，以及「自訂啟動器」中是否被隱藏。
+- **桌面端的曲目在車載上不顯示 / 無法播放**：更新後是否已開啟應用程式一次、是否在同一個網路、重新發行權杖後是否已重新連線。
+- **特定曲目無法播放**（例如 AIFF / CAF 原檔）：請使用 Downloads 畫面的「以 AAC 重新下載」。
+- **無法覆蓋安裝**：簽署憑證不同（解除安裝會清除已下載的內容與設定）。
+
+### 已知限制
+
+- 並非像 Google Play 版那樣免手動設定：**需要開啟 Android Auto 的開發人員設定**，且可能因車機、OEM、Android / Android Auto 版本而無法運作。
+- **尚未在實機、DHU、實車上驗證**（目前僅完成自動化測試）。結果將記錄於[驗證檢查清單](https://github.com/tainakanchu/crateforge/blob/main/docs/android-auto/verification-checklist.md)。
+- 僅允許系統簽署的應用程式、已知的 Google 主機以及 Crateforge 本身控制播放；第三方車載啟動器與 Wear OS 應用程式無法連線。
+- 轉換後的 AAC 串流無法搜尋（拖曳進度）。
+
+詳細步驟、驗證方法與維護者的簽署金鑰管理，請參閱[行動端 README](https://github.com/tainakanchu/crateforge/blob/main/clients/apps/mobile/README.md)。
+
 :::note
-行動用戶端是透過 EAS 的 internal distribution 另行配送。
-行動應用程式的更新以 OTA（EAS Update）發佈。
+Android 版如上所述以 GitHub Releases 的 APK 發佈。iOS 版透過 EAS 的 internal distribution 另行配送。
+僅 JS 的更新以 OTA（EAS Update）發佈（變更原生設定的更新需要替換 APK）。
 :::

@@ -3,8 +3,9 @@ import type { ExpoConfig } from "expo/config";
 // Crateforge モバイルクライアント。app.json は廃し、ここを単一の真実とする。
 // 要点:
 // - Android 9+ の cleartext 既定禁止を expo-build-properties で解除（LAN http 接続のため）。
-// - 背景再生: iOS は UIBackgroundModes=audio、Android は expo-audio プラグインが
-//   foreground service / 通知権限を付与する。
+// - 背景再生: iOS は UIBackgroundModes=audio。Android は expo-crateforge-android-auto の
+//   MediaLibraryService（Media3）が唯一の再生サービス（Android Auto 対応）。expo-audio の Android 背景再生
+//   サービスは無効化する（同一 APK に再生サービスを 2 つ置かない）。
 // - QR 接続のため expo-camera にカメラ権限文言を渡す。
 
 const config: ExpoConfig = {
@@ -28,6 +29,9 @@ const config: ExpoConfig = {
   runtimeVersion: { policy: "fingerprint" },
   updates: {
     url: "https://u.expo.dev/e7530a3f-f8cd-4569-a543-58469097cb3e",
+    // GitHub Releases の APK（EAS Build を経由しない）も production チャネルの OTA を受ける。
+    // runtimeVersion（fingerprint）が一致する時だけ適用される。
+    requestHeaders: { "expo-channel-name": "production" },
   },
   ios: {
     bundleIdentifier: "com.tainakanchu.crateforge",
@@ -73,7 +77,11 @@ const config: ExpoConfig = {
       },
     ],
     "expo-secure-store",
-    "expo-audio",
+    // Android Auto / 単一 Media3 再生サービス。mod は後ろのプラグインから先に実行されるため、
+    // expo-audio より前に置いて expo-audio の manifest 変更の後で検査・除去させる。
+    "expo-crateforge-android-auto",
+    // iOS の UIBackgroundModes は ios.infoPlist で明示済み。Android の AudioControlsService は作らない。
+    ["expo-audio", { enableBackgroundPlayback: false }],
     [
       "expo-camera",
       {

@@ -1,6 +1,6 @@
 ---
 title: モバイル
-description: モバイルクライアントの接続（QR / 手動）、ブラウズ、端末再生・背景再生、リモコン、オフライン DL / 閲覧 / 再生。
+description: モバイルクライアントの接続（QR / 手動）、ブラウズ、端末再生・背景再生、リモコン、オフライン DL / 閲覧 / 再生、Android の APK 配布と Android Auto。
 ---
 
 Crateforge のモバイルクライアントは、[内蔵 API サーバー](../api-server/) を通じて
@@ -58,7 +58,53 @@ Crateforge のモバイルクライアントは、[内蔵 API サーバー](../a
 - オフラインのコレクションでも、アルバム行にアートワークとアルバムアーティスト（複数混在は "Various Artists"）を表示します。
 - アーティストページもダウンロード済みからアルバム表示で再現します。
 
+## Android と Android Auto
+
+Android 版は **GitHub Releases の署名済み APK** で配布します（Google Play では配布しません）。
+Android Auto 対応は通常のスマホ用と同じ 1 つの APK に入っています。Android Auto では、**ダウンロード済みの曲 / プレイリスト / アーティスト / アルバム**を
+車載画面から閲覧・検索・再生でき（Google アプリ経由の Google Assistant / Gemini による音声操作に対応。実機では未検証）、LAN に届くときはデスクトップのライブラリも再生できます。
+スマホ・通知・車載は**同じ 1 つのプレイヤーとキュー**を操作するため、スマホ側の操作が車載に、車載の操作がスマホに反映されます。
+
+### インストール
+
+1. [GitHub Releases](https://github.com/tainakanchu/crateforge/releases) から `crateforge-android-<version>.apk`（と `.apk.sha256`）を取得します。
+2. SHA-256 を確認します（`sha256sum -c crateforge-android-<version>.apk.sha256`）。署名証明書は
+   `apksigner verify --print-certs` で確認でき、Release のノートに載っている署名証明書 SHA-256 と一致する必要があります。
+3. APK を開いてインストールします。**Android OS の「この提供元からのインストールを許可」** を求められたら許可してください。
+4. スマホで Crateforge を 1 度開き、デスクトップに接続して、必要な曲をダウンロードします。
+
+### Android Auto 側の設定（OS の許可とは別物）
+
+**手順 3 の OS の許可と、Android Auto の「Unknown sources」は別々の設定です。** 前者だけでは車載ランチャーに現れないことがあります。
+
+1. スマホの Android Auto 設定を開きます（見つからなければ設定の検索で「Android Auto」）。
+2. 一番下の **「バージョン」を 10 回タップ**して開発者モードを有効にします。
+3. 右上のメニューから **「デベロッパー向けの設定（Developer settings）」** を開き、**「提供元不明のアプリ（Unknown sources）」** を ON にします。
+4. 車載機（または DHU）に接続し直し、ランチャー、または「ランチャーのカスタマイズ」で「Crateforge」を確認します。
+
+### 更新時の注意
+
+- 新しい APK は**上書きインストール**できます（ダウンロード済みの曲・設定は維持されます）。署名証明書が前回と違うと上書きできません。
+- **アップデート直後は、スマホでアプリを 1 度開いてください。** 開くまでは、車載からの LAN ストリーミングは使えません（**ダウンロード済みの曲はアプリを開かなくても再生できます**）。
+- Android では EAS ビルドは使いません。以前の EAS 版から GitHub 版へは上書きできますが、逆はできません。
+
+### トラブルシューティング
+
+- **ランチャーに出ない**: Android Auto の Unknown sources が ON か、開発者モードが有効か、接続し直し／Android Auto の再起動、ランチャーのカスタマイズで非表示になっていないか。
+- **デスクトップの曲が車載で出ない・再生できない**: アップデート後にアプリを 1 度開いたか、同じネットワークにいるか、トークンを再発行したなら再接続したか。
+- **特定の曲が再生できない**（AIFF / CAF の原本など）: Downloads 画面の「AAC で再ダウンロード」を使います。
+- **上書きインストールできない**: 署名証明書が異なります（アンインストールするとダウンロードと設定が消えます）。
+
+### 既知の制約
+
+- Google Play 版のような手間なしの導入ではなく、**Android Auto の開発者設定が必要**です。車載機・OEM・Android Auto / Android のバージョンによって動作しない可能性があります。
+- **実機・DHU・実車での検証は未実施**です（現時点では自動テストまで）。結果は[検証チェックリスト](https://github.com/tainakanchu/crateforge/blob/main/docs/android-auto/verification-checklist.md)に記録します。
+- 車載の制御を許可するのは、システム署名のアプリ・既知の Google ホスト・Crateforge 自身だけで、サードパーティの車載ランチャーや Wear OS アプリは接続できません。
+- 変換済み AAC のストリーミングはシークできません。
+
+詳しい手順・検証方法・メンテナ向けの署名鍵運用は[モバイル README](https://github.com/tainakanchu/crateforge/blob/main/clients/apps/mobile/README.md)を参照してください。
+
 :::note
-モバイルクライアントは EAS の internal distribution で別途配布されます。
-モバイルアプリ側の更新は OTA（EAS Update）で配信されます。
+Android 版は上記のとおり GitHub Releases の APK で配布します。iOS 版は EAS の internal distribution で別途配布されます。
+JS のみの更新は OTA（EAS Update）で配信されます（ネイティブ構成が変わる更新は APK の入れ替えが必要です）。
 :::

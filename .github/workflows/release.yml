@@ -263,9 +263,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # desktop の成果物 (名前が `crateforge-` で始まるもの) だけを取得する。Android APK は別ジョブ
+      # (build-android → release-android) が `android-apk` という名前で作るため、このジョブの実行中に
+      # 生成途中でも混ざらない（desktop Release の内容は APK の有無・成否に依存しない）。
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: crateforge-*
           path: release-assets
 
       - name: Extract changelog section for this tag
@@ -300,3 +304,122 @@ jobs:
           # 公開する。アプリ内アップデータは /releases/latest を見る＝prerelease を拾わないので
           # 一般ユーザーには配られず、Releases ページから手動で取得してテストできる。
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  # === Android (Android Auto 対応 APK) ===
+  # 署名付き APK は GitHub Actions 上の `expo prebuild` + Gradle `assembleRelease` だけで作る (EAS Build は不使用)。
+  # 詳細は docs/android-auto/design.md §7 と clients/apps/mobile/README.md。
+  #
+  # 重要: このジョブは desktop の `release` ジョブと互いに依存しない。APK のビルドが失敗・遅延しても
+  # desktop Release は従来どおり作成される（アプリ内アップデータが読む releases/latest の挙動は不変）。
+  # APK を Release に載せるのは、desktop Release 作成と APK ビルドの「両方」が成功した後の
+  # release-android ジョブだけ。
+  # tag v* では Release 添付まで、workflow_dispatch では artifact (`android-apk`) の生成までを行う。
+  build-android:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/android-apk.yml
+    with:
+      signed: true
+      # tag 実行時は tag とルート package.json の version の一致を検証する（手動実行時は検証しない）。
+      version: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      # 未設定 (空) なら署名証明書の一致は強制せず警告だけ出す。
+      cert-sha256: ${{ vars.CRATEFORGE_ANDROID_CERT_SHA256 }}
+    secrets:
+      CRATEFORGE_ANDROID_KEYSTORE_BASE64: ${{ secrets.CRATEFORGE_ANDROID_KEYSTORE_BASE64 }}
+      CRATEFORGE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.CRATEFORGE_ANDROID_KEYSTORE_PASSWORD }}
+      CRATEFORGE_ANDROID_KEY_ALIAS: ${{ secrets.CRATEFORGE_ANDROID_KEY_ALIAS }}
+      CRATEFORGE_ANDROID_KEY_PASSWORD: ${{ secrets.CRATEFORGE_ANDROID_KEY_PASSWORD }}
+
+  # desktop Release が成功し、かつ APK ビルドも成功したときだけ、APK と SHA-256 を Release に添付する。
+  # 途中で失敗・キャンセルされたら、添付済みの APK / sha256 を両方とも削除し (Release 本文の Android 節も除去)、
+  # 「APK 同梱」と誤認される中途半端な状態を残さない。
+  # 失敗時の再実行は workflow run の "Re-run failed jobs"（成功済みの desktop ジョブは再実行されない）。
+  release-android:
+    needs: [release, build-android]
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.release.result == 'success' && needs.build-android.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      APK_NAME: ${{ needs.build-android.outputs.apk-name }}
+      VERSION_CODE: ${{ needs.build-android.outputs.version-code }}
+      CERT_SHA256: ${{ needs.build-android.outputs.cert-sha256 }}
+    steps:
+      - name: Download signed APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: android-apk
+
+      - name: Re-verify checksum and file set
+        working-directory: android-apk
+        run: |
+          set -euo pipefail
+          find . -maxdepth 1 -type f -ls
+          test -s "$APK_NAME"
+          test -s "$APK_NAME.sha256"
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 2
+          sha256sum -c "$APK_NAME.sha256"
+
+      - name: Attach APK to the GitHub Release
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "android-apk/$APK_NAME" "android-apk/$APK_NAME.sha256" --clobber
+
+      - name: Verify uploaded assets
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json assets > assets.json
+          for f in "$APK_NAME" "$APK_NAME.sha256"; do
+            want="$(stat -c %s "android-apk/$f")"
+            got="$(jq -r --arg n "$f" '[.assets[] | select(.name == $n)] | if length == 1 then .[0].size else -1 end' assets.json)"
+            if [ "$got" != "$want" ]; then
+              echo "::error::release asset $f has size $got, expected $want"
+              exit 1
+            fi
+            echo "ok: $f ($want bytes)"
+          done
+
+      # Release 本文の末尾に Android 節を追記する（desktop の本文と `[installer-required]` マーカーには触れない）。
+      # 再実行で二重にならないよう、マーカーコメントで囲んで置換する。
+      - name: Add Android section to the release notes
+        run: |
+          set -euo pipefail
+          sha="$(cut -d' ' -f1 "android-apk/$APK_NAME.sha256")"
+          base="https://github.com/${GH_REPO}"
+          gh release view "$TAG" --json body --jq .body > body.md
+          awk '/<!-- crateforge-android:begin -->/ { skip = 1 } !skip { print } /<!-- crateforge-android:end -->/ { skip = 0 }' body.md > body.stripped.md
+          {
+            cat body.stripped.md
+            printf '\n<!-- crateforge-android:begin -->\n'
+            printf '## Android (Android Auto 対応 APK) / Android APK\n\n'
+            printf -- "- ファイル / File: [\`%s\`](%s/releases/download/%s/%s)\n" "$APK_NAME" "$base" "$TAG" "$APK_NAME"
+            printf -- "- SHA-256: \`%s\` (%s)\n" "$sha" "$APK_NAME.sha256"
+            printf -- "- 署名証明書 SHA-256 / Signing certificate SHA-256: \`%s\`\n" "$CERT_SHA256"
+            printf -- "- versionCode: \`%s\`\n" "$VERSION_CODE"
+            printf -- '- インストール手順（Android Auto の開発者設定 "Unknown sources" を含む） / Install guide: %s/blob/%s/clients/apps/mobile/README.md#android-github-releases-の-apk正式配布\n' "$base" "$TAG"
+            printf -- '- 初回: アップデート後は一度アプリを開いてください（車載からの LAN ストリームの前提）。 / After updating, open the app once.\n'
+            printf '<!-- crateforge-android:end -->\n'
+          } > body.new.md
+          gh release edit "$TAG" --notes-file body.new.md
+
+      - name: Roll back Android assets on failure
+        if: ${{ failure() || cancelled() }}
+        run: |
+          set +e
+          for f in "$APK_NAME" "$APK_NAME.sha256"; do
+            gh release delete-asset "$TAG" "$f" --yes
+          done
+          # 本文の Android 節も外す（無ければ何もしない）。
+          if gh release view "$TAG" --json body --jq .body > body.md; then
+            awk '/<!-- crateforge-android:begin -->/ { skip = 1 } !skip { print } /<!-- crateforge-android:end -->/ { skip = 0 }' body.md > body.stripped.md
+            if ! cmp -s body.md body.stripped.md; then
+              gh release edit "$TAG" --notes-file body.stripped.md
+            fi
+          fi
+          exit 0

@@ -14,6 +14,7 @@ DJ 向けの解析（BPM / Key(Camelot) / Energy）・類似度選曲・フォ�
 - 📋 **プレイリスト編集**: 作成・名前変更・削除・フォルダ階層・複数選択追加・並び替え。
 - ▶ **ローカル再生**: `rodio` (symphonia) で各種フォーマットを直接デコード。
 - 📺 **キャスト再生**: 同じ LAN の Google Cast 端末 (Chromecast / Google TV / Cast スピーカー) へ再生先を切り替え。MP3 / AAC 対応。macOS では OS の AirPlay 出力でも鳴らせる見込み (動作は環境依存)。詳細は `docs/cast/design.md`。
+- 📱 **モバイル / Android Auto**: LAN 公開した API を使う Expo 製モバイルクライアント（閲覧・端末再生・リモコン・オフライン DL）。Android は **Android Auto** にも対応し、[GitHub Releases](https://github.com/tainakanchu/crateforge/releases) の署名済み APK（`crateforge-android-<version>.apk`）で配布します。導入手順・検証方法・制約は [`clients/apps/mobile/README.md`](clients/apps/mobile/README.md)。
 - 📦 **Nix 完結**: `flake.nix` で Rust/Node/GTK/WebKit/CD ツール/エンコーダ全部を宣言。
 - 🤖 **AI 選曲**: ローカル HTTP API を内蔵し、Claude Code プラグイン `dj-curator` から「インプット → コンセプト → DJ 選曲の叩き台」を生成（下記）。
 
@@ -42,10 +43,11 @@ pnpm tauri build           # OS ネイティブパッケージを生成
 ### Windows ビルド (.exe / .msi / .nsis)
 
 Tauri は **OS 上で直接ビルドする方式が前提** です (Windows ビルドは Windows、macOS ビルドは macOS で)。
-CI は 2 つに分かれています:
+CI は次のように分かれています:
 
 - `.github/workflows/ci.yml` — PR / main への push で走る**軽量チェック**（フロントの型チェック + `cargo test`、Windows は `cargo check`）。インストーラ生成や成果物アップロードはしません。アプリコードに無関係な変更 (docs / plugins) では走りません。
-- `.github/workflows/release.yml` — **タグ `v*` を push したとき (または手動実行) だけ** Windows / macOS / Linux のフルビルドを行い、全成果物を添付した GitHub Release を自動作成します。
+- `.github/workflows/release.yml` — **タグ `v*` を push したとき (または手動実行) だけ** Windows / macOS / Linux のフルビルドを行い、全成果物を添付した GitHub Release を自動作成します。同じタグで **Android APK**（Android Auto 対応・署名済み）もビルドし、desktop の Release とは独立に（APK の成否は desktop Release に影響しません）、両方成功した後に同じ Release へ添付します。
+- `.github/workflows/mobile.yml` — `clients/**`（モバイル / TV / 共有パッケージ）の PR / main push で走るモバイル用チェック（型・テスト・`expo prebuild` 回帰・未署名 APK のビルドと検査）。署名鍵は使いません。
 
 ```bash
 # 初回
@@ -58,7 +60,12 @@ git tag v0.1.0 && git push --tags
 # ↑ tag を push すると release.yml が走り、下記を添付した GitHub Release を自動作成:
 #   - Windows: 単体 .exe / portable .zip / .msi + setup .exe
 #   - macOS:   .dmg  /  Linux: .AppImage + .deb
+#   - Android: crateforge-android-<version>.apk + .apk.sha256 (Android Auto 対応。署名鍵は GitHub Secrets)
 ```
+
+Android APK を出すには GitHub に Secrets（`CRATEFORGE_ANDROID_KEYSTORE_BASE64` / `_KEYSTORE_PASSWORD` / `_KEY_ALIAS` / `_KEY_PASSWORD`）と
+変数（`CRATEFORGE_ANDROID_CERT_SHA256`）の登録が必要です。登録手順（既存の EAS keystore のエクスポートを含む）・鍵のバックアップ・versionCode の規則は
+[`clients/apps/mobile/README.md`](clients/apps/mobile/README.md) の「メンテナ向け」を参照してください。
 
 ローカル Windows で直接ビルドしたい場合:
 
