@@ -1029,6 +1029,7 @@ mod tests {
             file_size_bytes: None,
             codec: None,
             key_camelot_user: None,
+            grouping: None,
         }
     }
 

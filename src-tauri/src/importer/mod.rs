@@ -231,6 +231,8 @@ fn read_and_insert(db: &Database, path: &Path, library_root: Option<&Path>) -> R
 
     // BPM タグ (TBPM/tmpo/Vorbis BPM)。挿入後に set_track_bpm で埋める。
     let bpm = tag.and_then(read_bpm);
+    // グルーピング (ID3 GRP1/TIT1・MP4 ©grp・Vorbis GROUPING)。挿入後に埋める。
+    let grouping = tag.and_then(read_grouping);
 
     // Fall back to filename if no title tag.
     let fallback_title = path.file_stem().and_then(|s| s.to_str()).map(String::from);
@@ -292,6 +294,9 @@ fn read_and_insert(db: &Database, path: &Path, library_root: Option<&Path>) -> R
 
     if let Some(b) = bpm {
         let _ = db.set_track_bpm(track_id, b);
+    }
+    if let Some(g) = grouping {
+        let _ = db.set_track_grouping(track_id, &g);
     }
     if let Err(e) = db.set_track_tech_meta(track_id, &tech) {
         eprintln!("import: tech meta update failed for {} ({})", track_id, e);
@@ -427,6 +432,16 @@ pub fn relocate_track(db: &Database, track_id: i64, new_path: &str) -> Result<Tr
 
 /// タグから BPM を読む。TBPM/tmpo (IntegerBpm) を優先し、無ければ Vorbis "BPM"。
 /// "128" / "128.00" の両方を許容し、四捨五入して正の整数のみ採用する。
+/// グルーピングを読む。Apple の ID3 GRP1 (iTunes 12.5+) を優先し、無ければ汎用の
+/// ContentGroup (ID3 TIT1 / MP4 ©grp / Vorbis GROUPING) を使う。
+fn read_grouping(tag: &Tag) -> Option<String> {
+    tag.get_string(&ItemKey::AppleId3v2ContentGroup)
+        .or_else(|| tag.get_string(&ItemKey::ContentGroup))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn read_bpm(tag: &Tag) -> Option<i64> {
     tag.get_string(&ItemKey::IntegerBpm)
         .or_else(|| tag.get_string(&ItemKey::Bpm))

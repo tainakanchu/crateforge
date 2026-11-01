@@ -4,6 +4,7 @@ import * as libraryApi from "../api/library";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import { ColumnPicker } from "./ColumnPicker";
+import { SmartRestoreDialog } from "./SmartRestoreDialog";
 import type { LibraryStats, SortField, ViewMode } from "../types";
 import { ALBUM_SORT_FIELDS, ARTIST_SORT_FIELDS } from "../types";
 import { AUDIO_EXTENSIONS } from "../lib/audioExtensions";
@@ -138,6 +139,8 @@ export function Toolbar({
   } = useStore();
 
   const [importing, setImporting] = useState(false);
+  // iTunes XML からスマートプレイリストを復元するダイアログ。
+  const [smartRestoreOpen, setSmartRestoreOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
   const [importingFolders, setImportingFolders] = useState(false);
@@ -573,6 +576,15 @@ export function Toolbar({
       primary: true,
     },
     {
+      id: "restoreSmart",
+      label: "iTunes XML からスマートプレイリストを復元…",
+      icon: "sliders",
+      title:
+        "iTunes XML からスマートプレイリストを復元…\n" +
+        "取り込み済みのプレイリストに iTunes の条件だけを設定し直す (曲・プレイリストは取り込まない)",
+      onClick: () => setSmartRestoreOpen(true),
+    },
+    {
       id: "importFiles",
       label: "Add Files",
       icon: "filePlus",
@@ -956,6 +968,16 @@ export function Toolbar({
             clear all
           </button>
         </div>
+      )}
+
+      {smartRestoreOpen && (
+        <SmartRestoreDialog
+          onClose={() => setSmartRestoreOpen(false)}
+          onRestored={() => {
+            setStatus("iTunes XML からスマートプレイリストを復元しました");
+            onLibraryChanged();
+          }}
+        />
       )}
     </>
   );

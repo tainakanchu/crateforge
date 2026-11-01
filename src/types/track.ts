@@ -44,6 +44,8 @@ export interface Track {
   codec?: string | null;
   /** Key の手動上書き (Camelot, 例 "8A")。未設定なら null/undefined。実効キーは上書き ?? 解析値 (#172)。 */
   keyCamelotUser?: string | null;
+  /** グルーピング (iTunes の Grouping / タグの TIT1・GRP1・©grp)。 */
+  grouping?: string | null;
 }
 
 export interface AlbumRow {

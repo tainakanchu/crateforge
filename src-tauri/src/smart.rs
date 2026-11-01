@@ -2,11 +2,27 @@
 //!
 //! Track のフィールドに加えて解析結果 (Camelot key / energy) も条件に使える。
 //! メンバーシップは保存せず、開くたびにライブ評価する。
+//!
+//! 「プレイリストに含まれる」条件 (`field = "playlist"`) は、参照先のメンバー集合を
+//! 呼び出し側 (DB 層) が事前に解決して [`EvalContext`] に渡す。ここは純粋関数のまま保つ。
 
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
-use crate::models::{SmartCriteria, SmartOp, SmartRule, Track, TrackAnalysis};
+use crate::models::{SmartCriteria, SmartGroup, SmartOp, SmartRule, Track, TrackAnalysis};
 use crate::text_fold::{fold, FoldLevel};
+
+/// プレイリスト参照ルールのフィールド名。
+pub const PLAYLIST_FIELD: &str = "playlist";
+
+/// 条件評価のコンテキスト。
+pub struct EvalContext<'a> {
+    /// テキスト比較の字体ゆれ吸収レベル (Off でも大小無視は維持)。
+    pub level: FoldLevel,
+    /// 参照先プレイリスト (persistent_id) → メンバーの track_id 集合。
+    /// 載っていない参照先は「存在しない = 空」として扱う。
+    pub membership: &'a HashMap<String, HashSet<i64>>,
+}
 
 enum FieldVal {
     Str(String),
@@ -40,6 +56,7 @@ fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
         "albumArtist" => os(&t.album_artist),
         "album" => os(&t.album),
         "genre" => os(&t.genre),
+        "grouping" => os(&t.grouping),
         "composer" => os(&t.composer),
         "comments" => os(&t.comments),
         "year" => on(t.year),
@@ -94,6 +111,8 @@ fn str_op(s: &str, r: &SmartRule, level: FoldLevel) -> bool {
         SmartOp::IsNot => a != b,
         SmartOp::Contains => a.contains(&b),
         SmartOp::NotContains => !a.contains(&b),
+        SmartOp::StartsWith => a.starts_with(&b),
+        SmartOp::EndsWith => a.ends_with(&b),
         // 文字列に数値比較が来たら辞書順で比較する。
         SmartOp::Gt => a > b,
         SmartOp::Lt => a < b,
@@ -114,77 +133,163 @@ fn num_op(n: f64, r: &SmartRule) -> bool {
         SmartOp::Lt => n < v,
         SmartOp::Gte => n >= v,
         SmartOp::Lte => n <= v,
-        // 数値に contains が来たら文字列化して判定。
+        // 数値に文字列演算子が来たら文字列化して判定。
         SmartOp::Contains => n.to_string().contains(r.value.trim()),
         SmartOp::NotContains => !n.to_string().contains(r.value.trim()),
+        SmartOp::StartsWith => n.to_string().starts_with(r.value.trim()),
+        SmartOp::EndsWith => n.to_string().ends_with(r.value.trim()),
         SmartOp::Exists | SmartOp::NotExists => true,
     }
 }
 
-fn rule_matches(t: &Track, a: Option<&TrackAnalysis>, r: &SmartRule, level: FoldLevel) -> bool {
+fn rule_matches(t: &Track, a: Option<&TrackAnalysis>, r: &SmartRule, ctx: &EvalContext) -> bool {
+    if r.field == PLAYLIST_FIELD {
+        // 参照先が無い (削除済み・未解決) なら空集合扱い: is → false / isNot → true。
+        let member = ctx
+            .membership
+            .get(r.value.trim())
+            .is_some_and(|set| set.contains(&t.track_id));
+        return match r.op {
+            SmartOp::Is => member,
+            SmartOp::IsNot => !member,
+            _ => false,
+        };
+    }
     let v = field_value(t, a, &r.field);
     match r.op {
         SmartOp::Exists => !matches!(v, FieldVal::None),
         SmartOp::NotExists => matches!(v, FieldVal::None),
         _ => match v {
-            FieldVal::None => false,
-            FieldVal::Str(s) => str_op(&s, r, level),
+            // 値が無い曲: 否定の演算 (isNot / notContains) は「一致しない = 条件を満たす」とみなし、
+            // それ以外 (is / contains / 大小比較など) は満たさない。iTunes と同じ扱いで、
+            // 例えば「ジャンルに Soundtrack を含まない」はジャンル未設定の曲も含む。
+            FieldVal::None => matches!(r.op, SmartOp::IsNot | SmartOp::NotContains),
+            FieldVal::Str(s) => str_op(&s, r, ctx.level),
             FieldVal::Num(n) => num_op(n, r),
         },
     }
 }
 
-/// 1 曲が条件に一致するか。ルールが空なら全件一致。
-/// `level` はテキスト比較の字体ゆれ吸収レベル (Off でも大小無視は維持)。
+/// 子を持たない (= 実効的に空の) グループか。空グループは評価時に読み飛ばす。
+fn group_is_empty(g: &SmartGroup) -> bool {
+    g.rules.is_empty() && g.groups.iter().all(group_is_empty)
+}
+
+/// 1 ノード (ルール列 + 子グループ) の判定。空の子グループは読み飛ばし、
+/// 実効的な子が 1 つも無ければ全件一致 (従来の「ルールなし = 全曲」と同じ)。
+fn node_matches(
+    t: &Track,
+    a: Option<&TrackAnalysis>,
+    match_all: bool,
+    rules: &[SmartRule],
+    groups: &[SmartGroup],
+    ctx: &EvalContext,
+) -> bool {
+    let mut children = rules
+        .iter()
+        .map(|r| (Some(r), None))
+        .chain(
+            groups
+                .iter()
+                .filter(|g| !group_is_empty(g))
+                .map(|g| (None, Some(g))),
+        )
+        .peekable();
+    if children.peek().is_none() {
+        return true;
+    }
+    let mut eval = |(r, g): (Option<&SmartRule>, Option<&SmartGroup>)| match (r, g) {
+        (Some(r), _) => rule_matches(t, a, r, ctx),
+        (None, Some(g)) => node_matches(t, a, g.match_all, &g.rules, &g.groups, ctx),
+        (None, None) => true,
+    };
+    if match_all {
+        children.all(&mut eval)
+    } else {
+        children.any(&mut eval)
+    }
+}
+
+/// 1 曲が条件に一致するか。ルールもグループも (実効的に) 空なら全件一致。
 pub fn track_matches(
     t: &Track,
     a: Option<&TrackAnalysis>,
     c: &SmartCriteria,
-    level: FoldLevel,
+    ctx: &EvalContext,
 ) -> bool {
-    if c.rules.is_empty() {
-        return true;
+    node_matches(t, a, c.match_all, &c.rules, &c.groups, ctx)
+}
+
+/// 条件ツリー中のプレイリスト参照 (persistent_id) を出現順・重複なしで列挙する。
+pub fn referenced_playlists(c: &SmartCriteria) -> Vec<String> {
+    fn walk(rules: &[SmartRule], groups: &[SmartGroup], out: &mut Vec<String>) {
+        for r in rules {
+            let pid = r.value.trim();
+            if r.field == PLAYLIST_FIELD && !pid.is_empty() && !out.iter().any(|p| p == pid) {
+                out.push(pid.to_string());
+            }
+        }
+        for g in groups {
+            walk(&g.rules, &g.groups, out);
+        }
     }
-    if c.match_all {
-        c.rules.iter().all(|r| rule_matches(t, a, r, level))
-    } else {
-        c.rules.iter().any(|r| rule_matches(t, a, r, level))
+    let mut out = Vec::new();
+    walk(&c.rules, &c.groups, &mut out);
+    out
+}
+
+/// 条件ツリー中の全ルールを (入れ子も含めて) 可変で走査する。参照の付け替えに使う。
+pub fn for_each_rule_mut(c: &mut SmartCriteria, f: &mut dyn FnMut(&mut SmartRule)) {
+    fn walk(rules: &mut [SmartRule], groups: &mut [SmartGroup], f: &mut dyn FnMut(&mut SmartRule)) {
+        for r in rules.iter_mut() {
+            f(r);
+        }
+        for g in groups.iter_mut() {
+            walk(&mut g.rules, &mut g.groups, f);
+        }
     }
+    walk(&mut c.rules, &mut c.groups, f);
 }
 
 fn lower(v: &Option<String>) -> String {
     v.as_deref().unwrap_or("").to_lowercase()
 }
 
+/// 2 曲を指定フィールドで比較する (昇順。同値は track_id で安定化)。
+pub fn compare_tracks(a: &Track, b: &Track, field: &str) -> Ordering {
+    let ord = match field {
+        "artist" => lower(&a.artist).cmp(&lower(&b.artist)),
+        "album" => lower(&a.album).cmp(&lower(&b.album)),
+        "albumArtist" => lower(&a.album_artist).cmp(&lower(&b.album_artist)),
+        "genre" => lower(&a.genre).cmp(&lower(&b.genre)),
+        "grouping" => lower(&a.grouping).cmp(&lower(&b.grouping)),
+        "bpm" => a.bpm.cmp(&b.bpm),
+        "rating" => a.rating.cmp(&b.rating),
+        "playCount" => a.play_count.cmp(&b.play_count),
+        "year" => a.year.cmp(&b.year),
+        "totalTimeMs" => a.total_time_ms.cmp(&b.total_time_ms),
+        "trackNumber" => a.track_number.cmp(&b.track_number),
+        "dateAdded" => a.date_added.cmp(&b.date_added),
+        "lastPlayed" => a.last_played.cmp(&b.last_played),
+        "bitrate" => a.bitrate_kbps.cmp(&b.bitrate_kbps),
+        "sampleRate" => a.sample_rate_hz.cmp(&b.sample_rate_hz),
+        "bitDepth" => a.bit_depth.cmp(&b.bit_depth),
+        "channels" => a.channels.cmp(&b.channels),
+        "fileSize" => a.file_size_bytes.cmp(&b.file_size_bytes),
+        "codec" => lower(&a.codec).cmp(&lower(&b.codec)),
+        _ => lower(&a.name).cmp(&lower(&b.name)),
+    };
+    if ord == Ordering::Equal {
+        a.track_id.cmp(&b.track_id)
+    } else {
+        ord
+    }
+}
+
 /// マッチ済みトラックを指定フィールドで並び替える (NULL/空は末尾)。
 pub fn sort_tracks(tracks: &mut [Track], field: &str, desc: bool) {
     tracks.sort_by(|a, b| {
-        let ord = match field {
-            "artist" => lower(&a.artist).cmp(&lower(&b.artist)),
-            "album" => lower(&a.album).cmp(&lower(&b.album)),
-            "albumArtist" => lower(&a.album_artist).cmp(&lower(&b.album_artist)),
-            "genre" => lower(&a.genre).cmp(&lower(&b.genre)),
-            "bpm" => a.bpm.cmp(&b.bpm),
-            "rating" => a.rating.cmp(&b.rating),
-            "playCount" => a.play_count.cmp(&b.play_count),
-            "year" => a.year.cmp(&b.year),
-            "totalTimeMs" => a.total_time_ms.cmp(&b.total_time_ms),
-            "trackNumber" => a.track_number.cmp(&b.track_number),
-            "dateAdded" => a.date_added.cmp(&b.date_added),
-            "lastPlayed" => a.last_played.cmp(&b.last_played),
-            "bitrate" => a.bitrate_kbps.cmp(&b.bitrate_kbps),
-            "sampleRate" => a.sample_rate_hz.cmp(&b.sample_rate_hz),
-            "bitDepth" => a.bit_depth.cmp(&b.bit_depth),
-            "channels" => a.channels.cmp(&b.channels),
-            "fileSize" => a.file_size_bytes.cmp(&b.file_size_bytes),
-            "codec" => lower(&a.codec).cmp(&lower(&b.codec)),
-            _ => lower(&a.name).cmp(&lower(&b.name)),
-        };
-        let ord = if ord == Ordering::Equal {
-            a.track_id.cmp(&b.track_id)
-        } else {
-            ord
-        };
+        let ord = compare_tracks(a, b, field);
         if desc {
             ord.reverse()
         } else {
@@ -235,7 +340,27 @@ mod tests {
             file_size_bytes: None,
             codec: None,
             key_camelot_user: None,
+            grouping: None,
         }
+    }
+
+    /// プレイリスト参照なしで評価する (従来テスト用)。
+    fn matches_lvl(
+        t: &Track,
+        a: Option<&TrackAnalysis>,
+        c: &SmartCriteria,
+        level: FoldLevel,
+    ) -> bool {
+        let membership = HashMap::new();
+        track_matches(
+            t,
+            a,
+            c,
+            &EvalContext {
+                level,
+                membership: &membership,
+            },
+        )
     }
 
     fn rule(field: &str, op: SmartOp, value: &str) -> SmartRule {
@@ -252,56 +377,57 @@ mod tests {
         let crit = |op, v: &str| SmartCriteria {
             match_all: true,
             rules: vec![rule("rating", op, v)],
+            groups: vec![],
             limit: None,
             sort_by: None,
             sort_desc: false,
         };
         let half = track(1, "A", None, Some(70));
-        assert!(track_matches(
+        assert!(matches_lvl(
             &half,
             None,
             &crit(SmartOp::Is, "3.5"),
             FoldLevel::Standard
         ));
-        assert!(track_matches(
+        assert!(matches_lvl(
             &half,
             None,
             &crit(SmartOp::Gte, "3.5"),
             FoldLevel::Standard
         ));
-        assert!(track_matches(
+        assert!(matches_lvl(
             &half,
             None,
             &crit(SmartOp::Gt, "3"),
             FoldLevel::Standard
         ));
-        assert!(!track_matches(
+        assert!(!matches_lvl(
             &half,
             None,
             &crit(SmartOp::Gte, "4"),
             FoldLevel::Standard
         ));
-        assert!(!track_matches(
+        assert!(!matches_lvl(
             &half,
             None,
             &crit(SmartOp::Is, "3"),
             FoldLevel::Standard
         ));
         let odd = track(2, "A", None, Some(65));
-        assert!(track_matches(
+        assert!(matches_lvl(
             &odd,
             None,
             &crit(SmartOp::Is, "3.5"),
             FoldLevel::Standard
         ));
         let full = track(3, "A", None, Some(60));
-        assert!(track_matches(
+        assert!(matches_lvl(
             &full,
             None,
             &crit(SmartOp::Is, "3"),
             FoldLevel::Standard
         ));
-        assert!(track_matches(
+        assert!(matches_lvl(
             &full,
             None,
             &crit(SmartOp::Lt, "3.5"),
@@ -319,11 +445,12 @@ mod tests {
                 rule("bpm", SmartOp::Gte, "120"),
                 rule("rating", SmartOp::Gte, "4"),
             ],
+            groups: vec![],
             limit: None,
             sort_by: None,
             sort_desc: false,
         };
-        assert!(track_matches(&t, None, &all, FoldLevel::Standard));
+        assert!(matches_lvl(&t, None, &all, FoldLevel::Standard));
 
         let any = SmartCriteria {
             match_all: false,
@@ -332,22 +459,24 @@ mod tests {
                 rule("bpm", SmartOp::Lt, "100"),
                 rule("genre", SmartOp::Contains, "house"),
             ],
+            groups: vec![],
             limit: None,
             sort_by: None,
             sort_desc: false,
         };
-        assert!(track_matches(&t, None, &any, FoldLevel::Standard)); // genre matches
+        assert!(matches_lvl(&t, None, &any, FoldLevel::Standard)); // genre matches
     }
 
     #[test]
     fn numeric_and_exists() {
         let t = track(1, "X", None, None);
-        assert!(track_matches(
+        assert!(matches_lvl(
             &t,
             None,
             &SmartCriteria {
                 match_all: true,
                 rules: vec![rule("bpm", SmartOp::NotExists, "")],
+                groups: vec![],
                 limit: None,
                 sort_by: None,
                 sort_desc: false,
@@ -355,12 +484,13 @@ mod tests {
             FoldLevel::Standard
         ));
         let t2 = track(2, "X", Some(128), None);
-        assert!(!track_matches(
+        assert!(!matches_lvl(
             &t2,
             None,
             &SmartCriteria {
                 match_all: true,
                 rules: vec![rule("bpm", SmartOp::Lt, "120")],
+                groups: vec![],
                 limit: None,
                 sort_by: None,
                 sort_desc: false,
@@ -377,15 +507,16 @@ mod tests {
         let crit = SmartCriteria {
             match_all: true,
             rules: vec![rule("genre", SmartOp::Contains, "国")],
+            groups: vec![],
             limit: None,
             sort_by: None,
             sort_desc: false,
         };
         // Standard: 繁体字 "國" が簡体字 "国" に畳まれて一致。
-        assert!(track_matches(&t, None, &crit, FoldLevel::Standard));
+        assert!(matches_lvl(&t, None, &crit, FoldLevel::Standard));
         // Off / Light: 漢字は畳まれないので一致しない (従来挙動)。
-        assert!(!track_matches(&t, None, &crit, FoldLevel::Off));
-        assert!(!track_matches(&t, None, &crit, FoldLevel::Light));
+        assert!(!matches_lvl(&t, None, &crit, FoldLevel::Off));
+        assert!(!matches_lvl(&t, None, &crit, FoldLevel::Light));
     }
 
     #[test]
@@ -395,11 +526,12 @@ mod tests {
         let crit = SmartCriteria {
             match_all: true,
             rules: vec![rule("genre", SmartOp::Is, "HOUSE")],
+            groups: vec![],
             limit: None,
             sort_by: None,
             sort_desc: false,
         };
-        assert!(track_matches(&t, None, &crit, FoldLevel::Off));
+        assert!(matches_lvl(&t, None, &crit, FoldLevel::Off));
     }
 
     #[test]
@@ -414,5 +546,256 @@ mod tests {
             v.iter().map(|t| t.track_id).collect::<Vec<_>>(),
             vec![2, 3, 1]
         );
+    }
+
+    fn crit(match_all: bool, rules: Vec<SmartRule>, groups: Vec<SmartGroup>) -> SmartCriteria {
+        SmartCriteria {
+            match_all,
+            rules,
+            groups,
+            limit: None,
+            sort_by: None,
+            sort_desc: false,
+        }
+    }
+
+    fn group(match_all: bool, rules: Vec<SmartRule>, groups: Vec<SmartGroup>) -> SmartGroup {
+        SmartGroup {
+            match_all,
+            rules,
+            groups,
+        }
+    }
+
+    /// 入れ子グループ: ALL[ ANY[genre contains house, genre contains techno], bpm >= 120 ]。
+    #[test]
+    fn nested_groups() {
+        let c = crit(
+            true,
+            vec![rule("bpm", SmartOp::Gte, "120")],
+            vec![group(
+                false,
+                vec![
+                    rule("genre", SmartOp::Contains, "techno"),
+                    rule("genre", SmartOp::Contains, "house"),
+                ],
+                vec![],
+            )],
+        );
+        let fast_house = track(1, "A", Some(124), None);
+        assert!(matches_lvl(&fast_house, None, &c, FoldLevel::Standard));
+        let slow_house = track(2, "A", Some(100), None);
+        assert!(!matches_lvl(&slow_house, None, &c, FoldLevel::Standard));
+        let mut fast_idm = track(3, "A", Some(130), None);
+        fast_idm.genre = Some("IDM".into());
+        assert!(!matches_lvl(&fast_idm, None, &c, FoldLevel::Standard));
+
+        // 3 段の入れ子 (ANY の中の ALL)。
+        let deep = crit(
+            false,
+            vec![rule("artist", SmartOp::Is, "nobody")],
+            vec![group(
+                true,
+                vec![],
+                vec![group(
+                    true,
+                    vec![
+                        rule("genre", SmartOp::Is, "idm"),
+                        rule("bpm", SmartOp::Gt, "125"),
+                    ],
+                    vec![],
+                )],
+            )],
+        );
+        assert!(matches_lvl(&fast_idm, None, &deep, FoldLevel::Standard));
+        assert!(!matches_lvl(&fast_house, None, &deep, FoldLevel::Standard));
+    }
+
+    /// 空グループは読み飛ばす。実効的な子が無ければ全件一致。
+    #[test]
+    fn empty_groups_are_skipped() {
+        let t = track(1, "A", Some(120), None);
+        // ルールなし + 空グループだけ → 全件一致 (ALL でも ANY でも)。
+        for match_all in [true, false] {
+            let c = crit(
+                match_all,
+                vec![],
+                vec![group(false, vec![], vec![group(true, vec![], vec![])])],
+            );
+            assert!(matches_lvl(&t, None, &c, FoldLevel::Standard));
+        }
+        // ANY[artist is nobody, (空)] は空グループに引きずられて一致しない。
+        let c = crit(
+            false,
+            vec![rule("artist", SmartOp::Is, "nobody")],
+            vec![group(true, vec![], vec![])],
+        );
+        assert!(!matches_lvl(&t, None, &c, FoldLevel::Standard));
+    }
+
+    /// プレイリスト参照はコンテキストのメンバー集合で判定し、未知の参照は空集合扱い。
+    #[test]
+    fn playlist_rule_uses_context_membership() {
+        let mut membership = HashMap::new();
+        membership.insert("AAAA000000000001".to_string(), HashSet::from([1_i64, 3]));
+        let ctx = EvalContext {
+            level: FoldLevel::Standard,
+            membership: &membership,
+        };
+        let is = crit(
+            true,
+            vec![rule(PLAYLIST_FIELD, SmartOp::Is, "AAAA000000000001")],
+            vec![],
+        );
+        let is_not = crit(
+            true,
+            vec![rule(PLAYLIST_FIELD, SmartOp::IsNot, "AAAA000000000001")],
+            vec![],
+        );
+        let t1 = track(1, "A", None, None);
+        let t2 = track(2, "A", None, None);
+        assert!(track_matches(&t1, None, &is, &ctx));
+        assert!(!track_matches(&t2, None, &is, &ctx));
+        assert!(!track_matches(&t1, None, &is_not, &ctx));
+        assert!(track_matches(&t2, None, &is_not, &ctx));
+
+        // 存在しない参照先: is は常に偽、isNot は常に真。
+        let missing_is = crit(
+            true,
+            vec![rule(PLAYLIST_FIELD, SmartOp::Is, "FFFF000000000000")],
+            vec![],
+        );
+        let missing_not = crit(
+            true,
+            vec![rule(PLAYLIST_FIELD, SmartOp::IsNot, "FFFF000000000000")],
+            vec![],
+        );
+        assert!(!track_matches(&t1, None, &missing_is, &ctx));
+        assert!(track_matches(&t1, None, &missing_not, &ctx));
+
+        // 参照の列挙は入れ子も含めて重複なし。
+        let nested = crit(
+            true,
+            vec![rule(PLAYLIST_FIELD, SmartOp::Is, "B")],
+            vec![group(
+                false,
+                vec![
+                    rule(PLAYLIST_FIELD, SmartOp::Is, "A"),
+                    rule(PLAYLIST_FIELD, SmartOp::IsNot, "B"),
+                ],
+                vec![],
+            )],
+        );
+        assert_eq!(referenced_playlists(&nested), vec!["B", "A"]);
+    }
+
+    #[test]
+    fn starts_with_and_ends_with() {
+        let mut t = track(1, "Daft Punk", None, None);
+        t.name = Some("Ｏｎｅ More Time".into());
+        let c = |op, v: &str| crit(true, vec![rule("name", op, v)], vec![]);
+        // 全角も Contains と同じ正規化 (fold) で畳まれる。
+        assert!(matches_lvl(
+            &t,
+            None,
+            &c(SmartOp::StartsWith, "one"),
+            FoldLevel::Standard
+        ));
+        assert!(matches_lvl(
+            &t,
+            None,
+            &c(SmartOp::EndsWith, "TIME"),
+            FoldLevel::Standard
+        ));
+        assert!(!matches_lvl(
+            &t,
+            None,
+            &c(SmartOp::StartsWith, "time"),
+            FoldLevel::Standard
+        ));
+        assert!(!matches_lvl(
+            &t,
+            None,
+            &c(SmartOp::EndsWith, "one"),
+            FoldLevel::Standard
+        ));
+        // Off でも大小無視。
+        assert!(matches_lvl(
+            &t,
+            None,
+            &c(SmartOp::EndsWith, "TIME"),
+            FoldLevel::Off
+        ));
+    }
+
+    /// 値が無い曲: isNot / notContains は満たす (iTunes 互換)、それ以外の演算は満たさない。
+    #[test]
+    fn missing_value_semantics() {
+        let mut t = track(1, "X", None, None);
+        t.genre = None;
+        let m = |field: &str, op, v: &str| {
+            matches_lvl(
+                &t,
+                None,
+                &crit(true, vec![rule(field, op, v)], vec![]),
+                FoldLevel::Standard,
+            )
+        };
+        // 文字列 (genre 未設定)。
+        assert!(m("genre", SmartOp::NotContains, "Soundtrack"));
+        assert!(m("genre", SmartOp::IsNot, "House"));
+        for op in [
+            SmartOp::Is,
+            SmartOp::Contains,
+            SmartOp::StartsWith,
+            SmartOp::EndsWith,
+            SmartOp::Gt,
+            SmartOp::Lt,
+            SmartOp::Gte,
+            SmartOp::Lte,
+        ] {
+            assert!(!m("genre", op, "a"), "{op:?}");
+        }
+        // 数値 (bpm / rating 未設定)。
+        assert!(m("bpm", SmartOp::IsNot, "120"));
+        assert!(m("rating", SmartOp::NotContains, "5"));
+        for op in [
+            SmartOp::Is,
+            SmartOp::Gt,
+            SmartOp::Lt,
+            SmartOp::Gte,
+            SmartOp::Lte,
+        ] {
+            assert!(!m("bpm", op, "120"), "{op:?}");
+        }
+        // exists / notExists は従来どおり。
+        assert!(m("genre", SmartOp::NotExists, ""));
+        assert!(!m("genre", SmartOp::Exists, ""));
+    }
+
+    #[test]
+    fn grouping_field() {
+        let mut t = track(1, "A", None, None);
+        let c = crit(
+            true,
+            vec![rule("grouping", SmartOp::Contains, "idol")],
+            vec![],
+        );
+        assert!(!matches_lvl(&t, None, &c, FoldLevel::Standard));
+        t.grouping = Some("Idol Unit".into());
+        assert!(matches_lvl(&t, None, &c, FoldLevel::Standard));
+        let empty = crit(true, vec![rule("grouping", SmartOp::NotExists, "")], vec![]);
+        assert!(!matches_lvl(&t, None, &empty, FoldLevel::Standard));
+    }
+
+    /// 旧形式 (groups なし) の JSON はそのまま読め、groups は空になる。
+    #[test]
+    fn legacy_json_deserializes() {
+        let json = r#"{"matchAll":true,"rules":[{"field":"genre","op":"contains","value":"house"}],"limit":null,"sortBy":null,"sortDesc":false}"#;
+        let c: SmartCriteria = serde_json::from_str(json).unwrap();
+        assert!(c.groups.is_empty());
+        assert_eq!(c.rules.len(), 1);
+        let op: SmartOp = serde_json::from_str("\"startsWith\"").unwrap();
+        assert_eq!(op, SmartOp::StartsWith);
     }
 }
