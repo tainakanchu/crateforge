@@ -713,7 +713,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                           onContextMenu={(e) => openAlbumMenu(e, al)}
                         >
                           <span className="glyph">{leadingGlyph(al.album)}</span>
-                          <ArtworkImg path={al.coverPath} />
+                          <ArtworkImg path={al.coverPath} size={cardW} />
                           <span className="grad" />
                           <div className="kbtag">
                             {al.trackCount > 1 && (

@@ -65,16 +65,30 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         // 埋め込みジャケットを `artwork://localhost/<percent-encoded path>` で配信。
         // <img> から遅延ロードされ、WebView がレスポンスをキャッシュする。
-        .register_asynchronous_uri_scheme_protocol("artwork", |_ctx, request, responder| {
+        // `?s=<px>` を付けると段階 (64/128/256/512/1024) に丸めた縮小版を返し、
+        // `<app_cache_dir>/artwork-thumbs` にディスクキャッシュする (artwork::thumb)。
+        // s 無しは従来どおり原本。Windows では `http://artwork.localhost/...` になるが
+        // path / query の形は同じ。
+        .register_asynchronous_uri_scheme_protocol("artwork", |ctx, request, responder| {
             // convertFileSrc は `/<encodeURIComponent(path)>` を作る。先頭スラッシュは
             // 1 個だけ剥がす (絶対パスの先頭 `/` を誤って消さないため)。
             let raw = request.uri().path();
             let path_enc = raw.strip_prefix('/').unwrap_or(raw).to_string();
-            std::thread::spawn(move || {
+            let bucket = artwork::thumb::parse_size_query(request.uri().query());
+            let cache_dir = bucket.and_then(|_| {
+                ctx.app_handle()
+                    .path()
+                    .app_cache_dir()
+                    .ok()
+                    .map(|d| d.join(artwork::thumb::CACHE_DIR_NAME))
+            });
+            // スレッドを 1 リクエストごとに立てず、tokio の blocking プールに載せる。
+            // 重い処理 (抽出・縮小) の同時実行数は artwork::thumb 側のセマフォで絞る。
+            tauri::async_runtime::spawn(async move {
                 let path = percent_encoding::percent_decode_str(&path_enc)
                     .decode_utf8_lossy()
                     .into_owned();
-                let resp = match artwork::extract_picture(&path) {
+                let resp = match artwork::thumb::load(path, bucket, cache_dir).await {
                     Some((data, mime)) => tauri::http::Response::builder()
                         .status(200)
                         .header(tauri::http::header::CONTENT_TYPE, mime)
@@ -138,6 +152,12 @@ pub fn run() {
             // (GUI 起動で stderr が残らない。panic=abort でも abort 前にフックが走る)。
             if let Ok(dir) = app.path().app_data_dir() {
                 logging::install(&dir);
+            }
+
+            // artwork:// サムネイルのディスクキャッシュを容量上限まで掃除する。
+            // バックグラウンドスレッドで少し待ってから走るので起動はブロックしない。
+            if let Ok(dir) = app.path().app_cache_dir() {
+                artwork::thumb::spawn_startup_trim(dir.join(artwork::thumb::CACHE_DIR_NAME));
             }
 
             // バックグラウンド音声解析ワーカを起動して managed state に載せる。

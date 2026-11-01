@@ -5,23 +5,41 @@ import { useStore } from "../store/useStore";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
+/// バックエンドが縮小サムネイルを用意する段階 (px, 最大辺)。
+/// `src-tauri/src/artwork/thumb.rs` の BUCKETS と揃える。
+const ART_BUCKETS = [64, 128, 256, 512, 1024];
+
+/// 表示サイズ (CSS px) × devicePixelRatio を段階に切り上げる。
+/// サイズ未指定 / 最大段階を超える場合は null (= 原本を要求)。
+export function artworkBucket(cssPx: number | null | undefined): number | null {
+  if (!cssPx || !(cssPx > 0)) return null;
+  const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+  const want = Math.ceil(cssPx * dpr);
+  return ART_BUCKETS.find((b) => b >= want) ?? null;
+}
+
 /// トラックの実ファイルに埋め込まれたジャケットの URL を返す（無ければ null）。
 /// バックエンドの `artwork://` カスタムスキームが embedded picture を配信する。
-export function artworkUrl(path: string | null | undefined): string | null {
+/// `size` (表示サイズ, CSS px) を渡すと `?s=<段階>` を付け、縮小済みサムネイルを要求する
+/// (一覧の小さいタイルで数 MB の原本をデコードさせないため)。省略時は原本。
+export function artworkUrl(path: string | null | undefined, size?: number): string | null {
   if (!path || !isTauri) return null;
-  return convertFileSrc(path, "artwork");
+  const base = convertFileSrc(path, "artwork");
+  const s = artworkBucket(size);
+  return s ? `${base}${base.includes("?") ? "&" : "?"}s=${s}` : base;
 }
 
 /// 親（position:relative + overflow:hidden）を埋めるアートワーク <img>。
 /// パスが無い / Tauri 外 / 埋め込み画像が無い(404) 場合は何も描画せず、
 /// 下地のグラデーション＋グリフがそのまま見える。
-export function ArtworkImg({ path }: { path: string | null | undefined }) {
+/// `size` は表示サイズ (CSS px)。指定すると縮小サムネイルを、省略すると原本を読む。
+export function ArtworkImg({ path, size }: { path: string | null | undefined; size?: number }) {
   const [failed, setFailed] = useState(false);
   const epoch = useStore((s) => s.artworkEpoch);
   // path 変更時に加え、epoch 更新時にも失敗状態をリセットして再取得を許可する。
   useEffect(() => setFailed(false), [path, epoch]);
 
-  const base = artworkUrl(path);
+  const base = artworkUrl(path, size);
   const url = base ? `${base}${base.includes("?") ? "&" : "?"}v=${epoch}` : null;
   if (!url || failed) return null;
   return (
@@ -85,7 +103,7 @@ export function Cover({ seed, glyph, path, size, radius = 8, className, style }:
       >
         {leadingGlyph(glyph)}
       </span>
-      <ArtworkImg path={path} />
+      <ArtworkImg path={path} size={size} />
     </div>
   );
 }
