@@ -2334,6 +2334,14 @@ async fn play_by_id_for_remote(
     app: &tauri::AppHandle,
     track_id: i64,
 ) -> Result<(), ApiError> {
+    // ライブラリ外の一時再生曲 (デスクトップで「このアプリで開く」した曲) は DB に無い。
+    // キュー上の前後移動で当たることがあるので、DB 照合を飛ばして Coordinator に任せる。
+    if crate::transient::is_transient_id(track_id) {
+        return remote_coordinator(app)
+            .play_track(track_id, false)
+            .await
+            .map_err(play_error);
+    }
     let track = state
         .db()?
         .get_track_by_track_id(track_id)

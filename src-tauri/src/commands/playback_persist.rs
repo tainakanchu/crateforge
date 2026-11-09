@@ -11,17 +11,23 @@
 //!
 //! Preview / Audition (#119) 中は「本来の」曲・位置を上書きしない: preview 曲が
 //! 読み込まれている間は、最後に保存した通常再生の曲・位置を据え置く。
+//!
+//! ライブラリ外の一時再生曲 (`crate::transient`、負の ID) は保存しない: 次回起動時には
+//! レジストリが空で解決できないため。キューからは取り除き、再生中の曲なら「曲なし」で保存する。
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
 
-use crate::audio::{AudioPlayer, PlayerSnapshot};
+use std::collections::HashSet;
+
+use crate::audio::{prune_queue, AudioPlayer, PlayerSnapshot};
 use crate::commands::library::open_db;
 use crate::commands::playback::PreviewMode;
 use crate::db::playback::PersistedPlayback;
 use crate::db::Database;
+use crate::transient::is_transient_id;
 
 /// 位置だけが動いているときの保存間隔。
 const POSITION_INTERVAL: Duration = Duration::from_secs(5);
@@ -61,7 +67,7 @@ enum WritePlan {
 }
 
 /// スナップショット → 保存内容。preview 曲が読み込まれている間は、
-/// 前回保存した通常再生の曲・位置を据え置く。
+/// 前回保存した通常再生の曲・位置を据え置く。一時再生曲は取り除く。
 fn to_persisted(
     snap: &PlayerSnapshot,
     preview_active: bool,
@@ -73,10 +79,25 @@ fn to_persisted(
     } else {
         (snap.track_id, snap.position_ms)
     };
+    let (track_id, position_ms) = match track_id {
+        Some(tid) if is_transient_id(tid) => (None, 0),
+        other => (other, position_ms),
+    };
+    let transient: HashSet<i64> = snap
+        .queue
+        .iter()
+        .copied()
+        .filter(|&tid| is_transient_id(tid))
+        .collect();
+    let (queue, order, order_pos) = if transient.is_empty() {
+        (snap.queue.clone(), snap.order.clone(), snap.order_pos)
+    } else {
+        prune_queue(&snap.queue, &snap.order, snap.order_pos, &transient)
+    };
     PersistedPlayback {
-        queue: snap.queue.clone(),
-        order: snap.order.clone(),
-        order_pos: snap.order_pos,
+        queue,
+        order,
+        order_pos,
         track_id,
         position_ms,
         shuffle: snap.shuffle,
@@ -303,6 +324,45 @@ mod tests {
             plan(&next, Some(&last), Some(Duration::ZERO), false),
             WritePlan::StateOnly
         );
+    }
+
+    /// 一時再生曲 (負の ID) はキューから除いて保存し、再生中なら「曲なし」で保存する。
+    #[test]
+    fn transient_tracks_are_not_persisted() {
+        let mut s = snap();
+        s.queue = vec![-1, 2, -2, 3];
+        s.order = vec![0, 1, 2, 3];
+        s.order_pos = Some(2);
+        s.track_id = Some(-2);
+        let next = to_persisted(&s, false, None);
+        assert_eq!(next.queue, vec![2, 3]);
+        assert_eq!(next.order, vec![0, 1]);
+        // 消えた現在位置は直後に残る曲 (3) を指す。
+        assert_eq!(next.order_pos, Some(1));
+        assert_eq!(next.track_id, None);
+        assert_eq!(next.position_ms, 0);
+
+        // 全部が一時再生曲なら空のキューになる。
+        let mut s = snap();
+        s.queue = vec![-1, -2];
+        s.order = vec![1, 0];
+        s.order_pos = Some(0);
+        s.track_id = Some(-2);
+        let next = to_persisted(&s, false, None);
+        assert!(next.queue.is_empty() && next.order.is_empty());
+        assert_eq!(next.order_pos, None);
+        assert_eq!(next.track_id, None);
+
+        // ライブラリの曲を再生中なら従来どおり保存する。
+        let mut s = snap();
+        s.queue = vec![1, -1, 2];
+        s.track_id = Some(2);
+        s.order_pos = Some(2);
+        let next = to_persisted(&s, false, None);
+        assert_eq!(next.queue, vec![1, 2]);
+        assert_eq!(next.order_pos, Some(1));
+        assert_eq!(next.track_id, Some(2));
+        assert_eq!(next.position_ms, 10_000);
     }
 
     #[test]

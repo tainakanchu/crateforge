@@ -1941,6 +1941,19 @@ impl Database {
         Ok(common_dir_prefix(&paths))
     }
 
+    /// `location_path` を持つ全曲の `(track_id, location_path)`。
+    /// 「このアプリで開く」で渡されたファイルがライブラリの曲か照合するのに使う
+    /// (OS ごとの大文字小文字・区切り文字の違いを吸収するため、比較は呼び出し側で行う)。
+    pub fn track_location_paths(&self) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT track_id, location_path FROM tracks
+             WHERE location_path IS NOT NULL AND location_path != ''
+             ORDER BY track_id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
     /// ライブラリに登録済みの `location_path` を全て集めた集合を返す。
     /// フォルダ取り込みで「既にライブラリにあるファイル」を弾くために使う。
     pub fn existing_location_paths(&self) -> Result<HashSet<String>> {
