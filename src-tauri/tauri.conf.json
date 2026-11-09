@@ -33,6 +33,87 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "mp3"
+        ],
+        "name": "MP3 Audio",
+        "description": "MP3 Audio",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "audio/mpeg"
+      },
+      {
+        "ext": [
+          "flac"
+        ],
+        "name": "FLAC Audio",
+        "description": "FLAC Audio",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "audio/flac"
+      },
+      {
+        "ext": [
+          "wav"
+        ],
+        "name": "WAV Audio",
+        "description": "WAV Audio",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "audio/x-wav"
+      },
+      {
+        "ext": [
+          "aiff",
+          "aif"
+        ],
+        "name": "AIFF Audio",
+        "description": "AIFF Audio",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "audio/x-aiff"
+      },
+      {
+        "ext": [
+          "m4a"
+        ],
+        "name": "MPEG-4 Audio",
+        "description": "MPEG-4 Audio",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "audio/mp4"
+      },
+      {
+        "ext": [
+          "aac"
+        ],
+        "name": "AAC Audio",
+        "description": "AAC Audio",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "audio/aac"
+      },
+      {
+        "ext": [
+          "ogg"
+        ],
+        "name": "Ogg Vorbis Audio",
+        "description": "Ogg Vorbis Audio",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "audio/ogg"
+      }
+    ],
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/crateforge.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "linux/crateforge.desktop"
+      }
+    }
   }
 }

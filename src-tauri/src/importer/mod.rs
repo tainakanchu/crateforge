@@ -188,7 +188,40 @@ pub fn import_in_place(db: &Database, path: &Path) -> Result<i64, String> {
     read_and_insert(db, path, None)
 }
 
-fn read_and_insert(db: &Database, path: &Path, library_root: Option<&Path>) -> Result<i64, String> {
+/// 1 ファイルをライブラリへ取り込み、追加した track_id を返す。
+/// `import_files` と同じく、整理 ON (ライブラリルート設定済み) ならルート配下へコピーしてから登録する。
+/// 一時再生中の曲の「ライブラリに追加」で使う。
+pub fn import_file(db: &Database, path: &Path) -> Result<i64, String> {
+    if !path.is_file() {
+        return Err(format!("ファイルが見つかりません: {}", path.display()));
+    }
+    let root = db.organize_root().map(PathBuf::from);
+    read_and_insert(db, path, root.as_deref())
+}
+
+/// ファイルのタグ / 長さ / 技術メタデータを読み、取り込みと同じフォールバック
+/// (曲名 ← ファイル名、アルバム ← 親フォルダ、アーティスト ← 祖父フォルダ) を適用した結果。
+/// ライブラリへの取り込みと、ライブラリ外ファイルの一時再生 (`crate::transient`) で共用する。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FileTags {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album_artist: Option<String>,
+    pub album: Option<String>,
+    pub genre: Option<String>,
+    pub year: Option<i64>,
+    pub track_number: Option<i64>,
+    pub track_count: Option<i64>,
+    pub disc_number: Option<i64>,
+    pub disc_count: Option<i64>,
+    pub total_time_ms: Option<i64>,
+    pub bpm: Option<i64>,
+    pub grouping: Option<String>,
+    pub tech: tech::TechMeta,
+}
+
+/// 音声ファイルのタグを読む (DB には触れない)。
+pub(crate) fn read_file_tags(path: &Path) -> Result<FileTags, String> {
     let tagged = Probe::open(path)
         .map_err(|e| format!("open failed: {}", e))?
         .read()
@@ -253,6 +286,42 @@ fn read_and_insert(db: &Database, path: &Path, library_root: Option<&Path>) -> R
         .and_then(|s| s.to_str());
     let album = album.or_else(|| parent.map(String::from));
     let artist = artist.or_else(|| grandparent.map(String::from));
+
+    Ok(FileTags {
+        title,
+        artist,
+        album_artist,
+        album,
+        genre,
+        year,
+        track_number,
+        track_count,
+        disc_number,
+        disc_count,
+        total_time_ms,
+        bpm,
+        grouping,
+        tech,
+    })
+}
+
+fn read_and_insert(db: &Database, path: &Path, library_root: Option<&Path>) -> Result<i64, String> {
+    let FileTags {
+        title,
+        artist,
+        album_artist,
+        album,
+        genre,
+        year,
+        track_number,
+        track_count,
+        disc_number,
+        disc_count,
+        total_time_ms,
+        bpm,
+        grouping,
+        tech,
+    } = read_file_tags(path)?;
 
     // 整理 ON ならルート配下へコピー (iTunes 準拠のリネーム込み)。
     // 失敗したら元パスのまま続行 (警告のみ)。

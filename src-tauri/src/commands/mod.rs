@@ -8,6 +8,7 @@ pub mod duplicates;
 pub mod ffmpeg;
 pub mod fonts;
 pub mod library;
+pub mod open_with;
 pub mod output_device;
 pub mod pairing;
 pub mod playback;

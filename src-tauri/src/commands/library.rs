@@ -211,8 +211,42 @@ pub fn search_tracks(
 /// Up Next がフロントのロード済みページ (500件) を超える曲も表示できるようにするためのもの。
 #[tauri::command(async)]
 pub fn get_tracks_by_ids(app: AppHandle, track_ids: Vec<i64>) -> Result<Vec<Track>, String> {
-    let db = get_db(&app)?;
-    db.get_tracks_by_ids(&track_ids).map_err(|e| e.to_string())
+    // ライブラリ外の一時再生曲 (負の ID) はレジストリから引く。PlayerBar / Up Next が
+    // 再生中・キュー中の曲をこのコマンドで解決するので、表示はこれだけで追従する。
+    if !track_ids
+        .iter()
+        .any(|&id| crate::transient::is_transient_id(id))
+    {
+        let db = get_db(&app)?;
+        return db.get_tracks_by_ids(&track_ids).map_err(|e| e.to_string());
+    }
+    let transient = app.state::<crate::transient::TransientTracks>();
+    let db_ids: Vec<i64> = track_ids
+        .iter()
+        .copied()
+        .filter(|&id| !crate::transient::is_transient_id(id))
+        .collect();
+    let from_db: std::collections::HashMap<i64, Track> = if db_ids.is_empty() {
+        Default::default()
+    } else {
+        get_db(&app)?
+            .get_tracks_by_ids(&db_ids)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|t| (t.track_id, t))
+            .collect()
+    };
+    // 入力順を保ち、見つからない ID は飛ばす (DB 版と同じ規約)。
+    Ok(track_ids
+        .iter()
+        .filter_map(|&id| {
+            if crate::transient::is_transient_id(id) {
+                transient.get(id).map(|t| t.track)
+            } else {
+                from_db.get(&id).cloned()
+            }
+        })
+        .collect())
 }
 
 #[tauri::command(async)]

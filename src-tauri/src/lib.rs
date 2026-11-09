@@ -17,6 +17,7 @@ mod logging;
 mod mdns;
 mod metadata;
 mod models;
+mod open_with;
 mod organizer;
 mod pairing;
 mod playback_target;
@@ -28,6 +29,7 @@ mod smtc;
 mod sync;
 mod text_fold;
 mod traktor_nml;
+mod transient;
 mod updater;
 mod usb_export;
 
@@ -58,6 +60,15 @@ pub fn run() {
     let valid_tokens = devices::ValidTokens::default();
 
     tauri::Builder::default()
+        // 単一インスタンス化: 起動中にもう一度起動された (「このアプリで開く」で音声ファイルを
+        // 開いた) ときは、既存プロセスへ argv を転送して新しいプロセスは終了する。
+        // プラグインの規約どおり最初に登録する。
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            open_with::focus_main_window(app);
+            let cwd = (!cwd.is_empty()).then(|| std::path::PathBuf::from(&cwd));
+            let paths = open_with::paths_from_args(&argv, cwd.as_deref());
+            open_with::receive(app, paths);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -148,6 +159,9 @@ pub fn run() {
         .manage(commands::output_device::OutputDeviceNotices::default())
         // USB 書き出し (rbx-cli) の単一実行ガード。
         .manage(usb_export::UsbExportRuntime::default())
+        // 「このアプリで開く」: フロント準備前に届いたファイルの溜め置きと、一時再生曲のレジストリ。
+        .manage(open_with::PendingOpen::default())
+        .manage(transient::TransientTracks::default())
         .setup(|app| {
             // クラッシュ痕跡を残すためのファイルロガー + panic フックを最初に仕込む
             // (GUI 起動で stderr が残らない。panic=abort でも abort 前にフックが走る)。
@@ -219,6 +233,17 @@ pub fn run() {
                         devices::reload_valid_tokens(&db, &valid);
                     }
                 }
+            }
+
+            // 「このアプリで開く」で起動された場合 (Windows / Linux) は argv にファイルが載る。
+            // フロントの準備前なので溜めておき、マウント時に取り出してもらう。
+            {
+                let args: Vec<String> = std::env::args_os()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect();
+                let cwd = std::env::current_dir().ok();
+                let paths = open_with::paths_from_args(&args, cwd.as_deref());
+                open_with::receive(app.handle(), paths);
             }
 
             // 前回 enabled だった場合のみ内蔵 API サーバーを自動起動する。
@@ -327,6 +352,10 @@ pub fn run() {
             commands::playback::set_preview_mode,
             commands::playback::get_preview_mode,
             commands::playback_persist::get_playback_restored,
+            // 「このアプリで開く」(ファイル関連付け) / 一時再生曲
+            commands::open_with::take_pending_open_files,
+            commands::open_with::play_opened_files,
+            commands::open_with::import_transient_track,
             commands::output_device::list_output_devices,
             commands::output_device::set_output_device,
             commands::output_device::take_output_device_notices,
@@ -421,6 +450,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            // macOS: Finder の「このアプリで開く」/ 既定のプレーヤーで開いたファイルは
+            // argv ではなくこのイベントで届く (起動直後はフロントより先に来うる)。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                open_with::receive(app, open_with::paths_from_urls(urls));
+            }
             // 終了時に再生キュー / 再生位置を即時保存する (#159)。
             if let tauri::RunEvent::Exit = event {
                 commands::playback_persist::flush(app);

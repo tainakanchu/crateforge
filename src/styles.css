@@ -2657,6 +2657,31 @@ input {
   background: color-mix(in srgb, var(--ac) 22%, var(--bg3));
   border: 1px solid color-mix(in srgb, var(--ac) 50%, transparent);
 }
+/* 「このアプリで開く」の一時再生曲 (ライブラリ外) を取り込むボタン。曲名の下に出す。 */
+.cb-transient-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0;
+  padding: 2px 7px;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  color: var(--tx-strong);
+  background: color-mix(in srgb, var(--ac) 18%, var(--bg3));
+  border: 1px solid color-mix(in srgb, var(--ac) 45%, transparent);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cb-transient-add:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+.cb-transient-add:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
 .cb-player.audition .cb-seek {
   width: clamp(220px, 44vw, 520px);
 }

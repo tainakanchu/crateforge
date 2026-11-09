@@ -68,6 +68,11 @@ impl Analyzer {
 
     /// 解析対象 ID をワーカへ投入する (空なら無視)。`force` で再解析を強制。
     pub fn submit(&self, ids: Vec<i64>, force: bool) {
+        // ライブラリ外の一時再生曲 (負の ID) は DB に行が無いので解析しない。
+        let ids: Vec<i64> = ids
+            .into_iter()
+            .filter(|&id| !crate::transient::is_transient_id(id))
+            .collect();
         if ids.is_empty() {
             return;
         }

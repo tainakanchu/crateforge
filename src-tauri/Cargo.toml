@@ -93,6 +93,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 #       配下に置くと smtc モジュールが使う souvlaki が Windows でリンクされず E0432 になる。
 souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
 tauri-plugin-window-state = "2.4.1"
+tauri-plugin-single-instance = "2"
 
 # === Unix-only: MusicBrainz disc id via libdiscid (C lib comes from Nix/Brew/apt). ===
 # Skipped on Windows because libdiscid isn't trivially available via the standard

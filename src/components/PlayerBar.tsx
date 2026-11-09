@@ -3,6 +3,7 @@ import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import * as analysisApi from "../api/analysis";
 import * as libraryApi from "../api/library";
+import * as openWithApi from "../api/openWith";
 import type { Track } from "../types";
 import { Icon } from "./Icon";
 import { Cover } from "./Cover";
@@ -81,6 +82,24 @@ export function PlayerBar() {
   const currentTrack =
     listedTrack ??
     (fetchedTrack && fetchedTrack.trackId === playback.currentTrackId ? fetchedTrack : null);
+
+  // 「このアプリで開く」で再生中のライブラリ外ファイル (一時再生曲) をライブラリへ取り込む。
+  // 再生は止まらず、取り込み後はキュー / 再生中の曲がライブラリの曲に付け替わる。
+  const isTransient = currentTrack != null && openWithApi.isTransientTrackId(currentTrack.trackId);
+  const [importingTransient, setImportingTransient] = useState(false);
+  const handleAddTransientToLibrary = useCallback(async () => {
+    if (!currentTrack || !openWithApi.isTransientTrackId(currentTrack.trackId)) return;
+    setImportingTransient(true);
+    try {
+      const t = await openWithApi.importTransientTrack(currentTrack.trackId);
+      pushToast("success", `「${t.name ?? "(unknown)"}」をライブラリに追加しました`);
+      useStore.getState().setPlayback(await playbackApi.getPlaybackState());
+    } catch (e) {
+      pushToast("error", `ライブラリに追加できませんでした: ${e}`, 5200);
+    } finally {
+      setImportingTransient(false);
+    }
+  }, [currentTrack, pushToast]);
 
   // フォールバック用の決定的な波形バー（解析前/未解析時）。
   const waveHeights = useMemo(
@@ -245,6 +264,18 @@ export function PlayerBar() {
             />
             <div className="cb-pa-meta">
               <div className="cj">{currentTrack.name || "(unknown)"}</div>
+              {isTransient && (
+                <button
+                  type="button"
+                  className="cb-transient-add"
+                  onClick={handleAddTransientToLibrary}
+                  disabled={importingTransient}
+                  title="ライブラリ外のファイルを一時再生中です (再生回数などは記録されません)。クリックでライブラリに取り込みます"
+                >
+                  <Icon name="plus" size={11} />
+                  {importingTransient ? "追加中…" : "ライブラリに追加"}
+                </button>
+              )}
               <div className="la">
                 {currentTrack.artist || ""}
                 {currentTrack.bpm != null && (
