@@ -12,6 +12,7 @@ mod ffmpeg;
 mod fonts;
 mod importer;
 mod itunes_xml;
+mod library_match;
 mod logging;
 mod mdns;
 mod metadata;
@@ -247,6 +248,9 @@ pub fn run() {
             commands::library::export_library,
             commands::library::import_files,
             commands::library::import_folders,
+            commands::duplicates::find_rip_duplicates,
+            commands::duplicates::plan_import,
+            commands::duplicates::import_with_actions,
             commands::library::refresh_tech_metadata,
             commands::library::rescan_file_existence,
             commands::library::relocate_track_file,

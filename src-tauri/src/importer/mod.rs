@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use lofty::file::{AudioFile, TaggedFileExt};
@@ -7,9 +7,12 @@ use lofty::tag::{Accessor, ItemKey, Tag};
 
 use crate::db::Database;
 use crate::itunes_xml::writer::path_to_file_url;
+use crate::library_match::replace::{self, NewFile, OldFileDisposition, ReplaceOutcome};
+use crate::library_match::{self, MatchIndex, MatchQuery};
 use crate::metadata::tech;
 use crate::models::{
-    FileCheckSummary, ImportFileResult, ImportSummary, TechMetaRefreshSummary, Track,
+    FileCheckSummary, ImportActionItem, ImportActionResult, ImportActionsSummary, ImportFileResult,
+    ImportPlanItem, ImportSummary, ItemAction, TechMetaRefreshSummary, Track,
 };
 use crate::organizer;
 
@@ -430,6 +433,216 @@ pub fn relocate_track(db: &Database, track_id: i64, new_path: &str) -> Result<Tr
         .ok_or_else(|| format!("トラックが見つかりません (id={})", track_id))
 }
 
+/// 照合用にファイルから読むタグ (取り込み時と同じフォールバック込み)。
+#[derive(Debug, Clone, Default)]
+pub struct SourceTags {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album_artist: Option<String>,
+    pub album: Option<String>,
+    pub track_number: Option<i64>,
+    pub duration_ms: Option<i64>,
+}
+
+/// 取り込み前の照合用にタグと長さを読む。曲名が無ければファイル名、アルバム /
+/// アーティストが無ければ親 / 祖父ディレクトリ名を使う (`read_and_insert` と同じ)。
+pub fn read_source_tags(path: &Path) -> Result<SourceTags, String> {
+    let tagged = Probe::open(path)
+        .map_err(|e| format!("open failed: {}", e))?
+        .options(lofty::config::ParseOptions::new().read_cover_art(false))
+        .read()
+        .map_err(|e| format!("probe failed: {}", e))?;
+    let duration_ms = Some(tagged.properties().duration().as_millis() as i64).filter(|&d| d > 0);
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
+    let nonempty = |s: Option<String>| s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let title = nonempty(tag.and_then(|t| t.title().map(|s| s.to_string())));
+    let artist = nonempty(tag.and_then(|t| t.artist().map(|s| s.to_string())));
+    let album = nonempty(tag.and_then(|t| t.album().map(|s| s.to_string())));
+    let album_artist = nonempty(tag.and_then(|t| t.get_string(&ItemKey::AlbumArtist).map(str::to_string)));
+    let track_number = tag.and_then(|t| t.track()).map(|n| n as i64);
+
+    let parent = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str());
+    let grandparent = path
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str());
+    Ok(SourceTags {
+        title: title.or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from)),
+        artist: artist.or_else(|| grandparent.map(String::from)),
+        album_artist,
+        album: album.or_else(|| parent.map(String::from)),
+        track_number,
+        duration_ms,
+    })
+}
+
+/// 取り込み前の計画: フォルダを展開し、各ファイルのタグを読んでライブラリと照合する。
+/// ライブラリは 1 回だけ読んで索引にする。同じパスの既存曲は一致から除き、
+/// `already_imported_same_path` で知らせる (従来どおり黙ってスキップする対象)。
+/// `on_progress(done, total)` は他の一括処理と同じく最初に `0/total` を通知する。
+pub fn plan_import(
+    db: &Database,
+    roots: &[PathBuf],
+    mut on_progress: impl FnMut(usize, usize),
+) -> Result<Vec<ImportPlanItem>, String> {
+    let files = collect_audio_files(roots);
+    let existing = db.existing_location_paths().unwrap_or_default();
+    let rows = db
+        .library_match_rows()
+        .map_err(|e| format!("query failed: {e}"))?;
+    let index = MatchIndex::new(rows);
+    let mut health_cache = HashMap::new();
+    let total = files.len();
+    on_progress(0, total);
+    let mut out = Vec::with_capacity(total);
+    for (i, file) in files.iter().enumerate() {
+        let path_str = file.to_string_lossy().to_string();
+        let same_path = existing.contains(&path_str);
+        let tags = read_source_tags(file).unwrap_or_default();
+        let hits = match (&tags.title, &tags.artist) {
+            (Some(title), Some(artist)) => {
+                let q = MatchQuery {
+                    title,
+                    artist,
+                    album_artist: tags.album_artist.as_deref(),
+                    album: tags.album.as_deref(),
+                    track_number: tags.track_number,
+                    duration_ms: tags.duration_ms,
+                };
+                let found: Vec<_> = index
+                    .find(&q)
+                    .into_iter()
+                    .filter(|h| index.row(h.row_index).location_path.as_deref() != Some(path_str.as_str()))
+                    .collect();
+                library_match::to_duplicate_hits(&index, &found, &mut health_cache)
+            }
+            _ => Vec::new(),
+        };
+        out.push(ImportPlanItem {
+            path: path_str,
+            title: tags.title,
+            artist: tags.artist,
+            album: tags.album,
+            duration_ms: tags.duration_ms,
+            hits,
+            already_imported_same_path: same_path,
+        });
+        on_progress(i + 1, total);
+    }
+    Ok(out)
+}
+
+/// 計画に対するユーザーの指示どおりに取り込む (取り込む / スキップ / 置き換え)。
+/// 整理の設定は通常の取り込みと同じ (整理 ON ならルート配下へコピー)。
+pub fn import_with_actions(
+    db: &Database,
+    items: &[ImportActionItem],
+    mut on_progress: impl FnMut(usize, usize),
+) -> ImportActionsSummary {
+    let organize_root = db.organize_root().map(PathBuf::from);
+    let library_root = library_media_root(db);
+    let mut summary = ImportActionsSummary::default();
+    let total = items.len();
+    on_progress(0, total);
+    for (i, item) in items.iter().enumerate() {
+        let path = Path::new(&item.path);
+        let mut result = ImportActionResult {
+            path: item.path.clone(),
+            action: item.action,
+            ok: true,
+            error: None,
+            track_id: None,
+            new_path: None,
+            old_file_moved_to: None,
+        };
+        let outcome: Result<(), String> = match item.action {
+            ItemAction::Skip => {
+                summary.skipped += 1;
+                Ok(())
+            }
+            _ if !path.is_file() => Err(format!("ファイルが見つかりません: {}", item.path)),
+            ItemAction::Import => read_and_insert(db, path, organize_root.as_deref()).map(|id| {
+                summary.imported += 1;
+                result.track_id = Some(id);
+            }),
+            ItemAction::Replace => match item.replace_track_id {
+                None => Err("置き換え先の曲が指定されていません".to_string()),
+                Some(track_id) => replace_from_file(
+                    db,
+                    path,
+                    track_id,
+                    organize_root.as_deref(),
+                    library_root.as_deref(),
+                )
+                .map(|out| {
+                    summary.replaced += 1;
+                    result.track_id = Some(track_id);
+                    result.new_path = Some(out.new_path);
+                    if let OldFileDisposition::Moved { to } = out.old_file {
+                        result.old_file_moved_to = Some(to);
+                    }
+                }),
+            },
+        };
+        if let Err(e) = outcome {
+            eprintln!("import_with_actions: failed {} ({})", item.path, e);
+            summary.failed += 1;
+            result.ok = false;
+            result.error = Some(e);
+        }
+        summary.results.push(result);
+        on_progress(i + 1, total);
+    }
+    summary
+}
+
+/// `_replaced` を置く基準 = ライブラリのメディアルート (整理の有効/無効に関係なく設定値)。
+pub fn library_media_root(db: &Database) -> Option<PathBuf> {
+    db.get_state("library_root")
+        .ok()
+        .flatten()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+/// ファイル 1 つで既存曲を置き換える。整理 ON なら既存行のメタデータで決まる
+/// 整理先へコピーしてから、OFF ならそのファイルをその場参照で使う。
+fn replace_from_file(
+    db: &Database,
+    source: &Path,
+    track_id: i64,
+    organize_root: Option<&Path>,
+    library_root: Option<&Path>,
+) -> Result<ReplaceOutcome, String> {
+    let track = db
+        .get_track_by_track_id(track_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("置き換え先の曲が見つかりません (id={track_id})"))?;
+    let (new_path, owned, desired) = match organize_root {
+        Some(root) => {
+            let target = replace::target_for_track(root, &track, source);
+            let dest = organizer::relocate(source, &target, organizer::Mode::Copy)
+                .map_err(|e| format!("コピーに失敗しました: {e}"))?;
+            // 取り込み元がちょうど整理先にある (コピーしていない) なら自分のファイルではない。
+            let owned = dest != source;
+            (dest, owned, Some(target))
+        }
+        None => (source.to_path_buf(), false, None),
+    };
+    replace::finalize_replacement(
+        db,
+        track_id,
+        NewFile {
+            path: new_path,
+            owned,
+            desired,
+            library_root,
+        },
+    )
+}
+
 /// タグから BPM を読む。TBPM/tmpo (IntegerBpm) を優先し、無ければ Vorbis "BPM"。
 /// "128" / "128.00" の両方を許容し、四捨五入して正の整数のみ採用する。
 /// グルーピングを読む。Apple の ID3 GRP1 (iTunes 12.5+) を優先し、無ければ汎用の
@@ -805,5 +1018,110 @@ mod tests {
         // 再チェックしても見つかったままで、newly_found には数えない (既に 1)。
         let s = rescan_file_existence(&db, |_, _| {}).unwrap();
         assert_eq!((s.missing, s.newly_missing, s.newly_found), (0, 0, 0));
+    }
+
+    /// タグ付きの短い WAV を作る (照合テスト用)。
+    fn tagged_wav(path: &Path, title: &str, artist: &str, album: &str, secs: u32) {
+        crate::library_match::replace::tests::write_wav(path, secs);
+        organizer::write_tags(
+            path,
+            &organizer::TagWrite {
+                title: Some(title),
+                artist: Some(artist),
+                album: Some(album),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    /// 整理 ON でコピー取り込みしたフォルダを再度取り込もうとすると、
+    /// パスが違っても取り込み済みとして見つかる (以前は重複して入っていた)。
+    #[test]
+    fn plan_import_detects_reimport_of_organized_copy() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src/Artist/Album/01.wav");
+        tagged_wav(&src, "Song", "Artist", "Album", 12);
+        let other = tmp.path().join("src/Artist/Album/02.wav");
+        tagged_wav(&other, "Other Song", "Artist", "Album", 12);
+        let lib = tmp.path().join("lib");
+        let db = Database::open_memory().unwrap();
+        db.set_state("library_root", &lib.to_string_lossy()).unwrap();
+
+        let s = import_folders(&db, &[src.clone()], |_, _| {});
+        assert_eq!(s.imported, 1);
+
+        let plan = plan_import(&db, &[tmp.path().join("src")], |_, _| {}).unwrap();
+        assert_eq!(plan.len(), 2);
+        let first = plan.iter().find(|p| p.path.ends_with("01.wav")).unwrap();
+        assert!(!first.already_imported_same_path);
+        assert_eq!(first.hits.len(), 1);
+        assert_eq!(first.hits[0].kind, crate::library_match::MatchKind::Exact);
+        assert_eq!(
+            first.hits[0].health,
+            crate::library_match::health::FileHealth::Ok
+        );
+        let second = plan.iter().find(|p| p.path.ends_with("02.wav")).unwrap();
+        assert!(second.hits.is_empty());
+    }
+
+    /// 同じパスの既存曲は一致に出さず、already_imported_same_path で知らせる。
+    #[test]
+    fn plan_import_flags_same_path_without_self_hit() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("Artist/Album/01.wav");
+        tagged_wav(&f, "Song", "Artist", "Album", 12);
+        let db = Database::open_memory().unwrap();
+        assert_eq!(import_folders(&db, &[f.clone()], |_, _| {}).imported, 1);
+        let plan = plan_import(&db, &[f.clone()], |_, _| {}).unwrap();
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].already_imported_same_path);
+        assert!(plan[0].hits.is_empty());
+    }
+
+    #[test]
+    fn import_with_actions_imports_skips_and_replaces() {
+        let tmp = TempDir::new().unwrap();
+        let lib = tmp.path().join("lib");
+        let db = Database::open_memory().unwrap();
+        db.set_state("library_root", &lib.to_string_lossy()).unwrap();
+
+        // 既存曲 (ファイルなし) を用意。
+        let gone = lib.join("Artist/Album/01 Song.mp3");
+        let gone_str = gone.to_string_lossy().to_string();
+        let existing = db
+            .add_imported_track(
+                Some("Song"), Some("Artist"), Some("Artist"), Some("Album"), None, None,
+                Some(1), None, None, None, Some(12_000), &gone_str, &path_to_file_url(&gone_str),
+            )
+            .unwrap();
+        db.set_rating(existing, 100).unwrap();
+
+        let a = tmp.path().join("in/a.wav");
+        tagged_wav(&a, "Song", "Artist", "Album", 12);
+        let b = tmp.path().join("in/b.wav");
+        tagged_wav(&b, "New", "Artist", "Album", 12);
+        let c = tmp.path().join("in/c.wav");
+        tagged_wav(&c, "Skip", "Artist", "Album", 12);
+        let before = db.get_all_tracks().unwrap().len();
+
+        let items = vec![
+            ImportActionItem { path: a.to_string_lossy().into(), action: ItemAction::Replace, replace_track_id: Some(existing) },
+            ImportActionItem { path: b.to_string_lossy().into(), action: ItemAction::Import, replace_track_id: None },
+            ImportActionItem { path: c.to_string_lossy().into(), action: ItemAction::Skip, replace_track_id: None },
+            ImportActionItem { path: tmp.path().join("in/none.wav").to_string_lossy().into(), action: ItemAction::Import, replace_track_id: None },
+        ];
+        let s = import_with_actions(&db, &items, |_, _| {});
+        assert_eq!((s.imported, s.skipped, s.replaced, s.failed), (1, 1, 1, 1));
+        assert_eq!(db.get_all_tracks().unwrap().len(), before + 1);
+
+        let t = db.get_track_by_track_id(existing).unwrap().unwrap();
+        assert_eq!(t.rating, Some(100));
+        assert!(t.file_exists);
+        let p = t.location_path.unwrap();
+        // 整理先 (既存行のメタデータ) へコピーされ、拡張子は新ファイルのもの。
+        assert!(p.ends_with("01 Song.wav"), "{p}");
+        assert!(Path::new(&p).starts_with(&lib));
+        assert!(a.is_file(), "コピー取り込みなので元ファイルは残る");
     }
 }

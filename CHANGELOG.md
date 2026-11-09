@@ -10,6 +10,20 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+### 日本語
+
+#### デスクトップ
+- **取り込み済みの曲を検出して、スキップ・置き換えを選べるように**: CD のリッピングとファイル / フォルダの取り込み（メニュー・ドラッグ&ドロップ）の前に、同じ曲がライブラリにあるかを曲名・アーティスト・アルバム・長さで照合するようにした（全角半角・かなの違いや記号は無視し、長さは 3 秒までの差を同じとみなす）。見つかった曲には「取り込み済み」「取り込み済み・ファイルなし」「取り込み済み・破損の疑い」のバッジを付け（マウスを重ねると一致した曲のアーティスト・アルバム・場所を表示）、曲ごとに「取り込む / スキップ / 置き換え」を選べる。既定は、ファイルのある曲はスキップ、ファイルが無い・壊れている曲は置き換え、長さで確かめられない曲は取り込む。リッピングでは開始前に「N 曲はすでにライブラリにあります」と内訳を確認し、スキップした曲は読み取らない。「破損の疑い」は、OneDrive の同期失敗などで途中から末尾までがゼロで埋まった圧縮形式のファイル（MP3 / AAC・ALAC / FLAC / Ogg / Opus）を検出する（WAV / AIFF は無音が正当にゼロになるため対象外）。取り込みの結果は「取り込み N / スキップ N / 置き換え N / 失敗 N」で知らせる。
+- **既存の曲のファイルを置き換え**: 「置き換え」を選ぶと、新しくリッピング / 取り込みしたファイル（例: FLAC）を通常どおり整理先に置き、既存の曲をそのファイルに付け替える。曲の ID・プレイリスト・レート・再生回数・追加日・編集したタグはそのまま残し、ファイルのタグは既存の曲の情報で書き、アートワークは古いファイルから引き継ぐ。長さと技術情報（ビットレートなど）は新しいファイルから読み直し、解析結果は消して再解析させる。古いファイルは削除せず、ライブラリフォルダの `_replaced/<日付>/` へ元の階層のまま移す（他の曲も同じファイルを使っている場合は動かさない）。途中で失敗した場合は既存の曲と古いファイルには手を付けない。
+- **整理ありで取り込んだフォルダを再度取り込んでも重複しないように**: 整理先へコピーして取り込んだフォルダをもう一度取り込むと、パスが違うため同じ曲が二重に登録されていた。取り込み済みとして検出し、既定でスキップする。メニューの「ファイルを取り込む」でも、ライブラリに登録済みのパスは取り込まないようにした。
+
+### English
+
+#### Desktop
+- **Detect tracks already in the library, and choose to skip or replace them**: before ripping a CD or importing files / folders (menu or drag & drop), tracks are matched against the library by title, artist, album, and length (ignoring width / kana differences and punctuation, with up to 3 seconds of length difference). Matches get an "already imported", "already imported, file missing", or "already imported, possibly corrupted" badge (hover to see the matched track's artist, album, and location), and each track can be set to import / skip / replace. By default, tracks whose file is present are skipped, tracks whose file is missing or corrupted are replaced, and matches that cannot be confirmed by length are imported. Ripping shows an "N tracks are already in your library" summary before it starts, and skipped tracks are not read. "Possibly corrupted" detects compressed files (MP3 / AAC・ALAC / FLAC / Ogg / Opus) that were zero-filled from some point to the end, as happens with failed OneDrive syncs (WAV / AIFF are excluded because silence is legitimately zero). Import results are reported as "imported N / skipped N / replaced N / failed N".
+- **Replace the file of an existing track**: "Replace" puts the newly ripped / imported file (e.g. FLAC) in the organized location as usual and points the existing track at it. The track's ID, playlists, rating, play count, date added, and edited tags are kept; the file is tagged from the existing track, and artwork is carried over from the old file. Length and technical info (bitrate etc.) are read from the new file, and analysis results are cleared so the track is analyzed again. The old file is not deleted but moved to `_replaced/<date>/` in the library folder, keeping its folder structure (it is left in place if another track uses the same file). If anything fails, the existing track and the old file are left untouched.
+- **Re-importing an organized folder no longer creates duplicates**: importing a folder again after it was copied into the organized library used to add the same tracks twice because the paths differ. These are now detected as already imported and skipped by default. The "Import Files" menu also no longer imports paths that are already in the library.
+
 ## [v0.16.0] - 2026-11-02
 
 ### 日本語

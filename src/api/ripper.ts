@@ -3,8 +3,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   DiscToc,
   ReleaseCandidate,
+  RipDuplicateQuery,
   RipProgress,
   RipRequest,
+  RipTrackDuplicates,
 } from "../types";
 
 export async function detectDisc(device?: string): Promise<DiscToc> {
@@ -33,6 +35,13 @@ export async function lookupReleaseByToc(
   offsets: number[],
 ): Promise<ReleaseCandidate[]> {
   return invoke("lookup_release_by_toc", { trackCount, leadout, offsets });
+}
+
+/** 選んだリリースの各トラックについて、ライブラリにある同じ曲 (取り込み済み) を探す。 */
+export async function findRipDuplicates(
+  query: RipDuplicateQuery,
+): Promise<RipTrackDuplicates[]> {
+  return invoke("find_rip_duplicates", { query });
 }
 
 export async function ripCd(request: RipRequest): Promise<void> {

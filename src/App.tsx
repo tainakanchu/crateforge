@@ -10,6 +10,7 @@ import { RightRail } from "./components/RightRail";
 import { Toolbar } from "./components/Toolbar";
 import { TrackEditor } from "./components/TrackEditor";
 import { RipDialog } from "./components/ripper/RipDialog";
+import { ImportDuplicatesDialog } from "./components/ImportDuplicatesDialog";
 import { RulesPanel } from "./components/rules/RulesPanel";
 import { ConvertDialog } from "./components/ConvertDialog";
 import { SmartPlaylistEditor } from "./components/SmartPlaylistEditor";
@@ -981,11 +982,24 @@ export default function App() {
             current: prev?.total ?? p.writtenFiles.length,
             total: prev?.total ?? p.writtenFiles.length,
             label: prev?.label ?? "",
-            log: [...(prev?.log ?? []), `Done. ${p.writtenFiles.length} file(s), ${p.addedTracks} added.`],
+            log: [
+              ...(prev?.log ?? []),
+              ...(p.movedOldFiles ?? []).map((f) => `  置き換え前のファイルを移動: ${f}`),
+              ...(p.replaceErrors ?? []).map((e) => `  置き換え失敗: ${e}`),
+              `Done. ${p.writtenFiles.length} file(s), ${p.addedTracks} added` +
+                (p.replacedTracks > 0 ? `, ${p.replacedTracks} replaced.` : "."),
+            ],
             addedTracks: p.addedTracks,
           });
           triggerReload();
-          pushToast("success", `リッピング完了: ${p.addedTracks} 曲`);
+          pushToast(
+            "success",
+            `リッピング完了: ${p.addedTracks} 曲` +
+              (p.replacedTracks > 0 ? `（置き換え ${p.replacedTracks} 曲）` : ""),
+          );
+          if ((p.replaceErrors ?? []).length > 0) {
+            pushToast("error", `置き換えに失敗した曲があります（${p.replaceErrors.length} 曲）。ログを確認してください`, 6000);
+          }
         }
       });
     })();
@@ -1399,6 +1413,7 @@ export default function App() {
         onClose={() => { setRipOpen(false); setRipInitialDevice(null); }}
         onLibraryChanged={triggerReload}
       />
+      <ImportDuplicatesDialog />
       <RulesPanel open={rulesOpen} onClose={() => setRulesOpen(false)} onLibraryChanged={triggerReload} />
       {editorTracks && (
         <TrackEditor

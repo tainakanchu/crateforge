@@ -1,3 +1,5 @@
+import type { DuplicateHit, ItemAction } from "./ripper";
+
 export interface ImportResult {
   trackCount: number;
   playlistCount: number;
@@ -25,6 +27,44 @@ export interface ImportSummary {
   imported: number;
   skipped: number;
   failed: number;
+}
+
+/** `plan_import` の 1 ファイル分 (Rust: ImportPlanItem)。 */
+export interface ImportPlanItem {
+  path: string;
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+  durationMs: number | null;
+  /** 別ファイルとして取り込み済みの一致 (同じパスの曲は含まない)。 */
+  hits: DuplicateHit[];
+  /** このパスそのものが既にライブラリにある (黙ってスキップする)。 */
+  alreadyImportedSamePath: boolean;
+}
+
+export interface ImportActionItem {
+  path: string;
+  action: ItemAction;
+  replaceTrackId?: number | null;
+}
+
+export interface ImportActionResult {
+  path: string;
+  action: ItemAction;
+  ok: boolean;
+  error: string | null;
+  trackId: number | null;
+  newPath: string | null;
+  oldFileMovedTo: string | null;
+}
+
+/** `import_with_actions` の結果 (Rust: ImportActionsSummary)。 */
+export interface ImportActionsSummary {
+  imported: number;
+  skipped: number;
+  replaced: number;
+  failed: number;
+  results: ImportActionResult[];
 }
 
 /** 技術メタデータ一括再読み取り (#171) の結果 (Rust: TechMetaRefreshSummary)。 */
