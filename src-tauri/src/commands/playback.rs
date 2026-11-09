@@ -45,11 +45,12 @@ fn coordinator(app: &AppHandle) -> PlaybackCoordinator {
 /// - それ未満 → 誤操作とみなし無視
 /// - 再生開始時に preview だった曲 (`PlayReport.preview`) は一切反映しない
 ///   (フロントの「現在の preview フラグ」ではなくレポートに載った値で判断する)
+/// - ライブラリ外の一時再生曲 (`crate::transient`) は DB に行が無いので反映しない
 pub(crate) fn apply_report(db: &Database, report: Option<PlayReport>) {
     let Some(r) = report else {
         return;
     };
-    if r.preview {
+    if r.preview || crate::transient::is_transient_id(r.track_id) {
         return;
     }
     let played_threshold = if r.duration_ms > 0 {
@@ -621,6 +622,26 @@ mod tests {
             }),
         );
         assert_eq!(counts(&db, 1), (0, 0));
+    }
+
+    /// 一時再生曲 (負の ID) の実績は、閾値を超えていても DB に書かない。
+    /// (仮に同じ ID の行があっても触らないことで「書きに行っていない」ことを確かめる。)
+    #[test]
+    fn apply_report_skips_transient_tracks() {
+        let db = Database::open_memory().unwrap();
+        insert_track(&db, -1);
+        for played_ms in [120_000, 5_000] {
+            apply_report(
+                &db,
+                Some(PlayReport {
+                    track_id: -1,
+                    played_ms,
+                    duration_ms: 180_000,
+                    preview: false,
+                }),
+            );
+        }
+        assert_eq!(counts(&db, -1), (0, 0));
     }
 
     /// preview=false なら従来どおり再生 / スキップを計上する。

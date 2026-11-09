@@ -10,6 +10,16 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+### 日本語
+
+#### デスクトップ
+- **音声ファイルを「このアプリで開く」で再生できるように**: Windows（MSI / NSIS）・macOS・Linux（deb / rpm / AppImage）で MP3 / FLAC / WAV / AIFF / M4A / AAC / Ogg Vorbis のファイル関連付けを登録し、エクスプローラー / Finder / ファイルマネージャーの「プログラムから開く」で Crateforge を選べるようにした（既定のプレーヤーにも設定できる）。起動中にもう一度開いた場合は既存のウィンドウで再生する（多重起動しない）。複数のファイルをまとめて開くと、再生キューをそれらで置き換えて先頭から再生する。ライブラリにある曲は通常の曲として再生し、ライブラリに無いファイルは追加せずに一時再生する（再生回数・最近再生・解析・キューの復元の対象外で、キャストはできない）。一時再生中はプレイヤーバーの「ライブラリに追加」で、再生を止めずに取り込める。
+
+### English
+
+#### Desktop
+- **Play audio files with "Open with"**: Crateforge now registers file associations for MP3 / FLAC / WAV / AIFF / M4A / AAC / Ogg Vorbis on Windows (MSI / NSIS), macOS, and Linux (deb / rpm / AppImage), so it can be chosen from "Open with" in Explorer / Finder / your file manager (and set as the default player). Opening a file while Crateforge is running plays it in the existing window instead of starting a second instance. Opening several files at once replaces the playback queue with them and starts from the first. Files already in the library play as those library tracks; other files are played without being added (they are not counted in play counts, Recently Played, or analysis, are not restored in the queue, and can't be cast). While such a file is playing, "ライブラリに追加" (Add to library) in the player bar imports it without stopping playback.
+
 ## [v0.16.0] - 2026-11-02
 
 ### 日本語

@@ -42,6 +42,19 @@ Under **Settings → General → Output device** you can choose the audio output
   If it is not found, playback uses the **system default** and a toast tells you so (the choice is kept, so reconnecting the device and restarting brings it back).
 - If the chosen device is disconnected during playback, Crateforge switches to the system default automatically and notifies you.
 
+### Playing files directly ("Open with")
+
+Right-click an audio file in Explorer / Finder / your file manager and choose **Open with → Crateforge** to play it.
+You can also set Crateforge as the **default player** in your OS settings.
+
+- Supported formats: MP3 / FLAC / WAV / AIFF (.aiff / .aif) / M4A / AAC / Ogg Vorbis (.ogg).
+- If Crateforge isn't running it starts and plays the file; if it's already running, the existing window plays it (no second window opens).
+- Opening several files at once **replaces the playback queue** with them (in the order given) and starts from the first.
+- A file that is **already in your library** (same path) plays as that library track (play counts, Recently Played, and analysis work as usual).
+- A file that is **not in your library is played without adding it**. The player bar shows its title, artist, and artwork, but it isn't counted
+  in play / skip counts, Recently Played, or analysis, and it isn't restored in the queue on next launch. It also can't be cast (Google Cast).
+  Press **"ライブラリに追加" (Add to library)** in the player bar to import it without stopping playback (as with [importing](../import/), it is copied under the library root if one is set).
+
 ## Cast playback (Google Cast)
 
 Crateforge can send music to **Google Cast devices** on the same LAN (Chromecast, Google TV, and Cast-enabled speakers).

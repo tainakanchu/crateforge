@@ -684,6 +684,22 @@ impl AudioPlayer {
         current_removed
     }
 
+    /// キュー内と現在曲の track_id `from` を `to` に付け替える (順序・再生位置・sink はそのまま)。
+    /// 一時再生曲をライブラリに取り込んだとき、鳴らし続けたまま実 ID へ差し替えるのに使う。
+    /// 以降の停止時の `PlayReport` は新しい ID で返る。何か付け替えたら true。
+    pub fn replace_track_id(&mut self, from: i64, to: i64) -> bool {
+        let mut changed = false;
+        for tid in self.queue.iter_mut().filter(|t| **t == from) {
+            *tid = to;
+            changed = true;
+        }
+        if self.current_track_id == Some(from) {
+            self.current_track_id = Some(to);
+            changed = true;
+        }
+        changed
+    }
+
     /// `order` 上の `from` の要素を `to` へ移動する (Up Next の並び替え用)。
     /// 移動できたら true。`from`・`to` とも現在位置 (`order_pos`) より後ろの位置のみ許可し、
     /// それ以外 (現在位置以前・範囲外) は false を返す。
@@ -1297,6 +1313,19 @@ mod tests {
         // キューに積まずに単曲再生している状態 (current_track_id だけ立っている)。
         p.current_track_id = Some(77);
         assert!(p.remove_tracks(&HashSet::from([77])));
+    }
+
+    #[test]
+    fn replace_track_id_swaps_queue_and_current_and_report() {
+        let mut p = make_player(vec![-1, 20, -1], 0);
+        p.fake_loaded(-1, "/tmp/a.mp3", 180_000, 120_000);
+        assert!(p.replace_track_id(-1, 7));
+        assert_eq!(p.ordered_track_ids(), vec![7, 20, 7]);
+        assert_eq!(p.get_state().current_track_id, Some(7));
+        assert_order_is_permutation(&p);
+        // 停止時の実績は新しい (ライブラリの) ID で返る。
+        assert_eq!(p.stop().map(|r| r.track_id), Some(7));
+        assert!(!p.replace_track_id(-1, 8));
     }
 
     #[test]

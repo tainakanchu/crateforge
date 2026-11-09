@@ -1,6 +1,7 @@
 export * as library from "./library";
 export * as playlists from "./playlists";
 export * as playback from "./playback";
+export * as openWith from "./openWith";
 export * as cast from "./cast";
 export * as ripper from "./ripper";
 export * as rules from "./rules";

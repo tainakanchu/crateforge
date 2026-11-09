@@ -33,11 +33,13 @@ import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
 import * as playbackApi from "./api/playback";
 import * as castApi from "./api/cast";
+import * as openWithApi from "./api/openWith";
 import * as systemApi from "./api/system";
 import * as analysisApi from "./api/analysis";
 import * as ripperApi from "./api/ripper";
 import * as fontsApi from "./api/fonts";
 import * as audition from "./lib/audition";
+import { playOpenedFiles } from "./lib/openWith";
 import {
   INBOX_FETCH_LIMIT,
   loadTriagePersist,
@@ -452,6 +454,8 @@ export default function App() {
   // 同期が終わるまでポーリング側の逆同期は保留する (mountSyncedRef)。
   useEffect(() => {
     if (!isTauri) return;
+    let cancelled = false;
+    let unlistenOpen: (() => void) | undefined;
     (async () => {
       let restored = false;
       try {
@@ -480,7 +484,31 @@ export default function App() {
         ]);
       }
       mountSyncedRef.current = true;
+
+      // OS の「このアプリで開く」で渡されたファイルを再生する。上の同期の後に始める
+      // (先に再生すると shuffle の押し込みで開いた曲の再生順が組み直されるため)。
+      // 先にイベントを購読してから、起動時 / 準備前に届いていた分を取り出す。
+      // バックエンドはどちらか一方の経路でしか渡さないので、取りこぼしも二重再生も起きない。
+      if (cancelled) return;
+      const unlisten = await openWithApi.onOpenFiles((paths) => {
+        void playOpenedFiles(paths);
+      });
+      if (cancelled) {
+        unlisten();
+        return;
+      }
+      unlistenOpen = unlisten;
+      try {
+        const pending = await openWithApi.takePendingOpenFiles();
+        if (pending.length > 0) await playOpenedFiles(pending);
+      } catch {
+        // ignore
+      }
     })();
+    return () => {
+      cancelled = true;
+      unlistenOpen?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -505,13 +533,35 @@ export default function App() {
 
   // Sync now-playing to SMTC + listen to media key events from the OS.
   // 曲メタデータの検索はポーリング毎ではなく tracks / 再生中の曲が変わったときだけ行う。
-  const smtcTrack = useMemo(
+  const listedSmtcTrack = useMemo(
     () =>
       playback.currentTrackId
         ? tracks.find((t) => t.trackId === playback.currentTrackId) ?? null
         : null,
     [playback.currentTrackId, tracks],
   );
+  // 表示中の一覧に無い曲 (別ビューの曲 / 「このアプリで開く」の一時再生曲) は ID で取り直す。
+  const [fetchedSmtcTrack, setFetchedSmtcTrack] = useState<Track | null>(null);
+  useEffect(() => {
+    const id = playback.currentTrackId;
+    if (!isTauri || id == null || listedSmtcTrack) return;
+    if (fetchedSmtcTrack?.trackId === id) return;
+    let alive = true;
+    libraryApi
+      .getTracksByIds([id])
+      .then((r) => {
+        if (alive) setFetchedSmtcTrack(r[0] ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [playback.currentTrackId, listedSmtcTrack, fetchedSmtcTrack]);
+  const smtcTrack =
+    listedSmtcTrack ??
+    (fetchedSmtcTrack && fetchedSmtcTrack.trackId === playback.currentTrackId
+      ? fetchedSmtcTrack
+      : null);
   const smtcTitle = smtcTrack?.name ?? "";
   const smtcArtist = smtcTrack?.artist ?? "";
   const smtcAlbum = smtcTrack?.album ?? "";

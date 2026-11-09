@@ -148,6 +148,11 @@ pub fn add_tracks_to_playlist(
 ) -> Result<usize, String> {
     let db = open_db(&app)?;
     ensure_tracks_editable(&db, playlist_id)?;
+    // ライブラリ外の一時再生曲 (負の ID) は DB に行が無いので、プレイリストには入れない。
+    let track_ids: Vec<i64> = track_ids
+        .into_iter()
+        .filter(|&id| !crate::transient::is_transient_id(id))
+        .collect();
     db.add_tracks_to_playlist(playlist_id, &track_ids)
         .map_err(|e| e.to_string())
 }
