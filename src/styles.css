@@ -4390,6 +4390,55 @@ input {
   color: var(--tx2);
   font-size: 11px;
 }
+/* 取り込み済み検出 (RipDialog / ImportDuplicatesDialog) */
+.dup-badge {
+  flex: none;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  background: var(--ac-16);
+  color: var(--ac-hi);
+  cursor: help;
+}
+.dup-badge.dup-missing {
+  background: rgba(224, 163, 60, 0.16);
+  color: var(--warn);
+}
+.dup-badge.dup-broken {
+  background: rgba(224, 87, 60, 0.16);
+  color: #f0b3a6;
+}
+.dup-hint {
+  opacity: 0.8;
+}
+.dup-action {
+  flex: none;
+  font-size: 11px;
+  background: var(--bg3);
+  color: var(--tx);
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.dup-bulk {
+  display: flex;
+  gap: 12px;
+}
+.dup-checking {
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  color: var(--tx2);
+}
+.dup-dialog {
+  width: 640px;
+  max-width: calc(100vw - 32px);
+}
+.dup-list {
+  max-height: 320px;
+}
 .rip-actions {
   display: flex;
   justify-content: flex-end;

@@ -4,6 +4,7 @@ pub mod artwork;
 pub mod backup;
 pub mod cast;
 pub mod convert;
+pub mod duplicates;
 pub mod ffmpeg;
 pub mod fonts;
 pub mod library;

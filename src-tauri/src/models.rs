@@ -417,6 +417,10 @@ pub struct RipRequest {
     pub release: Option<ReleaseCandidate>,
     /// 取り込み完了後にライブラリに追加するか。
     pub add_to_library: bool,
+    /// トラックごとの扱い (取り込み済み検出の結果)。指定の無いトラックは取り込む。
+    /// skip はリップ自体をしない。replace は既存曲を新しいファイルへ置き換える。
+    #[serde(default)]
+    pub track_actions: Vec<RipTrackAction>,
 }
 
 /// リッピング中のトラックの工程 (UI の「読み取り中 / エンコード中」表示用)。
@@ -456,6 +460,12 @@ pub enum RipProgress {
     Done {
         written_files: Vec<String>,
         added_tracks: usize,
+        /// 既存曲を置き換えた数。
+        replaced_tracks: usize,
+        /// 置き換え時に退避した旧ファイルの場所。
+        moved_old_files: Vec<String>,
+        /// 置き換えに失敗したトラックの説明 (既存曲・旧ファイルはそのまま)。
+        replace_errors: Vec<String>,
     },
     Error {
         message: String,
@@ -477,6 +487,108 @@ pub struct ImportSummary {
     pub imported: usize,
     pub skipped: usize,
     pub failed: usize,
+}
+
+/// 取り込み済み検出で一致した既存曲 (リップ / ファイル取り込み共通)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateHit {
+    pub track_id: i64,
+    pub name: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub total_time_ms: Option<i64>,
+    pub location_path: Option<String>,
+    pub health: crate::library_match::health::FileHealth,
+    pub kind: crate::library_match::MatchKind,
+}
+
+/// CD の 1 トラック分の照合結果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipTrackDuplicates {
+    pub position: usize,
+    pub hits: Vec<DuplicateHit>,
+}
+
+/// `find_rip_duplicates` の入力 (選んだリリースのアルバム情報 + トラック)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipDuplicateQuery {
+    pub album: Option<String>,
+    pub album_artist: Option<String>,
+    pub tracks: Vec<ReleaseTrack>,
+}
+
+/// 取り込み / リップ時の 1 曲ごとの扱い。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ItemAction {
+    #[default]
+    Import,
+    Skip,
+    Replace,
+}
+
+/// `plan_import` の 1 ファイル分 (タグと照合結果)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPlanItem {
+    pub path: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub duration_ms: Option<i64>,
+    /// 同じパスの曲を除いた一致 (別ファイルとして取り込み済みの曲)。
+    pub hits: Vec<DuplicateHit>,
+    /// このパスそのものが既にライブラリにある (従来どおり黙ってスキップする対象)。
+    pub already_imported_same_path: bool,
+}
+
+/// `import_with_actions` の 1 ファイル分の指示。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportActionItem {
+    pub path: String,
+    pub action: ItemAction,
+    #[serde(default)]
+    pub replace_track_id: Option<i64>,
+}
+
+/// `import_with_actions` の 1 ファイル分の結果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportActionResult {
+    pub path: String,
+    pub action: ItemAction,
+    pub ok: bool,
+    pub error: Option<String>,
+    pub track_id: Option<i64>,
+    /// 置き換えで新しく参照するようになったファイル。
+    pub new_path: Option<String>,
+    /// 置き換えで旧ファイルを退避した先 (退避した場合のみ)。
+    pub old_file_moved_to: Option<String>,
+}
+
+/// `import_with_actions` の結果。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportActionsSummary {
+    pub imported: usize,
+    pub skipped: usize,
+    pub replaced: usize,
+    pub failed: usize,
+    pub results: Vec<ImportActionResult>,
+}
+
+/// リップ時のトラックごとの扱い ([`RipRequest::track_actions`])。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipTrackAction {
+    pub position: usize,
+    pub action: ItemAction,
+    #[serde(default)]
+    pub replace_track_id: Option<i64>,
 }
 
 /// 技術メタデータ一括再読み取り (#171) の結果。

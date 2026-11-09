@@ -8,6 +8,7 @@ import { SmartRestoreDialog } from "./SmartRestoreDialog";
 import type { LibraryStats, SortField, ViewMode } from "../types";
 import { ALBUM_SORT_FIELDS, ARTIST_SORT_FIELDS } from "../types";
 import { AUDIO_EXTENSIONS } from "../lib/audioExtensions";
+import { importWithDuplicateCheck, summarizeImport } from "../lib/importFlow";
 
 interface ToolbarProps {
   onLibraryChanged: () => void;
@@ -345,6 +346,40 @@ export function Toolbar({
     }
   }, [onLibraryChanged, refreshStats]);
 
+  // ファイル / フォルダ取り込みの共通処理: 取り込み済み検出 → (衝突があれば確認) → 取り込み。
+  const runImportWithDuplicateCheck = useCallback(
+    async (paths: string[]) => {
+      const r = await importWithDuplicateCheck(paths, { onStatus: setStatus });
+      if (!r) {
+        setStatus("取り込みをキャンセルしました");
+        return;
+      }
+      const total = r.imported + r.skipped + r.replaced + r.failed;
+      if (total === 0) {
+        setStatus("対応ファイルなし");
+        useStore.getState().pushToast("info", "対応フォーマットのファイルが見つかりませんでした");
+        return;
+      }
+      const summary = summarizeImport(r);
+      setStatus(summary);
+      const changed = r.imported + r.replaced > 0;
+      useStore
+        .getState()
+        .pushToast(
+          r.failed > 0 ? "error" : changed ? "success" : "info",
+          r.imported > 0
+            ? `${summary} — Inbox に追加されました。サイドバーの Inbox から整理できます`
+            : summary,
+          changed ? 5200 : 3200,
+        );
+      if (changed) {
+        onLibraryChanged();
+        refreshStats();
+      }
+    },
+    [onLibraryChanged, refreshStats, setStatus],
+  );
+
   const handleImportFiles = useCallback(async () => {
     const selected = await open({
       multiple: true,
@@ -360,29 +395,16 @@ export function Toolbar({
     const paths = Array.isArray(selected) ? selected : [selected];
     if (paths.length === 0) return;
     setImportingFiles(true);
-    setStatus(`Importing ${paths.length} file(s)…`);
+    setStatus(`${paths.length} ファイルを照合中…`);
     try {
-      const r = await libraryApi.importFiles(paths as string[]);
-      setStatus(
-        `Imported ${r.addedTracks} file(s)` + (r.skipped > 0 ? `, skipped ${r.skipped}` : ""),
-      );
-      if (r.addedTracks > 0) {
-        useStore
-          .getState()
-          .pushToast(
-            "success",
-            `${r.addedTracks} 曲を取り込みました — Inbox に追加されました。サイドバーの Inbox から整理できます`,
-            5200,
-          );
-      }
-      onLibraryChanged();
-      refreshStats();
+      await runImportWithDuplicateCheck(paths as string[]);
     } catch (err) {
       setStatus(`Import files error: ${err}`);
+      useStore.getState().pushToast("error", `取り込みエラー: ${err}`);
     } finally {
       setImportingFiles(false);
     }
-  }, [onLibraryChanged, refreshStats]);
+  }, [runImportWithDuplicateCheck]);
 
   // フォルダを選んで再帰的に取り込む (対応拡張子だけを Rust 側が拾う)。
   const handleImportFolders = useCallback(async () => {
@@ -392,46 +414,15 @@ export function Toolbar({
     if (paths.length === 0) return;
     setImportingFolders(true);
     setStatus(`${paths.length} フォルダを走査中…`);
-    // 走査後は 1 ファイルごとに進捗が飛んでくるのでサブバーに出す。
-    const unlisten = await libraryApi.onImportProgress(({ done, total }) => {
-      setStatus(total > 0 ? `取り込み中 ${done}/${total}` : "対応ファイルなし");
-    });
     try {
-      const r = await libraryApi.importFolders(paths);
-      const detail =
-        (r.skipped > 0 ? `, skipped ${r.skipped}` : "") +
-        (r.failed > 0 ? `, failed ${r.failed}` : "");
-      setStatus(`Imported ${r.imported} file(s)${detail}`);
-      if (r.imported > 0) {
-        useStore
-          .getState()
-          .pushToast(
-            "success",
-            `${r.imported} 曲を取り込みました` +
-              (r.skipped > 0 ? `（${r.skipped} 件は取り込み済み）` : "") +
-              " — Inbox に追加されました。サイドバーの Inbox から整理できます",
-            5200,
-          );
-      } else {
-        useStore
-          .getState()
-          .pushToast(
-            "info",
-            r.skipped > 0
-              ? `新しい曲はありませんでした（${r.skipped} 件は取り込み済み）`
-              : "対応フォーマットのファイルが見つかりませんでした",
-          );
-      }
-      onLibraryChanged();
-      refreshStats();
+      await runImportWithDuplicateCheck(paths);
     } catch (err) {
       setStatus(`Import folder error: ${err}`);
       useStore.getState().pushToast("error", `フォルダ取り込みエラー: ${err}`);
     } finally {
-      unlisten();
       setImportingFolders(false);
     }
-  }, [onLibraryChanged, refreshStats]);
+  }, [runImportWithDuplicateCheck]);
 
   const handleExport = useCallback(async () => {
     const path = await save({

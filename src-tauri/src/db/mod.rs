@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod backup;
+pub mod duplicates;
 pub mod playback;
 pub mod playlists;
 pub mod schema;
