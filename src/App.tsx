@@ -1549,7 +1549,16 @@ export default function App() {
       {detectedDisc && (
         <DiscDetectedDialog
           disc={detectedDisc}
-          onRip={() => { setRipInitialDevice(detectedDisc.device); dismissDisc(); setRipOpen(true); }}
+          onRip={() => {
+            // 前回の取り込み結果 (完了/エラーのログ) を閉じずに CD を入れ替えると、RipDialog が
+            // ripStatus を見て前回の結果ビューを出してしまう。新しいディスクなので片付けておく
+            // (リッピング中はそもそも検出が止まっているので、ここに来るのは done / error のみ)。
+            const st = useStore.getState();
+            if (st.ripStatus && st.ripStatus.phase !== "ripping") st.clearRipStatus();
+            setRipInitialDevice(detectedDisc.device);
+            dismissDisc();
+            setRipOpen(true);
+          }}
           onDismiss={dismissDisc}
         />
       )}
