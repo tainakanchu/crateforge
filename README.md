@@ -87,6 +87,8 @@ pnpm tauri build
 - macOS: 不要 (Xcode CLT + `brew install libdiscid cdparanoia flac lame ffmpeg`)
 - Windows: WebView2 + cdparanoia/flac/lame/ffmpeg を別途 PATH に
 
+上記はローカル開発用。配布ビルド (GitHub Release の macOS .app / Linux AppImage) では、libdiscid (LGPL-2.1-or-later) を `third_party/libdiscid/libdiscid.env` で固定した版・SHA-256 のソースから `scripts/build-libdiscid.sh` でビルドして同梱し、対応するソース tarball を各 Release に添付する。libdiscid を更新するときは同ディレクトリの `COPYING` / `AUTHORS` も差し替え、`node scripts/gen-licenses.mjs` を再実行すること。
+
 ## 使い方
 
 ### ライブラリ操作
