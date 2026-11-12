@@ -1420,9 +1420,13 @@ mod tests {
         );
         // sync ロールのトークン → タグ値。
         assert_eq!(first_bpm(&app, uri, ua, Some("sync-token")).await, Value::Null);
-        // UA 無し (旧版の同期クライアント = reqwest 既定) → タグ値。
-        assert_eq!(first_bpm(&app, uri, None, Some("remote-token")).await, Value::Null);
-        assert_eq!(first_bpm(&app, uri, None, None).await, Value::Null);
+        // User-Agent の有無では判定しない (UA 無しでも明示しなければ実効 BPM)。
+        assert_eq!(first_bpm(&app, uri, None, Some("remote-token")).await, json!(128));
+        assert_eq!(first_bpm(&app, uri, None, None).await, json!(128));
+        assert_eq!(
+            first_bpm(&app, &format!("{uri}?effectiveBpm=false"), None, None).await,
+            Value::Null
+        );
 
         // DB のタグ値は変わらない。
         let db = crate::db::Database::open(dir.path()).unwrap();
@@ -1433,6 +1437,191 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body[0]["track"]["trackId"], 2);
         assert_eq!(body[0]["track"]["bpm"], 128);
+    }
+
+    // ===== 実効 BPM: 曲を返す全 API が同じ規則 (既定は実効、effectiveBpm=false でタグ値) =====
+    #[tokio::test]
+    async fn case_all_track_endpoints_share_effective_bpm_rule() {
+        use axum::extract::ConnectInfo;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        // track 1 / 2: タグ BPM 無し・解析 BPM 128。
+        let tokens = crate::devices::ValidTokens::default();
+        tokens.insert_with_role("sync-token".into(), crate::devices::DeviceRole::Sync);
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens,
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
+        });
+
+        // UA も付けない素の要求 (User-Agent では判定しないことの確認を兼ねる)。
+        async fn call(
+            app: &Router,
+            method: &str,
+            uri: &str,
+            body: Option<Value>,
+            lan_token: Option<&str>,
+        ) -> Value {
+            let mut b = Request::builder().method(method).uri(uri);
+            if let Some(t) = lan_token {
+                b = b.header("X-API-Token", t);
+            }
+            let mut request = match body {
+                Some(v) => b
+                    .header("content-type", "application/json")
+                    .body(Body::from(v.to_string()))
+                    .unwrap(),
+                None => b.body(Body::empty()).unwrap(),
+            };
+            if lan_token.is_some() {
+                request
+                    .extensions_mut()
+                    .insert(ConnectInfo(SocketAddr::from(([192, 168, 1, 50], 54321))));
+            }
+            let resp = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{method} {uri}");
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+        fn bpm_of(v: &Value, track_id: i64) -> Value {
+            let arr = v.as_array().expect("array");
+            arr.iter()
+                .find(|t| t["trackId"] == track_id)
+                .map(|t| t["bpm"].clone())
+                .expect("track present")
+        }
+
+        for (suffix, want) in [("", json!(128)), ("effectiveBpm=false", Value::Null)] {
+            let q = |path: &str| {
+                if suffix.is_empty() {
+                    path.to_string()
+                } else if path.contains('?') {
+                    format!("{path}&{suffix}")
+                } else {
+                    format!("{path}?{suffix}")
+                }
+            };
+            // 一覧 (全件経路 / q 指定で DB に委譲する経路)。
+            let v = call(&app, "GET", &q("/api/tracks"), None, None).await;
+            assert_eq!(bpm_of(&v, 1), want, "list");
+            let v = call(&app, "GET", &q("/api/tracks?q=Sunrise"), None, None).await;
+            assert_eq!(bpm_of(&v, 1), want, "search");
+            // アルバム詳細 (albumExact) も一覧と同じ経路。
+            let v = call(&app, "GET", &q("/api/tracks?album=Dawn&albumExact=true"), None, None).await;
+            assert_eq!(bpm_of(&v, 1), want, "album detail");
+            // 1 曲。
+            let v = call(&app, "GET", &q("/api/tracks/1"), None, None).await;
+            assert_eq!(v["bpm"], want, "get");
+            // by-ids / lookup (POST)。
+            let v = call(&app, "POST", &q("/api/tracks/by-ids"), Some(json!({"trackIds": [1]})), None).await;
+            assert_eq!(bpm_of(&v, 1), want, "by-ids");
+            let v = call(
+                &app,
+                "POST",
+                &q("/api/tracks/lookup"),
+                Some(json!({"persistentIds": ["0000000000000001"]})),
+                None,
+            )
+            .await;
+            assert_eq!(bpm_of(&v, 1), want, "lookup");
+            // プレイリスト曲。
+            let v = call(&app, "GET", &q("/api/playlists/100/tracks"), None, None).await;
+            assert_eq!(bpm_of(&v, 1), want, "playlist tracks");
+            // similar (基準 2 → 1 がヒット)。
+            let v = call(&app, "GET", &q("/api/tracks/2/similar"), None, None).await;
+            assert_eq!(v[0]["track"]["trackId"], 1);
+            assert_eq!(v[0]["track"]["bpm"], want, "similar");
+            // PATCH の応答。
+            let v = call(&app, "PATCH", &q("/api/tracks/1"), Some(json!({"comments": "x"})), None).await;
+            assert_eq!(v["track"]["bpm"], want, "patch response");
+        }
+
+        // sync ロールのトークンは明示しなくてもタグ値。
+        let v = call(&app, "GET", "/api/tracks/1", None, Some("sync-token")).await;
+        assert_eq!(v["bpm"], Value::Null);
+        let v = call(
+            &app,
+            "POST",
+            "/api/tracks/lookup",
+            Some(json!({"persistentIds": ["0000000000000001"]})),
+            Some("sync-token"),
+        )
+        .await;
+        assert_eq!(bpm_of(&v, 1), Value::Null);
+
+        // DB のタグ値は変わらない。
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        assert_eq!(db.get_track_by_track_id(1).unwrap().unwrap().bpm, None);
+    }
+
+    // ===== 不明なアーティスト / アルバム: 空文字で返し、空の値で詳細を引ける =====
+    #[tokio::test]
+    async fn case_unknown_artist_and_album_are_empty_strings() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        // タグの無い曲 (artist / album_artist / album が NULL・空)。
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks (track_id, persistent_id, name, artist, album_artist, album, file_exists)
+                 VALUES (90, '000000000000005A', 'Untagged 1', NULL, NULL, NULL, 1),
+                        (91, '000000000000005B', 'Untagged 2', '', '', '  ', 1);",
+            )
+            .unwrap();
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens: crate::devices::ValidTokens::default(),
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
+        });
+
+        // /api/artists: 不明は artist: "" の 1 件で末尾 ("Unknown Artist" などの文字列は埋めない)。
+        let (status, body) = req(app.clone(), "GET", "/api/artists", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().unwrap();
+        let last = arr.last().unwrap();
+        assert_eq!(last["artist"], "");
+        assert_eq!(last["trackCount"], 2);
+        assert!(!arr.iter().any(|a| a["artist"] == "Unknown Artist"));
+        // ?artist= (空) で同じ曲が引ける。
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?artist=", None).await;
+        let mut ids: Vec<i64> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["trackId"].as_i64().unwrap())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![90, 91]);
+
+        // /api/albums: 不明は album: "" の 1 件で末尾。
+        let (status, body) = req(app.clone(), "GET", "/api/albums", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().unwrap();
+        let last = arr.last().unwrap();
+        assert_eq!(last["album"], "");
+        assert_eq!(last["trackCount"], 2);
+        // ?album=&albumExact=true (空) で album が NULL / 空白のみの曲が引ける。
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?album=&albumExact=true", None).await;
+        let mut ids: Vec<i64> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["trackId"].as_i64().unwrap())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![90, 91]);
+        // 応答の曲は artist / album を空のまま返す (フォルダ名などで埋めない)。
+        let (_, t) = req(app, "GET", "/api/tracks/90", None).await;
+        assert_eq!(t["artist"], Value::Null);
+        assert_eq!(t["album"], Value::Null);
     }
 
     // ===== 追加: analyzed フィルタ =====

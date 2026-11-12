@@ -1153,7 +1153,10 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
             virtualRow.index === tracks.length - 1;
           return (
             <div
-              key={t.id}
+              // 同じ曲を複数回含むプレイリストでは t.id が重複する。重複 key は React の
+              // 差分照合を壊し、別ビューへ移った後も古い行 DOM が残って重なる (ゴースト行)。
+              // 位置込みの key で一意にする (選択・並べ替えは trackId / index ベースなので影響なし)。
+              key={`${t.id}-${virtualRow.index}`}
               data-track-id={t.trackId}
               className={
                 "cb-row" +

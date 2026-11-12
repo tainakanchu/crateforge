@@ -335,7 +335,8 @@ pub fn import_file(db: &Database, path: &Path) -> Result<i64, String> {
 }
 
 /// ファイルのタグ / 長さ / 技術メタデータを読み、取り込みと同じフォールバック
-/// (曲名 ← ファイル名、アルバム ← 親フォルダ、アーティスト ← 祖父フォルダ) を適用した結果。
+/// (曲名 ← ファイル名) を適用した結果。アーティスト / アルバムはフォルダ名から推測せず、
+/// タグに無ければ空 (None) のままにする (表示側で「不明なアーティスト」等と出す)。
 /// ライブラリへの取り込みと、ライブラリ外ファイルの一時再生 (`crate::transient`) で共用する。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FileTags {
@@ -353,6 +354,11 @@ pub(crate) struct FileTags {
     pub bpm: Option<i64>,
     pub grouping: Option<String>,
     pub tech: tech::TechMeta,
+}
+
+/// タグの文字列を、前後空白だけ / 空なら None に倒す (空タグを「値あり」と扱わない)。
+fn nonempty_tag(v: Option<String>) -> Option<String> {
+    v.filter(|s| !s.trim().is_empty())
 }
 
 /// 音声ファイルのタグを読む (DB には触れない)。
@@ -382,13 +388,13 @@ pub(crate) fn read_file_tags(path: &Path) -> Result<FileTags, String> {
         Option<i64>,
     ) = match tag {
         Some(t) => (
-            t.title().map(|s| s.to_string()),
-            t.artist().map(|s| s.to_string()),
+            nonempty_tag(t.title().map(|s| s.to_string())),
+            nonempty_tag(t.artist().map(|s| s.to_string())),
             // lofty doesn't expose album_artist uniformly; we let it default to None
             // and fall back to artist in the DB call below.
             None,
-            t.album().map(|s| s.to_string()),
-            t.genre().map(|s| s.to_string()),
+            nonempty_tag(t.album().map(|s| s.to_string())),
+            nonempty_tag(t.genre().map(|s| s.to_string())),
             t.year().map(|y| y as i64),
             t.track().map(|n| n as i64),
             t.track_total().map(|n| n as i64),
@@ -408,19 +414,9 @@ pub(crate) fn read_file_tags(path: &Path) -> Result<FileTags, String> {
     // Fall back to filename if no title tag.
     let fallback_title = path.file_stem().and_then(|s| s.to_str()).map(String::from);
     let title = title.or(fallback_title);
-
-    // Fall back: parent dir = album, grandparent = artist (Music/Artist/Album/Track.mp3).
-    let parent = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str());
-    let grandparent = path
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str());
-    let album = album.or_else(|| parent.map(String::from));
-    let artist = artist.or_else(|| grandparent.map(String::from));
+    // アーティスト / アルバムはフォルダ名から推測しない (以前は親 = アルバム、祖父 =
+    // アーティストとしていたが、"Downloads" などが実在のアーティスト名のように並び、
+    // 無関係な曲が同じアルバムに束ねられていた)。タグに無ければ空のまま。
 
     Ok(FileTags {
         title,
@@ -648,8 +644,9 @@ pub struct SourceTags {
     pub duration_ms: Option<i64>,
 }
 
-/// 取り込み前の照合用にタグと長さを読む。曲名が無ければファイル名、アルバム /
-/// アーティストが無ければ親 / 祖父ディレクトリ名を使う (`read_and_insert` と同じ)。
+/// 取り込み前の照合用にタグと長さを読む。曲名が無ければファイル名を使う
+/// (`read_and_insert` と同じ)。アルバム / アーティストはフォルダ名から推測せず、
+/// タグに無ければ None (照合側で「不明」として扱う)。
 pub fn read_source_tags(path: &Path) -> Result<SourceTags, String> {
     let tagged = Probe::open(path)
         .map_err(|e| format!("open failed: {}", e))?
@@ -665,17 +662,11 @@ pub fn read_source_tags(path: &Path) -> Result<SourceTags, String> {
     let album_artist = nonempty(tag.and_then(|t| t.get_string(&ItemKey::AlbumArtist).map(str::to_string)));
     let track_number = tag.and_then(|t| t.track()).map(|n| n as i64);
 
-    let parent = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str());
-    let grandparent = path
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str());
     Ok(SourceTags {
         title: title.or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from)),
-        artist: artist.or_else(|| grandparent.map(String::from)),
+        artist,
         album_artist,
-        album: album.or_else(|| parent.map(String::from)),
+        album,
         track_number,
         duration_ms,
     })
@@ -706,11 +697,13 @@ pub fn plan_import(
         // 「同じパス」とみなす (D11 / E1)。表記が違うときは登録済みのパスを添える。
         let mut registered = existing.registered_same_file(file);
         let tags = read_source_tags(file).unwrap_or_default();
-        let hits = match (&tags.title, &tags.artist) {
-            (Some(title), Some(artist)) => {
+        // アーティストが無い (タグ無し) ファイルも照合する。照合側は空のアーティスト同士を
+        // 一致とみなさず、曲名 + 長さが合うときだけ Weak (要確認) で返す。
+        let hits = match &tags.title {
+            Some(title) => {
                 let q = MatchQuery {
                     title,
-                    artist,
+                    artist: tags.artist.as_deref().unwrap_or(""),
                     album_artist: tags.album_artist.as_deref(),
                     album: tags.album.as_deref(),
                     track_number: tags.track_number,
@@ -1278,6 +1271,71 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    /// タグの無いファイル: アーティスト / アルバムはフォルダ名から推測せず空のまま、
+    /// 曲名はファイル名 (拡張子なし) になる。
+    #[test]
+    fn untagged_file_keeps_artist_album_empty_and_titles_from_filename() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("Downloads/Some Folder/01 My Song.wav");
+        crate::library_match::replace::tests::write_wav(&f, 12);
+        let db = Database::open_memory().unwrap();
+
+        // 照合用のタグ読み取りもフォルダ名を使わない。
+        let src = read_source_tags(&f).unwrap();
+        assert_eq!(src.title.as_deref(), Some("01 My Song"));
+        assert_eq!(src.artist, None);
+        assert_eq!(src.album, None);
+        assert_eq!(src.album_artist, None);
+
+        assert_eq!(import_folders(&db, &[tmp.path().to_path_buf()], |_, _| {}).imported, 1);
+        let tracks = db.get_tracks(10, 0, None, None).unwrap();
+        assert_eq!(tracks.len(), 1);
+        let t = &tracks[0];
+        assert_eq!(t.name.as_deref(), Some("01 My Song"));
+        assert_eq!(t.artist, None, "artist must not come from the folder name");
+        assert_eq!(t.album, None, "album must not come from the folder name");
+        assert_eq!(t.album_artist, None);
+    }
+
+    /// タグの無いファイル同士の取り込み済み検出: 空のアーティスト / アルバムで無関係な曲を
+    /// 重複扱いしない。曲名 (ファイル名) + 長さが合うときだけ Weak (既定は取り込む)。
+    #[test]
+    fn plan_import_untagged_files_match_only_on_title_and_length() {
+        let tmp = TempDir::new().unwrap();
+        let first = tmp.path().join("a/Track 01.wav");
+        crate::library_match::replace::tests::write_wav(&first, 12);
+        let db = Database::open_memory().unwrap();
+        assert_eq!(import_folders(&db, &[first.clone()], |_, _| {}).imported, 1);
+
+        // 別フォルダの同名・同じ長さ (コピー) / 同名・長さ違い / 別名・同じ長さ。
+        let copy = tmp.path().join("b/Track 01.wav");
+        crate::library_match::replace::tests::write_wav(&copy, 12);
+        let longer = tmp.path().join("c/Track 01.wav");
+        crate::library_match::replace::tests::write_wav(&longer, 40);
+        let other = tmp.path().join("d/Track 02.wav");
+        crate::library_match::replace::tests::write_wav(&other, 12);
+
+        let roots = [
+            tmp.path().join("b"),
+            tmp.path().join("c"),
+            tmp.path().join("d"),
+        ];
+        let plan = plan_import(&db, &roots, |_, _| {}).unwrap();
+        assert_eq!(plan.len(), 3);
+        let item = |dir: &str| {
+            plan.iter()
+                .find(|p| Path::new(&p.path).parent().unwrap().ends_with(dir))
+                .unwrap()
+        };
+        let c = item("b");
+        assert_eq!(c.artist, None);
+        assert_eq!(c.album, None);
+        assert_eq!(c.hits.len(), 1, "{:?}", c.hits);
+        assert_eq!(c.hits[0].kind, crate::library_match::MatchKind::Weak);
+        assert!(item("c").hits.is_empty(), "{:?}", item("c").hits);
+        assert!(item("d").hits.is_empty(), "{:?}", item("d").hits);
     }
 
     /// 整理 ON でコピー取り込みしたフォルダを再度取り込もうとすると、

@@ -12,7 +12,14 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { View, Text, StyleSheet } from "react-native";
 
-import { type Album, type Track, useConnection, usePlayer } from "@crateforge/core";
+import {
+  type Album,
+  type Track,
+  albumLabel,
+  filterAlbumTracks,
+  useConnection,
+  usePlayer,
+} from "@crateforge/core";
 import { AlbumRow } from "@/components/library/AlbumRow";
 import { TrackRow } from "@/components/library/TrackRow";
 import { LibraryList } from "@/components/library/LibraryList";
@@ -28,6 +35,8 @@ const BROWSE_LIMIT = 100000;
  * /api/albums は year を返さないため年順は省略（安定ソートで十分）。
  */
 function compareAlbums(a: Album, b: Album): number {
+  // 不明なアルバム（album: ""）は常に末尾。
+  if (!a.album.trim() !== !b.album.trim()) return a.album.trim() ? -1 : 1;
   const byArtist = (a.albumArtist ?? a.album).localeCompare(b.albumArtist ?? b.album, undefined, {
     sensitivity: "base",
   });
@@ -58,20 +67,22 @@ export default function AlbumsScreen() {
   });
   const albums = albumsQuery.data ?? [];
 
-  // 選択アルバムの曲（disc→track 昇順）。album 名が空のときは取得しない。
-  const albumName = selected?.album || null;
+  // 選択アルバムの曲（disc→track 昇順）。album 名は完全一致（mobile の useAlbumTracks と同じ）:
+  // `?album=` は部分一致なので albumExact=true を付け、古いホスト向けにクライアントでも絞る。
+  // 不明なアルバム（album: ""）も albumExact で album が空の曲を引ける。
+  const albumName = selected ? selected.album : null;
   const tracksQuery = useQuery<Track[], Error, Track[]>({
     queryKey: ["album-tracks", albumName],
-    enabled: !!client && !!albumName,
-    queryFn: ({ signal }) => client!.listTracks({ album: albumName!, limit: BROWSE_LIMIT }, signal),
+    enabled: !!client && albumName != null,
+    queryFn: ({ signal }) =>
+      client!.listTracks({ album: albumName!, albumExact: true, limit: BROWSE_LIMIT }, signal),
     placeholderData: keepPreviousData,
-    select: (tracks) => [...tracks].sort(byDiscTrack),
+    select: (tracks) => filterAlbumTracks(tracks, albumName ?? "").sort(byDiscTrack),
   });
   const albumTracks = tracksQuery.data ?? [];
 
-  // アルバム選択: 空アルバム名は詳細に入れない（mobile と同じガード）。
+  // アルバム選択（不明なアルバム = 空名も詳細へ入れる）。
   const openAlbum = (album: Album) => {
-    if (!album.album) return;
     setSelected(album);
   };
 
@@ -90,7 +101,7 @@ export default function AlbumsScreen() {
 
   // ---- 詳細表示（選択アルバムの曲一覧）----
   if (selected) {
-    const title = selected.album || "アルバム";
+    const title = albumLabel(selected.album);
     const subtitle = `${selected.albumArtist ? `${selected.albumArtist} ・ ` : ""}${albumTracks.length || selected.trackCount}曲`;
     return (
       <View style={styles.container}>

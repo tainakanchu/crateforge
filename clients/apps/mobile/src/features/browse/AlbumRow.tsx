@@ -6,7 +6,7 @@
 import { Pressable, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { type Album, useConnection, useDownloads } from "@crateforge/core";
+import { type Album, albumLabel, useConnection, useDownloads } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
 import LayeredArtwork from "@/components/LayeredArtwork";
 
@@ -33,14 +33,15 @@ export default function AlbumRow({ album, onPress }: AlbumRowProps) {
       {/* 頭文字プレースホルダを下に敷き画像を重ねる（404 でも空箱にしない）。 */}
       <LayeredArtwork
         source={source}
-        name={album.album}
+        name={albumLabel(album.album)}
         size={THUMB}
         radius={RADIUS}
         recyclingKey={String(album.sampleTrackId)}
       />
       <View style={styles.texts}>
         <Text style={styles.name} numberOfLines={1}>
-          {album.album || "アルバムなし"}
+          {/* 空名（タグにアルバムが無い曲のグループ）は「不明なアルバム」。 */}
+          {albumLabel(album.album)}
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
           {album.albumArtist ? `${album.albumArtist} ・ ` : ""}

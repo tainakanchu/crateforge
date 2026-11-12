@@ -1950,8 +1950,8 @@ export function RightRail({
             <div className="cb-nowmeta">
               <div className="cj">{now.name || "(不明)"}</div>
               <div className="ar">
-                {now.artist || ""}
-                {now.album ? ` — ${now.album}` : ""}
+                {/* 片方だけ空 (タグ無し) でも先頭/末尾に区切りが残らないように連結する。 */}
+                {[now.artist, now.album].filter((v) => v && v.trim()).join(" — ")}
               </div>
             </div>
           </>

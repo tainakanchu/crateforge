@@ -55,11 +55,14 @@ pub(crate) const SEARCH_TEXT_EXPR: &str = "COALESCE(fold(name,2),'')||char(10)||
      COALESCE(fold(comments,2),'')";
 
 /// アルバム束ねキーの算出式。get_albums の GROUP BY と get_album_tracks の WHERE で同一に使う。
-/// - album が空/NULL → `tr:<track_id>` (1曲1グループ。(unknown)へ吸い込ませない)
+/// - album が空/NULL → `unk:` (タグにアルバムが無い曲をまとめた 1 つの「不明なアルバム」)
 /// - compilation=1  → `cmp:<album>` のみ (アーティストが曲ごとに違っても1枚に束ねる)
 /// - それ以外       → `al:<albumArtist||artist>␟<album>` (char(31)=ユニットセパレータ区切り)
+///
+/// アーティスト展開 (get_artist_albums) では「そのアーティストの不明なアルバム」を
+/// 区別するため、`unk:` を [`UNKNOWN_ALBUM_OF_ARTIST_PREFIX`]`<アーティスト名>` に読み替えて返す。
 const ALBUM_KEY_EXPR: &str = "CASE \
-  WHEN album IS NULL OR trim(album) = '' THEN 'tr:' || track_id \
+  WHEN album IS NULL OR trim(album) = '' THEN 'unk:' \
   WHEN compilation = 1 THEN 'cmp:' || lower(trim(album)) \
   ELSE 'al:' || lower(trim(coalesce(nullif(trim(album_artist),''), artist, ''))) || char(31) || lower(trim(album)) \
 END";
@@ -67,13 +70,20 @@ END";
 /// アーティスト表示名の算出式。get_artists の GROUP BY と get_artist_albums の WHERE で
 /// 同一に使うので、ALBUM_KEY_EXPR と同じくコンピレーションを特別扱いする:
 /// - compilation=1 → 'Various Artists' (曲ごとのアーティストではなく 1 つへ巻き上げる)
-/// - それ以外      → album_artist (空白のみは無効) → artist → 'Unknown Artist'
+/// - それ以外      → album_artist (空白のみは無効) → artist → '' (空文字)
 ///
+/// どちらも無い曲は空文字の 1 グループ (= 「不明なアーティスト」。ラベルは表示側で付ける。
+/// 実在の "Unknown Artist" という名前のアーティストと混ざらないよう文字列は埋めない)。
 /// ALBUM_KEY_EXPR の `al:` 分岐と同じ優先順 (album_artist → artist) を保つこと。
 const ARTIST_NAME_EXPR: &str = "CASE \
   WHEN compilation = 1 THEN 'Various Artists' \
-  ELSE coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''), 'Unknown Artist') \
+  ELSE coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''), '') \
 END";
+
+/// get_artist_albums が返す「そのアーティストの不明なアルバム」の album_key の接頭辞。
+/// 続く文字列はアーティスト名 (get_artists の表示名)。get_album_tracks はこのキーを
+/// 「アルバムが空 かつ そのアーティスト」で引く。
+const UNKNOWN_ALBUM_OF_ARTIST_PREFIX: &str = "unka:";
 
 /// 大文字小文字のゆれを畳んだアーティスト束ねキー (ALBUM_KEY_EXPR の lower(...) と同じ方針)。
 /// 表示名は ARTIST_NAME_EXPR 側で trim 済みなので lower() だけで足りる。
@@ -187,11 +197,14 @@ fn album_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String 
     } else {
         "ASC"
     };
+    // 空 (不明なアルバム / アーティスト) は方向によらず末尾 (フロントの cmpText と同じ)。
     let head = match sort_field {
-        Some("albumArtist") => {
-            format!("album_artist COLLATE NATSORT {dir}, album COLLATE NATSORT ASC")
-        }
-        Some("album") => format!("album COLLATE NATSORT {dir}, album_artist COLLATE NATSORT ASC"),
+        Some("albumArtist") => format!(
+            "(album_artist = ''), album_artist COLLATE NATSORT {dir}, (album = ''), album COLLATE NATSORT ASC"
+        ),
+        Some("album") => format!(
+            "(album = ''), album COLLATE NATSORT {dir}, (album_artist = ''), album_artist COLLATE NATSORT ASC"
+        ),
         Some("year") => format!(
             "(year IS NULL), year {dir}, album_artist COLLATE NATSORT ASC, album COLLATE NATSORT ASC"
         ),
@@ -204,7 +217,8 @@ fn album_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String 
         Some("playCount") => {
             format!("play_count {dir}, album_artist COLLATE NATSORT ASC, album COLLATE NATSORT ASC")
         }
-        _ => "album_artist COLLATE NATSORT ASC, album COLLATE NATSORT ASC".to_string(),
+        _ => "(album_artist = ''), album_artist COLLATE NATSORT ASC, (album = ''), album COLLATE NATSORT ASC"
+            .to_string(),
     };
     format!("{head}, album_key ASC")
 }
@@ -222,7 +236,8 @@ fn artist_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String
     let head = match sort_field {
         Some("trackCount") => format!("track_count {dir}, name COLLATE NATSORT ASC"),
         Some("albumCount") => format!("album_count {dir}, name COLLATE NATSORT ASC"),
-        _ => format!("name COLLATE NATSORT {dir}"),
+        // 不明なアーティスト (空文字) は方向によらず末尾。
+        _ => format!("(name = ''), name COLLATE NATSORT {dir}"),
     };
     format!("{head}, artist_key ASC")
 }
@@ -244,10 +259,18 @@ fn album_agg_sql(filter: &str, order_by: &str, tail: &str) -> String {
                 ) AS rn
               FROM tracks
             )
+            SELECT * FROM (
             SELECT
               album_key,
-              MAX(coalesce(nullif(trim(album),''), name, '(unknown)'))          AS album,
-              CASE WHEN MAX(compilation) = 1
+              -- 不明なアルバム (unk:) は空文字。ラベル (「不明なアルバム」) は表示側で付ける。
+              coalesce(MAX(nullif(trim(album),'')), '')                         AS album,
+              CASE WHEN album_key = 'unk:'
+                     -- 不明なアルバムは寄せ集めなので Various Artists とは呼ばない
+                     -- (アーティストが 1 人ならその名前、複数なら空)。
+                     THEN CASE WHEN COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), artist, '')))) = 1
+                               THEN coalesce(MAX(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))), '')
+                               ELSE '' END
+                   WHEN MAX(compilation) = 1
                      OR COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), artist, '')))) > 1
                    THEN 'Various Artists'
                    ELSE MAX(coalesce(nullif(trim(album_artist),''), artist, '')) END AS album_artist,
@@ -266,6 +289,7 @@ fn album_agg_sql(filter: &str, order_by: &str, tail: &str) -> String {
             FROM base
             {filter}
             GROUP BY album_key
+            ) AS agg
             ORDER BY {order_by}
             {tail}",
         key = ALBUM_KEY_EXPR,
@@ -1751,22 +1775,30 @@ impl Database {
     }
 
     /// ライブラリ内の distinct なアルバム一覧を album 名 (NOCASE) 昇順で返す。
-    /// album が NULL/空 の曲は除外。`sample_track_id` はアルバム内最小 track_id (代表曲)。
+    /// album が NULL/空白のみ の曲は `album: ""` の 1 件 (= 「不明なアルバム」。ラベルは
+    /// クライアントが付ける) にまとめ、名前順によらず末尾に置く。その曲は
+    /// `/api/tracks?album=&albumExact=true` で引ける。
+    /// `sample_track_id` はアルバム内最小 track_id (代表曲)。
     pub fn get_albums_legacy(&self) -> Result<Vec<AlbumInfo>> {
         let mut stmt = self.conn.prepare(
             // 代表アーティスト: album_artist (空なら artist) が曲ごとに複数ある / コンピなら
             // "Various Artists" (MAX だとコンピが特定アーティストのアルバムに見えた: E5)。
-            "SELECT album,
-                    CASE WHEN MAX(compilation) = 1
+            // 不明なアルバムは寄せ集めなので、複数アーティストなら Various Artists ではなく NULL。
+            "SELECT coalesce(nullif(trim(album),''), '') AS album_name,
+                    CASE WHEN coalesce(nullif(trim(album),''), '') = '' THEN
+                           CASE WHEN COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))))) > 1
+                                THEN NULL
+                                ELSE MAX(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))) END
+                         WHEN MAX(compilation) = 1
                            OR COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))))) > 1
                          THEN 'Various Artists'
                          ELSE MAX(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))) END,
                     COUNT(*), MIN(track_id) FROM tracks
-             WHERE album IS NOT NULL AND album != '' GROUP BY album ORDER BY album COLLATE NOCASE",
+             GROUP BY CASE WHEN coalesce(nullif(trim(album),''), '') = '' THEN '' ELSE album END
+             ORDER BY (album_name = ''), album_name COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(AlbumInfo {
-                // WHERE 句で album の非 NULL を保証済み。
                 album: r.get(0)?,
                 album_artist: r.get(1)?,
                 track_count: r.get(2)?,
@@ -1797,6 +1829,10 @@ impl Database {
     /// 指定アーティストのアルバム一覧を get_albums と同じ集約で返す (年→アルバム名順)。
     /// `name` は get_artists が返した表示名。突き合わせは ARTIST_NAME_EXPR を lower() した
     /// キー同士なので、大文字小文字のゆれがあっても同じグループに当たる。
+    ///
+    /// アルバムが空の曲は「そのアーティストの不明なアルバム」1 枚にまとめ、album_key を
+    /// `unka:<name>` にして返す (Albums ビュー全体の `unk:` と区別し、get_album_tracks が
+    /// そのアーティストの曲だけを引けるようにする)。
     pub fn get_artist_albums(&self, name: &str) -> Result<Vec<AlbumRow>> {
         let sql = album_agg_sql(
             "WHERE artist_key = lower(trim(?1))",
@@ -1805,12 +1841,44 @@ impl Database {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![name], row_to_album_row)?;
-        rows.collect()
+        rows.map(|r| {
+            r.map(|mut row| {
+                if row.album_key == "unk:" {
+                    row.album_key = format!("{UNKNOWN_ALBUM_OF_ARTIST_PREFIX}{name}");
+                }
+                row
+            })
+        })
+        .collect()
     }
 
     /// album_key に属するトラック一覧をディスク→トラック順で返す。
     /// 同一の ALBUM_KEY_EXPR で WHERE するため get_albums と完全に一致する。
+    ///
+    /// `unka:<アーティスト名>` (get_artist_albums の不明なアルバム) は「アルバムが空 かつ
+    /// そのアーティスト (ARTIST_NAME_EXPR の束ね方)」の曲を返す。
     pub fn get_album_tracks(&self, album_key: &str) -> Result<Vec<Track>> {
+        if let Some(artist) = album_key.strip_prefix(UNKNOWN_ALBUM_OF_ARTIST_PREFIX) {
+            let sql = format!(
+                "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
+                        album, genre, year, rating, play_count, skip_count, total_time_ms,
+                        date_added, date_modified, bpm, comments, location_raw, location_path,
+                        track_type, disabled, compilation, disc_number, disc_count,
+                        track_number, track_count, file_exists, last_played,
+                        bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
+                        key_camelot_user, grouping
+                 FROM (
+                   SELECT *, ({key}) AS album_key, ({artist_key}) AS artist_key FROM tracks
+                 ) WHERE album_key = 'unk:' AND artist_key = lower(trim(?1))
+                 ORDER BY (disc_number IS NULL), disc_number,
+                          (track_number IS NULL), track_number, track_id",
+                key = ALBUM_KEY_EXPR,
+                artist_key = artist_key_expr(),
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![artist], row_to_track)?;
+            return rows.collect();
+        }
         let sql = format!(
             "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
@@ -1833,14 +1901,16 @@ impl Database {
 
     /// `/api/artists` (HTTP) 用の軽量版。ライブラリ内の distinct な表示アーティスト一覧を
     /// 表示名 (NOCASE) 昇順で返す。Artists ビューが使う集約版は `get_artists` を参照。
-    /// `by_album_artist=false` (grouping=artist): artist→album_artist→"Unknown Artist"。
-    /// `by_album_artist=true`  (grouping=albumArtist): album_artist→artist→"Unknown Artist"。
+    /// `by_album_artist=false` (grouping=artist): artist→album_artist→"" (空文字)。
+    /// `by_album_artist=true`  (grouping=albumArtist): album_artist→artist→"" (空文字)。
+    /// どちらも無い曲は `artist: ""` の 1 グループ (クライアントが「不明なアーティスト」と表示し、
+    /// `/api/tracks?artist=` (空) で同じ曲を引ける)。空は名前順によらず末尾に置く。
     /// 表示名でグループ化し、`track_count` は COUNT(*)、`sample_track_id` は MIN(track_id)。
     /// 共有インターフェース契約 (TS の trackArtist/trackAlbumArtist) と完全一致させる:
     /// 空文字 "" は falsy=次へ、NULL も次へ、空白のみ " " は truthy=採用。
     pub fn get_artists_legacy(&self, by_album_artist: bool) -> Result<Vec<ArtistInfo>> {
         // 表示名式: 優先列が NULL でも空文字 '' でもない → 採用、それ以外は次の列、
-        // どちらも無効なら 'Unknown Artist'。grouping により artist/album_artist の優先を入替。
+        // どちらも無効なら ''。grouping により artist/album_artist の優先を入替。
         let (first, second) = if by_album_artist {
             ("album_artist", "artist")
         } else {
@@ -1849,11 +1919,11 @@ impl Database {
         let display_expr = format!(
             "CASE WHEN {first} IS NOT NULL AND {first} != '' THEN {first} \
                   WHEN {second} IS NOT NULL AND {second} != '' THEN {second} \
-                  ELSE 'Unknown Artist' END"
+                  ELSE '' END"
         );
         let sql = format!(
             "SELECT {display_expr} AS display_name, COUNT(*), MIN(track_id) FROM tracks \
-             GROUP BY display_name ORDER BY display_name COLLATE NOCASE"
+             GROUP BY display_name ORDER BY (display_name = ''), display_name COLLATE NOCASE"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |r| {
@@ -1868,9 +1938,9 @@ impl Database {
 
     /// API 応答用: タグの BPM が無い (NULL / 0) 曲の `bpm` を解析 BPM (四捨五入) で埋め、
     /// 実効 BPM (タグ ?? 解析値) にそろえる。DB の値は変えない。
-    /// 同期 (federation) の取り寄せでタグ値として保存されないよう、呼び出しは表示用の
-    /// エンドポイントに限る (/api/tracks 系・similar。プレイリスト曲は
-    /// `api::handlers::effective_bpm_allowed` で同期の要求を除いて適用する)。
+    /// API の曲応答はすべて `api::handlers::effective_bpm_allowed` を通して呼ぶ
+    /// (既定は実効 BPM。`effectiveBpm=false` / sync ロールのトークンにはタグ値のまま返し、
+    /// 同期の取り寄せ・書き戻しで解析値がタグとして定着しないようにする)。
     pub fn fill_effective_bpm(&self, tracks: &mut [Track]) -> Result<()> {
         if !tracks.iter().any(|t| t.bpm.is_none_or(|b| b <= 0)) {
             return Ok(());
@@ -3110,7 +3180,8 @@ mod tests {
     }
 
     /// get_albums は album ごとに distinct 集約し、track_count と最小 track_id を返す。
-    /// album が NULL/空 の曲は除外し、album 名 (NOCASE) 昇順で並ぶ。
+    /// album が NULL/空 の曲は album = "" の 1 件 (不明なアルバム) にまとめて末尾、
+    /// それ以外は album 名 (NOCASE) 昇順で並ぶ。
     #[test]
     fn get_albums_groups_by_album() {
         let db = Database::open_memory().unwrap();
@@ -3119,8 +3190,8 @@ mod tests {
             (10, Some("Beta"), Some("AA1")),
             (11, Some("Beta"), Some("AA1")),
             (12, Some("alpha"), Some("AA2")),
-            (13, Some(""), None), // 空 album → 除外
-            (14, None, None),     // NULL album → 除外
+            (13, Some(""), None), // 空 album → 不明なアルバム
+            (14, None, None),     // NULL album → 不明なアルバム
         ];
         for (tid, album, aa) in rows {
             db.conn
@@ -3133,8 +3204,11 @@ mod tests {
         }
 
         let albums = db.get_albums_legacy().unwrap();
-        // distinct な album は 2 件 ("alpha", "Beta")。NOCASE 昇順なので alpha が先。
-        assert_eq!(albums.len(), 2);
+        // distinct な album は 2 件 ("alpha", "Beta") + 不明 ("")。NOCASE 昇順なので alpha が先。
+        assert_eq!(albums.len(), 3);
+        assert_eq!(albums[2].album, "");
+        assert_eq!(albums[2].track_count, 2);
+        assert_eq!(albums[2].sample_track_id, 13);
         assert_eq!(albums[0].album, "alpha");
         assert_eq!(albums[0].track_count, 1);
         assert_eq!(albums[0].sample_track_id, 12);
@@ -3189,8 +3263,8 @@ mod tests {
 
     /// get_artists_legacy (HTTP /api/artists) は grouping ごとに表示名でグループ化し、
     /// track_count と最小 track_id を返す。
-    /// 表示名フォールバック (artist→album_artist→Unknown / album_artist→artist→Unknown) と
-    /// 空文字="" の扱い (falsy=次へ)、表示名 NOCASE 昇順を検証する。
+    /// 表示名フォールバック (artist→album_artist→"" / album_artist→artist→"") と
+    /// 空文字="" の扱い (falsy=次へ)、表示名 NOCASE 昇順 (不明 = "" は末尾) を検証する。
     #[test]
     fn get_artists_legacy_groups_by_display_name() {
         let db = Database::open_memory().unwrap();
@@ -3200,7 +3274,8 @@ mod tests {
             (11, Some("Beta"), Some("VA")), // 同 artist=Beta、別 album_artist と組み合わせ
             (12, Some("alpha"), Some("alpha")),
             (13, Some(""), Some("Comp AA")), // artist 空 → grouping=artist では album_artist にフォールバック
-            (14, None, None),                // 両方無し → "Unknown Artist"
+            (14, None, None),                // 両方無し → "" (不明なアーティスト)
+            (15, Some(""), Some("")),         // 空文字同士も同じ "" グループ
         ];
         for (tid, artist, aa) in rows {
             db.conn
@@ -3212,30 +3287,27 @@ mod tests {
                 .unwrap();
         }
 
-        // grouping=artist: 表示名 = artist || album_artist || "Unknown Artist"。
-        // 期待される表示名: "alpha"(12), "Beta"(10,11), "Comp AA"(13), "Unknown Artist"(14)。
+        // grouping=artist: 表示名 = artist || album_artist || ""。
+        // 期待される表示名: "alpha"(12), "Beta"(10,11), "Comp AA"(13), ""(14,15)。
         let artists = db.get_artists_legacy(false).unwrap();
         let names: Vec<&str> = artists.iter().map(|a| a.artist.as_str()).collect();
-        // NOCASE 昇順: alpha, Beta, Comp AA, Unknown Artist。
-        assert_eq!(names, vec!["alpha", "Beta", "Comp AA", "Unknown Artist"]);
+        // NOCASE 昇順、不明 ("") は末尾。
+        assert_eq!(names, vec!["alpha", "Beta", "Comp AA", ""]);
         let beta = artists.iter().find(|a| a.artist == "Beta").unwrap();
         assert_eq!(beta.track_count, 2);
         assert_eq!(beta.sample_track_id, 10);
         let comp = artists.iter().find(|a| a.artist == "Comp AA").unwrap();
         assert_eq!(comp.track_count, 1);
         assert_eq!(comp.sample_track_id, 13);
-        let unknown = artists
-            .iter()
-            .find(|a| a.artist == "Unknown Artist")
-            .unwrap();
-        assert_eq!(unknown.track_count, 1);
+        let unknown = artists.iter().find(|a| a.artist.is_empty()).unwrap();
+        assert_eq!(unknown.track_count, 2);
         assert_eq!(unknown.sample_track_id, 14);
 
-        // grouping=albumArtist: 表示名 = album_artist || artist || "Unknown Artist"。
-        // 期待: "alpha"(12), "Comp AA"(13), "Unknown Artist"(14), "VA"(10,11)。
+        // grouping=albumArtist: 表示名 = album_artist || artist || ""。
+        // 期待: "alpha"(12), "Comp AA"(13), "VA"(10,11), ""(14,15)。
         let aas = db.get_artists_legacy(true).unwrap();
         let names: Vec<&str> = aas.iter().map(|a| a.artist.as_str()).collect();
-        assert_eq!(names, vec!["alpha", "Comp AA", "Unknown Artist", "VA"]);
+        assert_eq!(names, vec!["alpha", "Comp AA", "VA", ""]);
         let va = aas.iter().find(|a| a.artist == "VA").unwrap();
         assert_eq!(va.track_count, 2);
         assert_eq!(va.sample_track_id, 10);
@@ -3292,10 +3364,10 @@ mod tests {
             artist_order_by(Some("trackCount"), Some("desc")),
             "track_count DESC, name COLLATE NATSORT ASC, artist_key ASC"
         );
-        // 未知フィールドは name 昇順へ。
+        // 未知フィールドは name 昇順へ (不明なアーティスト = "" は末尾)。
         assert_eq!(
             artist_order_by(Some("bogus"), None),
-            "name COLLATE NATSORT ASC, artist_key ASC"
+            "(name = ''), name COLLATE NATSORT ASC, artist_key ASC"
         );
     }
 
@@ -3343,7 +3415,7 @@ mod tests {
     }
 
     /// album_artist が NULL / 空 / 空白のみなら artist に、どちらも無ければ
-    /// "Unknown Artist" にフォールバックする。大文字小文字のゆれは 1 グループに畳む。
+    /// 空文字 (不明なアーティスト) の 1 グループにする。大文字小文字のゆれは 1 グループに畳む。
     #[test]
     fn get_artists_falls_back_when_album_artist_empty() {
         let db = Database::open_memory().unwrap();
@@ -3352,13 +3424,18 @@ mod tests {
         insert_artist_fixture(&db, 12, Some("Kraftwerk"), Some("   "), Some("A3"), 0);
         // 表記ゆれ (小文字) は同じキーへ畳む。
         insert_artist_fixture(&db, 13, Some("kraftwerk"), None, Some("A1"), 0);
-        // artist / album_artist ともに無し → Unknown Artist。
+        // artist / album_artist ともに無し → "" (不明なアーティスト)。
         insert_artist_fixture(&db, 14, None, None, Some("A4"), 0);
         insert_artist_fixture(&db, 15, Some(""), Some(""), Some("A5"), 0);
+        // 実在の "Unknown Artist" という名前は不明グループと混ざらない。
+        insert_artist_fixture(&db, 16, Some("Unknown Artist"), None, Some("A6"), 0);
 
         let artists = db.get_artists(None, None, 100, 0).unwrap();
         let names: Vec<&str> = artists.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, vec!["Kraftwerk", "Unknown Artist"]);
+        // 不明 ("") は名前順・方向によらず末尾。
+        assert_eq!(names, vec!["Kraftwerk", "Unknown Artist", ""]);
+        let desc = db.get_artists(Some("name"), Some("desc"), 100, 0).unwrap();
+        assert_eq!(desc.last().unwrap().name, "");
 
         let k = &artists[0];
         assert_eq!(k.track_count, 4);
@@ -3366,9 +3443,68 @@ mod tests {
         assert_eq!(k.album_count, 3);
         assert_eq!(k.artwork_track_id, Some(10));
 
-        let unknown = &artists[1];
+        let unknown = &artists[2];
         assert_eq!(unknown.track_count, 2);
         assert_eq!(unknown.album_count, 2);
+        // 空の名前でもアルバム展開できる。
+        assert_eq!(db.get_artist_albums("").unwrap().len(), 2);
+    }
+
+    /// アルバムが空の曲は Albums ビューで 1 つの「不明なアルバム」(album_key = unk:、
+    /// album = "") にまとまり、アーティスト展開では「そのアーティストの不明なアルバム」
+    /// (unka:<name>) として、そのアーティストの曲だけが引ける。
+    #[test]
+    fn unknown_album_groups_into_one_and_scopes_per_artist() {
+        let db = Database::open_memory().unwrap();
+        insert_artist_fixture(&db, 1, Some("Alpha"), None, None, 0);
+        insert_artist_fixture(&db, 2, Some("Alpha"), None, Some("  "), 0);
+        insert_artist_fixture(&db, 3, Some("Beta"), None, None, 0);
+        insert_artist_fixture(&db, 4, None, None, None, 0);
+        insert_artist_fixture(&db, 5, Some("Alpha"), None, Some("Real"), 0);
+
+        let albums = db.get_albums(None, None, 100, 0).unwrap();
+        let unk: Vec<_> = albums.iter().filter(|a| a.album_key == "unk:").collect();
+        assert_eq!(unk.len(), 1, "{albums:?}");
+        assert_eq!(unk[0].album, "");
+        assert_eq!(unk[0].track_count, 4);
+        // 寄せ集めなので Various Artists とは呼ばない。
+        assert_eq!(unk[0].album_artist, "");
+        assert!(!unk[0].is_compilation);
+        // 既定の並び (albumArtist→album) で末尾。
+        assert_eq!(albums.last().unwrap().album_key, "unk:");
+        let all = db.get_album_tracks("unk:").unwrap();
+        assert_eq!(all.iter().map(|t| t.track_id).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+
+        // Alpha の展開: Real + 不明なアルバム (Alpha の 2 曲だけ)。
+        let alpha = db.get_artist_albums("Alpha").unwrap();
+        assert_eq!(alpha.len(), 2);
+        let alpha_unk = alpha.iter().find(|a| a.album.is_empty()).unwrap();
+        assert_eq!(alpha_unk.album_key, "unka:Alpha");
+        assert_eq!(alpha_unk.album_artist, "Alpha");
+        let ts = db.get_album_tracks(&alpha_unk.album_key).unwrap();
+        assert_eq!(ts.iter().map(|t| t.track_id).collect::<Vec<_>>(), vec![1, 2]);
+        // 不明なアーティストの不明なアルバム。
+        let none = db.get_artist_albums("").unwrap();
+        assert_eq!(none.len(), 1);
+        assert_eq!(none[0].album_key, "unka:");
+        let ts = db.get_album_tracks(&none[0].album_key).unwrap();
+        assert_eq!(ts.iter().map(|t| t.track_id).collect::<Vec<_>>(), vec![4]);
+    }
+
+    /// /api/albums (get_albums_legacy): アルバムが空の曲は album = "" の 1 件にまとまり末尾。
+    #[test]
+    fn get_albums_legacy_groups_unknown_album_last() {
+        let db = Database::open_memory().unwrap();
+        insert_artist_fixture(&db, 1, Some("Alpha"), None, None, 0);
+        insert_artist_fixture(&db, 2, Some("Beta"), None, Some(""), 0);
+        insert_artist_fixture(&db, 3, Some("Alpha"), None, Some("Zeta"), 0);
+        let albums = db.get_albums_legacy().unwrap();
+        let names: Vec<&str> = albums.iter().map(|a| a.album.as_str()).collect();
+        assert_eq!(names, vec!["Zeta", ""]);
+        assert_eq!(albums[1].track_count, 2);
+        assert_eq!(albums[1].sample_track_id, 1);
+        // 複数アーティストの寄せ集めは Various Artists ではなく null。
+        assert_eq!(albums[1].album_artist, None);
     }
 
     /// D4: 検索クエリでアーティストを絞り、件数も一致した曲で数える。0 件なら空。
@@ -3600,9 +3736,9 @@ mod tests {
         assert!(albums[0].album_key.starts_with("al:"));
     }
 
-    /// 空 album: album が空の2曲はそれぞれ別行(tr: キー)になる。
+    /// 空 album: album が空の曲は 1 行の「不明なアルバム」(unk: キー、album = "") にまとまる。
     #[test]
-    fn album_row_empty_album_separate() {
+    fn album_row_empty_album_grouped_as_unknown() {
         let db = Database::open_memory().unwrap();
         for tid in [300i64, 301] {
             db.conn
@@ -3614,8 +3750,10 @@ mod tests {
                 .unwrap();
         }
         let albums = db.get_albums(None, None, 100, 0).unwrap();
-        assert_eq!(albums.len(), 2, "空albumの曲はそれぞれ別行になるべき");
-        assert!(albums.iter().all(|a| a.album_key.starts_with("tr:")));
+        assert_eq!(albums.len(), 1, "空albumの曲は1行にまとまるべき");
+        assert_eq!(albums[0].album_key, "unk:");
+        assert_eq!(albums[0].album, "");
+        assert_eq!(albums[0].track_count, 2);
     }
 
     /// 空 albumArtist 非コンピ: album_artist 空・artist 同じ・album 同じ → artist にフォールバックして1行。

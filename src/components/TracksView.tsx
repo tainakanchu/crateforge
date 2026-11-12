@@ -307,11 +307,12 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                   padding: `0 ${PAD_X}px ${GAP}px`,
                 }}
               >
-                {row.tracks.map((t) => {
+                {row.tracks.map((t, j) => {
                   const inCrate = crateSet.has(t.trackId);
                   const isCurrent = playback.currentTrackId === t.trackId;
                   return (
-                    <div key={t.id} className="cb-cardwrap">
+                    // プレイリストに同じ曲が複数あると t.id が重複するため位置込みの key にする。
+                    <div key={`${t.id}-${j}`} className="cb-cardwrap">
                       <div
                         className={"cb-card" + (inCrate ? " incrate" : "") + (isCurrent ? " playing" : "")}
                         style={{ background: artGradient(t.album || t.name || ""), height: cardW }}
@@ -375,7 +376,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                         className="cov-meta"
                         onDoubleClick={() => void playTrack(t)}
                         onContextMenu={(e) => openTrackMenu(e, t)}
-                        title={`${t.name || "(unknown)"} — ${t.artist || ""}`}
+                        title={[t.name || "(unknown)", t.artist].filter(Boolean).join(" — ")}
                       >
                         <div className="cj">{t.name || "(unknown)"}</div>
                         <div className="la">{t.artist || ""}</div>

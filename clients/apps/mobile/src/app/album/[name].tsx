@@ -9,9 +9,10 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   type ArtistGrouping,
   type Track,
-  trackArtist,
+  albumLabel,
+  trackArtistKey,
   filterAlbumTracks,
-  trackAlbumArtist,
+  trackAlbumArtistKey,
   useConnection,
   usePlayer,
   useDownloads,
@@ -27,6 +28,7 @@ import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { useAlbumTracks, useArtistTracks } from "@/features/browse/hooks";
 import { showTrackMenu } from "@/features/playback/trackMenu";
 import { usePullToRefresh } from "@/hooks/use-refresh";
+import { nameFromParams } from "@/lib/albumHref";
 
 /** disc 番号 → トラック番号 の収録順比較。 */
 function byDiscTrack(a: Track, b: Track): number {
@@ -37,22 +39,27 @@ export default function AlbumScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
     name?: string;
+    unknown?: string;
     noAlbum?: string;
     artist?: string;
     grouping?: string;
   }>();
-  // 「アルバムなし」モード: 指定アーティストの album が空の曲を集めて表示する。
+  // 「アーティストの不明なアルバム」モード: 指定アーティストの album が空の曲を集めて表示する
+  // （アーティスト詳細のアルバム一覧から来る。artist="" は不明なアーティスト）。
   const isNoAlbum = params.noAlbum === "1";
-  const album = params.name ? decodeURIComponent(params.name) : "";
+  // 名前は unknown=1 なら "" (= ライブラリ全体の不明なアルバム)、無ければ null。
+  const albumParam = nameFromParams(params);
+  const album = albumParam ?? "";
   const artist = params.artist ? decodeURIComponent(params.artist) : "";
   const grouping: ArtistGrouping = params.grouping === "albumArtist" ? "albumArtist" : "artist";
-  const title = isNoAlbum ? "アルバムなし" : album || "アルバム";
+  const title = isNoAlbum ? albumLabel("") : albumParam != null ? albumLabel(albumParam) : "アルバム";
   const client = useConnection((s) => s.client);
 
   // 通常はアルバム名（完全一致）で取得。一覧と同じ粒度にするため albumArtist では絞らない（round-2 M1）。
-  // アルバムなしはアーティストの曲から album 空を抽出する。
-  const albumQuery = useAlbumTracks(isNoAlbum ? null : album || null);
-  const artistQuery = useArtistTracks(isNoAlbum ? artist || null : null, grouping);
+  // 不明なアルバム（album=""）も albumExact で album が空の曲を引ける。
+  // アーティストの不明なアルバムはアーティストの曲から album 空を抽出する。
+  const albumQuery = useAlbumTracks(isNoAlbum ? null : albumParam);
+  const artistQuery = useArtistTracks(isNoAlbum ? artist : null, grouping);
   const query = isNoAlbum ? artistQuery : albumQuery;
   const { refreshing, onRefresh } = usePullToRefresh(query.refetch);
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
@@ -67,7 +74,8 @@ export default function AlbumScreen() {
   const offlineTracks = useMemo(() => {
     if (client) return [] as Track[];
     if (isNoAlbum) {
-      const nameOf = grouping === "albumArtist" ? trackAlbumArtist : trackArtist;
+      // 束ねキー（不明なアーティストは ""）で突き合わせる（表示ラベルとは比べない）。
+      const nameOf = grouping === "albumArtist" ? trackAlbumArtistKey : trackArtistKey;
       return Object.values(entries)
         .map((e) => e.track)
         .filter((t) => nameOf(t) === artist && !t.album)
@@ -142,7 +150,12 @@ export default function AlbumScreen() {
           </Pressable>
           <DesktopPlayButton tracks={tracks} />
           {client && !isNoAlbum ? (
-            <DownloadButton albumName={album} label="アルバムを保存" />
+            album ? (
+              <DownloadButton albumName={album} label="アルバムを保存" />
+            ) : (
+              // 不明なアルバムは名前で引き直せないので、表示中の曲をそのまま保存する。
+              <DownloadButton tracks={tracks} label="アルバムを保存" />
+            )
           ) : null}
         </View>
       ) : null}

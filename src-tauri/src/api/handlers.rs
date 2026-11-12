@@ -57,15 +57,16 @@ async fn track_upload_lock(persistent_id: &str) -> TrackUploadLock {
 const ALL_ROWS: i64 = i64::MAX;
 
 /// 表示アーティスト名を契約のフォールバック規則で決める。
-/// `first || second || "Unknown Artist"` 相当: 各値は Some かつ非空文字なら採用、
+/// `first || second || ""` 相当: 各値は Some かつ非空文字なら採用、
 /// None / 空文字 "" は次へ、空白のみ " " は truthy として採用する
 /// (db 側 `get_artists_legacy` の SQL 表示名式と完全一致させる)。
+/// どちらも無ければ空文字 (= 不明なアーティスト。`/api/artists` の `artist: ""` と同じ)。
 fn display_artist(first: Option<&str>, second: Option<&str>) -> String {
     match first {
         Some(s) if !s.is_empty() => s.to_string(),
         _ => match second {
             Some(s) if !s.is_empty() => s.to_string(),
-            _ => "Unknown Artist".to_string(),
+            _ => String::new(),
         },
     }
 }
@@ -183,10 +184,66 @@ pub struct TracksQuery {
     pub order: Option<String>,
 }
 
+/// 曲を返す API 共通のクエリ (`effectiveBpm` / `token`)。各ハンドラの本来のクエリとは
+/// 別の `Query` 抽出として受ける (未知フィールドは無視されるので併用できる)。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveBpmQuery {
+    /// `false` なら `bpm` をタグ値のまま返す (同期の取り寄せ・書き戻し用)。省略時は実効 BPM。
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub effective_bpm: Option<bool>,
+    /// `?token=` 認証のトークン (sync ロールの判定に使う)。
+    pub token: Option<String>,
+}
+
+/// 曲の応答の `bpm` を実効 BPM (タグ ?? 解析値) で埋めてよいか (A4 / D3)。
+///
+/// 曲を返す API (`/api/tracks`・`/api/tracks/{id}`・by-ids・lookup・similar・
+/// プレイリスト曲・PATCH の応答) の `bpm` は既定で実効 BPM。呼び出し側が明示的に
+/// タグ値を求めたときだけタグ値のまま返す:
+/// - `effectiveBpm=false` (同期クライアントは取り寄せ・書き戻しで必ず付ける)
+/// - sync ロールのトークン (同期として承認した端末。旧版の同期クライアントの保護)
+///
+/// 同期 (federation) はこの `bpm` をタグ値として子の DB に保存し、書き戻しで親へ
+/// 送り返しうるため、解析値が混ざるとタグとして定着してしまう。User-Agent などの
+/// 推測では判定しない (明示した要求だけを信じる)。
+pub(crate) fn effective_bpm_allowed(
+    state: &ApiState,
+    headers: &axum::http::HeaderMap,
+    query_token: Option<&str>,
+    requested: Option<bool>,
+) -> bool {
+    if requested == Some(false) {
+        return false;
+    }
+    let token = query_token.or_else(|| {
+        headers
+            .get("X-API-Token")
+            .and_then(|v| v.to_str().ok())
+    });
+    token.and_then(|t| state.tokens.role_for(t)) != Some(crate::devices::DeviceRole::Sync)
+}
+
+/// `effective_bpm_allowed` が真なら `tracks` の `bpm` を実効 BPM で埋める。
+fn apply_effective_bpm(
+    db: &crate::db::Database,
+    state: &ApiState,
+    headers: &axum::http::HeaderMap,
+    q: &EffectiveBpmQuery,
+    tracks: &mut [Track],
+) -> Result<(), ApiError> {
+    if effective_bpm_allowed(state, headers, q.token.as_deref(), q.effective_bpm) {
+        db.fill_effective_bpm(tracks)?;
+    }
+    Ok(())
+}
+
 /// `GET /api/tracks` — DB から取得 (q 有無で search/get を切替) → 構造化フィルタ → offset/limit。
 pub async fn list_tracks(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
     Query(q): Query<TracksQuery>,
+    Query(bq): Query<EffectiveBpmQuery>,
 ) -> Result<Json<Vec<Track>>, ApiError> {
     let db = state.db()?;
 
@@ -250,10 +307,12 @@ pub async fn list_tracks(
     }
     // album: genre と同様に小文字化して部分一致。albumExact=true なら完全一致
     // (/api/albums の GROUP BY album と同じ粒度。前後空白だけは無視する)。
+    // `album=&albumExact=true` (空) は album が NULL / 空白のみの曲 (= /api/albums の
+    // `album: ""`「不明なアルバム」) に一致する。
     if let Some(album) = q.album.as_deref() {
         if q.album_exact.unwrap_or(false) {
             let want = album.trim();
-            tracks.retain(|t| t.album.as_deref().map(str::trim) == Some(want));
+            tracks.retain(|t| t.album.as_deref().unwrap_or("").trim() == want);
         } else {
             let needle = album.to_lowercase();
             tracks.retain(|t| {
@@ -265,13 +324,14 @@ pub async fn list_tracks(
         }
     }
     // artist: 表示アーティスト名 (grouping=artist 表示名式) と完全一致。
-    // 契約: trackArtist = artist || albumArtist || "Unknown Artist"
+    // 契約: trackArtist = artist || albumArtist || "" (空 = 不明なアーティスト)
     //   (空文字 "" は falsy=次へ、NULL も次へ、空白のみ " " は truthy=採用)。
+    //   `artist=` (空) は artist / albumArtist とも無い曲に一致する。
     if let Some(want) = q.artist.as_deref() {
         tracks.retain(|t| display_artist(t.artist.as_deref(), t.album_artist.as_deref()) == want);
     }
     // albumArtist: 表示アルバムアーティスト名 (grouping=albumArtist 表示名式) と完全一致。
-    // 契約: trackAlbumArtist = albumArtist || artist || "Unknown Artist" (artist と優先順を入替)。
+    // 契約: trackAlbumArtist = albumArtist || artist || "" (artist と優先順を入替)。
     if let Some(want) = q.album_artist.as_deref() {
         tracks.retain(|t| display_artist(t.album_artist.as_deref(), t.artist.as_deref()) == want);
     }
@@ -297,7 +357,7 @@ pub async fn list_tracks(
     //    (二重スライスを避ける)。それ以外 (q 無し or 追加フィルタ有り) は従来どおり。
     if db_pushdown {
         // 実効 BPM (タグ ?? 解析値) にそろえる (A4)。
-        db.fill_effective_bpm(&mut tracks)?;
+        apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
         return Ok(Json(tracks));
     }
     let offset = q.offset.unwrap_or(0).max(0) as usize;
@@ -311,7 +371,7 @@ pub async fn list_tracks(
         }
     };
     // 実効 BPM (タグ ?? 解析値) にそろえる (A4)。
-    db.fill_effective_bpm(&mut sliced)?;
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut sliced)?;
     Ok(Json(sliced))
 }
 
@@ -319,11 +379,13 @@ pub async fn list_tracks(
 pub async fn get_track(
     State(state): State<ApiState>,
     Path(track_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+    Query(bq): Query<EffectiveBpmQuery>,
 ) -> Result<Json<Track>, ApiError> {
     let db = state.db()?;
     let mut found = db.get_tracks_by_ids(&[track_id])?;
     // 実効 BPM (タグ ?? 解析値) にそろえる (A4)。
-    db.fill_effective_bpm(&mut found)?;
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut found)?;
     match found.into_iter().next() {
         Some(track) => Ok(Json(track)),
         None => Err(ApiError::not_found("track not found")),
@@ -340,12 +402,14 @@ pub struct ByIdsBody {
 /// `POST /api/tracks/by-ids` — ID 列を入力順のまま Track へ解決する。
 pub async fn tracks_by_ids(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
+    Query(bq): Query<EffectiveBpmQuery>,
     ExtractJson(body): ExtractJson<ByIdsBody>,
 ) -> Result<Json<Vec<Track>>, ApiError> {
     let db = state.db()?;
     let mut tracks = db.get_tracks_by_ids(&body.track_ids)?;
     // 実効 BPM (タグ ?? 解析値) にそろえる (A4)。
-    db.fill_effective_bpm(&mut tracks)?;
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
     Ok(Json(tracks))
 }
 
@@ -357,13 +421,18 @@ pub struct PersistentIdsBody {
 }
 
 /// `POST /api/tracks/lookup` — persistent ID 列を入力順のまま Track へ解決する。
+///
+/// 他の曲 API と同じく `bpm` は既定で実効 BPM。同期の書き戻しは `effectiveBpm=false`
+/// を付けてタグ値で比較する (sync ロールのトークンも常にタグ値)。
 pub async fn tracks_lookup(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
+    Query(bq): Query<EffectiveBpmQuery>,
     ExtractJson(body): ExtractJson<PersistentIdsBody>,
 ) -> Result<Json<Vec<Track>>, ApiError> {
-    let tracks = state
-        .db()?
-        .get_tracks_by_persistent_ids(&body.persistent_ids)?;
+    let db = state.db()?;
+    let mut tracks = db.get_tracks_by_persistent_ids(&body.persistent_ids)?;
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
     Ok(Json(tracks))
 }
 
@@ -1226,7 +1295,9 @@ pub struct SimilarQuery {
 pub async fn get_similar_tracks(
     State(state): State<ApiState>,
     Path(track_id): Path<i64>,
+    headers: axum::http::HeaderMap,
     Query(q): Query<SimilarQuery>,
+    Query(bq): Query<EffectiveBpmQuery>,
 ) -> Result<Json<Vec<SimilarHit>>, ApiError> {
     let db = state.db()?;
     // 基準曲が未解析 / ベクトル空なら類似なし。
@@ -1250,8 +1321,8 @@ pub async fn get_similar_tracks(
             distances.push(distance);
         }
     }
-    // 実効 BPM (タグ ?? 解析値) にそろえる (D3)。同期はこの API を使わない。
-    db.fill_effective_bpm(&mut tracks)?;
+    // 実効 BPM (タグ ?? 解析値) にそろえる (D3)。
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
     let hits = tracks
         .into_iter()
         .zip(distances)
@@ -1511,43 +1582,6 @@ pub struct PlaylistTracksQuery {
     pub offset: Option<i64>,
     pub sort: Option<String>,
     pub order: Option<String>,
-    /// `false` なら `bpm` をタグ値のまま返す (同期の取り寄せ用)。省略時は実効 BPM。
-    #[serde(default, deserialize_with = "lenient_opt_bool")]
-    pub effective_bpm: Option<bool>,
-    /// `?token=` 認証のトークン (sync ロールの判定に使う)。
-    pub token: Option<String>,
-}
-
-/// プレイリスト曲の応答の `bpm` を実効 BPM (タグ ?? 解析値) で埋めてよいか (D3)。
-///
-/// 同期 (federation) の取り寄せはこの API の `bpm` をタグ値として子の DB に保存し、
-/// 書き戻し (writeback) で親へ送り返しうる。解析値が混ざるとタグとして定着してしまう
-/// ので、同期と思われる要求には埋めない。次のいずれかならタグ値のまま返す:
-/// - `effectiveBpm=false` (現行の同期クライアントは必ず付ける)
-/// - sync ロールのトークン (旧版の同期クライアントで sync として承認した端末)
-/// - User-Agent ヘッダが無い (旧版の同期クライアント = reqwest 既定は UA を送らない。
-///   remote ロールで承認された旧版の同期にも効く。モバイル・ブラウザは必ず UA を送る)
-pub(crate) fn effective_bpm_allowed(
-    state: &ApiState,
-    headers: &axum::http::HeaderMap,
-    query_token: Option<&str>,
-    requested: Option<bool>,
-) -> bool {
-    if requested == Some(false) {
-        return false;
-    }
-    let token = query_token.or_else(|| {
-        headers
-            .get("X-API-Token")
-            .and_then(|v| v.to_str().ok())
-    });
-    if token.and_then(|t| state.tokens.role_for(t)) == Some(crate::devices::DeviceRole::Sync) {
-        return false;
-    }
-    headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|ua| !ua.trim().is_empty())
 }
 
 /// `GET /api/playlists/:playlistId/tracks` — プレイリスト内の曲。スマートプレイリストは
@@ -1557,6 +1591,7 @@ pub async fn playlist_tracks(
     Path(playlist_id): Path<i64>,
     headers: axum::http::HeaderMap,
     Query(q): Query<PlaylistTracksQuery>,
+    Query(bq): Query<EffectiveBpmQuery>,
 ) -> Result<Json<Vec<Track>>, ApiError> {
     let db = state.db()?;
     // get_playlist_tracks の limit/offset は i64 直値。未指定はコマンド層の既定 (500/0) に合わせる。
@@ -1567,10 +1602,8 @@ pub async fn playlist_tracks(
         q.sort.as_deref(),
         q.order.as_deref(),
     )?;
-    // 表示用 (モバイル・Web プレイヤー) は実効 BPM にそろえる (D3)。同期の取り寄せには埋めない。
-    if effective_bpm_allowed(&state, &headers, q.token.as_deref(), q.effective_bpm) {
-        db.fill_effective_bpm(&mut tracks)?;
-    }
+    // 実効 BPM にそろえる (D3)。同期の取り寄せは effectiveBpm=false でタグ値を受け取る。
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
     Ok(Json(tracks))
 }
 
@@ -2967,13 +3000,17 @@ fn apply_track_edit(
 pub async fn patch_track(
     State(state): State<ApiState>,
     Path(track_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+    Query(bq): Query<EffectiveBpmQuery>,
     ExtractJson(edit): ExtractJson<crate::models::TrackEdit>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
-    let r = match apply_track_edit(&db, track_id, &edit)? {
+    let mut r = match apply_track_edit(&db, track_id, &edit)? {
         Some(r) => r,
         None => return Err(ApiError::not_found("track not found")),
     };
+    // 応答の `track.bpm` も他の曲 API と同じ規則 (書き戻しは effectiveBpm=false でタグ値)。
+    apply_effective_bpm(&db, &state, &headers, &bq, std::slice::from_mut(&mut r.track))?;
     let track_val = serde_json::to_value(&r.track)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state.notify_library_changed(None);

@@ -11,6 +11,7 @@ import { artGradient, leadingGlyph } from "../lib/art";
 import { ARTIST_SORT_FIELDS } from "../types";
 import type { AlbumRow, ArtistRow, SortField, Track } from "../types";
 import { EmptyState } from "./EmptyState";
+import { albumLabel, artistLabel } from "../lib/unknownLabels";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -373,11 +374,11 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                             (isCurrent ? " playing" : "") +
                             (isOpen ? " opened" : "")
                           }
-                          style={{ background: artGradient(a.name), height: cardW }}
+                          style={{ background: artGradient(artistLabel(a.name)), height: cardW }}
                           onClick={() => toggleArtist(a)}
                           onDoubleClick={() => artistTracks(a).then((ts) => playTracks(ts))}
                         >
-                          <span className="glyph">{leadingGlyph(a.name)}</span>
+                          <span className="glyph">{leadingGlyph(artistLabel(a.name))}</span>
                           <ArtworkImg path={a.artworkLocationPath} size={cardW} />
                           <span className="grad" />
                           <div className="kbtag">
@@ -422,9 +423,9 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                         <div
                           className="cov-meta"
                           onClick={() => toggleArtist(a)}
-                          title={`${a.name} — ${a.albumCount} アルバム · ${a.trackCount} 曲`}
+                          title={`${artistLabel(a.name)} — ${a.albumCount} アルバム · ${a.trackCount} 曲`}
                         >
-                          <div className="cj">{a.name}</div>
+                          <div className="cj">{artistLabel(a.name)}</div>
                           <div className="la">
                             {a.trackCount} 曲 · {a.albumCount} アルバム
                           </div>
@@ -506,7 +507,7 @@ function ArtistExpansion({
       <div className="cov-exp">
         <div className="cov-exp-head">
           <div className="cov-exp-title">
-            <span className="t">{artist.name}</span>
+            <span className="t">{artistLabel(artist.name)}</span>
             <span className="s">
               {artist.albumCount} アルバム · {artist.trackCount} 曲
             </span>
@@ -538,13 +539,13 @@ function ArtistExpansion({
                   <div className="art-alb-head" onClick={() => onToggleAlbum(al)}>
                     <div
                       className="art-alb-cover"
-                      style={{ background: artGradient(al.album) }}
+                      style={{ background: artGradient(albumLabel(al.album)) }}
                     >
-                      <span className="glyph">{leadingGlyph(al.album)}</span>
+                      <span className="glyph">{leadingGlyph(albumLabel(al.album))}</span>
                       <ArtworkImg path={al.coverFileExists ? al.coverLocationPath : null} size={38} />
                     </div>
                     <div className="art-alb-meta">
-                      <div className="t">{al.album}</div>
+                      <div className="t">{albumLabel(al.album)}</div>
                       <div className="s">
                         {al.year != null ? `${al.year} · ` : ""}
                         {al.trackCount} 曲
@@ -596,7 +597,7 @@ function ArtistExpansion({
                           const showArtist = !!t.artist && t.artist !== artist.name;
                           return (
                             <div
-                              key={t.id}
+                              key={`${t.id}-${i}`}
                               className={
                                 "cov-trk" +
                                 (isCurrent ? " play" : "") +

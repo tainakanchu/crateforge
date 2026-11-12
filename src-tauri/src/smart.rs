@@ -952,6 +952,36 @@ mod tests {
         ));
     }
 
+    /// タグの無い曲 (artist / albumArtist / album が NULL または空文字): 値が無い扱いで、
+    /// isNot / notContains は満たし、is / contains などは満たさない (取り込みでフォルダ名を
+    /// 埋めなくなったので、空の曲がこの規則で Rules / スマートに入る)。
+    #[test]
+    fn untagged_artist_album_are_missing_values() {
+        for empty in [None, Some(String::new())] {
+            let mut t = track(1, "", None, None);
+            t.artist = empty.clone();
+            t.album_artist = empty.clone();
+            t.album = empty.clone();
+            let m = |field: &str, op, v: &str| {
+                matches_lvl(
+                    &t,
+                    None,
+                    &crit(true, vec![rule(field, op, v)], vec![]),
+                    FoldLevel::Standard,
+                )
+            };
+            for field in ["artist", "albumArtist", "album"] {
+                assert!(m(field, SmartOp::IsNot, "Daft Punk"), "{field} {empty:?}");
+                assert!(m(field, SmartOp::NotContains, "daft"), "{field} {empty:?}");
+                assert!(!m(field, SmartOp::Is, "Daft Punk"), "{field} {empty:?}");
+                assert!(!m(field, SmartOp::Contains, "daft"), "{field} {empty:?}");
+                assert!(!m(field, SmartOp::StartsWith, "d"), "{field} {empty:?}");
+                assert!(m(field, SmartOp::NotExists, ""), "{field} {empty:?}");
+                assert!(!m(field, SmartOp::Exists, ""), "{field} {empty:?}");
+            }
+        }
+    }
+
     /// 値が無い曲: isNot / notContains は満たす (iTunes 互換)、それ以外の演算は満たさない。
     #[test]
     fn missing_value_semantics() {

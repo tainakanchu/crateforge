@@ -7,7 +7,7 @@
 import { useCallback, useMemo } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, filterAlbumTracks, trackArtist, trackAlbumArtist, useConnection, useDownloads, useSettings } from "@crateforge/core";
+import { ApiError, type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, filterAlbumTracks, trackArtistKey, trackAlbumArtistKey, useConnection, useDownloads, useSettings } from "@crateforge/core";
 
 import { usePendingEdits } from "@/store/pendingEdits";
 
@@ -214,16 +214,17 @@ function deriveArtistAlbums(
   grouping: ArtistGrouping,
   downloadedIds: Set<number>,
 ): Album[] {
-  const nameOf = grouping === "albumArtist" ? trackAlbumArtist : trackArtist;
+  // 束ねキー（不明なアーティストは ""。/api/artists の artist と同じ）で突き合わせる。
+  const nameOf = grouping === "albumArtist" ? trackAlbumArtistKey : trackArtistKey;
   const map = new Map<
     string,
     { album: string; albumArtist: string | null; trackCount: number; sampleTrackId: number; sampleDownloaded: boolean; year: number | null }
   >();
   for (const t of tracks) {
     if (nameOf(t) !== artist) continue;
-    const album = t.album ?? "";
-    // album が空/NULL の曲は "" キーで 1 グループ（「アルバムなし」）に束ねる。
-    // 表示は AlbumRow が空名を「アルバムなし」と出し、遷移はアーティスト画面が
+    const album = (t.album ?? "").trim() ? (t.album as string) : "";
+    // album が空/NULL の曲は "" キーで 1 グループ（「不明なアルバム」）に束ねる。
+    // 表示は AlbumRow が空名を「不明なアルバム」と出し、遷移はアーティスト画面が
     // 専用パラメータ(noAlbum)へ振り分ける（/album/ 空セグメントのクラッシュは回避済み）。
     const isDownloaded = downloadedIds.has(t.trackId);
     const entry = map.get(album);
@@ -253,7 +254,7 @@ function deriveArtistAlbums(
   return [...map.values()]
     .map(({ album, albumArtist, trackCount, sampleTrackId, year }) => ({ album, albumArtist, trackCount, sampleTrackId, year }))
     .sort((a, b) => {
-      // 「アルバムなし」(空アルバム) グループは常に末尾へ。
+      // 「不明なアルバム」(空アルバム) グループは常に末尾へ。
       if (!a.album !== !b.album) return a.album ? -1 : 1;
       return compareAlbums(a, b);
     })

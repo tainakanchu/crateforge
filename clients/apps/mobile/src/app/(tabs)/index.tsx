@@ -4,7 +4,7 @@
 // アルバムモード: distinct アルバムを一覧。検索でクライアント絞り込み。タップで詳細へ。
 // アーティストモード: クライアント側集計のアーティスト一覧。タップで詳細へ。
 
-import { albumHref } from "@/lib/albumHref";
+import { albumHref, artistHref } from "@/lib/albumHref";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, RefreshControl, Text, TextInput, View, StyleSheet } from "react-native";
 import { isSearchable, matchesNormalized, naturalCompare } from "@/lib/normalize";
@@ -15,7 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 
-import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, useConnection, usePlayer, useDownloads, useSettings, describeApiError } from "@crateforge/core";
+import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import TrackRow from "@/components/TrackRow";
@@ -139,19 +139,21 @@ export default function LibraryScreen() {
 
   // アルバムモードは検索でアルバム名をクライアント側で絞り込む。
   // 全角半角・かなカナ・大小・記号のゆれは正規化して吸収し、並びは自然順（2 < 10）。
+  // 不明なアルバム（album: ""）は末尾に置き、検索は表示ラベル（「不明なアルバム」）で照合する。
   const albums = useMemo(() => {
-    const all = [...(albumsQuery.data ?? [])].sort((a, b) => naturalCompare(a.album, b.album));
+    const all = [...(albumsQuery.data ?? [])].sort(compareNamesUnknownLast((a) => a.album));
     if (!debounced) return all;
-    return all.filter((a) => matchesNormalized(a.album, debounced));
+    return all.filter((a) => matchesNormalized(albumLabel(a.album), debounced));
   }, [albumsQuery.data, debounced]);
 
   // アーティストモードは検索でアーティスト名をクライアント側で絞り込む。
+  // 不明なアーティスト（artist: ""）は末尾、検索は表示ラベルで照合する。
   const artists = useMemo((): Artist[] => {
-    const all: Artist[] = [...(artistsQuery.data ?? [])].sort((a, b) =>
-      naturalCompare(a.artist, b.artist),
+    const all: Artist[] = [...(artistsQuery.data ?? [])].sort(
+      compareNamesUnknownLast((a) => a.artist),
     );
     if (!debounced) return all;
-    return all.filter((a) => matchesNormalized(a.artist, debounced));
+    return all.filter((a) => matchesNormalized(artistLabel(a.artist), debounced));
   }, [artistsQuery.data, debounced]);
 
   const onPressTrack = (index: number) => {
@@ -277,10 +279,8 @@ export default function LibraryScreen() {
           renderItem={({ item }: { item: Album }) => (
             <AlbumRow
               album={item}
-              onPress={() => {
-                if (!item.album) return;
-                router.push(albumHref(item.album));
-              }}
+              // 不明なアルバム（空名）も albumHref が unknown=1 のルートへ振り分ける。
+              onPress={() => router.push(albumHref(item.album))}
             />
           )}
           ListEmptyComponent={
@@ -313,10 +313,8 @@ export default function LibraryScreen() {
             renderItem={({ item }: { item: Artist }) => (
               <ArtistRow
                 artist={item}
-                onPress={() => {
-                  if (!item.artist) return;
-                  router.push(`/artist/${encodeURIComponent(item.artist)}`);
-                }}
+                // 不明なアーティスト（空名）も artistHref が unknown=1 のルートへ振り分ける。
+                onPress={() => router.push(artistHref(item.artist))}
               />
             )}
             ListEmptyComponent={
@@ -365,7 +363,8 @@ function OfflineLibrary() {
     [entries],
   );
 
-  // entries から album 名でグルーピングしてアルバム一覧を導出する（album が空の曲は除外）。
+  // entries から album 名でグルーピングしてアルバム一覧を導出する（album が空の曲は "" の
+  // 「不明なアルバム」1 件にまとめて末尾）。
   // アルバムごとに 曲数 / 表示アーティスト / アート用の代表トラックID を持たせる。
   const offlineAlbums = useMemo((): OfflineAlbum[] => {
     // album 名 → { 曲数, アーティスト集合, 代表トラックID } を集約。
@@ -374,8 +373,7 @@ function OfflineLibrary() {
       { count: number; artists: Set<string>; repTrackId: number }
     >();
     for (const e of Object.values(entries)) {
-      const album = e.track.album;
-      if (!album) continue;
+      const album = e.track.album?.trim() ? e.track.album : "";
       const existing = map.get(album);
       if (existing) {
         existing.count += 1;
@@ -404,20 +402,18 @@ function OfflineLibrary() {
               : "Various Artists",
         repTrackId: v.repTrackId,
       }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(compareNamesUnknownLast((a) => a.name));
   }, [entries]);
 
-  // entries をアーティストでグルーピング（空アーティストは除外）。
+  // entries をアーティストでグルーピング（空アーティストは "" の「不明なアーティスト」1 件で末尾）。
   // 束ね方は設定 (artistGrouping) に追従させ、artist ページの nameOf と一致させる
   // （"albumArtist" なら albumArtist 優先、それ以外は artist 優先）。
   const offlineArtists = useMemo((): OfflineArtist[] => {
     const map = new Map<string, { count: number; repTrackId: number }>();
     for (const e of Object.values(entries)) {
+      // 束ねキーはアーティスト画面のオフライン絞り込み（trackArtistKey 等）と同じ。
       const name =
-        artistGrouping === "albumArtist"
-          ? (e.track.albumArtist ?? e.track.artist)
-          : (e.track.artist ?? e.track.albumArtist);
-      if (!name) continue;
+        artistGrouping === "albumArtist" ? trackAlbumArtistKey(e.track) : trackArtistKey(e.track);
       const existing = map.get(name);
       if (existing) {
         existing.count += 1;
@@ -428,7 +424,7 @@ function OfflineLibrary() {
     }
     return Array.from(map.entries())
       .map(([name, v]) => ({ name, count: v.count, repTrackId: v.repTrackId }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(compareNamesUnknownLast((a) => a.name));
   }, [entries, artistGrouping]);
 
   // DL済みプレイリスト（新しい順）。
@@ -481,6 +477,19 @@ function OfflineLibrary() {
       )}
     </Screen>
   );
+}
+
+/**
+ * 名前の自然順比較。ただし空名（不明なアルバム / アーティスト）は常に末尾に置く
+ * （デスクトップの Artists / Albums と同じ並び）。
+ */
+function compareNamesUnknownLast<T>(nameOf: (x: T) => string): (a: T, b: T) => number {
+  return (a, b) => {
+    const an = nameOf(a).trim();
+    const bn = nameOf(b).trim();
+    if (!an !== !bn) return an ? -1 : 1;
+    return naturalCompare(nameOf(a), nameOf(b));
+  };
 }
 
 /** オフライン時のアルバム集約（アート用代表トラック・表示アーティスト付き）。 */
@@ -548,15 +557,15 @@ function OfflineCollectionHeader({
           {albums.map((a) => (
             <Pressable
               key={a.name}
-              onPress={() => router.push(`/album/${encodeURIComponent(a.name)}`)}
+              onPress={() => router.push(albumHref(a.name))}
               accessibilityRole="button"
-              accessibilityLabel={a.name}
+              accessibilityLabel={albumLabel(a.name)}
               style={({ pressed }) => [styles.collectionRow, pressed && styles.pressed]}
             >
               <LocalArt uri={getLocalArtworkUri(a.repTrackId)} fallbackIcon="albums-outline" />
               <View style={styles.collectionText}>
                 <Text style={styles.collectionName} numberOfLines={1}>
-                  {a.name}
+                  {albumLabel(a.name)}
                 </Text>
                 {a.artist ? (
                   <Text style={styles.collectionSub} numberOfLines={1}>
@@ -578,15 +587,15 @@ function OfflineCollectionHeader({
           {artists.map((ar) => (
             <Pressable
               key={ar.name}
-              onPress={() => router.push(`/artist/${encodeURIComponent(ar.name)}`)}
+              onPress={() => router.push(artistHref(ar.name))}
               accessibilityRole="button"
-              accessibilityLabel={ar.name}
+              accessibilityLabel={artistLabel(ar.name)}
               style={({ pressed }) => [styles.collectionRow, pressed && styles.pressed]}
             >
               <LocalArt uri={getLocalArtworkUri(ar.repTrackId)} fallbackIcon="person-outline" circular />
               <View style={styles.collectionText}>
                 <Text style={styles.collectionName} numberOfLines={1}>
-                  {ar.name}
+                  {artistLabel(ar.name)}
                 </Text>
                 <Text style={styles.collectionMeta}>{ar.count}曲</Text>
               </View>

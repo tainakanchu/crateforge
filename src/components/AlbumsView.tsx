@@ -17,6 +17,7 @@ import type { Track, Playlist, AlbumRow, SortField, SortOrder } from "../types";
 import { EmptyState } from "./EmptyState";
 import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import { splitGenre } from "../lib/genre";
+import { albumLabel } from "../lib/unknownLabels";
 
 const GAP = 18;
 const PAD_X = 20;
@@ -78,7 +79,9 @@ function formatTime(ms: number | null): string {
 function albumRowToVM(r: AlbumRow): AlbumVM {
   return {
     key: r.albumKey,
-    album: r.album || "(unknown)",
+    // 不明なアルバム (unk:) は空文字のまま持ち、描画時に albumLabel でラベル付けする
+    // (空のままにするとソートで方向によらず末尾へ置ける)。
+    album: r.album,
     albumArtist: r.albumArtist,
     isCompilation: r.isCompilation,
     trackCount: r.trackCount,
@@ -169,7 +172,7 @@ function albumComparator(
 
 // ロード済みトラックをクライアント側でアルバム単位に束ねる (スコープ外: プレイリスト/検索/最近)。
 // 束ねキーの優先順位はサーバの ALBUM_KEY_EXPR と一致させる (album 空を先に判定):
-//   album 空    → tr:<trackId>           (巨大な「(unknown)」へ吸い込まれないように)
+//   album 空    → unk:                   (タグにアルバムが無い曲をまとめた 1 つの「不明なアルバム」)
 //   compilation → cmp:<album>            (アルバムアーティストが違っても album だけで束ねる)
 //   それ以外    → al:<albumArtist|artist>␟<album>
 // アルバム内は disc→track 順 (multi-disc を正しく並べる)。
@@ -181,7 +184,7 @@ function groupAlbums(tracks: Track[], sortField: SortField, sortOrder: SortOrder
     const albumName = (t.album || "").trim();
     const isCmp = t.compilation === true;
     const key = !albumName
-      ? `tr:${t.trackId}`
+      ? "unk:"
       : isCmp
         ? `cmp:${albumName.toLowerCase()}`
         : `al:${(t.albumArtist || t.artist || "").toLowerCase()}␟${albumName.toLowerCase()}`;
@@ -190,9 +193,9 @@ function groupAlbums(tracks: Track[], sortField: SortField, sortOrder: SortOrder
       entry = {
         vm: {
           key,
-          album: albumName || t.name || "(unknown)",
-          albumArtist: isCmp ? "Various Artists" : t.albumArtist || t.artist || "",
-          isCompilation: isCmp,
+          album: albumName,
+          albumArtist: isCmp && albumName ? "Various Artists" : t.albumArtist || t.artist || "",
+          isCompilation: isCmp && !!albumName,
           trackCount: 0,
           coverTrackId: null,
           coverPath: null,
@@ -239,6 +242,11 @@ function groupAlbums(tracks: Track[], sortField: SortField, sortOrder: SortOrder
     vm.playCount = ts.reduce((s, t) => s + (t.playCount ?? 0), 0);
     vm.coverTrackId = cover?.trackId ?? null;
     vm.coverPath = cover && cover.fileExists ? cover.locationPath : null;
+    if (key === "unk:") {
+      // 不明なアルバムは寄せ集め: アーティストが 1 人ならその名前、複数なら空 (サーバ集約と同じ)。
+      const artists = new Set(ts.map((t) => (t.albumArtist || t.artist || "").trim().toLowerCase()));
+      if (artists.size > 1) vm.albumArtist = "";
+    }
     out.push(vm);
   }
   out.sort(albumComparator(sortField, sortOrder));
@@ -460,7 +468,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         tracks: ts,
         trackIds: ts.map((t) => t.trackId),
         primary: ts[0],
-        headerLabel: ts.length > 1 ? `${vm.album} · ${ts.length} 曲` : vm.album,
+        headerLabel: ts.length > 1 ? `${albumLabel(vm.album)} · ${ts.length} 曲` : albumLabel(vm.album),
       });
     },
     [ensureTracks],
@@ -710,12 +718,12 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                             (isCurrent ? " playing" : "") +
                             (isOpen ? " opened" : "")
                           }
-                          style={{ background: artGradient(al.album), height: cardW }}
+                          style={{ background: artGradient(albumLabel(al.album)), height: cardW }}
                           onClick={() => toggleExpand(al)}
                           onDoubleClick={() => playAlbum(al)}
                           onContextMenu={(e) => openAlbumMenu(e, al)}
                         >
-                          <span className="glyph">{leadingGlyph(al.album)}</span>
+                          <span className="glyph">{leadingGlyph(albumLabel(al.album))}</span>
                           <ArtworkImg path={al.coverPath} size={cardW} />
                           <span className="grad" />
                           <div className="kbtag">
@@ -761,9 +769,13 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                           className="cov-meta"
                           onClick={() => toggleExpand(al)}
                           onContextMenu={(e) => openAlbumMenu(e, al)}
-                          title={`${al.album} — ${al.albumArtist}`}
+                          title={
+                            al.albumArtist
+                              ? `${albumLabel(al.album)} — ${al.albumArtist}`
+                              : albumLabel(al.album)
+                          }
                         >
-                          <div className="cj">{al.album}</div>
+                          <div className="cj">{albumLabel(al.album)}</div>
                           <div className="la">{al.albumArtist}</div>
                           {showSortLine && <div className="ls cb-dim">{sortLabel ?? "—"}</div>}
                         </div>
@@ -932,9 +944,11 @@ function AlbumExpansion({
       <div className="cov-exp">
       <div className="cov-exp-head">
         <div className="cov-exp-title">
-          <span className="t">{vm.album}</span>
+          <span className="t">{albumLabel(vm.album)}</span>
           <span className="s">
-            {vm.albumArtist} · {tracks.length} tracks · {formatTime(totalMs)}
+            {[vm.albumArtist, `${tracks.length} tracks`, formatTime(totalMs)]
+              .filter(Boolean)
+              .join(" · ")}
           </span>
         </div>
         <button className="cov-exp-close" title="Collapse" onClick={onClose}>
@@ -948,7 +962,7 @@ function AlbumExpansion({
           const showArtist = (t.artist || "") !== vm.albumArtist && !!t.artist;
           return (
             <div
-              key={t.id}
+              key={`${t.id}-${i}`}
               className={"cov-trk" + (isCurrent ? " play" : "") + (!t.fileExists ? " missing" : "")}
               onDoubleClick={() => onPlayTrack(t.trackId)}
               onContextMenu={(e) => onTrackContextMenu(e, t)}

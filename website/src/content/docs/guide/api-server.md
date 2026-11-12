@@ -49,9 +49,15 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 - `GET /api/playlists` / `GET /api/playlists/{id}`（スマート条件 `smartCriteria` を含む） / `GET /api/playlists/{id}/tracks`
   （スマートプレイリストの `trackCount` は条件のライブ評価の件数です）
 
-曲を返す API（`/api/tracks` 系・`/similar`・`/api/playlists/{id}/tracks`）の `bpm` は **実効 BPM**（タグの BPM、無ければ解析 BPM）です。
-ただし `/api/playlists/{id}/tracks` は、同期（取り寄せ）が解析値をタグとして保存しないよう、`?effectiveBpm=false` を付けた要求・
-sync ロールのトークン・User-Agent の無い要求（旧版の同期クライアント）にはタグの値のまま返します。
+曲を返す API（`/api/tracks` 系・`/api/tracks/by-ids`・`/api/tracks/lookup`・`/similar`・`/api/playlists/{id}/tracks`・
+`PATCH /api/tracks/{id}` の応答）の `bpm` は、常に **実効 BPM**（タグの BPM、無ければ解析 BPM）です。
+タグの値そのものが要るときは `?effectiveBpm=false` を付けて明示してください（sync ロールのトークンも常にタグの値）。
+同期（取り寄せ・書き戻し）は解析値をタグとして保存しないよう、必ず `?effectiveBpm=false` を付けて要求します。
+
+タグにアーティスト / アルバムが無い曲は、フォルダ名などで補わず空のまま扱います（曲名はファイル名で補います）。
+`GET /api/artists` はそのような曲を `artist: ""` の 1 件に、`GET /api/albums` は `album: ""` の 1 件にまとめて末尾に返します
+（「不明なアーティスト」「不明なアルバム」といった表示名はクライアント側で付けてください）。
+その曲は `GET /api/tracks?artist=`（空）／ `GET /api/tracks?album=&albumExact=true` で取得できます。
 
 クエリの真偽値は `true` / `false` のほか `1` / `0` も受け付けます。
 クライアントが `Accept-Encoding: gzip` を送ると、大きな JSON 応答（全曲一覧など）は gzip 圧縮して返します。

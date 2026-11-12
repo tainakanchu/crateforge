@@ -636,7 +636,7 @@ export function SetHistoryView() {
                       {t.name ?? "(untitled)"}
                     </span>
                     <span className="set-history-track-artist">
-                      {t.artist ?? "—"}
+                      {t.artist || "—"}
                     </span>
                   </div>
                   <div className="set-history-track-actions">
@@ -758,7 +758,7 @@ export function SetHistoryView() {
                               >
                                 <span>{t.name ?? "?"}</span>
                                 <span className="set-history-muted">
-                                  {t.artist ?? "—"}
+                                  {t.artist || "—"}
                                 </span>
                               </button>
                             </li>

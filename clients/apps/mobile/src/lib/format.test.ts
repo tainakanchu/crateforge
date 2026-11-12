@@ -1,10 +1,14 @@
 import {
+  albumLabel,
+  artistLabel,
   formatDuration,
   formatSeconds,
   ratingToStars,
   ratingToHalfStars,
   formatRatingStars,
   trackArtist,
+  trackArtistKey,
+  trackAlbumArtistKey,
   trackMetaText,
   trackSubtitle,
   trackTitle,
@@ -60,12 +64,28 @@ describe("track display helpers", () => {
   it("trackArtist prefers artist then albumArtist", () => {
     expect(trackArtist({ artist: "A", albumArtist: "B" })).toBe("A");
     expect(trackArtist({ artist: null, albumArtist: "B" })).toBe("B");
-    expect(trackArtist({ artist: null, albumArtist: null })).toBe("Unknown Artist");
+    expect(trackArtist({ artist: null, albumArtist: null })).toBe("不明なアーティスト");
+    expect(trackArtist({ artist: "", albumArtist: "" })).toBe("不明なアーティスト");
+  });
+  it("束ねキーは不明なアーティストを空文字にする（/api/artists の artist: \"\" と一致）", () => {
+    expect(trackArtistKey({ artist: null, albumArtist: null })).toBe("");
+    expect(trackArtistKey({ artist: "", albumArtist: "B" })).toBe("B");
+    expect(trackAlbumArtistKey({ artist: "A", albumArtist: null })).toBe("A");
+    expect(trackAlbumArtistKey({ artist: null, albumArtist: "" })).toBe("");
+  });
+  it("artistLabel / albumLabel は空名を「不明な〜」にする", () => {
+    expect(artistLabel("")).toBe("不明なアーティスト");
+    expect(artistLabel("  ")).toBe("不明なアーティスト");
+    expect(artistLabel(null)).toBe("不明なアーティスト");
+    expect(artistLabel("Daft Punk")).toBe("Daft Punk");
+    expect(albumLabel("")).toBe("不明なアルバム");
+    expect(albumLabel(undefined)).toBe("不明なアルバム");
+    expect(albumLabel("Discovery")).toBe("Discovery");
   });
   it("trackSubtitle joins artist and album", () => {
     expect(trackSubtitle({ artist: "A", albumArtist: null, album: "Alb" })).toBe("A — Alb");
     expect(trackSubtitle({ artist: null, albumArtist: "B", album: null })).toBe("B");
-    expect(trackSubtitle({ artist: null, albumArtist: null, album: null })).toBe("Unknown Artist");
+    expect(trackSubtitle({ artist: null, albumArtist: null, album: null })).toBe("不明なアーティスト");
   });
 });
 

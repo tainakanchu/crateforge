@@ -5,7 +5,7 @@
 import { Pressable, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { type Artist, useConnection, useDownloads } from "@crateforge/core";
+import { type Artist, artistLabel, useConnection, useDownloads } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
 import LayeredArtwork from "@/components/LayeredArtwork";
 
@@ -32,14 +32,15 @@ export default function ArtistRow({ artist, onPress }: ArtistRowProps) {
       {/* 頭文字プレースホルダを下に敷き画像を重ねる（404 でも空箱にしない）。 */}
       <LayeredArtwork
         source={source}
-        name={artist.artist}
+        name={artistLabel(artist.artist)}
         size={THUMB}
         radius={RADIUS}
         recyclingKey={String(artist.sampleTrackId)}
       />
       <View style={styles.texts}>
         <Text style={styles.name} numberOfLines={1}>
-          {artist.artist}
+          {/* 空名（タグにアーティストが無い曲のグループ）は「不明なアーティスト」。 */}
+          {artistLabel(artist.artist)}
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
           {artist.trackCount}曲

@@ -16,7 +16,7 @@
 import { View, Text, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 
-import { type Artist, useConnection } from "@crateforge/core";
+import { type Artist, artistLabel, useConnection } from "@crateforge/core";
 import { Focusable } from "@/components/focus";
 import { PALETTE, TV_FONT, FOCUS_RING } from "@/theme/palette";
 
@@ -43,7 +43,7 @@ export function ArtistRow({ artist, onSelect, onFocus, active = false, hasTVPref
       onFocus={onFocus}
       hasTVPreferredFocus={hasTVPreferredFocus}
       style={[styles.row, active && styles.rowActive]}
-      accessibilityLabel={`${artist.artist}, ${artist.trackCount}曲`}
+      accessibilityLabel={`${artistLabel(artist.artist)}, ${artist.trackCount}曲`}
     >
       {client ? (
         <Image
@@ -58,7 +58,8 @@ export function ArtistRow({ artist, onSelect, onFocus, active = false, hasTVPref
 
       <View style={styles.texts}>
         <Text style={[styles.name, active && styles.nameActive]} numberOfLines={1}>
-          {artist.artist}
+          {/* 空名（タグにアーティストが無い曲のグループ）は「不明なアーティスト」。 */}
+          {artistLabel(artist.artist)}
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
           {artist.trackCount}曲

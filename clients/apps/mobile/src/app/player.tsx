@@ -2,7 +2,7 @@
 // その下に「次に再生」（残りキュー）と「似た曲」（現在曲の類似曲）を並べる。
 // 依存追加禁止のため、シークバーは Pressable のレイアウト幅から位置を計算する自作。
 
-import { albumHref } from "@/lib/albumHref";
+import { albumHref, artistHref } from "@/lib/albumHref";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   View,
@@ -18,7 +18,7 @@ import type { LayoutChangeEvent, GestureResponderEvent } from "react-native";
 import { useRouter } from "expo-router";
 
 import { BRAND, PALETTE } from "@/constants/brand";
-import { ApiError, type SimilarHit, type Track, formatDuration, ratingToHalfStars, trackTitle, trackArtist, trackAlbumArtist, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
+import { ApiError, type SimilarHit, type Track, formatDuration, ratingToHalfStars, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
 import ModeToggleButton from "@/components/ModeToggleButton";
@@ -263,14 +263,14 @@ function NowPlaying({
   const setSleepTimer = usePlayer((s) => s.setSleepTimer);
   const setStopAtTrackEnd = usePlayer((s) => s.setStopAtTrackEnd);
 
-  // アーティストページへ遷移（"Unknown Artist" のときは no-op）。
-  // 束ね方は設定に追従させ、artist ページの絞り込みと一致させる。
+  // アーティストページへ遷移。束ね方は設定に追従させ、artist ページの絞り込みと一致させる。
+  // タグにアーティストが無い曲は「不明なアーティスト」グループ（artistKey = ""）へ遷移する。
   const artistGrouping = useSettings((s) => s.artistGrouping);
-  const artistName =
-    artistGrouping === "albumArtist" ? trackAlbumArtist(current) : trackArtist(current);
+  const artistKey =
+    artistGrouping === "albumArtist" ? trackAlbumArtistKey(current) : trackArtistKey(current);
+  const artistName = artistLabel(artistKey);
   const handleArtistPress = () => {
-    if (artistName === "Unknown Artist") return;
-    router.push(`/artist/${encodeURIComponent(artistName)}`);
+    router.push(artistHref(artistKey));
   };
 
   const [showRatePicker, setShowRatePicker] = useState(false);
@@ -315,27 +315,20 @@ function NowPlaying({
         {trackTitle(current)}
       </Text>
 
-      {/* アーティスト名：タップでアーティストページへ。Unknown Artist のときは遷移しない */}
+      {/* アーティスト名：タップでアーティストページへ（不明なアーティストはそのグループへ） */}
       <Pressable
         onPress={handleArtistPress}
-        disabled={artistName === "Unknown Artist"}
         accessibilityRole="link"
         accessibilityLabel={`アーティスト: ${artistName}`}
         style={({ pressed }) => pressed && styles.pressed}
       >
-        <Text
-          style={[
-            styles.artist,
-            artistName !== "Unknown Artist" && styles.artistTappable,
-          ]}
-          numberOfLines={1}
-        >
+        <Text style={[styles.artist, styles.artistTappable]} numberOfLines={1}>
           {artistName}
         </Text>
       </Pressable>
 
       {/* アルバム名：存在するときのみ表示。タップでアルバムページへ */}
-      {current.album != null && (
+      {!!current.album?.trim() && (
         <Pressable
           onPress={() =>
             router.push(albumHref(current.album!))

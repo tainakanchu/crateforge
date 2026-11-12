@@ -7,7 +7,8 @@ import {
   type Track,
   describeApiError,
   trackArtist,
-  trackAlbumArtist,
+  trackArtistKey,
+  trackAlbumArtistKey,
   ratingToHalfStars,
   formatRatingStars,
   trackTitle,
@@ -20,7 +21,7 @@ import { router } from "expo-router";
 
 import { type ActionSheetAction, showActionSheet } from "@/components/ActionSheet";
 import { showToast } from "@/components/Toast";
-import { albumHref } from "@/lib/albumHref";
+import { albumHref, artistHref } from "@/lib/albumHref";
 
 import { COMMON_TRIAGE_TAGS, REVIEW_LATER_TAG } from "@/features/triage/commonTags";
 import { usePendingEdits } from "@/store/pendingEdits";
@@ -34,7 +35,8 @@ import { playTrackOnDesktop } from "./desktopPlay";
 export function showTrackMenu(track: Track): void {
   const online = useConnection.getState().client != null;
   const grouping = useSettings.getState().artistGrouping;
-  const artistName = grouping === "albumArtist" ? trackAlbumArtist(track) : trackArtist(track);
+  // 束ねキー（タグにアーティストが無ければ ""）。
+  const artistKey = grouping === "albumArtist" ? trackAlbumArtistKey(track) : trackArtistKey(track);
 
   const actions: ActionSheetAction[] = [];
 
@@ -57,11 +59,11 @@ export function showTrackMenu(track: Track): void {
   actions.push({ label: "タグを付ける…", onPress: () => showTagMenu(track) });
   actions.push({ label: "あとで聴く", onPress: () => void applyReviewLater(track) });
 
-  // アーティストを見る（表示名が "Unknown Artist"/空でなければ）。
-  if (artistName && artistName !== "Unknown Artist") {
+  // アーティストを見る（タグにアーティストがあるときだけ。不明なアーティストは一覧から辿れる）。
+  if (artistKey.trim()) {
     actions.push({
       label: "アーティストを見る",
-      onPress: () => router.push(`/artist/${encodeURIComponent(artistName)}`),
+      onPress: () => router.push(artistHref(artistKey)),
     });
   }
 

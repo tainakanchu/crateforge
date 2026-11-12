@@ -48,9 +48,15 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 - `GET /api/playlists` / `GET /api/playlists/{id}`（含智慧型條件 `smartCriteria`） / `GET /api/playlists/{id}/tracks`
   （智慧型播放清單的 `trackCount` 為條件即時評估後的曲數）
 
-回傳曲目的 API（`/api/tracks` 系列・`/similar`・`/api/playlists/{id}/tracks`）的 `bpm` 為**實效 BPM**（標籤的 BPM，沒有時為解析 BPM）。
-但為了避免同步（取回）把解析值存成標籤，`/api/playlists/{id}/tracks` 對帶有 `?effectiveBpm=false` 的請求、sync 角色的權杖、
-以及沒有 User-Agent 的請求（舊版同步用戶端）會直接回傳標籤值。
+回傳曲目的 API（`/api/tracks` 系列・`/api/tracks/by-ids`・`/api/tracks/lookup`・`/similar`・`/api/playlists/{id}/tracks`・
+`PATCH /api/tracks/{id}` 的回應）的 `bpm` 一律為**實效 BPM**（標籤的 BPM，沒有時為解析 BPM）。
+需要標籤原值時，請加上 `?effectiveBpm=false` 明確指定（sync 角色的權杖也一律回傳標籤值）。
+同步（取回・寫回）為避免把解析值存成標籤，一定會帶上 `?effectiveBpm=false` 發出請求。
+
+標籤中沒有演出者 / 專輯的曲目不會以資料夾名稱補上，而是維持空白（曲名仍會以檔名補上）。
+`GET /api/artists` 會把這些曲目彙整為一筆 `artist: ""`，`GET /api/albums` 彙整為一筆 `album: ""`，並排在最後
+（「未知的演出者」「未知的專輯」等顯示名稱請由用戶端自行加上）。
+這些曲目可透過 `GET /api/tracks?artist=`（空值）／ `GET /api/tracks?album=&albumExact=true` 取得。
 
 查詢參數的布林值除了 `true` / `false` 之外，也接受 `1` / `0`。
 用戶端送出 `Accept-Encoding: gzip` 時，較大的 JSON 回應（例如全部曲目清單）會以 gzip 壓縮回傳。

@@ -49,9 +49,15 @@ It exposes a REST API for reading and writing the library, analysis data, and pl
 - `GET /api/playlists` / `GET /api/playlists/{id}` (includes the smart criteria `smartCriteria`) / `GET /api/playlists/{id}/tracks`
   (for smart playlists, `trackCount` is the live-evaluated count)
 
-The `bpm` of APIs that return tracks (`/api/tracks*`, `/similar`, `/api/playlists/{id}/tracks`) is the **effective BPM** (the tag BPM, or the analyzed BPM when the tag has none).
-`/api/playlists/{id}/tracks`, however, returns the raw tag value for requests with `?effectiveBpm=false`, for sync-role tokens, and for requests without a User-Agent (older sync clients),
-so that sync (provisioning) never stores an analyzed value as a tag.
+The `bpm` of APIs that return tracks (`/api/tracks*`, `/api/tracks/by-ids`, `/api/tracks/lookup`, `/similar`, `/api/playlists/{id}/tracks`,
+and the response of `PATCH /api/tracks/{id}`) is always the **effective BPM** (the tag BPM, or the analyzed BPM when the tag has none).
+To get the raw tag value, ask for it explicitly with `?effectiveBpm=false` (sync-role tokens also always get the tag value).
+Sync (provisioning and write-back) always sends `?effectiveBpm=false`, so it never stores an analyzed value as a tag.
+
+Tracks whose tags have no artist / album are kept empty rather than filled in from folder names (the title still falls back to the file name).
+`GET /api/artists` groups them into a single `artist: ""` entry and `GET /api/albums` into a single `album: ""` entry, both listed last
+(clients should label them, e.g. "Unknown Artist" / "Unknown Album").
+Those tracks can be fetched with `GET /api/tracks?artist=` (empty) / `GET /api/tracks?album=&albumExact=true`.
 
 Boolean query parameters accept `1` / `0` as well as `true` / `false`.
 When the client sends `Accept-Encoding: gzip`, large JSON responses (such as the full track list) are gzip-compressed.

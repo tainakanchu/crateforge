@@ -60,14 +60,49 @@ export function trackTitle(t: Pick<Track, "name" | "locationPath">): string {
   return "Unknown Track";
 }
 
-/** 曲の表示アーティスト。 */
-export function trackArtist(t: Pick<Track, "artist" | "albumArtist">): string {
-  return t.artist || t.albumArtist || "Unknown Artist";
+/** タグにアーティストが無い曲（グループ）の表示ラベル。 */
+export const UNKNOWN_ARTIST_LABEL = "不明なアーティスト";
+/** タグにアルバムが無い曲（グループ）の表示ラベル。 */
+export const UNKNOWN_ALBUM_LABEL = "不明なアルバム";
+
+/**
+ * アーティスト名の表示ラベル。空（null / "" / 空白のみ）は「不明なアーティスト」。
+ * `/api/artists` は不明なアーティストを `artist: ""` で返すので、名前を出す所はこれを通す。
+ */
+export function artistLabel(name: string | null | undefined): string {
+  return name && name.trim() ? name : UNKNOWN_ARTIST_LABEL;
 }
 
-/** アルバムアーティスト名。無ければトラックのアーティスト、それも無ければ Unknown。 */
+/**
+ * アルバム名の表示ラベル。空（null / "" / 空白のみ）は「不明なアルバム」。
+ * `/api/albums` は不明なアルバムを `album: ""` で返す。
+ */
+export function albumLabel(name: string | null | undefined): string {
+  return name && name.trim() ? name : UNKNOWN_ALBUM_LABEL;
+}
+
+/**
+ * 曲のアーティストの束ねキー（grouping=artist）。`/api/artists` の `artist` と同じ規則:
+ * artist || albumArtist || ""（空 = 不明なアーティスト）。オフラインでの絞り込みや
+ * `/api/tracks?artist=` との突き合わせに使う（表示には trackArtist を使う）。
+ */
+export function trackArtistKey(t: Pick<Track, "artist" | "albumArtist">): string {
+  return t.artist || t.albumArtist || "";
+}
+
+/** 曲のアルバムアーティストの束ねキー（grouping=albumArtist）: albumArtist || artist || ""。 */
+export function trackAlbumArtistKey(t: Pick<Track, "artist" | "albumArtist">): string {
+  return t.albumArtist || t.artist || "";
+}
+
+/** 曲の表示アーティスト。無ければ「不明なアーティスト」。 */
+export function trackArtist(t: Pick<Track, "artist" | "albumArtist">): string {
+  return artistLabel(trackArtistKey(t));
+}
+
+/** アルバムアーティスト名。無ければトラックのアーティスト、それも無ければ「不明なアーティスト」。 */
 export function trackAlbumArtist(t: Pick<Track, "artist" | "albumArtist">): string {
-  return t.albumArtist || t.artist || "Unknown Artist";
+  return artistLabel(trackAlbumArtistKey(t));
 }
 
 /** "Artist — Album" 形式のサブタイトル（欠損は片側のみ）。 */
@@ -75,7 +110,7 @@ export function trackSubtitle(t: Pick<Track, "artist" | "albumArtist" | "album">
   const artist = t.artist || t.albumArtist || "";
   const album = t.album || "";
   if (artist && album) return `${artist} — ${album}`;
-  return artist || album || "Unknown Artist";
+  return artist || album || UNKNOWN_ARTIST_LABEL;
 }
 
 /** 指定フィールドのメタテキストを生成する。値がない場合は null を返す。 */

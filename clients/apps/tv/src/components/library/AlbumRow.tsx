@@ -16,7 +16,7 @@
 import { View, Text, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 
-import { type Album, useConnection } from "@crateforge/core";
+import { type Album, albumLabel, useConnection } from "@crateforge/core";
 import { Focusable } from "@/components/focus";
 import { PALETTE, TV_FONT, FOCUS_RING } from "@/theme/palette";
 
@@ -34,8 +34,8 @@ export interface AlbumRowProps {
 /** 共有のフォーカス可能なアルバム行コンポーネント。 */
 export function AlbumRow({ album, onSelect, onFocus, hasTVPreferredFocus }: AlbumRowProps) {
   const client = useConnection((s) => s.client);
-  // 空のアルバム名は「アルバムなし」として表示する（distinct 集計で空キーが来る場合がある）。
-  const name = album.album || "アルバムなし";
+  // 空のアルバム名（タグにアルバムが無い曲のグループ。API は album: "" で返す）は「不明なアルバム」。
+  const name = albumLabel(album.album);
   const meta = `${album.albumArtist ? `${album.albumArtist} ・ ` : ""}${album.trackCount}曲`;
 
   return (

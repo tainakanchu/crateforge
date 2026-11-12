@@ -423,7 +423,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
                 >
                   {candidates.map((c) => (
                     <option key={c.releaseId} value={c.releaseId}>
-                      {c.artist} — {c.title}
+                      {c.artist || "不明なアーティスト"} — {c.title}
                       {c.date ? ` (${c.date.slice(0, 4)})` : ""}
                       {c.country ? ` [${c.country}]` : ""}
                     </option>
