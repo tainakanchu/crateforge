@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { type Artist, useConnection, useDownloads } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
+import ArtPlaceholder from "@/components/ArtPlaceholder";
 
 export interface ArtistRowProps {
   artist: Artist;
@@ -39,9 +40,7 @@ export default function ArtistRow({ artist, onPress }: ArtistRowProps) {
           recyclingKey={String(artist.sampleTrackId)}
         />
       ) : (
-        <View style={[styles.placeholder, dimensions]}>
-          <Ionicons name="person-outline" size={Math.round(THUMB * 0.5)} color={PALETTE.textFaint} />
-        </View>
+        <ArtPlaceholder name={artist.artist} size={THUMB} radius={RADIUS} />
       )}
       <View style={styles.texts}>
         <Text style={styles.name} numberOfLines={1}>

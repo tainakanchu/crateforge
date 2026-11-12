@@ -13,8 +13,11 @@ import * as Updates from "expo-updates";
 
 import { PALETTE } from "@/constants/brand";
 import { createFilePersister } from "@/lib/queryPersister";
-import { useConnection, usePlayer, useDownloads, useSettings, createAudioEngine, initPlayback } from "@crateforge/core";
+import { useConnection, useConnectionMonitor, usePlayer, useDownloads, useSettings, createAudioEngine, initPlayback } from "@crateforge/core";
 import MiniPlayer from "@/components/MiniPlayer";
+import { ActionSheetHost } from "@/components/ActionSheet";
+import { ToastHost } from "@/components/Toast";
+import DownloadFailureToast from "@/components/DownloadFailureToast";
 import PlaybackErrorToast from "@/components/PlaybackErrorToast";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { usePendingEdits } from "@/store/pendingEdits";
@@ -52,6 +55,8 @@ async function checkForOtaUpdate(): Promise<void> {
 }
 
 export default function RootLayout() {
+  // 前面復帰・オフライン中の接続再確認（B 担当の core フック）。
+  useConnectionMonitor();
   useEffect(() => {
     usePlayer.getState().setEngine(createAudioEngine());
     void initPlayback();
@@ -112,6 +117,9 @@ export default function RootLayout() {
             <MiniPlayer />
             {/* 再生エラーの通知（描画なし。Toast/Alert を出す） */}
             <PlaybackErrorToast />
+            <DownloadFailureToast />
+            <ToastHost />
+            <ActionSheetHost />
           </ErrorBoundary>
         </PersistQueryClientProvider>
       </SafeAreaProvider>

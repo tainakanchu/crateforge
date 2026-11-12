@@ -10,13 +10,17 @@ import {
   type ArtistGrouping,
   type Track,
   trackArtist,
+  filterAlbumTracks,
   trackAlbumArtist,
   useConnection,
   usePlayer,
   useDownloads,
+  describeApiError,
 } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
+import BackButton from "@/components/BackButton";
+import DesktopPlayButton from "@/components/DesktopPlayButton";
 import TrackRow from "@/components/TrackRow";
 import DownloadButton from "@/components/DownloadButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
@@ -34,18 +38,21 @@ export default function AlbumScreen() {
     name?: string;
     noAlbum?: string;
     artist?: string;
+    albumArtist?: string;
     grouping?: string;
   }>();
   // 「アルバムなし」モード: 指定アーティストの album が空の曲を集めて表示する。
   const isNoAlbum = params.noAlbum === "1";
   const album = params.name ? decodeURIComponent(params.name) : "";
   const artist = params.artist ? decodeURIComponent(params.artist) : "";
+  // 同名別アルバムを区別する albumArtist（遷移元が分かる場合のみ付く）。
+  const albumArtist = params.albumArtist ? decodeURIComponent(params.albumArtist) : null;
   const grouping: ArtistGrouping = params.grouping === "albumArtist" ? "albumArtist" : "artist";
   const title = isNoAlbum ? "アルバムなし" : album || "アルバム";
   const client = useConnection((s) => s.client);
 
   // 通常はアルバム名で取得。アルバムなしはアーティストの曲から album 空を抽出する。
-  const albumQuery = useAlbumTracks(isNoAlbum ? null : album || null);
+  const albumQuery = useAlbumTracks(isNoAlbum ? null : album || null, albumArtist);
   const artistQuery = useArtistTracks(isNoAlbum ? artist || null : null, grouping);
   const query = isNoAlbum ? artistQuery : albumQuery;
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
@@ -66,11 +73,12 @@ export default function AlbumScreen() {
         .filter((t) => nameOf(t) === artist && !t.album)
         .sort(byDiscTrack);
     }
-    return Object.values(entries)
-      .filter((e) => e.track.album === album)
-      .map((e) => e.track)
-      .sort(byDiscTrack);
-  }, [client, entries, album, isNoAlbum, artist, grouping]);
+    return filterAlbumTracks(
+      Object.values(entries).map((e) => e.track),
+      album,
+      albumArtist,
+    ).sort(byDiscTrack);
+  }, [client, entries, album, albumArtist, isNoAlbum, artist, grouping]);
   const tracks = client ? onlineTracks : offlineTracks;
 
   const onPressTrack = (index: number) => {
@@ -86,6 +94,7 @@ export default function AlbumScreen() {
 
   return (
     <Screen edges={["top"]}>
+      <BackButton />
       <View style={styles.header}>
         <View style={styles.headerText}>
           <Text style={styles.title} numberOfLines={2}>
@@ -114,8 +123,9 @@ export default function AlbumScreen() {
             <Ionicons name="play" size={18} color={BRAND.accentText} />
             <Text style={styles.playLabel}>再生</Text>
           </Pressable>
+          <DesktopPlayButton tracks={tracks} />
           {client && !isNoAlbum ? (
-            <DownloadButton albumName={album} label="アルバムを保存" />
+            <DownloadButton albumName={album} albumArtist={albumArtist} label="アルバムを保存" />
           ) : null}
         </View>
       ) : null}
@@ -171,7 +181,7 @@ export default function AlbumScreen() {
 }
 
 function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : "読み込みに失敗しました";
+  return describeApiError(e, { action: "読み込み" });
 }
 
 const styles = StyleSheet.create({
@@ -200,6 +210,7 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     gap: 12,
     paddingHorizontal: 16,

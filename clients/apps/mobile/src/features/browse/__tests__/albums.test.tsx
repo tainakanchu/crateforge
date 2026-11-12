@@ -102,7 +102,7 @@ describe("Library album mode", () => {
     fireEvent.press(row);
 
     await waitFor(() => {
-      expect(router.push).toHaveBeenCalledWith("/album/Blue%20Train");
+      expect(router.push).toHaveBeenCalledWith("/album/Blue%20Train?albumArtist=John%20Coltrane");
     });
   });
 

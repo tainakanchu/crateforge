@@ -149,6 +149,11 @@ export interface PlaybackState {
   currentTrackId: number | null;
   positionMs: number;
   durationMs: number;
+  /** 0.0–1.0。旧ホストでは欠ける。 */
+  volume?: number;
+  shuffle?: boolean;
+  /** "off" | "all" | "one"。旧ホストでは欠ける。 */
+  repeat?: "off" | "all" | "one";
 }
 
 /** 類似曲ヒット（`/api/tracks/{id}/similar`）。distance は小さいほど近い。 */
@@ -186,8 +191,10 @@ export interface TracksQuery {
   ratingMax?: number;
   /** genre 部分一致（小文字比較）。 */
   genre?: string;
-  /** album 部分一致（小文字比較）。 */
+  /** album 部分一致（小文字比較）。albumExact=true なら完全一致。 */
   album?: string;
+  /** true なら album を完全一致で絞る（新しいホストのみ。古いホストは無視して部分一致）。 */
+  albumExact?: boolean;
   /** artist 表示名（grouping=artist の表示名式）に完全一致する行のみに絞る。 */
   artist?: string;
   /** albumArtist 表示名（grouping=albumArtist の表示名式）に完全一致する行のみに絞る。 */

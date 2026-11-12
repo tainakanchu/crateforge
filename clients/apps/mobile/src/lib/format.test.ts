@@ -2,6 +2,8 @@ import {
   formatDuration,
   formatSeconds,
   ratingToStars,
+  ratingToHalfStars,
+  formatRatingStars,
   trackArtist,
   trackMetaText,
   trackSubtitle,
@@ -111,5 +113,26 @@ describe("trackMetaText", () => {
 
   it("playCount フィールド: 0 は null", () => {
     expect(trackMetaText({ ...baseTrack, playCount: 0 }, "playCount")).toBeNull();
+  });
+});
+
+describe("半星表示", () => {
+  it("ratingToHalfStars は 10 刻みを 0.5 星で返す", () => {
+    expect(ratingToHalfStars(0)).toBe(0);
+    expect(ratingToHalfStars(10)).toBe(0.5);
+    expect(ratingToHalfStars(70)).toBe(3.5);
+    expect(ratingToHalfStars(100)).toBe(5);
+    expect(ratingToHalfStars(null)).toBe(0);
+    expect(ratingToHalfStars(250)).toBe(5);
+  });
+  it("formatRatingStars は ½ を付ける", () => {
+    expect(formatRatingStars(70)).toBe("★★★½");
+    expect(formatRatingStars(10)).toBe("½");
+    expect(formatRatingStars(80)).toBe("★★★★");
+    expect(formatRatingStars(0)).toBe("");
+    expect(formatRatingStars(undefined)).toBe("");
+  });
+  it("trackMetaText の rating は半星を含む", () => {
+    expect(trackMetaText({ bpm: null, year: null, genre: null, rating: 70, playCount: null }, "rating")).toBe("★★★½");
   });
 });

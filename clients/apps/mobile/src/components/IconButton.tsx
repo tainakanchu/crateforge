@@ -29,7 +29,7 @@ export default function IconButton({
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityState={{ disabled }}
-      hitSlop={8}
+      hitSlop={10}
       style={({ pressed }) => [styles.button, pressed && !disabled && styles.pressed]}
     >
       <Ionicons name={name} size={size} color={disabled ? PALETTE.textFaint : color} />
@@ -42,6 +42,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     padding: 6,
+    minWidth: 44,
+    minHeight: 44,
   },
   pressed: {
     opacity: 0.6,

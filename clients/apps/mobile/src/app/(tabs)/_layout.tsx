@@ -1,4 +1,4 @@
-// タブナビ。Library / Playlists / Remote / Settings の 4 タブ。
+// タブナビ。ライブラリ・プレイリスト・リモート・設定の 4 タブ。
 // ミニプレイヤー/再生エラー通知はルートレイアウト(_layout.tsx)へ移したのでここには置かない。
 
 import { Tabs } from "expo-router";
@@ -22,7 +22,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: "Library",
+          title: "ライブラリ",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="library" size={size} color={color} />
           ),
@@ -31,7 +31,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="playlists"
         options={{
-          title: "Playlists",
+          title: "プレイリスト",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="list" size={size} color={color} />
           ),
@@ -40,7 +40,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="remote"
         options={{
-          title: "Remote",
+          title: "リモート",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="game-controller" size={size} color={color} />
           ),
@@ -49,7 +49,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="settings"
         options={{
-          title: "Settings",
+          title: "設定",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="settings" size={size} color={color} />
           ),

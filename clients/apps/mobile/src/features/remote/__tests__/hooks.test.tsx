@@ -40,6 +40,17 @@ describe("useRemoteState", () => {
     expect(result.current.data).toEqual(STATE);
   });
 
+  test("active=false（タブ非表示・アプリ非アクティブ）ならポーリングしない", async () => {
+    setTestConnection();
+    const fn = mockFetch({ body: STATE });
+    const wrapper = createQueryWrapper();
+
+    const { result } = await renderHook(() => useRemoteState(false), { wrapper });
+
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   test("未接続なら enabled=false で実行されない", async () => {
     const fn = mockFetch({ body: STATE });
     const wrapper = createQueryWrapper();
@@ -107,6 +118,30 @@ describe("useRemoteCommands", () => {
     const [url, init] = fn.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("http://host:8787/api/remote/set-queue");
     expect(JSON.parse(String(init.body))).toEqual({ trackIds: [1, 2, 3], startIndex: 2 });
+  });
+
+  test("playAt は /api/remote/play-at に index を POST する", async () => {
+    setTestConnection({ baseUrl: "http://host:8787" });
+    const fn = mockFetch({ body: { trackId: 43 } });
+    const wrapper = createQueryWrapper();
+
+    const { result } = await renderHook(() => useRemoteCommands(), { wrapper });
+
+    await expect(result.current.playAt(1)).resolves.toBe(true);
+
+    const [url, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://host:8787/api/remote/play-at");
+    expect(JSON.parse(String(init.body))).toEqual({ index: 1 });
+  });
+
+  test("失敗時は false を返す（例外を投げない）", async () => {
+    setTestConnection({ baseUrl: "http://host:8787" });
+    mockFetch({ body: "boom", status: 500 });
+    const wrapper = createQueryWrapper();
+
+    const { result } = await renderHook(() => useRemoteCommands(), { wrapper });
+
+    await expect(result.current.pause()).resolves.toBe(false);
   });
 
   test("未接続なら何も送らない", async () => {

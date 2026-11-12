@@ -2,12 +2,12 @@
 // ローカル保存済みアートがあればオフラインでも表示する。
 // CRITICAL: アートワーク URL は track.trackId（iTunes trackId）で取得する。
 
-import { View, StyleSheet } from "react-native";
+import { StyleSheet } from "react-native";
 import { Image } from "expo-image";
-import { Ionicons } from "@expo/vector-icons";
 
-import { type Track, useConnection, useDownloads } from "@crateforge/core";
+import { type Track, trackTitle, useConnection, useDownloads } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
+import ArtPlaceholder from "@/components/ArtPlaceholder";
 
 export interface ArtworkProps {
   track: Track;
@@ -24,9 +24,11 @@ export default function Artwork({ track, size = 48, radius = 6 }: ArtworkProps) 
 
   if (!source) {
     return (
-      <View style={[styles.placeholder, dimensions]}>
-        <Ionicons name="musical-note" size={Math.round(size * 0.5)} color={PALETTE.textFaint} />
-      </View>
+      <ArtPlaceholder
+        name={track.album || trackTitle(track)}
+        size={size}
+        radius={radius}
+      />
     );
   }
 

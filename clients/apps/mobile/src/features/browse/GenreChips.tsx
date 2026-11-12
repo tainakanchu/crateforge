@@ -57,6 +57,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   chip: {
+    flexShrink: 0,
+    minHeight: 36,
+    justifyContent: "center",
     paddingHorizontal: 14,
     paddingVertical: 7,
     borderRadius: 16,

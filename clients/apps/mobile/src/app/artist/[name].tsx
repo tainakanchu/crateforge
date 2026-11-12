@@ -1,14 +1,17 @@
 // アーティスト詳細。アーティスト名 + アルバム一覧（主役）+ 全曲リスト（下に併置）。
 // アルバムは albumArtist 順にソート。タップでアルバム詳細へ。曲はその位置からアーティスト全体をキューにして再生する。
 
+import { albumHref } from "@/lib/albumHref";
 import { useMemo } from "react";
 import { FlatList, Pressable, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
-import { type Album, type Track, useConnection, usePlayer, useDownloads, useSettings, trackArtist, trackAlbumArtist } from "@crateforge/core";
+import { type Album, type Track, useConnection, usePlayer, useDownloads, useSettings, trackArtist, trackAlbumArtist, describeApiError } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
+import BackButton from "@/components/BackButton";
+import DesktopPlayButton from "@/components/DesktopPlayButton";
 import TrackRow from "@/components/TrackRow";
 import AlbumRow from "@/features/browse/AlbumRow";
 import DownloadButton from "@/components/DownloadButton";
@@ -89,6 +92,7 @@ export default function ArtistScreen() {
 
   return (
     <Screen edges={["top"]}>
+      <BackButton />
       <View style={styles.header}>
         <View style={styles.headerText}>
           <Text style={styles.title} numberOfLines={2}>
@@ -117,6 +121,7 @@ export default function ArtistScreen() {
             <Ionicons name="play" size={18} color={BRAND.accentText} />
             <Text style={styles.playLabel}>再生</Text>
           </Pressable>
+          <DesktopPlayButton tracks={tracks} />
         </View>
       ) : null}
 
@@ -145,7 +150,7 @@ export default function ArtistScreen() {
                     // 「アルバムなし」(空アルバム) はこのアーティストの無アルバム曲を専用表示へ。
                     // 通常アルバムは従来どおり album 名で遷移（空セグメントのクラッシュは回避）。
                     if (item.album.album) {
-                      router.push(`/album/${encodeURIComponent(item.album.album)}`);
+                      router.push(albumHref(item.album.album, item.album.albumArtist));
                     } else {
                       router.push(
                         `/album/none?noAlbum=1&artist=${encodeURIComponent(artist)}&grouping=${artistGrouping}`,
@@ -174,7 +179,7 @@ export default function ArtistScreen() {
 }
 
 function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : "読み込みに失敗しました";
+  return describeApiError(e, { action: "読み込み" });
 }
 
 const styles = StyleSheet.create({
@@ -203,6 +208,7 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     gap: 12,
     paddingHorizontal: 16,

@@ -7,7 +7,7 @@
 import { useCallback, useMemo } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, trackArtist, trackAlbumArtist, useConnection, useDownloads, useSettings } from "@crateforge/core";
+import { ApiError, type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, filterAlbumTracks, trackArtist, trackAlbumArtist, useConnection, useDownloads, useSettings } from "@crateforge/core";
 
 import { usePendingEdits } from "@/store/pendingEdits";
 
@@ -137,15 +137,20 @@ export function useAlbums(enabled = true) {
   });
 }
 
-/** 指定アルバムの曲（album が null のときは無効）。disc→track 昇順でソート。 */
-export function useAlbumTracks(album: string | null) {
+/** 指定アルバムの曲（album が null のときは無効）。disc→track 昇順でソート。
+ * album 名は完全一致（`?album=` は部分一致なので "Dawn" が "Dawn (Remixes)" を含んでしまう）。
+ * 新しいホストには albumExact=true で絞らせ、古いホスト向けにクライアントでも完全一致で絞る。
+ * albumArtist を渡すと、album_artist が別の値の曲（同名の別アルバム）も除く（未設定の曲は残す）。
+ */
+export function useAlbumTracks(album: string | null, albumArtist?: string | null) {
   const client = useConnection((s) => s.client);
   return useQuery<Track[], Error, Track[]>({
-    queryKey: ["album-tracks", album],
+    queryKey: ["album-tracks", album, albumArtist ?? null],
     enabled: !!client && album != null,
-    queryFn: () => client!.listTracks({ album: album!, limit: BROWSE_LIMIT }),
+    queryFn: ({ signal }) =>
+      client!.listTracks({ album: album!, albumExact: true, limit: BROWSE_LIMIT }, signal),
     select: (tracks) =>
-      [...tracks].sort(
+      filterAlbumTracks(tracks, album ?? "", albumArtist).sort(
         (a, b) =>
           (a.discNumber ?? 0) - (b.discNumber ?? 0) ||
           (a.trackNumber ?? 0) - (b.trackNumber ?? 0),

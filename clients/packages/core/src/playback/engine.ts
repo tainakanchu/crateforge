@@ -84,7 +84,7 @@ export class ExpoAudioEngine implements AudioEngine {
     this.triedAacFallback = false;
     // CRITICAL: メディアは track.trackId（iTunes trackId）で解決する。
     // オフライン保存済みならローカルファイルを優先（client 不要で再生可）。
-    // 未保存のときだけ接続中の LAN ストリーム（native=1）を使う。
+    // 未保存のときだけ接続中の LAN ストリーム（native=true）を使う。
     const local = useDownloads.getState().getLocalUri(track.trackId);
     if (local) {
       this.isLocalSource = true;

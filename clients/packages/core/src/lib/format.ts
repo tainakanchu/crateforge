@@ -36,6 +36,20 @@ export function ratingToStars(rating: number | null | undefined): number {
   return Math.round(clamped / 20);
 }
 
+/** 0-100 の rating を 0.5 刻み（0..5）の星数に。10 刻みの半星を保持する。 */
+export function ratingToHalfStars(rating: number | null | undefined): number {
+  if (rating == null || !Number.isFinite(rating)) return 0;
+  const clamped = Math.max(0, Math.min(100, rating));
+  return Math.round(clamped / 10) / 2;
+}
+
+/** 半星対応の星文字列。例: 70 → "★★★½"、80 → "★★★★"、0 → ""。 */
+export function formatRatingStars(rating: number | null | undefined): string {
+  const half = ratingToHalfStars(rating);
+  const full = Math.floor(half);
+  return "★".repeat(full) + (half - full >= 0.5 ? "½" : "");
+}
+
 /** 曲の表示タイトル。name 無しはファイル名 or "Unknown"。 */
 export function trackTitle(t: Pick<Track, "name" | "locationPath">): string {
   if (t.name && t.name.trim() !== "") return t.name;
@@ -77,8 +91,8 @@ export function trackMetaText(
     case "genre":
       return track.genre || null;
     case "rating": {
-      const stars = ratingToStars(track.rating);
-      return stars > 0 ? "★".repeat(stars) : null;
+      const text = formatRatingStars(track.rating);
+      return text !== "" ? text : null;
     }
     case "playCount":
       return track.playCount != null && track.playCount > 0

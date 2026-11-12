@@ -1,7 +1,8 @@
 // 全画面プレイヤー（モーダル）。大きなアートワーク + トランスポート + シークバー、
-// その下に「Up Next」（残りキュー）と「Similar」（現在曲の類似曲）を並べる。
+// その下に「次に再生」（残りキュー）と「似た曲」（現在曲の類似曲）を並べる。
 // 依存追加禁止のため、シークバーは Pressable のレイアウト幅から位置を計算する自作。
 
+import { albumHref } from "@/lib/albumHref";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   View,
@@ -17,7 +18,7 @@ import type { LayoutChangeEvent, GestureResponderEvent } from "react-native";
 import { useRouter } from "expo-router";
 
 import { BRAND, PALETTE } from "@/constants/brand";
-import { ApiError, type SimilarHit, type Track, formatDuration, ratingToStars, trackTitle, trackArtist, trackAlbumArtist, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
+import { ApiError, type SimilarHit, type Track, formatDuration, ratingToHalfStars, trackTitle, trackArtist, trackAlbumArtist, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
 import IconButton from "@/components/IconButton";
@@ -137,7 +138,7 @@ export default function PlayerScreen() {
           item.kind === "section" ? (
             <Text style={styles.sectionTitle}>{item.title}</Text>
           ) : item.kind === "similar" ? (
-            <SimilarSection trackId={current.trackId} />
+            <SimilarSection trackId={current.trackId} analyzed={current.bpm != null} />
           ) : item.kind === "upnext-track" ? (
             <UpNextRow
               track={item.track}
@@ -196,6 +197,7 @@ function UpNextRow({ track, queueIndex, orderIndex, onPress }: UpNextRowProps) {
           onPress={() => moveUpNext(orderIndex, orderIndex - 1)}
           disabled={!canMoveUp}
           accessibilityLabel="上へ移動"
+          hitSlop={{ top: 6, bottom: 0 }}
           style={styles.arrowBtn}
         >
           <Text style={[styles.arrowText, !canMoveUp && styles.arrowDisabled]}>▲</Text>
@@ -204,6 +206,7 @@ function UpNextRow({ track, queueIndex, orderIndex, onPress }: UpNextRowProps) {
           onPress={() => moveUpNext(orderIndex, orderIndex + 1)}
           disabled={!canMoveDown}
           accessibilityLabel="下へ移動"
+          hitSlop={{ top: 0, bottom: 6 }}
           style={styles.arrowBtn}
         >
           <Text style={[styles.arrowText, !canMoveDown && styles.arrowDisabled]}>▼</Text>
@@ -334,7 +337,7 @@ function NowPlaying({
       {current.album != null && (
         <Pressable
           onPress={() =>
-            router.push(`/album/${encodeURIComponent(current.album!)}`)
+            router.push(albumHref(current.album!, current.albumArtist))
           }
           accessibilityRole="link"
           accessibilityLabel={`アルバム: ${current.album}`}
@@ -521,20 +524,18 @@ function NowPlaying({
 function RatingControl({ track }: { track: Track }) {
   const setRating = useSetRating();
   // サーバ確定値（track.rating 由来）の星数。track が変わると key 再マウントで初期化される。
-  // rating はデスクトップの半星（10 刻み）もあり得るので 0-100 のまま持ち、表示時に整数星へ丸める。
+  // rating はデスクトップの半星（10 刻み）も表示・設定できる（0.5 刻みの星数 × 20 = rating）。
   const [rating, setRatingValue] = useState(track.rating ?? 0);
-  const stars = ratingToStars(rating);
+  const stars = ratingToHalfStars(rating);
 
-  const handleChange = (tapped: number) => {
+  const handleChange = (next: number) => {
     const prev = rating;
-    // RatingStars は「表示中の星を再タップ → 0」を返す。半星（例: 70 → 表示 4）で 4 をタップした場合は
-    // クリアではなく 4 ちょうどに揃える意図とみなす。
-    const next = tapped === 0 && rating % 20 !== 0 ? stars : tapped;
-    setRatingValue(next * 20); // 楽観的更新
+    const value = Math.round(next * 20);
+    setRatingValue(value); // 楽観的更新
     setRating.mutate(
       {
         trackId: track.id,
-        rating: next * 20,
+        rating: value,
         baseRating: track.rating ?? null,
         trackName: track.name,
       },
@@ -688,7 +689,7 @@ function SeekBar({ progress, durationMs, onSeek }: SeekBarProps) {
 }
 
 /** 現在曲の類似曲を直接 client.similar で取得して表示する自己完結セクション。 */
-function SimilarSection({ trackId }: { trackId: number }) {
+function SimilarSection({ trackId, analyzed }: { trackId: number; analyzed: boolean }) {
   const client = useConnection((s) => s.client);
   // 結果は取得元 (client / trackId) と一緒に保持し、現在の入力と一致しないものは
   // 「読み込み中」として扱う。effect 内で同期 setState せずに再取得時のリセットを表現する。
@@ -731,7 +732,14 @@ function SimilarSection({ trackId }: { trackId: number }) {
     );
   }
   if (hits.length === 0) {
-    return <Text style={styles.similarNote}>類似曲はありません</Text>;
+    // BPM 等が未解析の曲は類似度を計算できない。解析済みで 0 件のときと文言を分ける。
+    return (
+      <Text style={styles.similarNote}>
+        {analyzed
+          ? "類似曲はありません"
+          : "この曲は未解析のため、類似曲を表示できません（デスクトップで解析してください）"}
+      </Text>
+    );
   }
 
   const tracks = hits.map((h) => h.track);
@@ -771,7 +779,7 @@ type ListItem =
 function buildList(upNext: ReturnType<typeof upNextEntries>): ListItem[] {
   const items: ListItem[] = [];
   if (upNext.length > 0) {
-    items.push({ kind: "section", title: "Up Next" });
+    items.push({ kind: "section", title: "次に再生" });
     for (const entry of upNext) {
       items.push({
         kind: "upnext-track",
@@ -782,7 +790,7 @@ function buildList(upNext: ReturnType<typeof upNextEntries>): ListItem[] {
       });
     }
   }
-  items.push({ kind: "section", title: "Similar" });
+  items.push({ kind: "section", title: "似た曲" });
   items.push({ kind: "similar" });
   return items;
 }
@@ -886,8 +894,9 @@ const styles = StyleSheet.create({
   },
 
   seekHit: {
-    marginTop: 24,
-    paddingVertical: 8,
+    marginTop: 12,
+    // 見た目 4px のバーに対し、タップ領域を 44pt 以上確保する。
+    paddingVertical: 20,
   },
   seekTrack: {
     height: 4,
@@ -941,7 +950,10 @@ const styles = StyleSheet.create({
   },
   skipBtn: {
     paddingHorizontal: 16,
-    paddingVertical: 6,
+    minHeight: 44,
+    minWidth: 64,
+    justifyContent: "center",
+    alignItems: "center",
   },
   skipText: {
     color: PALETTE.textDim,
@@ -960,6 +972,8 @@ const styles = StyleSheet.create({
   },
   secondaryCenter: { flex: 1 },
   secondaryBtn: {
+    minHeight: 40,
+    justifyContent: "center",
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 6,
@@ -993,7 +1007,10 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   arrowBtn: {
-    padding: 4,
+    minWidth: 44,
+    minHeight: 34,
+    alignItems: "center",
+    justifyContent: "center",
   },
   arrowText: {
     color: PALETTE.textDim,
@@ -1006,7 +1023,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   removeBtn: {
-    padding: 10,
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
   },
   removeText: {
     color: PALETTE.textFaint,

@@ -1,6 +1,6 @@
 // Playlists タブ。フォルダ階層のルート項目だけを縦に一覧する。
 // 各行: 名前（太字）+ 種別/曲数 + アイコン。フォルダはフォルダ画面へ、プレイリストは詳細へ遷移。
-// フォルダは子を含むので trackCount で落とさない。空のプレイリスト（非フォルダ）だけ間引く。
+// trackCount での絞り込みはしない（空 / スマートも表示）。
 // オフライン時はダウンロード済みプレイリストを一覧し、タップで詳細へ遷移できる。
 
 import { useMemo } from "react";
@@ -8,7 +8,7 @@ import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
-import { type DownloadedPlaylist, type Playlist, useConnection, useDownloads } from "@crateforge/core";
+import { type DownloadedPlaylist, type Playlist, useConnection, useDownloads, describeApiError } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
@@ -21,12 +21,9 @@ export default function PlaylistsScreen() {
   const client = useConnection((s) => s.client);
   const query = usePlaylists();
 
-  // 階層のルート項目だけを表示する。フォルダは中身を持つので残し、
-  // 空の通常プレイリスト（trackCount 0）だけノイズとして間引く。
-  const rows = useMemo(() => {
-    const all = query.data ?? [];
-    return rootItems(all).filter((p) => (p.isFolder ? true : p.trackCount > 0));
-  }, [query.data]);
+  // 階層のルート項目だけを表示する。空のプレイリスト・スマートプレイリストも隠さない
+  // （スマートの件数は評価結果に依存するため 0 でも表示する）。
+  const rows = useMemo(() => rootItems(query.data ?? []), [query.data]);
 
   const onPress = (p: Playlist) => {
     if (p.isFolder) {
@@ -156,7 +153,7 @@ function OfflinePlaylistRow({
 }
 
 function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : "読み込みに失敗しました";
+  return describeApiError(e, { action: "読み込み" });
 }
 
 const styles = StyleSheet.create({

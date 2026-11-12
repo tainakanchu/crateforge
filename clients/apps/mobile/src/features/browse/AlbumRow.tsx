@@ -9,6 +9,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { type Album, useConnection, useDownloads } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
+import ArtPlaceholder from "@/components/ArtPlaceholder";
 
 export interface AlbumRowProps {
   album: Album;
@@ -40,9 +41,7 @@ export default function AlbumRow({ album, onPress }: AlbumRowProps) {
           recyclingKey={String(album.sampleTrackId)}
         />
       ) : (
-        <View style={[styles.placeholder, dimensions]}>
-          <Ionicons name="albums-outline" size={Math.round(THUMB * 0.5)} color={PALETTE.textFaint} />
-        </View>
+        <ArtPlaceholder name={album.album} size={THUMB} radius={dimensions.borderRadius} />
       )}
       <View style={styles.texts}>
         <Text style={styles.name} numberOfLines={1}>

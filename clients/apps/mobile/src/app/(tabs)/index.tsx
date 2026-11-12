@@ -4,14 +4,18 @@
 // アルバムモード: distinct アルバムを一覧。検索でクライアント絞り込み。タップで詳細へ。
 // アーティストモード: クライアント側集計のアーティスト一覧。タップで詳細へ。
 
+import { albumHref } from "@/lib/albumHref";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, FlatList, Pressable, Text, TextInput, View, StyleSheet } from "react-native";
+import { FlatList, Pressable, Text, TextInput, View, StyleSheet } from "react-native";
+import { isSearchable, matchesNormalized, naturalCompare } from "@/lib/normalize";
+import { loadPref, savePref } from "@/lib/prefs";
+import { showActionSheet } from "@/components/ActionSheet";
 import { showTrackMenu } from "@/features/playback/trackMenu";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 
-import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, useConnection, usePlayer, useDownloads, useSettings } from "@crateforge/core";
+import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, useConnection, usePlayer, useDownloads, useSettings, describeApiError } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import TrackRow from "@/components/TrackRow";
@@ -33,9 +37,11 @@ const SORT_FIELD_LABELS: Record<SortField, string> = {
   dateAdded: "追加日",
   year: "年",
   bpm: "BPM",
-  rating: "レート",
+  rating: "評価",
   playCount: "再生回数",
 };
+
+const MODE_PREF_KEY = "crateforge.ui.libraryMode";
 
 const SORT_FIELDS: SortField[] = ["name", "artist", "album", "dateAdded", "year", "bpm", "rating", "playCount"];
 
@@ -44,7 +50,20 @@ export default function LibraryScreen() {
   const client = useConnection((s) => s.client);
 
   // 既定は「アーティスト」モード（アーティスト→アルバム→曲の導線を優先）。
-  const [mode, setMode] = useState<Mode>("artists");
+  const [mode, setModeState] = useState<Mode>("artists");
+  const modeTouched = useRef(false);
+  const setMode = (m: Mode) => {
+    modeTouched.current = true;
+    setModeState(m);
+    void savePref(MODE_PREF_KEY, m);
+  };
+  // 前回の表示モードを復元する（復元前にユーザーが切り替えていたらそちらを優先）。
+  useEffect(() => {
+    void loadPref(MODE_PREF_KEY).then((v) => {
+      if (modeTouched.current) return;
+      if (v === "tracks" || v === "albums" || v === "artists") setModeState(v);
+    });
+  }, []);
 
   // 検索はデバウンス（入力ごとに叩かない）。
   const [search, setSearch] = useState("");
@@ -61,8 +80,9 @@ export default function LibraryScreen() {
   const setTrackSort = useSettings((s) => s.setTrackSort);
 
   // 検索クエリは最小2文字ガード（debounced は trim 済み）。1文字だと巨大ヒット＝
-  // 全件転送になり得るので投げない。空のときは undefined（フィルタ無し一覧）に戻る。
-  const searchQuery = debounced.length >= 2 ? debounced : undefined;
+  // 全件転送になり得るので投げない。ただし CJK は 1 文字でも意味を持つので 1 文字から検索する。
+  // 空のときは undefined（フィルタ無し一覧）に戻る。
+  const searchQuery = isSearchable(debounced) ? debounced : undefined;
 
   // アクティブなモードだけ取得する（既定アルバム時に全曲フェッチしない＝重さ回避）。
   const tracksQuery = useTracks(
@@ -84,19 +104,20 @@ export default function LibraryScreen() {
   const listRef = useRef<FlatList<Track>>(null);
 
   // アルバムモードは検索でアルバム名をクライアント側で絞り込む。
+  // 全角半角・かなカナ・大小・記号のゆれは正規化して吸収し、並びは自然順（2 < 10）。
   const albums = useMemo(() => {
-    const all = albumsQuery.data ?? [];
-    const q = debounced.toLowerCase();
-    if (!q) return all;
-    return all.filter((a) => a.album.toLowerCase().includes(q));
+    const all = [...(albumsQuery.data ?? [])].sort((a, b) => naturalCompare(a.album, b.album));
+    if (!debounced) return all;
+    return all.filter((a) => matchesNormalized(a.album, debounced));
   }, [albumsQuery.data, debounced]);
 
   // アーティストモードは検索でアーティスト名をクライアント側で絞り込む。
   const artists = useMemo((): Artist[] => {
-    const all: Artist[] = artistsQuery.data ?? [];
-    const q = debounced.toLowerCase();
-    if (!q) return all;
-    return all.filter((a) => a.artist.toLowerCase().includes(q));
+    const all: Artist[] = [...(artistsQuery.data ?? [])].sort((a, b) =>
+      naturalCompare(a.artist, b.artist),
+    );
+    if (!debounced) return all;
+    return all.filter((a) => matchesNormalized(a.artist, debounced));
   }, [artistsQuery.data, debounced]);
 
   const onPressTrack = (index: number) => {
@@ -106,15 +127,14 @@ export default function LibraryScreen() {
 
   /** ソートフィールド選択ダイアログを開く。 */
   const openSortPicker = () => {
-    const buttons: Parameters<typeof Alert.alert>[2] = SORT_FIELDS.map((field) => ({
-      text:
-        trackSort.field === field
-          ? `✓ ${SORT_FIELD_LABELS[field]}`
-          : SORT_FIELD_LABELS[field],
-      onPress: () => setTrackSort({ field, order: trackSort.order }),
-    }));
-    buttons.push({ text: "キャンセル", style: "cancel" });
-    Alert.alert("並び順", undefined, buttons);
+    showActionSheet({
+      title: "並び順",
+      actions: SORT_FIELDS.map((field) => ({
+        label: SORT_FIELD_LABELS[field],
+        selected: trackSort.field === field,
+        onPress: () => setTrackSort({ field, order: trackSort.order }),
+      })),
+    });
   };
 
   /** asc/desc トグル。 */
@@ -170,7 +190,8 @@ export default function LibraryScreen() {
             <Pressable
               onPress={openSortPicker}
               accessibilityRole="button"
-              accessibilityLabel="ソートフィールドを選択"
+              accessibilityLabel="並び順を選択"
+              hitSlop={{ top: 4, bottom: 4 }}
               style={({ pressed }) => [styles.sortFieldBtn, pressed && styles.pressed]}
             >
               <Ionicons name="swap-vertical" size={15} color={PALETTE.textDim} />
@@ -223,7 +244,7 @@ export default function LibraryScreen() {
               album={item}
               onPress={() => {
                 if (!item.album) return;
-                router.push(`/album/${encodeURIComponent(item.album)}`);
+                router.push(albumHref(item.album, item.albumArtist));
               }}
             />
           )}
@@ -621,7 +642,7 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
 }
 
 function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : "読み込みに失敗しました";
+  return describeApiError(e, { action: "読み込み" });
 }
 
 // コレクション行のサムネイル寸法（AlbumRow に倣う）。
@@ -688,8 +709,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
+    minHeight: 36,
     paddingVertical: 4,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     borderRadius: 6,
     backgroundColor: PALETTE.surface,
     borderWidth: 1,

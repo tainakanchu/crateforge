@@ -27,12 +27,19 @@ import type {
   Track,
   TracksQuery,
 } from "../types";
+import type { RepeatMode } from "../../store/player";
 
 export interface Connection {
   /** 例: "192.168.1.10:8787" / "http://host:port"。スキームは正規化で補完する。 */
   baseUrl: string;
   /** LAN は必須。loopback なら null でも可。 */
   token: string | null;
+  /**
+   * 通信失敗（NetworkError / InvalidResponseError / ApiError）のたびに呼ばれるフック。
+   * AbortError（呼び出し側のキャンセル・タイムアウト）では呼ばない。
+   * 接続ストアが「接続済みのまま古い状態」にならないよう、ここで状態遷移を起こす。
+   */
+  onError?: (e: unknown) => void;
 }
 
 /** HTTP エラー。status とサーバーメッセージを保持する。 */
@@ -40,9 +47,47 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** エラー応答が HTML だった（= Crateforge の API ではない URL の可能性が高い）。 */
+    readonly htmlBody: boolean = false,
   ) {
     super(message);
     this.name = "ApiError";
+  }
+}
+
+/** fetch 自体が失敗した（ホストに到達できない・接続拒否・DNS 失敗など）。 */
+export class NetworkError extends Error {
+  constructor(
+    message: string,
+    /** fetch が投げた元の例外。 */
+    readonly original?: unknown,
+  ) {
+    super(message);
+    this.name = "NetworkError";
+  }
+}
+
+/** 2xx だが JSON として読めない応答（HTML のルーター画面など = Crateforge の API ではない）。 */
+export class InvalidResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidResponseError";
+  }
+}
+
+/** AbortController による中断（キャンセル/タイムアウト）か。 */
+export function isAbortError(e: unknown): boolean {
+  return (
+    typeof e === "object" && e !== null && (e as { name?: unknown }).name === "AbortError"
+  );
+}
+
+/** レスポンスのヘッダから content-type を安全に読む（テストのモック応答は headers を持たない）。 */
+function contentTypeOf(res: Response): string {
+  try {
+    return res.headers?.get?.("content-type") ?? "";
+  } catch {
+    return "";
   }
 }
 
@@ -70,10 +115,22 @@ type MediaSource = { uri: string; headers?: Record<string, string> };
 export class ApiClient {
   readonly baseUrl: string;
   readonly token: string | null;
+  private readonly onError?: (e: unknown) => void;
 
   constructor(conn: Connection) {
     this.baseUrl = normalizeBaseUrl(conn.baseUrl);
     this.token = conn.token ?? null;
+    this.onError = conn.onError;
+  }
+
+  /** onError フックへ通知する（AbortError は除外。フック内の例外は握りつぶす）。 */
+  private notifyError(e: unknown): void {
+    if (!this.onError || isAbortError(e)) return;
+    try {
+      this.onError(e);
+    } catch {
+      // フックの失敗で元のエラーを隠さない。
+    }
   }
 
   /** fetch 用の認証ヘッダ。token 無しなら空。 */
@@ -99,29 +156,62 @@ export class ApiClient {
     path: string,
     opts: { query?: Record<string, unknown>; body?: unknown; signal?: AbortSignal } = {},
   ): Promise<T> {
+    try {
+      return await this.requestInner<T>(method, path, opts);
+    } catch (e) {
+      this.notifyError(e);
+      throw e;
+    }
+  }
+
+  private async requestInner<T>(
+    method: string,
+    path: string,
+    opts: { query?: Record<string, unknown>; body?: unknown; signal?: AbortSignal },
+  ): Promise<T> {
     const url = this.baseUrl + path + buildQuery(opts.query);
     const hasBody = opts.body !== undefined;
-    const res = await fetch(url, {
-      method,
-      headers: {
-        ...(hasBody ? { "Content-Type": "application/json" } : {}),
-        ...this.authHeaders(),
-      },
-      body: hasBody ? JSON.stringify(opts.body) : undefined,
-      signal: opts.signal,
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers: {
+          ...(hasBody ? { "Content-Type": "application/json" } : {}),
+          ...this.authHeaders(),
+        },
+        body: hasBody ? JSON.stringify(opts.body) : undefined,
+        signal: opts.signal,
+      });
+    } catch (e) {
+      // キャンセル/タイムアウトはそのまま（呼び出し側が AbortError として扱う）。
+      if (isAbortError(e)) throw e;
+      // RN の fetch はホスト不達で TypeError("Network request failed") を投げる。
+      throw new NetworkError(e instanceof Error ? e.message : String(e), e);
+    }
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
+      let html = /text\/html/i.test(contentTypeOf(res));
       try {
         const text = await res.text();
-        if (text) msg = text;
+        if (text) {
+          if (/^\s*</.test(text)) html = true;
+          // HTML 本文をそのままメッセージに載せない（UI に生 HTML が出るのを防ぐ）。
+          if (!html) msg = text;
+        }
       } catch {
         // ignore
       }
-      throw new ApiError(res.status, msg);
+      throw new ApiError(res.status, msg, html);
     }
     if (res.status === 204) return undefined as T;
-    return (await res.json()) as T;
+    try {
+      return (await res.json()) as T;
+    } catch (e) {
+      if (isAbortError(e)) throw e;
+      throw new InvalidResponseError(
+        `JSON として読めない応答です（${contentTypeOf(res) || "content-type 不明"}）`,
+      );
+    }
   }
 
   get<T>(path: string, query?: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
@@ -231,13 +321,15 @@ export class ApiClient {
   }
   /**
    * 再生用ストリーム source（ヘッダ認証つき）。
-   * - opts.native=true で `?native=1` を付け、端末再生可能な形式は無変換、不可なら AAC で配信させる。
+   * - opts.native=true で `?native=true` を付け、端末再生可能な形式は無変換、不可なら AAC で配信させる。
+   *   （旧版は `native=1` を送っていたが、古いホストの `Option<bool>` が 1 を受けず 400 になっていた。
+   *   `true` なら新旧どちらのホストでも通る。）
    * - opts.forceAac=true で `?fmt=aac` を付け、常に ADTS AAC へ再エンコードさせる
    *   （端末で再生できない形式の "Source error" フォールバック用）。forceAac は native より優先。
    */
   streamSource(trackId: number, opts?: { native?: boolean; forceAac?: boolean }): MediaSource {
     const query = buildQuery(
-      opts?.forceAac ? { fmt: "aac" } : opts?.native ? { native: 1 } : {},
+      opts?.forceAac ? { fmt: "aac" } : opts?.native ? { native: true } : {},
     );
     return {
       uri: this.baseUrl + `/api/tracks/${trackId}/stream` + query,
@@ -248,13 +340,13 @@ export class ApiClient {
   /**
    * オフライン保存用のダウンロード URL（token をクエリに載せた完全 URL）。
    * expo-file-system の `File.downloadFileAsync` がカスタムヘッダ無しで使えるよう、認証はクエリで渡す。
-   * - original: 無変換の元バイト（`?original=1&native=1`）。
+   * - original: 無変換の元バイト（`?original=true&native=true`。`1` は古いホストで 400 になるため `true`）。
    * - aacNNN: AAC へ再エンコード（`?fmt=aac&br=NNN`）。
    */
   downloadUrl(trackId: number, quality: DownloadQuality): string {
     const params: Record<string, unknown> =
       quality === "original"
-        ? { original: 1, native: 1 }
+        ? { original: true, native: true }
         : { fmt: "aac", br: quality === "aac256" ? 256 : quality === "aac192" ? 192 : 128 };
     if (this.token) params.token = this.token;
     return this.baseUrl + `/api/tracks/${trackId}/stream` + buildQuery(params);
@@ -309,7 +401,40 @@ export class ApiClient {
   remoteSeek(positionMs: number): Promise<unknown> {
     return this.post("/api/remote/seek", { positionMs });
   }
-  remoteSetQueue(trackIds: number[], startIndex?: number): Promise<unknown> {
-    return this.post("/api/remote/set-queue", { trackIds, startIndex });
+  /**
+   * 再生キューを置き換える（`POST /api/remote/set-queue`）。
+   * opts.play=true なら置き換え後に startIndex の曲から再生を始める（新しいホストのみ。
+   * 古いホストは play を無視してキューだけ置き換える）。
+   */
+  remoteSetQueue(
+    trackIds: number[],
+    startIndex?: number,
+    opts?: { play?: boolean },
+  ): Promise<unknown> {
+    return this.post("/api/remote/set-queue", {
+      trackIds,
+      startIndex,
+      ...(opts?.play ? { play: true } : {}),
+    });
+  }
+  /**
+   * 現在のキュー（`remoteQueue().trackIds` の再生順）の index 番目にジャンプして再生する
+   * （`POST /api/remote/play-at`）。キュー順・シャッフル順は保たれる。
+   * 範囲外は 404。古いホストは 404（呼び出し側で remoteSetQueue へフォールバック可）。
+   */
+  remotePlayAt(index: number): Promise<{ trackId: number | null } | undefined> {
+    return this.post("/api/remote/play-at", { index });
+  }
+  /** 音量（0.0–1.0）。 */
+  remoteVolume(volume: number): Promise<unknown> {
+    return this.post("/api/remote/volume", { volume: Math.max(0, Math.min(1, volume)) });
+  }
+  /** シャッフルの ON/OFF。 */
+  remoteShuffle(on: boolean): Promise<unknown> {
+    return this.post("/api/remote/shuffle", { on });
+  }
+  /** リピートモード。 */
+  remoteRepeat(mode: RepeatMode): Promise<unknown> {
+    return this.post("/api/remote/repeat", { mode });
   }
 }

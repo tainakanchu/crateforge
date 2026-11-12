@@ -2,12 +2,13 @@
 // フック非依存（通常関数）なので getState() でストアにアクセスする。
 // トリアージ系（評価・タグ・あとで聴く）はオンライン直書き / オフラインは pending キュー (#125)。
 
-import { Alert } from "react-native";
 import {
   ApiError,
   type Track,
   trackArtist,
   trackAlbumArtist,
+  ratingToHalfStars,
+  formatRatingStars,
   trackTitle,
   useConnection,
   usePlayer,
@@ -16,9 +17,13 @@ import {
 } from "@crateforge/core";
 import { router } from "expo-router";
 
+import { type ActionSheetAction, showActionSheet } from "@/components/ActionSheet";
+import { showToast } from "@/components/Toast";
+
 import { COMMON_TRIAGE_TAGS, REVIEW_LATER_TAG } from "@/features/triage/commonTags";
 import { usePendingEdits } from "@/store/pendingEdits";
 import { startRadio } from "./radio";
+import { playOnDesktop } from "./desktopPlay";
 
 /**
  * 曲ごとのアクションメニューを表示する。文脈（オンライン/アルバム有無/アーティスト名）で
@@ -29,66 +34,69 @@ export function showTrackMenu(track: Track): void {
   const grouping = useSettings.getState().artistGrouping;
   const artistName = grouping === "albumArtist" ? trackAlbumArtist(track) : trackArtist(track);
 
-  const buttons: Parameters<typeof Alert.alert>[2] = [];
+  const actions: ActionSheetAction[] = [];
 
   // 似た曲でラジオ（オンラインのみ）。
   if (online) {
-    buttons.push({ text: "似た曲でラジオ", onPress: () => void startRadio(track) });
+    actions.push({ label: "似た曲でラジオ", onPress: () => void startRadio(track) });
+  }
+
+  // デスクトップ側で再生（オンラインのみ）。
+  if (online) {
+    actions.push({ label: "デスクトップで再生", onPress: () => void playOnDesktop([track], 0) });
   }
 
   // 次に再生。
-  buttons.push({ text: "次に再生", onPress: () => usePlayer.getState().enqueueNext(track) });
+  actions.push({ label: "次に再生", onPress: () => usePlayer.getState().enqueueNext(track) });
 
   // --- トリアージ（評価 / タグ / あとで）---
-  buttons.push({ text: "評価…", onPress: () => showRateMenu(track) });
-  buttons.push({ text: "タグを付ける…", onPress: () => showTagMenu(track) });
-  buttons.push({
-    text: "あとで聴く",
-    onPress: () => void applyReviewLater(track),
-  });
+  actions.push({ label: "評価…", onPress: () => showRateMenu(track) });
+  actions.push({ label: "タグを付ける…", onPress: () => showTagMenu(track) });
+  actions.push({ label: "あとで聴く", onPress: () => void applyReviewLater(track) });
 
   // アーティストを見る（表示名が "Unknown Artist"/空でなければ）。
   if (artistName && artistName !== "Unknown Artist") {
-    buttons.push({
-      text: "アーティストを見る",
+    actions.push({
+      label: "アーティストを見る",
       onPress: () => router.push(`/artist/${encodeURIComponent(artistName)}`),
     });
   }
 
   // アルバムを保存（オンライン かつ album があるとき）。
   if (online && track.album) {
-    buttons.push({
-      text: "アルバムを保存",
-      onPress: () => void useDownloads.getState().downloadAlbum(track.album!),
+    actions.push({
+      label: "アルバムを保存",
+      onPress: () => void useDownloads.getState().downloadAlbum(track.album!, track.albumArtist),
     });
   }
 
-  buttons.push({ text: "キャンセル", style: "cancel" });
-
-  Alert.alert(track.name || "この曲", undefined, buttons);
+  showActionSheet({ title: track.name || "この曲", subtitle: trackArtist(track), actions });
 }
 
-/** ★1–5 / クリア のサブメニュー。 */
-function showRateMenu(track: Track): void {
-  const stars = [1, 2, 3, 4, 5].map((n) => ({
-    text: "★".repeat(n),
-    onPress: () => void applyRating(track, n * 20),
-  }));
-  Alert.alert("評価", trackTitle(track), [
-    ...stars,
-    { text: "クリア", style: "destructive", onPress: () => void applyRating(track, 0) },
-    { text: "キャンセル", style: "cancel" },
-  ]);
+/** 評価（★0.5–5 / クリア）のサブメニュー。半星（10 刻み）対応。 */
+export function showRateMenu(track: Track): void {
+  const current = ratingToHalfStars(track.rating);
+  const actions: ActionSheetAction[] = [];
+  for (let half = 1; half <= 10; half++) {
+    const stars = half / 2;
+    actions.push({
+      label: formatRatingStars(half * 10),
+      detail: String(stars),
+      selected: current === stars,
+      onPress: () => void applyRating(track, half * 10),
+    });
+  }
+  actions.push({ label: "クリア", destructive: true, onPress: () => void applyRating(track, 0) });
+  showActionSheet({ title: "評価", subtitle: trackTitle(track), actions });
 }
 
 /** 定番タグのチップ相当メニュー。 */
 function showTagMenu(track: Track): void {
-  const buttons: Parameters<typeof Alert.alert>[2] = COMMON_TRIAGE_TAGS.map(({ tag, label }) => ({
-    text: label,
+  const actions: ActionSheetAction[] = COMMON_TRIAGE_TAGS.map(({ tag, label }) => ({
+    label,
     onPress: () => void applyTagAdd(track, tag),
   }));
-  buttons.push({ text: "キャンセル", style: "cancel" });
-  Alert.alert("タグを付ける", trackTitle(track), buttons);
+  showActionSheet({ title: "タグを付ける", subtitle: trackTitle(track), actions });
 }
 
 async function applyRating(track: Track, rating: number): Promise<void> {
@@ -97,8 +105,9 @@ async function applyRating(track: Track, rating: number): Promise<void> {
   if (client) {
     try {
       await client.setRating(track.id, rating);
+      showToast(rating > 0 ? `評価を保存しました（${formatRatingStars(rating)}）` : "評価をクリアしました");
     } catch (e) {
-      Alert.alert("評価を保存できませんでした", errorMessage(e));
+      showToast(`評価を保存できませんでした（${errorMessage(e)}）`, "error");
     }
     return;
   }
@@ -109,7 +118,7 @@ async function applyRating(track: Track, rating: number): Promise<void> {
     baseRating,
     trackName: track.name,
   });
-  Alert.alert("オフライン", "再接続時に評価を同期します");
+  showToast("オフライン: 再接続時に評価を同期します");
 }
 
 async function applyTagAdd(track: Track, tag: string): Promise<void> {
@@ -117,12 +126,13 @@ async function applyTagAdd(track: Track, tag: string): Promise<void> {
   if (client) {
     try {
       await client.addTrackTags([track.id], tag);
+      showToast("タグを付けました");
     } catch (e) {
       if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
-        Alert.alert("タグ未対応", "ホストが first-class Tags に未対応です");
+        showToast("このデスクトップはタグ機能に未対応です（アプリを更新してください）", "error");
         return;
       }
-      Alert.alert("タグを付けられませんでした", errorMessage(e));
+      showToast(`タグを付けられませんでした（${errorMessage(e)}）`, "error");
     }
     return;
   }
@@ -132,7 +142,7 @@ async function applyTagAdd(track: Track, tag: string): Promise<void> {
     tag,
     trackName: track.name,
   });
-  Alert.alert("オフライン", "再接続時にタグを同期します");
+  showToast("オフライン: 再接続時にタグを同期します");
 }
 
 async function applyReviewLater(track: Track): Promise<void> {
@@ -140,6 +150,7 @@ async function applyReviewLater(track: Track): Promise<void> {
   if (client) {
     try {
       await client.addTrackTags([track.id], REVIEW_LATER_TAG);
+      showToast("「あとで聴く」に追加しました");
     } catch (e) {
       if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
         // タグ API 無しでもローカルフラグとしてキューへ。
@@ -148,10 +159,10 @@ async function applyReviewLater(track: Track): Promise<void> {
           trackId: track.id,
           trackName: track.name,
         });
-        Alert.alert("ローカルに記録", "ホスト未対応のため端末側のみ保持します");
+        showToast("デスクトップ未対応のため、端末側のみに記録しました");
         return;
       }
-      Alert.alert("記録できませんでした", errorMessage(e));
+      showToast(`記録できませんでした（${errorMessage(e)}）`, "error");
     }
     return;
   }
@@ -160,7 +171,7 @@ async function applyReviewLater(track: Track): Promise<void> {
     trackId: track.id,
     trackName: track.name,
   });
-  Alert.alert("オフライン", "再接続時に「あとで聴く」を同期します");
+  showToast("オフライン: 再接続時に「あとで聴く」を同期します");
 }
 
 function errorMessage(e: unknown): string {
