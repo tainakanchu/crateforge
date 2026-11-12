@@ -11,6 +11,8 @@
 import { Directory, File, Paths } from "expo-file-system";
 import { create } from "zustand";
 
+import { describeApiError } from "../lib/api/errors";
+import { filterAlbumTracks } from "../lib/album";
 import type { DownloadedPlaylist, DownloadEntry, DownloadQuality, Track } from "../lib/types";
 import { useConnection } from "./connection";
 import { useSettings } from "./settings";
@@ -84,11 +86,33 @@ function albumArtKey(track: Track): string {
   return safe.slice(0, 128);
 }
 
+/** ダウンロード失敗 1 件（UI のトースト/再試行用。永続化しない）。 */
+export interface DownloadFailure {
+  /** 曲単位の失敗なら trackId、アルバム一括取得そのものの失敗なら null。 */
+  trackId: number | null;
+  /** 表示用の名前（曲名 / アルバム名）。 */
+  label: string;
+  /** 日本語メッセージ（describeApiError 済み）。 */
+  message: string;
+  /** 失敗時刻（epoch ms）。トーストの重複表示防止に使う。 */
+  at: number;
+  /** 再試行用の曲（曲単位の失敗のみ）。 */
+  track: Track | null;
+}
+
 export interface DownloadsState {
   /** trackId → ダウンロード済みエントリ。 */
   entries: Record<number, DownloadEntry>;
   /** trackId → ダウンロード進行中フラグ。 */
   downloading: Record<number, boolean>;
+  /** trackId → 直近のダウンロード失敗（成功・削除・clearFailures で消える）。 */
+  failed: Record<number, DownloadFailure>;
+  /** 直近の失敗（曲/アルバム問わず）。UI はこれの `at` の変化を見てトーストを出す。 */
+  lastFailure: DownloadFailure | null;
+  /** 失敗記録を消す（trackId 省略で全件 + lastFailure）。 */
+  clearFailures: (trackId?: number) => void;
+  /** failed に残っている曲をまとめて再試行する。 */
+  retryFailed: () => Promise<void>;
   /** playlistId → オフライン保存したプレイリスト。 */
   playlists: Record<number, DownloadedPlaylist>;
 
@@ -104,8 +128,12 @@ export interface DownloadsState {
   downloadTrack: (track: Track) => Promise<void>;
   /** 複数曲を順番にダウンロード（既にあるものはスキップ）。 */
   downloadMany: (tracks: Track[]) => Promise<void>;
-  /** album 名でライブラリから曲を引いて一括ダウンロード。 */
-  downloadAlbum: (albumName: string) => Promise<void>;
+  /**
+   * アルバムの曲を一括ダウンロード。album 名は完全一致（部分一致で別アルバムを含めない）。
+   * albumArtist を渡すと、album_artist が別の値の曲（同名の別アルバム）を除外する
+   * （album_artist 未設定の曲は残す）。
+   */
+  downloadAlbum: (albumName: string, albumArtist?: string | null) => Promise<void>;
   /** プレイリストをコレクションとして記録しつつ、曲を一括ダウンロードする。 */
   downloadPlaylist: (
     playlistId: number,
@@ -171,10 +199,46 @@ function referencedTrackIds(playlists: Record<number, DownloadedPlaylist>): Set<
 /** syncPinnedPlaylists の再入防止用 in-flight Promise（モジュールスコープ、zustand state ではない）。 */
 let syncInFlight: Promise<void> | null = null;
 
+/** 失敗を記録する set 用のパッチを作る。 */
+function failurePatch(
+  s: Pick<DownloadsState, "failed">,
+  f: DownloadFailure,
+): Pick<DownloadsState, "failed" | "lastFailure"> {
+  return {
+    failed: f.trackId != null ? { ...s.failed, [f.trackId]: f } : s.failed,
+    lastFailure: f,
+  };
+}
+
 export const useDownloads = create<DownloadsState>((set, get) => ({
   entries: {},
   downloading: {},
+  failed: {},
+  lastFailure: null,
   playlists: {},
+
+  clearFailures: (trackId) => {
+    if (trackId == null) {
+      set({ failed: {}, lastFailure: null });
+      return;
+    }
+    set((s) => {
+      if (!s.failed[trackId]) return s;
+      const failed = { ...s.failed };
+      delete failed[trackId];
+      return { failed };
+    });
+  },
+
+  retryFailed: async () => {
+    const tracks = Object.values(get().failed)
+      .map((f) => f.track)
+      .filter((t): t is Track => t != null);
+    for (const t of tracks) {
+      if (get().isDownloaded(t.trackId)) continue;
+      await get().downloadTrack(t);
+    }
+  },
 
   hydrate: async () => {
     try {
@@ -220,11 +284,27 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
 
   downloadTrack: async (track) => {
     if (get().isDownloaded(track.trackId)) return;
+    const label = track.name ?? `#${track.trackId}`;
     const client = useConnection.getState().client;
-    if (!client) return;
+    if (!client) {
+      set((s) =>
+        failurePatch(s, {
+          trackId: track.trackId,
+          label,
+          message: "デスクトップに接続していないためダウンロードできません",
+          at: Date.now(),
+          track,
+        }),
+      );
+      return;
+    }
     const quality = useSettings.getState().downloadQuality;
 
-    set((s) => ({ downloading: { ...s.downloading, [track.trackId]: true } }));
+    set((s) => {
+      const failed = { ...s.failed };
+      delete failed[track.trackId];
+      return { downloading: { ...s.downloading, [track.trackId]: true }, failed };
+    });
     try {
       ensureDir();
       const url = client.downloadUrl(track.trackId, quality);
@@ -271,11 +351,24 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
     } catch (e) {
       // 完全沈黙だとDL失敗が分からないので最低限ログだけ残す（UI は壊さない）。
       console.warn("[downloads] downloadTrack failed:", track.trackId, e);
+      // UI（トースト・行の失敗表示）が拾えるよう失敗を保持する。
       set((s) => {
         const downloading = { ...s.downloading };
         delete downloading[track.trackId];
-        return { downloading };
+        return {
+          downloading,
+          ...failurePatch(s, {
+            trackId: track.trackId,
+            label,
+            // 理由のみ（UI 側が「「曲名」をダウンロードできませんでした: 」を前置するので二重にしない）。
+            message: describeApiError(e),
+            at: Date.now(),
+            track,
+          }),
+        };
       });
+      // 接続断が原因なら接続状態にも反映させる（health で確認してから遷移）。
+      useConnection.getState().reportError(e);
     }
   },
 
@@ -286,15 +379,29 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
     }
   },
 
-  downloadAlbum: async (albumName) => {
+  downloadAlbum: async (albumName, albumArtist) => {
     const client = useConnection.getState().client;
-    if (!client) return;
-    try {
-      const tracks = await client.listTracks({ album: albumName });
-      await get().downloadMany(tracks);
-    } catch {
-      // 取得失敗は何もしない。
+    const fail = (message: string) =>
+      set((s) =>
+        failurePatch(s, { trackId: null, label: albumName, message, at: Date.now(), track: null }),
+      );
+    if (!client) {
+      fail("デスクトップに接続していないためダウンロードできません");
+      return;
     }
+    let tracks: Track[];
+    try {
+      // albumExact は新しいホストのみ有効。古いホストは部分一致で返すので必ずクライアントでも絞る。
+      tracks = filterAlbumTracks(
+        await client.listTracks({ album: albumName, albumExact: true }),
+        albumName,
+        albumArtist,
+      );
+    } catch (e) {
+      fail(describeApiError(e, { action: "アルバムの取得" }));
+      return;
+    }
+    await get().downloadMany(tracks);
   },
 
   downloadPlaylist: async (playlistId, name, tracks, pinned = false) => {
@@ -434,7 +541,7 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
     const empty: Record<number, DownloadEntry> = {};
     persist(empty);
     persistPlaylists({});
-    set({ entries: empty, playlists: {} });
+    set({ entries: empty, playlists: {}, failed: {}, lastFailure: null });
   },
 
   totalBytes: () =>

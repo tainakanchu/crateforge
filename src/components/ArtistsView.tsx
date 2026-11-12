@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { create } from "zustand";
 import { useStore } from "../store/useStore";
 import * as libraryApi from "../api/library";
 import * as playbackApi from "../api/playback";
@@ -9,8 +10,19 @@ import { ArtworkImg } from "./Cover";
 import { artGradient, leadingGlyph } from "../lib/art";
 import { ARTIST_SORT_FIELDS } from "../types";
 import type { AlbumRow, ArtistRow, SortField, Track } from "../types";
+import { EmptyState } from "./EmptyState";
+import { albumLabel, artistLabel } from "../lib/unknownLabels";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
+
+/**
+ * 表示中のアーティスト数 (検索中の見出しの件数用。Toolbar が読む)。
+ * 追加ページがあるときは取得済みの数 + "以上" を示すため hasMore も持つ。
+ */
+export const useArtistsResult = create<{ count: number | null; hasMore: boolean }>(() => ({
+  count: null,
+  hasMore: false,
+}));
 
 const GAP = 18;
 const PAD_X = 20;
@@ -46,6 +58,13 @@ type Row = { type: "grid"; artists: ArtistRow[] } | { type: "expand"; artist: Ar
 export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   const { playback, crate, addToCrate, sortField, sortOrder } = useStore();
   const pushToast = useStore((s) => s.pushToast);
+  // 検索ボックス + フィルタタグ (D4)。トラック一覧と同じ組み立て (App.tsx の combinedQuery)。
+  const searchQuery = useStore((s) => s.searchQuery);
+  const filterTags = useStore((s) => s.filterTags);
+  const combinedQuery = useMemo(
+    () => [searchQuery.trim(), ...filterTags].filter(Boolean).join(" "),
+    [searchQuery, filterTags],
+  );
 
   const parentRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -68,6 +87,11 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   useEffect(() => {
     artistsRef.current = artists;
   }, [artists]);
+  // 見出しの件数 (検索結果のアーティスト数) を Toolbar へ渡す。
+  useEffect(() => {
+    useArtistsResult.setState({ count: isLoading ? null : artists.length, hasMore });
+  }, [artists.length, hasMore, isLoading]);
+  useEffect(() => () => useArtistsResult.setState({ count: null, hasMore: false }), []);
   const loadingRef = useRef(false);
   // 取得のたびに増やす連番。応答が返ったとき最新でなければ (ソート変更などで
   // 後発のリクエストが走っていれば) その結果は捨てる。
@@ -102,7 +126,13 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
       setIsLoading(true);
       try {
         const offset = reset ? 0 : artistsRef.current.length;
-        const rows = await libraryApi.getArtists(artistSort, sortOrder, PAGE_SIZE, offset);
+        const rows = await libraryApi.getArtists(
+          artistSort,
+          sortOrder,
+          PAGE_SIZE,
+          offset,
+          combinedQuery || undefined,
+        );
         if (seq !== reqSeq.current) return; // 古い応答は捨てる
         setArtists((prev) => (reset ? rows : [...prev, ...rows]));
         setHasMore(rows.length === PAGE_SIZE);
@@ -118,10 +148,10 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
         }
       }
     },
-    [artistSort, sortOrder, pushToast],
+    [artistSort, sortOrder, combinedQuery, pushToast],
   );
 
-  // ソート変更・ライブラリ変更で先頭から取り直す (キャッシュも捨てる)。
+  // ソート変更・検索変更・ライブラリ変更で先頭から取り直す (キャッシュも捨てる)。
   useEffect(() => {
     setExpanded(null);
     setOpenAlbumKey(null);
@@ -131,7 +161,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
     bumpCache();
     void load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [artistSort, sortOrder, reloadKey]);
+  }, [artistSort, sortOrder, combinedQuery, reloadKey]);
 
   const ensureAlbums = useCallback(
     async (name: string): Promise<AlbumRow[]> => {
@@ -293,9 +323,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   if (artists.length === 0 && !isLoading) {
     return (
       <div className="cb-grid-wrap">
-        <div className="cb-empty">
-          No tracks. Import an iTunes Library XML, rip a CD, or add files to get started.
-        </div>
+        <EmptyState />
       </div>
     );
   }
@@ -346,11 +374,11 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                             (isCurrent ? " playing" : "") +
                             (isOpen ? " opened" : "")
                           }
-                          style={{ background: artGradient(a.name), height: cardW }}
+                          style={{ background: artGradient(artistLabel(a.name)), height: cardW }}
                           onClick={() => toggleArtist(a)}
                           onDoubleClick={() => artistTracks(a).then((ts) => playTracks(ts))}
                         >
-                          <span className="glyph">{leadingGlyph(a.name)}</span>
+                          <span className="glyph">{leadingGlyph(artistLabel(a.name))}</span>
                           <ArtworkImg path={a.artworkLocationPath} size={cardW} />
                           <span className="grad" />
                           <div className="kbtag">
@@ -360,7 +388,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                           </div>
                           <button
                             className="cov-play"
-                            title="Play artist"
+                            title="このアーティストを再生"
                             onClick={(e) => {
                               e.stopPropagation();
                               artistTracks(a).then((ts) => playTracks(ts));
@@ -372,14 +400,14 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                             <span
                               className="addbtn"
                               style={{ opacity: 1, transform: "none" }}
-                              title="All in crate"
+                              title="すべて Crate に追加済み"
                             >
                               <Icon name="check" size={17} />
                             </span>
                           ) : (
                             <button
                               className="addbtn"
-                              title="Add artist to crate"
+                              title="このアーティストを Crate に追加"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 artistTracks(a).then(crateTracks);
@@ -395,12 +423,11 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                         <div
                           className="cov-meta"
                           onClick={() => toggleArtist(a)}
-                          title={`${a.name} — ${a.albumCount} albums · ${a.trackCount} tracks`}
+                          title={`${artistLabel(a.name)} — ${a.albumCount} アルバム · ${a.trackCount} 曲`}
                         >
-                          <div className="cj">{a.name}</div>
+                          <div className="cj">{artistLabel(a.name)}</div>
                           <div className="la">
-                            {a.trackCount} track{a.trackCount === 1 ? "" : "s"} ·{" "}
-                            {a.albumCount} album{a.albumCount === 1 ? "" : "s"}
+                            {a.trackCount} 曲 · {a.albumCount} アルバム
                           </div>
                         </div>
                       </div>
@@ -480,20 +507,19 @@ function ArtistExpansion({
       <div className="cov-exp">
         <div className="cov-exp-head">
           <div className="cov-exp-title">
-            <span className="t">{artist.name}</span>
+            <span className="t">{artistLabel(artist.name)}</span>
             <span className="s">
-              {artist.albumCount} album{artist.albumCount === 1 ? "" : "s"} ·{" "}
-              {artist.trackCount} track{artist.trackCount === 1 ? "" : "s"}
+              {artist.albumCount} アルバム · {artist.trackCount} 曲
             </span>
           </div>
           <div className="art-exp-actions">
-            <button className="cb-btn" title="Play all" onClick={onPlayArtist}>
-              <Icon name="play" size={13} fill="currentColor" stroke={0} /> Play
+            <button className="cb-btn" title="すべて再生" onClick={onPlayArtist}>
+              <Icon name="play" size={13} fill="currentColor" stroke={0} /> 再生
             </button>
-            <button className="cb-btn" title="Add all to queue" onClick={onQueueArtist}>
-              <Icon name="list" size={13} /> Queue
+            <button className="cb-btn" title="すべてキューに追加" onClick={onQueueArtist}>
+              <Icon name="list" size={13} /> キュー
             </button>
-            <button className="cb-btn" title="Add all to crate" onClick={onCrateArtist}>
+            <button className="cb-btn" title="すべて Crate に追加" onClick={onCrateArtist}>
               <Icon name="plus" size={13} /> Crate
             </button>
             <button className="cov-exp-close" title="Collapse" onClick={onClose}>
@@ -513,22 +539,22 @@ function ArtistExpansion({
                   <div className="art-alb-head" onClick={() => onToggleAlbum(al)}>
                     <div
                       className="art-alb-cover"
-                      style={{ background: artGradient(al.album) }}
+                      style={{ background: artGradient(albumLabel(al.album)) }}
                     >
-                      <span className="glyph">{leadingGlyph(al.album)}</span>
+                      <span className="glyph">{leadingGlyph(albumLabel(al.album))}</span>
                       <ArtworkImg path={al.coverFileExists ? al.coverLocationPath : null} size={38} />
                     </div>
                     <div className="art-alb-meta">
-                      <div className="t">{al.album}</div>
+                      <div className="t">{albumLabel(al.album)}</div>
                       <div className="s">
                         {al.year != null ? `${al.year} · ` : ""}
-                        {al.trackCount} track{al.trackCount === 1 ? "" : "s"}
+                        {al.trackCount} 曲
                         {al.totalTimeMs > 0 ? ` · ${formatTime(al.totalTimeMs)}` : ""}
                       </div>
                     </div>
                     <button
                       className="art-alb-btn"
-                      title="Play album"
+                      title="アルバムを再生"
                       onClick={(e) => {
                         e.stopPropagation();
                         onPlayAlbum(al);
@@ -538,7 +564,7 @@ function ArtistExpansion({
                     </button>
                     <button
                       className="art-alb-btn"
-                      title="Add album to queue"
+                      title="アルバムをキューに追加"
                       onClick={(e) => {
                         e.stopPropagation();
                         onQueueAlbum(al);
@@ -548,7 +574,7 @@ function ArtistExpansion({
                     </button>
                     <button
                       className="art-alb-btn"
-                      title="Add album to crate"
+                      title="アルバムを Crate に追加"
                       onClick={(e) => {
                         e.stopPropagation();
                         onCrateAlbum(al);
@@ -571,7 +597,7 @@ function ArtistExpansion({
                           const showArtist = !!t.artist && t.artist !== artist.name;
                           return (
                             <div
-                              key={t.id}
+                              key={`${t.id}-${i}`}
                               className={
                                 "cov-trk" +
                                 (isCurrent ? " play" : "") +
@@ -587,7 +613,7 @@ function ArtistExpansion({
                                   </span>
                                 )}
                                 {!t.fileExists && (
-                                  <span className="cb-warn" title="File not found">
+                                  <span className="cb-warn" title="ファイルが見つかりません">
                                     <Icon name="warning" size={11} />
                                   </span>
                                 )}
@@ -596,13 +622,13 @@ function ArtistExpansion({
                               </span>
                               <span className="tm cb-fmono">{formatTime(t.totalTimeMs)}</span>
                               {isIn ? (
-                                <span className="cov-trk-add in" title="In crate">
+                                <span className="cov-trk-add in" title="Crate に追加済み">
                                   <Icon name="check" size={15} />
                                 </span>
                               ) : (
                                 <button
                                   className="cov-trk-add"
-                                  title="Add to crate"
+                                  title="Crate に追加"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onCrateTrack(t);

@@ -34,7 +34,13 @@ export default function PlaylistRow({ playlist, onPress }: PlaylistRowProps) {
           {playlist.name}
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
-          {playlist.isFolder ? "フォルダ" : playlist.isSmart ? "スマート" : "プレイリスト"}
+          {playlist.isFolder ? (
+            "フォルダ"
+          ) : playlist.isSmart ? (
+            <Text style={styles.smart}>スマートプレイリスト</Text>
+          ) : (
+            "プレイリスト"
+          )}
           {/* フォルダは曲数を持たない（子を含む）ので曲数は出さない。 */}
           {playlist.isFolder ? null : ` ・ ${playlist.trackCount}曲`}
         </Text>
@@ -73,6 +79,10 @@ const styles = StyleSheet.create({
     color: PALETTE.text,
     fontSize: 16,
     fontWeight: "700",
+  },
+  smart: {
+    color: PALETTE.accent,
+    fontWeight: "600",
   },
   meta: {
     color: PALETTE.textDim,

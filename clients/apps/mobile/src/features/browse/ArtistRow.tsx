@@ -3,11 +3,11 @@
 // CRITICAL: artwork は artist.sampleTrackId（= trackId）で取得する。
 
 import { Pressable, Text, View, StyleSheet } from "react-native";
-import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 
-import { type Artist, useConnection, useDownloads } from "@crateforge/core";
+import { type Artist, artistLabel, useConnection, useDownloads } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
+import LayeredArtwork from "@/components/LayeredArtwork";
 
 export interface ArtistRowProps {
   artist: Artist;
@@ -22,7 +22,6 @@ export default function ArtistRow({ artist, onPress }: ArtistRowProps) {
   // ローカル保存済みアートを最優先。DL完了で再描画されるようリアクティブに取得する。
   const localArtworkUri = useDownloads((s) => s.getLocalArtworkUri(artist.sampleTrackId));
   const source = localArtworkUri ?? client?.artworkSource(artist.sampleTrackId);
-  const dimensions = { width: THUMB, height: THUMB, borderRadius: RADIUS };
 
   return (
     <Pressable
@@ -30,22 +29,18 @@ export default function ArtistRow({ artist, onPress }: ArtistRowProps) {
       accessibilityRole="button"
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
-      {source ? (
-        <Image
-          source={source}
-          style={[styles.image, dimensions]}
-          contentFit="cover"
-          transition={120}
-          recyclingKey={String(artist.sampleTrackId)}
-        />
-      ) : (
-        <View style={[styles.placeholder, dimensions]}>
-          <Ionicons name="person-outline" size={Math.round(THUMB * 0.5)} color={PALETTE.textFaint} />
-        </View>
-      )}
+      {/* 頭文字プレースホルダを下に敷き画像を重ねる（404 でも空箱にしない）。 */}
+      <LayeredArtwork
+        source={source}
+        name={artistLabel(artist.artist)}
+        size={THUMB}
+        radius={RADIUS}
+        recyclingKey={String(artist.sampleTrackId)}
+      />
       <View style={styles.texts}>
         <Text style={styles.name} numberOfLines={1}>
-          {artist.artist}
+          {/* 空名（タグにアーティストが無い曲のグループ）は「不明なアーティスト」。 */}
+          {artistLabel(artist.artist)}
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
           {artist.trackCount}曲
@@ -66,14 +61,6 @@ const styles = StyleSheet.create({
   },
   pressed: {
     backgroundColor: PALETTE.surface,
-  },
-  image: {
-    backgroundColor: PALETTE.surfaceAlt,
-  },
-  placeholder: {
-    backgroundColor: PALETTE.surfaceAlt,
-    alignItems: "center",
-    justifyContent: "center",
   },
   texts: {
     flex: 1,

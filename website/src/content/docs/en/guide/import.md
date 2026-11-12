@@ -9,7 +9,7 @@ You can import a library into Crateforge from either the **iTunes / Music `Libra
 
 ## Importing the iTunes / Music Library.xml
 
-From **"📥 Import XML"** in the toolbar, select an `iTunes Library.xml` (Apple plist format).
+From **"iTunes XML を取り込む" (Import iTunes XML)** in the toolbar, select an `iTunes Library.xml` (Apple plist format).
 
 - It is read with a streaming SAX parser, so even large libraries import fast.
 - The import uses streaming parsing and reproduces tracks, playlists, and the **folder hierarchy** (Persistent ID / Parent Persistent ID).
@@ -32,22 +32,26 @@ without re-importing the XML (also select an older library XML to resolve refere
 
 ## Importing music files
 
-With **"🎵 Add Files"** in the toolbar, you can import your own music files directly (multiple selection supported).
+With **"ファイルを追加" (Add Files)** in the toolbar, you can import your own music files directly (multiple selection supported).
 
 - Supported formats: **FLAC / MP3 / M4A / WAV / Ogg / Opus / AIFF** and more.
 - Tags (title / artist / album / genre / year, etc.) are read with `lofty`.
 - The **BPM tag** (TBPM / tmpo / Vorbis BPM) is also read on import.
 
-## Importing whole folders (Add Folder / drag and drop)
+## Importing whole folders ("フォルダを追加" (Add Folder) / drag and drop)
 
-Pick a folder with **"Add Folder"** in the toolbar (inside the ⋯ menu when the window is narrow) and it
+Pick a folder with **"フォルダを追加" (Add Folder)** in the toolbar (inside the ⋯ menu when the window is narrow) and it
 **walks subfolders recursively**, importing every supported file it finds. **Dragging and dropping** onto the window
 goes through the same path, so you can drop a mix of files and folders.
 
 - Only files with a supported extension are imported (everything else is ignored).
 - **Hidden files and folders (starting with `.`) are skipped** (`.DS_Store` and friends).
   Files you point at explicitly are imported even if they are hidden.
-- **Files already in the library (same path) are skipped**, so dropping the same folder again never creates duplicates.
+- The **`_replaced` folder** (where replaced files are moved) **is skipped too**, so backed-up files never show up as candidates.
+- If a track is already in the library under another path, or **the file being imported looks corrupted (e.g. its tail is zero-filled)**,
+  a confirmation dialog opens before importing. You can choose import / skip / replace per track, or use bulk actions such as "すべて取り込む" (import all).
+  Suspected-corrupt files are skipped by default. The dialog does not close on a background click (use "取り込みをキャンセル" (cancel import) to abort). Pressing Esc asks "取り込みをキャンセルしますか？" (cancel the import?) first.
+- **Files already in the library (same path) are skipped**, so dropping the same folder again never creates duplicates. The same file reached through a different path or file name (a folder symlink, a differently named file symlink, or a hard link) counts as the same file, even with "すべて取り込む" (import all). When the confirmation dialog opens, such files are listed as "登録済み（同じファイル）" (already registered, same file) and always skipped, so the counts in the dialog (including "ほかの N 曲はそのまま取り込みます" — the other N tracks imported as-is) match what is actually imported.
 - Symlink loops are detected and cut off, and unreadable folders are skipped so the rest still imports.
 - The result is shown as a toast: how many were imported, how many were skipped as already imported, and how many failed.
 - Imported tracks land in the **Inbox** in the sidebar, where you can [rate them and add them to the Crate](../playback/).
@@ -61,7 +65,7 @@ Using **"Auto-detect"** in settings infers the organize folder from the paths of
 
 ## Writing tags back to files
 
-When you edit a track (Get Info / `Ctrl + I`), Crateforge updates the database **and writes the tags back to the
+When you edit a track ("情報を見る / 編集" (Get Info / Edit) / `Ctrl + I`), Crateforge updates the database **and writes the tags back to the
 actual file (ID3 / Vorbis / MP4)**. No organize folder is required — **tags are written back even when it is not set**
 (when it is set, the file is also moved and renamed into place).
 
@@ -82,7 +86,7 @@ It reaches other software through the InitialKey file tag instead. BPM is includ
 
 Right-click a track for the following actions.
 
-- **"Finder / エクスプローラで表示" (Reveal in file manager)** — opens the track's file in your OS file manager
+- **"Finder で表示" / "エクスプローラーで表示" / "ファイルマネージャで表示" (Reveal in file manager; the label follows your OS)** — opens the track's file in your OS file manager
   (selected in Finder on macOS, selected in Explorer on Windows, and the parent folder on Linux).
 - **"ライブラリから削除…" (Delete from library…)** — removes the selected tracks from the library (the database).
   In the confirmation dialog you can also check **"delete the files too"** to remove the actual files.
@@ -112,7 +116,7 @@ moved in Finder — are shown as missing ("見つかりません").
 
 ## Exporting iTunes-compatible XML
 
-With **"📤 Export XML"** in the toolbar, you can export an `iTunes Library.xml` (Apple plist format).
+With **"iTunes XML に書き出し" (Export iTunes XML)** in the toolbar, you can export an `iTunes Library.xml` (Apple plist format).
 You can hand it to DJ software that reads iTunes XML, such as rekordbox / Serato / Traktor.
 
 The exported XML includes the following.
@@ -132,20 +136,20 @@ When an auto-export succeeds, `library.db` is backed up along with it
 
 ## Importing from a CD (ripping)
 
-From **"💿 Rip CD"** in the toolbar, you can import a physical CD (track info is fetched automatically from MusicBrainz, and cover art from the Cover Art Archive).
+From **"CD を取り込む" (Rip CD)** in the toolbar, you can import a physical CD (track info is fetched automatically from MusicBrainz, and cover art from the Cover Art Archive).
 
-1. Choose the **Drive** and click "🔍 Detect Disc". Connected CD drives (e.g. `E:` on Windows, `/dev/sr0` / `/dev/cdrom` on Linux) are listed automatically, and the drive that was last read successfully is remembered as the next default. If yours isn't listed, pick "その他…" (Other) to type it manually (fallback defaults when nothing is detected: Linux: `/dev/cdrom`, macOS: `disk1`, Windows: `D:`)
+1. Choose the **"ドライブ" (Drive)** and click "🔍 ディスクを検出" (Detect Disc). Connected CD drives (e.g. `E:` on Windows, `/dev/sr0` / `/dev/cdrom` on Linux) are listed automatically, and the drive that was last read successfully is remembered as the next default. If yours isn't listed, pick "その他…" (Other) to type it manually (fallback defaults when nothing is detected: Linux: `/dev/cdrom`, macOS: `disk1`, Windows: `D:`)
 
    While the app is running, CD drives are watched automatically: inserting a disc shows a "CD を検出しました" (CD detected) dialog, and clicking "取り込む" (Import) opens Rip CD with that drive selected.
 2. The TOC is read and candidate albums from MusicBrainz are displayed automatically
 3. Re-pick the release if needed, and select the tracks
-4. Specify the **Format** (FLAC / ALAC / MP3 / WAV) and the **Output** folder, then click "▶ Start Ripping"
+4. Specify the **"形式" (Format)** (FLAC / ALAC / MP3 / WAV) and the **"出力先" (Output)** folder, then click "▶ 取り込み開始" (Start Ripping)
 5. While ripping, a progress card appears at the bottom right (above the player bar), showing an overall progress bar, "track n / total", the current track, and the stage (reading / encoding). Click it (or press Enter) to open the log
 6. When done, it is added to the library automatically (when the option is on). A short chime plays on completion (a lower tone on failure); you can turn it off in **Settings → General → "CD rip completion sound"** (labeled 「CD 取り込みの完了音」 in the UI)
 
 :::caution
 Under WSL2, a physical CD isn't visible directly, so you need to attach the drive to WSL2 with `usbipd-win`.
-The Windows build does not bundle `discid` (libdiscid), but "Detect Disc" still works because it reads the TOC directly via the OS IOCTL and computes the MusicBrainz Disc ID in-house. Entering the TOC manually is a fallback for environments where neither libdiscid nor IOCTL is available.
+The Windows build does not bundle `discid` (libdiscid), but "ディスクを検出" (Detect Disc) still works because it reads the TOC directly via the OS IOCTL and computes the MusicBrainz Disc ID in-house. Entering the TOC manually is a fallback for environments where neither libdiscid nor IOCTL is available.
 :::
 
 ## Using your tracks on a CDJ

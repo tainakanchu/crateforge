@@ -127,6 +127,19 @@ pub const SORT_FIELDS: &[&str] = &[
     "codec",
 ];
 
+/// 実効 BPM = タグの BPM ?? 解析 BPM (タグ優先)。一覧表示・ソート・検索・スマート条件・
+/// Rules・API で同じ定義を使う。
+/// タグの 0 は「未設定」とみなす。
+pub fn effective_bpm(t: &Track, a: Option<&TrackAnalysis>) -> Option<f64> {
+    t.bpm
+        .filter(|&b| b > 0)
+        .map(|b| b as f64)
+        .or_else(|| a.and_then(|x| x.bpm))
+}
+
+/// track_id → 解析結果。並び替えで実効 BPM を引くのに使う。
+pub type AnalysisMap = HashMap<i64, TrackAnalysis>;
+
 /// 条件で使えるフィールド (フロントの選択肢と一致させる)。
 fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
     match field {
@@ -140,7 +153,10 @@ fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
         "composer" => os(&t.composer),
         "comments" => os(&t.comments),
         "year" => on(t.year),
-        "bpm" => on(t.bpm),
+        // 実効 BPM = タグ ?? 解析値 (一覧表示・ソート・検索と同じ定義)。
+        "bpm" => effective_bpm(t, a)
+            .map(FieldVal::Num)
+            .unwrap_or(FieldVal::None),
         // rating はスター数 (0-5, 0.5 刻み) で扱う (DB は 0-100)。#172 半星:
         // 70 → 3.5。10 の倍数でない値 (例 65) は最寄りの半星に丸める (UI 表示と同じ)。
         "rating" => t
@@ -358,18 +374,27 @@ fn location_key(t: &Track) -> String {
 }
 
 /// 2 曲を 1 フィールドだけで比較する (昇順、同値なら Equal。未知のフィールドは name 順)。
-fn compare_field(a: &Track, b: &Track, field: &str) -> Ordering {
+/// `an` があれば bpm は実効 BPM (タグ ?? 解析値) で比較する。
+fn compare_field(a: &Track, b: &Track, field: &str, an: Option<&AnalysisMap>) -> Ordering {
     match field {
         "trackId" => a.track_id.cmp(&b.track_id),
-        "name" => lower(&a.name).cmp(&lower(&b.name)),
-        "artist" => lower(&a.artist).cmp(&lower(&b.artist)),
-        "album" => lower(&a.album).cmp(&lower(&b.album)),
-        "albumArtist" => lower(&a.album_artist).cmp(&lower(&b.album_artist)),
+        // 曲名・アーティスト・アルバムは一覧の ORDER BY (COLLATE NATSORT) と同じ自然順 (D10)。
+        "name" => natural(&a.name, &b.name),
+        "artist" => natural(&a.artist, &b.artist),
+        "album" => natural(&a.album, &b.album),
+        "albumArtist" => natural(&a.album_artist, &b.album_artist),
         "genre" => lower(&a.genre).cmp(&lower(&b.genre)),
         "grouping" => lower(&a.grouping).cmp(&lower(&b.grouping)),
         "composer" => lower(&a.composer).cmp(&lower(&b.composer)),
         "comments" => lower(&a.comments).cmp(&lower(&b.comments)),
-        "bpm" => a.bpm.cmp(&b.bpm),
+        "bpm" => {
+            let bpm = |t: &Track| effective_bpm(t, an.and_then(|m| m.get(&t.track_id)));
+            // Option の順序 (None < Some) は従来の i64 比較と同じ。
+            match (bpm(a), bpm(b)) {
+                (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+                (x, y) => x.is_some().cmp(&y.is_some()),
+            }
+        }
         "rating" => a.rating.cmp(&b.rating),
         "playCount" => a.play_count.cmp(&b.play_count),
         "skipCount" => a.skip_count.cmp(&b.skip_count),
@@ -392,35 +417,44 @@ fn compare_field(a: &Track, b: &Track, field: &str) -> Ordering {
         "channels" => a.channels.cmp(&b.channels),
         "fileSize" => a.file_size_bytes.cmp(&b.file_size_bytes),
         "codec" => lower(&a.codec).cmp(&lower(&b.codec)),
-        _ => lower(&a.name).cmp(&lower(&b.name)),
+        _ => natural(&a.name, &b.name),
     }
 }
 
+fn natural(a: &Option<String>, b: &Option<String>) -> Ordering {
+    crate::natural_sort::natural_cmp(a.as_deref().unwrap_or(""), b.as_deref().unwrap_or(""))
+}
+
 /// 2 曲を指定フィールドで比較する (昇順。同値は track_id で安定化)。
-pub fn compare_tracks(a: &Track, b: &Track, field: &str) -> Ordering {
-    compare_field(a, b, field).then_with(|| a.track_id.cmp(&b.track_id))
+pub fn compare_tracks(a: &Track, b: &Track, field: &str, an: Option<&AnalysisMap>) -> Ordering {
+    compare_field(a, b, field, an).then_with(|| a.track_id.cmp(&b.track_id))
 }
 
 /// criteria 自身の並び (`sort_by` + `sort_desc`、同順位なら `then_by` を順に) で比較する。
 /// `sort_by` が無ければ name 昇順。最後は track_id で安定化する (第 1 キーが降順なら
 /// track_id も降順 = `then_by` が空なら従来の `compare_tracks(..).reverse()` と同じ)。
-pub fn compare_by_criteria(a: &Track, b: &Track, c: &SmartCriteria) -> Ordering {
+pub fn compare_by_criteria(
+    a: &Track,
+    b: &Track,
+    c: &SmartCriteria,
+    an: Option<&AnalysisMap>,
+) -> Ordering {
     let field = c.sort_by.as_deref().unwrap_or("name");
     let dir = |ord: Ordering, desc: bool| if desc { ord.reverse() } else { ord };
-    let mut ord = dir(compare_field(a, b, field), c.sort_desc);
+    let mut ord = dir(compare_field(a, b, field, an), c.sort_desc);
     for key in &c.then_by {
         if ord != Ordering::Equal {
             break;
         }
-        ord = dir(compare_field(a, b, &key.field), key.desc);
+        ord = dir(compare_field(a, b, &key.field, an), key.desc);
     }
     ord.then_with(|| dir(a.track_id.cmp(&b.track_id), c.sort_desc))
 }
 
 /// マッチ済みトラックを指定フィールドで並び替える (NULL/空は末尾)。
-pub fn sort_tracks(tracks: &mut [Track], field: &str, desc: bool) {
+pub fn sort_tracks(tracks: &mut [Track], field: &str, desc: bool, an: Option<&AnalysisMap>) {
     tracks.sort_by(|a, b| {
-        let ord = compare_tracks(a, b, field);
+        let ord = compare_tracks(a, b, field, an);
         if desc {
             ord.reverse()
         } else {
@@ -679,10 +713,61 @@ mod tests {
             track(2, "B", Some(128), None),
             track(3, "C", Some(124), None),
         ];
-        sort_tracks(&mut v, "bpm", true);
+        sort_tracks(&mut v, "bpm", true, None);
         assert_eq!(
             v.iter().map(|t| t.track_id).collect::<Vec<_>>(),
             vec![2, 3, 1]
+        );
+    }
+
+    fn analysis_bpm(id: i64, bpm: f64) -> TrackAnalysis {
+        TrackAnalysis {
+            track_id: id,
+            version: 1,
+            analyzed_at: String::new(),
+            bpm: Some(bpm),
+            key_camelot: None,
+            key_name: None,
+            key_camelot_user: None,
+            energy: None,
+            loudness_lufs: None,
+            replaygain_db: None,
+            vector: Vec::new(),
+            peaks: Vec::new(),
+        }
+    }
+
+    /// 実効 BPM = タグ ?? 解析値。条件評価と並び替えの両方で同じ値を使う。
+    #[test]
+    fn effective_bpm_prefers_tag_then_analysis() {
+        let tagged = track(1, "A", Some(120), None);
+        let untagged = track(2, "B", None, None);
+        let a1 = analysis_bpm(1, 140.0);
+        let a2 = analysis_bpm(2, 130.0);
+        assert_eq!(effective_bpm(&tagged, Some(&a1)), Some(120.0));
+        assert_eq!(effective_bpm(&untagged, Some(&a2)), Some(130.0));
+        assert_eq!(effective_bpm(&untagged, None), None);
+
+        let c = crit(true, vec![rule("bpm", SmartOp::Gte, "125")], vec![]);
+        // タグ 120 は解析値 140 があっても対象外、タグ無しは解析値 130 で対象。
+        assert!(!matches_lvl(&tagged, Some(&a1), &c, FoldLevel::Standard));
+        assert!(matches_lvl(&untagged, Some(&a2), &c, FoldLevel::Standard));
+        let exists = crit(true, vec![rule("bpm", SmartOp::Exists, "")], vec![]);
+        assert!(matches_lvl(&untagged, Some(&a2), &exists, FoldLevel::Standard));
+
+        let mut an = AnalysisMap::new();
+        an.insert(1, a1);
+        an.insert(2, a2);
+        let mut v = vec![
+            tagged.clone(),
+            untagged.clone(),
+            track(3, "C", None, None),
+        ];
+        sort_tracks(&mut v, "bpm", false, Some(&an));
+        // 未設定 (3) → 120 (1) → 130 (2: 解析値)。
+        assert_eq!(
+            v.iter().map(|t| t.track_id).collect::<Vec<_>>(),
+            vec![3, 1, 2]
         );
     }
 
@@ -867,6 +952,36 @@ mod tests {
         ));
     }
 
+    /// タグの無い曲 (artist / albumArtist / album が NULL または空文字): 値が無い扱いで、
+    /// isNot / notContains は満たし、is / contains などは満たさない (取り込みでフォルダ名を
+    /// 埋めなくなったので、空の曲がこの規則で Rules / スマートに入る)。
+    #[test]
+    fn untagged_artist_album_are_missing_values() {
+        for empty in [None, Some(String::new())] {
+            let mut t = track(1, "", None, None);
+            t.artist = empty.clone();
+            t.album_artist = empty.clone();
+            t.album = empty.clone();
+            let m = |field: &str, op, v: &str| {
+                matches_lvl(
+                    &t,
+                    None,
+                    &crit(true, vec![rule(field, op, v)], vec![]),
+                    FoldLevel::Standard,
+                )
+            };
+            for field in ["artist", "albumArtist", "album"] {
+                assert!(m(field, SmartOp::IsNot, "Daft Punk"), "{field} {empty:?}");
+                assert!(m(field, SmartOp::NotContains, "daft"), "{field} {empty:?}");
+                assert!(!m(field, SmartOp::Is, "Daft Punk"), "{field} {empty:?}");
+                assert!(!m(field, SmartOp::Contains, "daft"), "{field} {empty:?}");
+                assert!(!m(field, SmartOp::StartsWith, "d"), "{field} {empty:?}");
+                assert!(m(field, SmartOp::NotExists, ""), "{field} {empty:?}");
+                assert!(!m(field, SmartOp::Exists, ""), "{field} {empty:?}");
+            }
+        }
+    }
+
     /// 値が無い曲: isNot / notContains は満たす (iTunes 互換)、それ以外の演算は満たさない。
     #[test]
     fn missing_value_semantics() {
@@ -1001,7 +1116,7 @@ mod tests {
                 desc: false,
             },
         ];
-        v.sort_by(|a, b| compare_by_criteria(a, b, &c));
+        v.sort_by(|a, b| compare_by_criteria(a, b, &c, None));
         assert_eq!(
             v.iter().map(|t| t.track_id).collect::<Vec<_>>(),
             vec![3, 2, 4, 1]
@@ -1009,7 +1124,7 @@ mod tests {
         // then_by が空なら従来どおり (第 1 キー降順は track_id も降順)。
         c.then_by.clear();
         c.sort_desc = true;
-        v.sort_by(|a, b| compare_by_criteria(a, b, &c));
+        v.sort_by(|a, b| compare_by_criteria(a, b, &c, None));
         assert_eq!(
             v.iter().map(|t| t.track_id).collect::<Vec<_>>(),
             vec![1, 4, 3, 2]

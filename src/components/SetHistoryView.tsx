@@ -337,7 +337,7 @@ export function SetHistoryView() {
         <div className="set-history-toolbar">
           <div className="set-history-toolbar-title">
             <Icon name="history" size={16} />
-            <span>Set History</span>
+            <span>セット履歴</span>
             <span className="set-history-count">{entries.length}</span>
           </div>
           <div className="set-history-toolbar-actions">
@@ -636,7 +636,7 @@ export function SetHistoryView() {
                       {t.name ?? "(untitled)"}
                     </span>
                     <span className="set-history-track-artist">
-                      {t.artist ?? "—"}
+                      {t.artist || "—"}
                     </span>
                   </div>
                   <div className="set-history-track-actions">
@@ -758,7 +758,7 @@ export function SetHistoryView() {
                               >
                                 <span>{t.name ?? "?"}</span>
                                 <span className="set-history-muted">
-                                  {t.artist ?? "—"}
+                                  {t.artist || "—"}
                                 </span>
                               </button>
                             </li>

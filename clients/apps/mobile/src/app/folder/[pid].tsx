@@ -6,9 +6,10 @@ import { useMemo } from "react";
 import { FlatList, Text, View, StyleSheet } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
-import { type Playlist, useConnection } from "@crateforge/core";
+import { type Playlist, useConnection, describeApiError } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
+import BackButton from "@/components/BackButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { usePlaylists } from "@/features/browse/hooks";
 import { childrenOf } from "@/features/browse/playlistTree";
@@ -43,6 +44,7 @@ export default function FolderScreen() {
 
   return (
     <Screen edges={["top"]}>
+      <BackButton />
       <View style={styles.header}>
         <Text style={styles.title} numberOfLines={2}>
           {title}
@@ -72,7 +74,7 @@ export default function FolderScreen() {
 }
 
 function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : "読み込みに失敗しました";
+  return describeApiError(e, { action: "読み込み" });
 }
 
 const styles = StyleSheet.create({

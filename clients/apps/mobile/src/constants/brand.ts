@@ -16,7 +16,7 @@ export const PALETTE = {
   border: "#26343A",
   text: "#E8EEF0",
   textDim: "#9DB0B7",
-  textFaint: "#62757C",
+  textFaint: "#8296A0", // surfaceAlt 上でも WCAG 4.5:1 以上
   accent: BRAND.accent,
   accentDim: BRAND.accentDim,
   danger: "#D9534F",

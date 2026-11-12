@@ -1,0 +1,127 @@
+// 接続状態の表示ラベル（設定/接続画面共通）。status だけで「接続済み」と出さず、
+// errorKind / checking / lastOkAt / selectIsOffline から日本語ラベルを決める。
+
+import {
+  type ConnectionState,
+  DESKTOP_API_SETTINGS_PATH,
+  apiErrorKindMessage,
+  selectIsOffline,
+} from "@crateforge/core";
+
+export type ConnectionLabelTone = "ok" | "pending" | "offline" | "error" | "idle";
+
+export interface ConnectionLabel {
+  /** 短いラベル（状態行に表示）。 */
+  text: string;
+  tone: ConnectionLabelTone;
+  /** 補足の説明（エラー時の対処など）。無ければ null。 */
+  detail: string | null;
+}
+
+type Input = Pick<
+  ConnectionState,
+  "status" | "errorKind" | "checking" | "lastOkAt" | "baseUrl"
+>;
+
+/** epoch ms → "hh:mm"（端末ローカル時刻）。 */
+export function formatClock(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+export function connectionLabel(s: Input): ConnectionLabel {
+  if (s.status === "connecting" || (s.checking && s.status !== "idle")) {
+    return { text: "確認中", tone: "pending", detail: null };
+  }
+  if (s.status === "connected") {
+    return { text: "接続済み", tone: "ok", detail: null };
+  }
+  if (s.status === "error") {
+    if (s.errorKind === "unauthorized") {
+      // 状態行が「トークン不一致」なので、補足は確認場所だけにする（同じ趣旨を 2 回出さない。round-3 N2）。
+      return {
+        text: "トークン不一致",
+        tone: "error",
+        detail: `デスクトップの ${DESKTOP_API_SETTINGS_PATH} で現在のトークンを確認してください`,
+      };
+    }
+    if (selectIsOffline(s)) {
+      const text = s.lastOkAt != null ? `オフライン（最終接続 ${formatClock(s.lastOkAt)}）` : "オフライン";
+      return { text, tone: "offline", detail: apiErrorKindMessage(s.errorKind ?? "network") };
+    }
+    return {
+      text: "エラー",
+      tone: "error",
+      detail: s.errorKind ? apiErrorKindMessage(s.errorKind) : null,
+    };
+  }
+  return { text: "未接続", tone: "idle", detail: null };
+}
+
+/** 未接続時の復帰導線の種類。 */
+export type RecoveryAction = "reauth" | "retry" | "connect";
+
+export interface ConnectionRecovery {
+  /** 1 行の理由（未接続表示のバナーに出す）。 */
+  reason: string;
+  action: RecoveryAction;
+  /** 導線ボタンの文言。 */
+  actionLabel: string;
+}
+
+/** 接続画面へトークン再入力モードで行く href（旧トークンは入れない）。 */
+export const REAUTH_HREF = "/connect?reauth=1";
+
+/**
+ * 未接続（client なし）のときの理由 1 行と復帰導線（ライブラリ/プレイリスト/リモート/設定で共通）。
+ * - トークン不一致: 「トークンを入力し直す」（URL 入りの接続画面へ。旧トークンは入れない）
+ * - オフライン（デスクトップに届かない）: 「再試行」（同じ接続先で health を叩き直す）
+ * - それ以外（未設定・その他のエラー）: 「サーバーに接続」（接続画面へ）
+ */
+export function connectionRecovery(s: Input): ConnectionRecovery {
+  if (s.status === "error" && s.errorKind === "unauthorized") {
+    // バナーで 1 行に収まる長さにする（ボタンと並ぶため。round-3 N2）。
+    return {
+      reason: "トークンが一致しません",
+      action: "reauth",
+      actionLabel: "トークンを入力し直す",
+    };
+  }
+  if (s.status === "error" && s.errorKind === "notCrateforge") {
+    // 同じ URL で再試行しても直らないので接続画面で URL を直してもらう。
+    return { reason: "接続先が Crateforge ではありません", action: "connect", actionLabel: "接続先を変更" };
+  }
+  if (selectIsOffline(s)) {
+    const at = s.lastOkAt != null ? `（最終接続 ${formatClock(s.lastOkAt)}）` : "";
+    return { reason: `デスクトップに届きません${at}`, action: "retry", actionLabel: "再試行" };
+  }
+  if (s.status === "error" && s.errorKind) {
+    return { reason: apiErrorKindMessage(s.errorKind), action: "connect", actionLabel: "サーバーに接続" };
+  }
+  return { reason: "サーバー未接続", action: "connect", actionLabel: "サーバーに接続" };
+}
+
+/**
+ * 未接続時の本文（リモートタブなど、バナーの下に出す説明）。バナーと矛盾しないよう状態で出し分ける（round-3 N2）。
+ * - トークン不一致: トークンを入れ直せば操作できる旨
+ * - オフライン（自動再試行中）: 再接続待ち
+ * - 接続先はあるがその他のエラー: 接続先の確認
+ * - 未設定: サーバーに接続してください
+ */
+export function disconnectedBody(s: Input): { message: string; icon: "key-outline" | "cloud-offline-outline" } {
+  const r = connectionRecovery(s);
+  if (r.action === "reauth") {
+    return { message: "トークンを入力し直すと、デスクトップを操作できます", icon: "key-outline" };
+  }
+  if (r.action === "retry") {
+    return {
+      message: "デスクトップへの再接続を待っています（起動すると自動で再接続します）",
+      icon: "cloud-offline-outline",
+    };
+  }
+  if (s.baseUrl && s.status === "error") {
+    return { message: "接続先を確認してください", icon: "cloud-offline-outline" };
+  }
+  return { message: "サーバーに接続してください", icon: "cloud-offline-outline" };
+}

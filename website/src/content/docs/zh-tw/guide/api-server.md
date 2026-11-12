@@ -10,15 +10,16 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 
 ## 啟用與監聽位置
 
-在設定的 **「AI 整合 / API」** 啟用 API 伺服器。
+在設定的 **「行動裝置 / API」** 啟用 API 伺服器。
 
 - 預設為 **OFF**。預設連接埠為 **8787**。
 - 預設以 **`127.0.0.1`（僅 loopback）** 監聽。
 - 啟用 **「LAN 公開」** 後，可從同一 Wi-Fi 的手機 / TV / PC 瀏覽器存取。
   連線 URL 與 **QR 碼** 會顯示在設定中。
 
-伺服器已強化為在確實完成停止後才重新啟動（`SO_REUSEADDR` / `SO_REUSEPORT`），
+伺服器已強化為在確實完成停止後才重新啟動（`SO_REUSEADDR`），
 解決了「前一個伺服器尚未完全關閉而無法啟動（address in use）」的問題。
+若已有其他 Crateforge 在同一連接埠等待連線，不會重複佔用該連接埠，而是改用其他空閒的連接埠（實際連接埠會顯示在設定的連線 URL，並以「8787 は使用中のため 9797 で起動しました」（8787 使用中，已改用 9797 啟動）明確標示）。
 
 ## 認證、權杖、配對
 
@@ -38,12 +39,27 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 ### 讀取
 
 - `GET /api/health` — 伺服器資訊 + 目前曲目數
-- `GET /api/tracks`（`?q` 搜尋、`?album` / `?genre` 部分比對、offset/limit）
-- `GET /api/tracks/{id}` / `POST /api/tracks/by-ids`
+- `GET /api/tracks`（`?q` 搜尋、`?album` / `?genre` 部分比對、offset/limit）。加上 `?albumExact=true` 可讓 `album` 完全比對
+- `GET /api/tracks/{id}` / `POST /api/tracks/by-ids`（ID 列 → 曲目。屬唯讀查詢，LAN 端帶權杖也可使用）
+- `GET /api/tracks/{id}/stream` — 音訊串流（`?native=true` 裝置可播放的格式不轉檔 / `?original=true` 原始檔 / `?fmt=aac&br=192` 轉為 AAC）
 - `GET /api/tracks/{id}/analysis` — 解析結果（未解析時為 null）
 - `GET /api/tracks/{id}/similar` — 相似曲
 - `GET /api/stats` / `GET /api/genres` / `GET /api/albums`
 - `GET /api/playlists` / `GET /api/playlists/{id}`（含智慧型條件 `smartCriteria`） / `GET /api/playlists/{id}/tracks`
+  （智慧型播放清單的 `trackCount` 為條件即時評估後的曲數）
+
+回傳曲目的 API（`/api/tracks` 系列・`/api/tracks/by-ids`・`/api/tracks/lookup`・`/similar`・`/api/playlists/{id}/tracks`・
+`PATCH /api/tracks/{id}` 的回應）的 `bpm` 一律為**實效 BPM**（標籤的 BPM，沒有時為解析 BPM）。
+需要標籤原值時，請加上 `?effectiveBpm=false` 明確指定（sync 角色的權杖也一律回傳標籤值）。
+同步（取回・寫回）為避免把解析值存成標籤，一定會帶上 `?effectiveBpm=false` 發出請求。
+
+標籤中沒有演出者 / 專輯的曲目不會以資料夾名稱補上，而是維持空白（曲名仍會以檔名補上）。
+`GET /api/artists` 會把這些曲目彙整為一筆 `artist: ""`，`GET /api/albums` 彙整為一筆 `album: ""`，並排在最後
+（「未知的演出者」「未知的專輯」等顯示名稱請由用戶端自行加上）。
+這些曲目可透過 `GET /api/tracks?artist=`（空值）／ `GET /api/tracks?album=&albumExact=true` 取得。
+
+查詢參數的布林值除了 `true` / `false` 之外，也接受 `1` / `0`。
+用戶端送出 `Accept-Encoding: gzip` 時，較大的 JSON 回應（例如全部曲目清單）會以 gzip 壓縮回傳。
 
 ### 寫入（中繼資料）
 
@@ -112,6 +128,9 @@ iOS 可用 **「加入主畫面」全螢幕應用程式化（PWA）**。
 遙控具備 **播放 / 暫停、前後、搜尋、音量滑桿、隨機播放 / 重複播放的切換**，
 狀態以 `GET /api/remote/state`（含 音量 / 隨機播放 / 重複播放）取得，操作以 `POST /api/remote/*`
 （`play` / `pause` / `resume` / `next` / `prev` / `seek` / `volume` / `shuffle` / `repeat` 等）進行。
+停止後的 `resume` 會從佇列目前位置的曲目重新播放。若要從佇列的任意位置播放，請使用
+`POST /api/remote/play-at`（`{index}`，即 `GET /api/remote/queue` 的 `trackIds` 中的位置）；
+若要替換佇列並立即播放，請在 `POST /api/remote/set-queue` 加上 `play: true`。
 
 Web UI 也具備接近桌面本體的 **鍵盤快捷鍵**，按 `?` 可開啟一覽
 （`Space` 播放 / 暫停、`J` / `K` 上一首 / 下一首、`Shift + ←` / `Shift + →` 5 秒搜尋、`S` 隨機播放、`R` 重複播放、

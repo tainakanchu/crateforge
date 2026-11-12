@@ -12,6 +12,7 @@ import { useStore } from "../store/useStore";
 import type { Track, TrackEdit } from "../types";
 import { formatTagStr } from "../types";
 import { ALL_CAMELOT_KEYS, describeKey, formatKey } from "../lib/keyNotation";
+import { joinGenre, splitGenre } from "../lib/genre";
 
 function formatDuration(ms: number | null | undefined): string {
   if (!ms || ms <= 0) return "—";
@@ -285,8 +286,16 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
 
   const ph = (mixed: boolean) => (mixed && !dirty.size ? "— 複数の値 —" : undefined);
 
+  // 単曲の曲名を空にして保存させない (一覧で "(unknown)" になり探せなくなる)。
+  const nameEmpty = single && dirty.has("name") && form.name.trim() === "";
+
   const handleSave = useCallback(async () => {
     if (busy) return;
+    if (nameEmpty) {
+      setError("曲名を入力してください");
+      firstInputRef.current?.focus();
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -316,7 +325,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
       }
       // 複数曲のジャンルは初期セットとの差分を add/remove で各曲にマージ（既存タグを保持）。
       if (!single && dirty.has("genre")) {
-        const splitTags = (s: string) => s.split(/\s+/).filter(Boolean);
+        const splitTags = splitGenre;
         const eqi = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
         const before = splitTags(initial.genre.value);
         const after = splitTags(form.genre);
@@ -353,6 +362,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
     }
   }, [
     busy,
+    nameEmpty,
     form,
     dirty,
     trackIds,
@@ -400,7 +410,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
   const chooseArtwork = useCallback(async () => {
     const path = await open({
       multiple: false,
-      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }],
+      filters: [{ name: "画像", extensions: ["png", "jpg", "jpeg", "webp"] }],
     });
     if (typeof path !== "string") return;
     setBusy(true);
@@ -441,11 +451,17 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
   const artUrl = baseArt
     ? `${baseArt}${baseArt.includes("?") ? "&" : "?"}v=${artVersion}`
     : null;
+  // アートワークが無い / 読めない曲は壊れ画像を出さず、頭文字のプレースホルダに倒す。
+  const [artFailedUrl, setArtFailedUrl] = useState<string | null>(null);
+  const showArt = artUrl != null && artFailedUrl !== artUrl;
   const seed = single ? tracks[0].album : "multi";
   // 単曲時に Key 欄の横へ出す解析値 (上書きとは別に常に見せる)。
   const analyzedKey = single
     ? (analysisByTrack.get(tracks[0].trackId)?.keyCamelot ?? null)
     : null;
+  const analyzedBpmRaw = single ? (analysisByTrack.get(tracks[0].trackId)?.bpm ?? null) : null;
+  const analyzedBpm =
+    analyzedBpmRaw != null && analyzedBpmRaw > 0 ? Math.round(analyzedBpmRaw) : null; // 一覧と同じ丸め
   const glyph = single ? tracks[0].name : `${tracks.length}`;
 
   return (
@@ -454,7 +470,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
         <div className="modal-header">
           <h2>
             <Icon name="info" size={16} />{" "}
-            {single ? "Track Info" : `${tracks.length} 曲を一括編集`}
+            {single ? "曲の情報" : `${tracks.length} 曲を一括編集`}
           </h2>
           <button className="modal-close" onClick={requestClose} disabled={busy}>
             <Icon name="x" size={16} />
@@ -477,11 +493,12 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
                 placeItems: "center",
               }}
             >
-              {artUrl ? (
+              {showArt ? (
                 <img
                   src={artUrl}
                   alt=""
                   style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  onError={() => setArtFailedUrl(artUrl)}
                 />
               ) : (
                 <span
@@ -517,7 +534,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
             </div>
           </div>
 
-          <Field label="Name">
+          <Field label="曲名">
             {/* 初期フォーカスは最初の入力欄へ */}
             <input
               ref={firstInputRef}
@@ -527,7 +544,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(e) => update("name", e.target.value)}
             />
           </Field>
-          <Field label="Artist">
+          <Field label="アーティスト">
             <input
               className="rip-input"
               value={form.artist}
@@ -535,7 +552,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(e) => update("artist", e.target.value)}
             />
           </Field>
-          <Field label="Album Artist">
+          <Field label="アルバムアーティスト">
             <input
               className="rip-input"
               value={form.albumArtist}
@@ -543,7 +560,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(e) => update("albumArtist", e.target.value)}
             />
           </Field>
-          <Field label="Album">
+          <Field label="アルバム">
             <input
               className="rip-input"
               value={form.album}
@@ -551,7 +568,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(e) => update("album", e.target.value)}
             />
           </Field>
-          <Field label="Composer">
+          <Field label="作曲者">
             <input
               className="rip-input"
               value={form.composer}
@@ -559,19 +576,20 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(e) => update("composer", e.target.value)}
             />
           </Field>
-          <Field label="Genre tags">
+          <Field label="ジャンル">
             <GenreTagInput
-              value={form.genre.split(/\s+/).filter(Boolean)}
+              value={splitGenre(form.genre)}
+              allowSpaces
               suggestions={genreSuggestions}
               placeholder={
                 initial.genre.mixed && !dirty.has("genre")
                   ? "— 複数の値 — タグを足すと全曲へ適用"
                   : "タグを入力して Enter / 候補から選択"
               }
-              onChange={(tags) => update("genre", tags.join(" "))}
+              onChange={(tags) => update("genre", joinGenre(tags))}
             />
           </Field>
-          <Field label="Tags">
+          <Field label="タグ">
             <GenreTagInput
               value={tagList}
               suggestions={tagSuggestions}
@@ -592,7 +610,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           </Field>
 
           <div className="track-editor-row">
-            <Field label="Year">
+            <Field label="年">
               <input
                 className="rip-input"
                 type="number"
@@ -602,17 +620,29 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               />
             </Field>
             <Field label="BPM">
-              <input
-                className="rip-input"
-                type="number"
-                value={form.bpm}
-                placeholder={ph(initial.bpm.mixed)}
-                onChange={(e) => update("bpm", e.target.value)}
-              />
+              <div className="track-editor-rating" style={{ padding: 0 }}>
+                <input
+                  className="rip-input"
+                  style={{ flex: 1, minWidth: 0 }}
+                  type="number"
+                  value={form.bpm}
+                  placeholder={ph(initial.bpm.mixed)}
+                  onChange={(e) => update("bpm", e.target.value)}
+                />
+                {/* Key と同じく、タグとは別に解析値を常に見せる (E8)。 */}
+                {single && (
+                  <span
+                    style={{ fontSize: 12, color: "var(--mut)", whiteSpace: "nowrap" }}
+                    title="解析で求めた BPM（タグの BPM が空のときは一覧にこの値が出ます）"
+                  >
+                    解析値: {analyzedBpm ?? "—"}
+                  </span>
+                )}
+              </div>
             </Field>
           </div>
 
-          <Field label="Key">
+          <Field label="キー">
             <div className="track-editor-rating">
               <select
                 className="rip-input"
@@ -648,7 +678,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           </Field>
 
           <div className="track-editor-row">
-            <Field label="Track #">
+            <Field label="曲番号">
               <input
                 className="rip-input"
                 type="number"
@@ -657,7 +687,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
                 onChange={(e) => update("trackNumber", e.target.value)}
               />
             </Field>
-            <Field label="Of">
+            <Field label="全曲数">
               <input
                 className="rip-input"
                 type="number"
@@ -666,7 +696,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
                 onChange={(e) => update("trackCount", e.target.value)}
               />
             </Field>
-            <Field label="Disc #">
+            <Field label="ディスク番号">
               <input
                 className="rip-input"
                 type="number"
@@ -675,7 +705,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
                 onChange={(e) => update("discNumber", e.target.value)}
               />
             </Field>
-            <Field label="Of">
+            <Field label="全ディスク数">
               <input
                 className="rip-input"
                 type="number"
@@ -686,7 +716,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
             </Field>
           </div>
 
-          <Field label="Rating">
+          <Field label="評価">
             <div className="track-editor-rating">
               <Stars
                 value={ratingToStars(form.rating)}
@@ -698,7 +728,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
                 className="track-editor-clear"
                 onClick={() => update("rating", 0)}
               >
-                clear
+                クリア
               </button>
               {initial.rating.mixed && !dirty.has("rating") && (
                 <span style={{ fontSize: 12, color: "var(--mut)" }}>(複数の値)</span>
@@ -706,7 +736,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
             </div>
           </Field>
 
-          <Field label="Compilation">
+          <Field label="コンピレーション">
             <label className="te-check">
               <input
                 type="checkbox"
@@ -721,7 +751,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
             </label>
           </Field>
 
-          <Field label="Comments">
+          <Field label="コメント">
             <textarea
               className="rip-input"
               rows={4}
@@ -733,7 +763,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           </Field>
 
           {single && tracks[0].locationPath && (
-            <Field label="Location">
+            <Field label="ファイルの場所">
               <div className="track-editor-readonly">{tracks[0].locationPath}</div>
             </Field>
           )}
@@ -764,11 +794,16 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
         </div>
         <div className="modal-footer">
           <button className="toolbar-btn" onClick={requestClose} disabled={busy}>
-            Cancel
+            キャンセル
           </button>
-          <button className="toolbar-btn primary" onClick={handleSave} disabled={busy}>
+          <button
+            className="toolbar-btn primary"
+            onClick={handleSave}
+            disabled={busy || nameEmpty}
+            title={nameEmpty ? "曲名を入力してください" : undefined}
+          >
             {/* 保存中はスピナー相当のラベルに変更してボタンを無効化 */}
-            {busy ? "保存中…" : single ? "Save" : `${tracks.length} 曲を保存`}
+            {busy ? "保存中…" : single ? "保存" : `${tracks.length} 曲を保存`}
           </button>
         </div>
       </div>

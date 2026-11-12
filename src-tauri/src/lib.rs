@@ -17,6 +17,7 @@ mod logging;
 mod mdns;
 mod metadata;
 mod models;
+mod natural_sort;
 mod open_with;
 mod organizer;
 mod pairing;
@@ -318,6 +319,8 @@ pub fn run() {
             commands::playlists::create_playlist,
             commands::playlists::rename_playlist,
             commands::playlists::delete_playlist,
+            commands::playlists::get_playlist_track_count,
+            commands::playlists::get_smart_playlist_counts,
             commands::playlists::add_tracks_to_playlist,
             commands::playlists::remove_track_from_playlist,
             commands::playlists::remove_tracks_from_playlist,

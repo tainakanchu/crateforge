@@ -52,8 +52,22 @@ export async function renamePlaylist(
   return invoke("rename_playlist", { playlistId, name });
 }
 
-export async function deletePlaylist(playlistId: number): Promise<void> {
-  return invoke("delete_playlist", { playlistId });
+/**
+ * プレイリストを削除する。フォルダで `withContents` が true なら中身 (子孫) ごと削除、
+ * false / 省略なら中身は残してフォルダの親へ繰り上げる。
+ */
+export async function deletePlaylist(playlistId: number, withContents = false): Promise<void> {
+  return invoke("delete_playlist", { playlistId, withContents });
+}
+
+/** プレイリストの実際の曲数 (スマートはライブ評価、フォルダは子孫の和集合)。 */
+export async function getPlaylistTrackCount(playlistId: number): Promise<number> {
+  return invoke("get_playlist_track_count", { playlistId });
+}
+
+/** 全スマートプレイリストのライブ評価件数 (playlistId → 件数)。 */
+export async function getSmartPlaylistCounts(): Promise<Record<number, number>> {
+  return invoke("get_smart_playlist_counts");
 }
 
 export async function addTracksToPlaylist(

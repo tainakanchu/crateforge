@@ -22,50 +22,50 @@ interface SmartPlaylistEditorProps {
 type FieldType = "str" | "num" | "date" | "playlist";
 
 const FIELDS: { value: string; label: string; type: FieldType }[] = [
-  { value: "artist", label: "Artist", type: "str" },
-  { value: "albumArtist", label: "Album Artist", type: "str" },
-  { value: "album", label: "Album", type: "str" },
-  { value: "name", label: "Name", type: "str" },
-  { value: "genre", label: "Genre", type: "str" },
-  { value: "grouping", label: "Grouping", type: "str" },
-  { value: "composer", label: "Composer", type: "str" },
-  { value: "comments", label: "Comments", type: "str" },
+  { value: "artist", label: "アーティスト", type: "str" },
+  { value: "albumArtist", label: "アルバムアーティスト", type: "str" },
+  { value: "album", label: "アルバム", type: "str" },
+  { value: "name", label: "曲名", type: "str" },
+  { value: "genre", label: "ジャンル", type: "str" },
+  { value: "grouping", label: "グループ", type: "str" },
+  { value: "composer", label: "作曲者", type: "str" },
+  { value: "comments", label: "コメント", type: "str" },
   { value: "key", label: "Key (Camelot)", type: "str" },
   // 別のプレイリスト (スマート・フォルダも可) に含まれるか。値は参照先の persistentId。
-  { value: "playlist", label: "Playlist", type: "playlist" },
-  { value: "year", label: "Year", type: "num" },
+  { value: "playlist", label: "プレイリスト", type: "playlist" },
+  { value: "year", label: "年", type: "num" },
   { value: "bpm", label: "BPM", type: "num" },
-  { value: "rating", label: "Rating (0–5, 0.5 刻み)", type: "num" },
+  { value: "rating", label: "評価 (0–5, 0.5 刻み)", type: "num" },
   { value: "energy", label: "Energy (0–1)", type: "num" },
-  { value: "playCount", label: "Plays", type: "num" },
-  { value: "skipCount", label: "Skips", type: "num" },
-  { value: "trackNumber", label: "Track #", type: "num" },
-  { value: "discNumber", label: "Disc #", type: "num" },
-  { value: "trackId", label: "Track ID", type: "num" },
+  { value: "playCount", label: "再生回数", type: "num" },
+  { value: "skipCount", label: "スキップ回数", type: "num" },
+  { value: "trackNumber", label: "曲番号", type: "num" },
+  { value: "discNumber", label: "ディスク番号", type: "num" },
+  { value: "trackId", label: "曲 ID", type: "num" },
   // bool は 1 / 0 で比較する (Rules の equals: true は is 1 になる)。
-  { value: "compilation", label: "Compilation (1/0)", type: "num" },
-  { value: "disabled", label: "Disabled (1/0)", type: "num" },
-  { value: "kind", label: "Kind", type: "str" },
-  { value: "location", label: "Location", type: "str" },
+  { value: "compilation", label: "コンピレーション (1/0)", type: "num" },
+  { value: "disabled", label: "無効 (1/0)", type: "num" },
+  { value: "kind", label: "種類", type: "str" },
+  { value: "location", label: "ファイルの場所", type: "str" },
   // 技術メタデータ (#171)。codec は "MP3" / "AAC" / "ALAC" / "FLAC" などの表示名。
-  { value: "bitrate", label: "Bitrate (kbps)", type: "num" },
-  { value: "sampleRate", label: "Sample Rate (Hz)", type: "num" },
-  { value: "bitDepth", label: "Bit Depth", type: "num" },
-  { value: "codec", label: "Codec", type: "str" },
-  { value: "dateAdded", label: "Date Added", type: "date" },
-  { value: "dateModified", label: "Date Modified", type: "date" },
-  { value: "lastPlayed", label: "Last Played", type: "date" },
+  { value: "bitrate", label: "ビットレート (kbps)", type: "num" },
+  { value: "sampleRate", label: "サンプルレート (Hz)", type: "num" },
+  { value: "bitDepth", label: "ビット深度", type: "num" },
+  { value: "codec", label: "コーデック", type: "str" },
+  { value: "dateAdded", label: "追加日", type: "date" },
+  { value: "dateModified", label: "更新日", type: "date" },
+  { value: "lastPlayed", label: "最終再生", type: "date" },
 ];
 
 const STR_OPS: { value: SmartOp; label: string }[] = [
-  { value: "contains", label: "contains" },
-  { value: "notContains", label: "doesn't contain" },
-  { value: "is", label: "is" },
-  { value: "isNot", label: "is not" },
-  { value: "startsWith", label: "starts with" },
-  { value: "endsWith", label: "ends with" },
-  { value: "exists", label: "is present" },
-  { value: "notExists", label: "is empty" },
+  { value: "contains", label: "が次を含む" },
+  { value: "notContains", label: "が次を含まない" },
+  { value: "is", label: "が次と一致" },
+  { value: "isNot", label: "が次と一致しない" },
+  { value: "startsWith", label: "が次で始まる" },
+  { value: "endsWith", label: "が次で終わる" },
+  { value: "exists", label: "が空でない" },
+  { value: "notExists", label: "が空" },
 ];
 const NUM_OPS: { value: SmartOp; label: string }[] = [
   { value: "is", label: "=" },
@@ -74,25 +74,25 @@ const NUM_OPS: { value: SmartOp; label: string }[] = [
   { value: "gte", label: "≥" },
   { value: "lt", label: "<" },
   { value: "lte", label: "≤" },
-  { value: "exists", label: "is present" },
-  { value: "notExists", label: "is empty" },
+  { value: "exists", label: "が空でない" },
+  { value: "notExists", label: "が空" },
 ];
 const PLAYLIST_OPS: { value: SmartOp; label: string }[] = [
-  { value: "is", label: "is in" },
-  { value: "isNot", label: "is not in" },
+  { value: "is", label: "に含まれる" },
+  { value: "isNot", label: "に含まれない" },
 ];
 
 const SORTS = [
-  ["", "Default"],
-  ["dateAdded", "Date Added"],
-  ["lastPlayed", "Last Played"],
-  ["playCount", "Plays"],
-  ["rating", "Rating"],
+  ["", "既定"],
+  ["dateAdded", "追加日"],
+  ["lastPlayed", "最終再生"],
+  ["playCount", "再生回数"],
+  ["rating", "評価"],
   ["bpm", "BPM"],
-  ["bitrate", "Bitrate"],
-  ["artist", "Artist"],
-  ["album", "Album"],
-  ["name", "Name"],
+  ["bitrate", "ビットレート"],
+  ["artist", "アーティスト"],
+  ["album", "アルバム"],
+  ["name", "曲名"],
 ] as const;
 
 /// 並び替えフィールドの表示名 (選択肢に無いもの = Rules 由来などはフィールド名のまま)。
@@ -540,7 +540,7 @@ export function SmartPlaylistEditor({
         <div className="modal-header">
           <h2>
             <Icon name="sliders" size={16} />{" "}
-            {creating ? "New Smart Playlist" : "Edit Smart Playlist"}
+            {creating ? "新規スマートプレイリスト" : "スマートプレイリストを編集"}
           </h2>
           <button className="modal-close" onClick={onClose} disabled={busy}>
             <Icon name="x" size={16} />
@@ -617,7 +617,7 @@ export function SmartPlaylistEditor({
           </div>
           {thenBy.length > 0 && (
             <div style={{ fontSize: 12, color: "var(--tx2)" }}>
-              同順位の並び (then by):{" "}
+              同順位の並び:{" "}
               {thenBy.map((k) => `${sortLabel(k.field)} ${k.desc ? "↓" : "↑"}`).join(", ")}
             </div>
           )}
@@ -626,10 +626,10 @@ export function SmartPlaylistEditor({
         </div>
         <div className="modal-footer">
           <button className="toolbar-btn" onClick={onClose} disabled={busy}>
-            Cancel
+            キャンセル
           </button>
           <button className="toolbar-btn primary" onClick={handleSave} disabled={busy}>
-            {busy ? "Saving…" : creating ? "Create" : "Save"}
+            {busy ? "保存中…" : creating ? "作成" : "保存"}
           </button>
         </div>
       </div>

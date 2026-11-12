@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { useStore } from "../store/useStore";
 import * as playlistsApi from "../api/playlists";
 import { Icon } from "./Icon";
+import { DeletePlaylistDialog } from "./DeletePlaylistDialog";
 import { getTrackIdsData, hasTrackIdsData } from "../lib/trackDrag";
 import appIcon from "../assets/app-icon.png";
 import type { Playlist, ViewMode } from "../types";
@@ -12,6 +13,8 @@ interface SidebarProps {
   onEditSmart: (playlistId: number | null, name?: string) => void;
   /** USB 書き出しダイアログを、このプレイリスト / フォルダを選んだ状態で開く。 */
   onUsbExport: (playlistIds: number[]) => void;
+  /** ライブラリ変更のたびに増える値。スマートプレイリストの件数を数え直す (D9)。 */
+  reloadKey?: number;
 }
 
 /** サイドバー右クリック用メニューの状態（位置＋対象プレイリスト） */
@@ -138,14 +141,15 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { mode: "library", icon: "music", label: "All Tracks" },
+  // 表記は Toolbar の VIEW_TITLE と揃える (D8)。Inbox は機能名なので英語のまま。
+  { mode: "library", icon: "music", label: "すべての曲" },
   { mode: "inbox", icon: "inbox", label: "Inbox" },
-  { mode: "history", icon: "history", label: "History" },
-  { mode: "artists", icon: "mic", label: "Artists" },
-  { mode: "recent", icon: "clock", label: "Recently Played" },
+  { mode: "history", icon: "history", label: "セット履歴" },
+  { mode: "artists", icon: "mic", label: "アーティスト" },
+  { mode: "recent", icon: "clock", label: "最近再生した曲" },
 ];
 
-export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: SidebarProps) {
+export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKey }: SidebarProps) {
   const {
     viewMode,
     playlists,
@@ -163,6 +167,27 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
 
   // 一覧からドラッグしてきたトラックのドロップ先ハイライト (playlistId)。
   const [dropTargetId, setDropTargetId] = useState<number | null>(null);
+
+  // スマートプレイリストのライブ評価件数 (D9)。一覧の trackCount は静的な行数なので
+  // スマートは 0 になる → 一覧とは別に非同期で数え、通常プレイリストと同じ位置に出す。
+  const [smartCounts, setSmartCounts] = useState<Record<number, number>>({});
+  const hasSmart = playlists.some((p) => p.isSmart);
+  useEffect(() => {
+    if (!hasSmart) {
+      setSmartCounts({});
+      return;
+    }
+    let cancelled = false;
+    playlistsApi
+      .getSmartPlaylistCounts()
+      .then((c) => {
+        if (!cancelled) setSmartCounts(c);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [hasSmart, playlists, reloadKey]);
 
   // Set History badge (#123) — cheap localStorage read; updates when re-entering History.
   const historyCount = listSetHistories().length;
@@ -214,7 +239,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
       await playlistsApi.createPlaylist(name, null, isFolder);
       onPlaylistsChanged();
     } catch (err) {
-      pushToast("error", `Failed to create: ${err}`);
+      pushToast("error", `作成に失敗しました: ${err}`);
     }
   }, [creating, creatingName, onPlaylistsChanged, pushToast]);
 
@@ -231,7 +256,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
         await playlistsApi.renamePlaylist(editingId, name);
         onPlaylistsChanged();
       } catch (err) {
-        pushToast("error", `Rename failed: ${err}`);
+        pushToast("error", `名前を変更できませんでした: ${err}`);
       }
     }
     setEditingId(null);
@@ -241,7 +266,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
   const handleDuplicate = useCallback(
     async (pl: Playlist) => {
       if (pl.isFolder) {
-        pushToast("info", "Folders can't be duplicated");
+        pushToast("info", "フォルダは複製できません");
         return;
       }
       const newName = `${pl.name} copy`;
@@ -268,22 +293,34 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
     [onPlaylistsChanged, pushToast],
   );
 
-  const handleDelete = useCallback(
-    async (pl: Playlist) => {
-      if (!confirm(`Delete "${pl.name}"?`)) return;
-      try {
-        await playlistsApi.deletePlaylist(pl.playlistId);
-        if (selectedPlaylistId === pl.playlistId) {
-          setSelectedPlaylistId(null);
-          setViewMode("library");
+  // 削除確認ダイアログの対象 (null で非表示)。window.confirm は使わない。
+  const [deleteTarget, setDeleteTarget] = useState<Playlist | null>(null);
+  const handleDelete = useCallback((pl: Playlist) => setDeleteTarget(pl), []);
+
+  // 削除後: 表示中のプレイリスト (中身ごと削除ならフォルダ配下も) が消えたらライブラリへ戻る。
+  const handleDeleted = useCallback(
+    (pl: Playlist, withContents: boolean) => {
+      const sel = playlists.find((p) => p.playlistId === selectedPlaylistId);
+      let gone = selectedPlaylistId === pl.playlistId;
+      if (!gone && withContents && sel && pl.persistentId) {
+        // 選択中のプレイリストの祖先に削除したフォルダがあるか。
+        let cur: Playlist | undefined = sel;
+        for (let guard = 0; cur && guard < 64; guard++) {
+          if (cur.parentPersistentId === pl.persistentId) {
+            gone = true;
+            break;
+          }
+          const parent: string | null = cur.parentPersistentId;
+          cur = parent ? playlists.find((p) => p.persistentId === parent) : undefined;
         }
-        onPlaylistsChanged();
-        pushToast("success", `Deleted "${pl.name}"`);
-      } catch (err) {
-        pushToast("error", `Delete failed: ${err}`);
       }
+      if (gone) {
+        setSelectedPlaylistId(null);
+        setViewMode("library");
+      }
+      onPlaylistsChanged();
     },
-    [selectedPlaylistId, setSelectedPlaylistId, setViewMode, onPlaylistsChanged, pushToast],
+    [playlists, selectedPlaylistId, setSelectedPlaylistId, setViewMode, onPlaylistsChanged],
   );
 
   // 対象プレイリスト/フォルダ向けのメニュー項目を組み立てる
@@ -291,13 +328,13 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
     (pl: Playlist): SidebarMenuAction[] => {
       const editable = pl.isSmart && !pl.isFolder;
       const actions: SidebarMenuAction[] = [
-        { id: "rename", icon: "edit", label: "Rename", run: () => startRename(pl) },
+        { id: "rename", icon: "edit", label: "名前を変更", run: () => startRename(pl) },
       ];
       if (!pl.isFolder) {
         actions.push({
           id: "duplicate",
           icon: "filePlus",
-          label: "Duplicate",
+          label: "複製",
           run: () => handleDuplicate(pl),
         });
       }
@@ -311,14 +348,14 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
         actions.push({
           id: "edit",
           icon: "sliders",
-          label: "Edit rules",
+          label: "条件を編集",
           run: () => onEditSmart(pl.playlistId, pl.name),
         });
       }
       actions.push({
         id: "delete",
         icon: "trash",
-        label: "Delete",
+        label: "削除…",
         danger: true,
         run: () => handleDelete(pl),
       });
@@ -422,9 +459,9 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
           }}
           title={
             pl.isFolder
-              ? "Click to collapse/expand, double-click to rename"
+              ? "クリックで開閉 / ダブルクリックで名前変更"
               : pl.isSmart
-                ? "Smart playlist — right-click for actions (Edit rules)"
+                ? "スマートプレイリスト — 右クリックでメニュー（条件を編集）"
                 : "曲をドロップで追加 / ダブルクリックで名前変更、右クリックでメニュー"
           }
         >
@@ -463,6 +500,11 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
               {!pl.isFolder && !pl.isSmart && (
                 <span className="ct">{pl.trackCount.toLocaleString()}</span>
               )}
+              {pl.isSmart && smartCounts[pl.playlistId] != null && (
+                <span className="ct" title="条件に一致する曲数（ライブ）">
+                  {smartCounts[pl.playlistId].toLocaleString()}
+                </span>
+              )}
             </>
           )}
         </div>
@@ -479,7 +521,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
         <b>Crateforge</b>
       </div>
 
-      <div className="cb-lbl">Library</div>
+      <div className="cb-lbl">ライブラリ</div>
       {NAV.map((n) => (
         <div
           key={n.mode}
@@ -491,7 +533,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
           {n.mode === "inbox" && inboxCount > 0 && (
             <span
               className="cb-nav-badge"
-              title={`Inbox ${inboxCount} 曲（直近追加枠 + later）`}
+              title={`Inbox ${inboxCount} 曲（最近追加した曲 +「あとで」に回した曲）`}
             >
               {inboxCount > 999 ? "999+" : inboxCount}
             </span>
@@ -505,25 +547,25 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
       ))}
 
       <div className="cb-lbl">
-        <span>Playlists</span>
+        <span>プレイリスト</span>
         <span className="cb-lbl-actions">
           <button
             className="cb-iconbtn"
-            title="New playlist"
+            title="新規プレイリスト"
             onClick={() => startCreate(false)}
           >
             <Icon name="plus" size={14} />
           </button>
           <button
             className="cb-iconbtn"
-            title="New folder"
+            title="新規フォルダ"
             onClick={() => startCreate(true)}
           >
             <Icon name="folderPlus" size={14} />
           </button>
           <button
             className="cb-iconbtn"
-            title="New smart playlist"
+            title="新規スマートプレイリスト"
             onClick={() => onEditSmart(null)}
           >
             <Icon name="sliders" size={14} />
@@ -547,7 +589,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
             <input
               autoFocus
               className="cb-rename"
-              placeholder={creating.isFolder ? "New folder…" : "New playlist…"}
+              placeholder={creating.isFolder ? "新規フォルダ…" : "新規プレイリスト…"}
               value={creatingName}
               onChange={(e) => setCreatingName(e.target.value)}
               onBlur={commitCreate}
@@ -561,7 +603,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
         {rootPlaylists.length === 0 ? (
           !creating && (
             <div className="cb-side-empty">
-              No playlists yet. Import a library XML or create one.
+              プレイリストはまだありません。iTunes XML を取り込むか、新しく作成してください。
             </div>
           )
         ) : (
@@ -597,19 +639,19 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
                 {
                   id: "new-playlist",
                   icon: "plus",
-                  label: "New playlist",
+                  label: "新規プレイリスト",
                   run: () => startCreate(false),
                 },
                 {
                   id: "new-folder",
                   icon: "folderPlus",
-                  label: "New folder",
+                  label: "新規フォルダ",
                   run: () => startCreate(true),
                 },
                 {
                   id: "new-smart",
                   icon: "sliders",
-                  label: "New smart playlist",
+                  label: "新規スマートプレイリスト",
                   run: () => onEditSmart(null),
                 },
               ]}
@@ -617,6 +659,15 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
             />
           )}
         </>
+      )}
+
+      {deleteTarget && (
+        <DeletePlaylistDialog
+          playlist={deleteTarget}
+          playlists={playlists}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={(withContents) => handleDeleted(deleteTarget, withContents)}
+        />
       )}
     </aside>
   );

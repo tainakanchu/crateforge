@@ -134,10 +134,46 @@ pub fn rename_playlist(app: AppHandle, playlist_id: i64, name: String) -> Result
         .map_err(|e| e.to_string())
 }
 
+/// プレイリストの実際の曲数 (スマートはライブ評価、フォルダは子孫の和集合)。
 #[tauri::command]
-pub fn delete_playlist(app: AppHandle, playlist_id: i64) -> Result<(), String> {
+pub fn get_playlist_track_count(app: AppHandle, playlist_id: i64) -> Result<usize, String> {
     let db = open_db(&app)?;
-    db.delete_playlist(playlist_id).map_err(|e| e.to_string())
+    db.playlist_member_count(playlist_id)
+        .map_err(|e| e.to_string())
+}
+
+/// 全スマートプレイリストのライブ評価件数 (サイドバーの件数表示用。D9)。
+/// 一覧 (`get_playlists`) とは別に非同期で取り、一覧の表示を待たせない。
+#[tauri::command]
+pub async fn get_smart_playlist_counts(
+    app: AppHandle,
+) -> Result<std::collections::HashMap<i64, usize>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = open_db(&app)?;
+        db.smart_playlist_counts()
+            .map(|v| v.into_iter().collect())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("smart count task panicked: {e}"))?
+}
+
+/// `with_contents` が true ならフォルダの中身 (子孫プレイリスト) ごと削除する。
+/// false / 省略なら中身は残し、削除したフォルダの親へ繰り上げる。
+#[tauri::command]
+pub fn delete_playlist(
+    app: AppHandle,
+    playlist_id: i64,
+    with_contents: Option<bool>,
+) -> Result<(), String> {
+    let db = open_db(&app)?;
+    if with_contents.unwrap_or(false) {
+        db.delete_playlist_subtree(playlist_id)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    } else {
+        db.delete_playlist(playlist_id).map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]

@@ -11,7 +11,7 @@ Because it evaluates the entire library every time you open it, it is always kep
 ## Creating and editing
 
 - Create a new one with the **🎛 button** in the sidebar.
-- For an existing Smart Playlist, edit its rules with **right-click → Edit rules**.
+- For an existing Smart Playlist, edit its rules with **right-click → "条件を編集" (Edit rules)**.
 
 ## Rules
 
@@ -42,6 +42,10 @@ String conditions support contains / doesn't contain / is / is not / starts with
 
 Like regular playlists, Smart Playlists can be placed in the **folder hierarchy** in the sidebar.
 Folders can be collapsed / expanded by clicking, and that state is saved and kept across restarts.
+
+When you delete a folder (right-click → "削除…" (Delete…)), the confirmation dialog lets you choose between
+**"フォルダだけ削除し、中身は残す" (delete only the folder; its playlists move up one level)** and **"中身ごと削除" (delete it with everything inside)**.
+Tracks themselves stay in the library either way.
 
 :::note
 Smart Playlists in an iTunes XML have their criteria converted on import (see [Library import](../import/)).

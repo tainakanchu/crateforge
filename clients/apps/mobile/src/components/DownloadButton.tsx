@@ -1,8 +1,8 @@
 // オフラインダウンロードのトグルボタン（FINAL）。
 // 3 モード:
-//  - track:     1 曲。ダウンロード済みなら✓（タップで削除）/ 進行中はスピナー / 未取得はDLアイコン。
+//  - track:     1 曲。ダウンロード済みなら✓（タップで削除確認）。失敗は赤アイコン（タップで再試行）/ 進行中はスピナー / 未取得はDLアイコン。
 //  - tracks[]:  複数曲。タップで未取得分を順次DL。進行中は件数（done/total）を表示。
-//  - albumName: album 名で引いて一括DL。進行中はスピナー。
+//  - albumName: album 名（完全一致。アルバム一覧と同じ粒度）で引いて一括DL。進行中はスピナー。
 // いずれも 1 つの props で受け、track > tracks > albumName の優先で振る舞う。
 
 import { useMemo, useState } from "react";
@@ -11,6 +11,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { type Track, useDownloads } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
+import { showActionSheet } from "@/components/ActionSheet";
 
 export interface DownloadButtonProps {
   /** 単曲モード。 */
@@ -35,6 +36,7 @@ export default function DownloadButton({
   label,
 }: DownloadButtonProps) {
   const entries = useDownloads((s) => s.entries);
+  const failed = useDownloads((s) => s.failed);
   const downloading = useDownloads((s) => s.downloading);
   const downloadTrack = useDownloads((s) => s.downloadTrack);
   const removeDownload = useDownloads((s) => s.removeDownload);
@@ -57,24 +59,43 @@ export default function DownloadButton({
     const id = track.trackId;
     const isDone = entries[id] != null;
     const isBusy = downloading[id] === true;
+    const isFailed = !isDone && !isBusy && failed[id] != null;
 
     const onPress = () => {
       if (isBusy) return;
-      if (isDone) void removeDownload(id);
-      else void downloadTrack(track);
+      if (isDone) {
+        // 保存済みの削除は誤タップしやすいので確認を挟む。
+        showActionSheet({
+          title: "ダウンロードを削除しますか？",
+          subtitle: track.name || undefined,
+          actions: [{ label: "削除", destructive: true, onPress: () => void removeDownload(id) }],
+        });
+      } else {
+        void downloadTrack(track);
+      }
     };
 
+    // a11y 用の状態説明。表示用の prop `label` とは別名にする（同名で隠すと全行に文字が出る）。
+    const a11yLabel = isBusy
+      ? "ダウンロード中"
+      : isDone
+        ? "ダウンロード済み（タップで削除）"
+        : isFailed
+          ? "ダウンロードに失敗しました（タップで再試行）"
+          : "ダウンロード";
+
     return (
-      <Shell onPress={onPress} disabled={isBusy} accessibilityLabel="ダウンロード">
+      <Shell onPress={onPress} disabled={isBusy} accessibilityLabel={a11yLabel}>
         {isBusy ? (
           <ActivityIndicator size="small" color={PALETTE.accent} />
         ) : (
           <Ionicons
-            name={isDone ? "checkmark-circle" : "download-outline"}
+            name={isDone ? "checkmark-circle" : isFailed ? "alert-circle-outline" : "download-outline"}
             size={size}
-            color={isDone ? PALETTE.accent : PALETTE.textDim}
+            color={isDone ? PALETTE.accent : isFailed ? PALETTE.danger : PALETTE.textDim}
           />
         )}
+        {/* 表示文字は呼び出し側が label prop を渡したときだけ（行内はアイコンのみ）。 */}
         {label ? <Text style={styles.label}>{label}</Text> : null}
       </Shell>
     );
@@ -103,7 +124,13 @@ export default function DownloadButton({
     : label ?? (albumName ? "アルバムを保存" : total > 0 ? `${total}曲を保存` : "保存");
 
   return (
-    <Shell onPress={() => void onPress()} disabled={batchBusy} accessibilityLabel="一括ダウンロード">
+    <Shell
+      onPress={() => void onPress()}
+      disabled={batchBusy}
+      accessibilityLabel={
+        batchBusy ? "一括ダウンロード中" : allDone ? "一括ダウンロード（保存済み）" : "一括ダウンロード"
+      }
+    >
       {batchBusy ? (
         <ActivityIndicator size="small" color={PALETTE.accent} />
       ) : (

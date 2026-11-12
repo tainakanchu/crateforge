@@ -90,6 +90,9 @@ pub struct AudioPlayer {
     external: bool,
 }
 
+/// 出力デバイスが無いときの再生エラー。リモート API (`/api/remote/*`) の本文にもそのまま
+/// 載ってモバイルに表示されうるので日本語にする (E9)。
+pub const NO_AUDIO_OUTPUT: &str = "音声出力が見つかりません（出力デバイスを確認してください）";
 /// 外部出力モード中に `play` / `load_paused` を呼んだときのエラー。
 /// Playback Coordinator はこの状態をロック下で判定して Cast へ振り替える。
 pub const EXTERNAL_OUTPUT_ACTIVE: &str = "EXTERNAL_OUTPUT_ACTIVE: 外部出力 (Cast) で再生中です";
@@ -185,7 +188,7 @@ impl AudioPlayer {
         }
         let report = self.stop_internal();
 
-        let device = self._device.as_ref().ok_or("No audio output available")?;
+        let device = self._device.as_ref().ok_or(NO_AUDIO_OUTPUT)?;
 
         let path = Path::new(file_path);
         if !path.exists() {
@@ -194,7 +197,7 @@ impl AudioPlayer {
                 "error",
                 &format!("playback failed: file not found ({})", file_path),
             );
-            return Err(format!("File not found: {}", file_path));
+            return Err(format!("ファイルが見つかりません: {}", file_path));
         }
 
         self.current_gain_db = gain_db;
@@ -205,7 +208,7 @@ impl AudioPlayer {
         // catch_unwind で囲い、アプリごと abort させず「その曲だけ再生失敗」に留める。
         // (panic フック=logging は unwind 中に走るので crateforge.log には残り原因追跡できる。)
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
+            let file = File::open(path).map_err(|e| format!("ファイルを開けませんでした: {}", e))?;
             // byte_len は seek / duration 算出に必要なので metadata から取得する
             // (取れなくてもデコード自体は可能。その場合は seek/duration の精度が落ちるだけ)。
             let byte_len = file.metadata().ok().map(|m| m.len());
@@ -226,7 +229,7 @@ impl AudioPlayer {
             }
             let source = builder
                 .build()
-                .map_err(|e| format!("Failed to decode audio: {}", e))?;
+                .map_err(|e| format!("音声をデコードできませんでした: {}", e))?;
             // Prefer the decoded source's reported duration when available.
             let actual_duration = source.total_duration().map(|d| d.as_millis() as u64);
             let sink = Player::connect_new(device.mixer());
@@ -255,7 +258,7 @@ impl AudioPlayer {
                     "error",
                     &format!("playback failed: decoder crashed ({})", file_path),
                 );
-                return Err(format!("Failed to play (decoder crashed): {}", file_path));
+                return Err(format!("再生できませんでした (デコーダーが異常終了しました): {}", file_path));
             }
         };
 

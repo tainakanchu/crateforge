@@ -5,16 +5,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   Text,
   TextInput,
   View,
   StyleSheet,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Device from "expo-device";
 import {
   isAvailable as mdnsIsAvailable,
@@ -25,8 +27,16 @@ import {
 } from "expo-crateforge-mdns";
 
 import Screen from "@/components/Screen";
+import BackButton from "@/components/BackButton";
+import { splitUrlToken } from "@/features/connect/splitUrlToken";
 import { BRAND, PALETTE } from "@/constants/brand";
-import { ApiClient, useConnection, useDownloads } from "@crateforge/core";
+import {
+  ApiClient,
+  DESKTOP_API_SETTINGS_PATH,
+  describeApiError,
+  useConnection,
+  useDownloads,
+} from "@crateforge/core";
 import QrScanner, { parseConnectionQr } from "@/features/connect/QrScanner";
 
 // ネイティブ mDNS モジュールが使えるか（Expo Go / web では false）。
@@ -40,8 +50,32 @@ export default function ConnectScreen() {
   const router = useRouter();
   const hasDownloads = useDownloads((s) => Object.keys(s.entries).length > 0);
   const error = useConnection((s) => s.error);
-  const [url, setUrl] = useState("");
-  const [token, setToken] = useState("");
+  const savedUrl = useConnection((s) => s.baseUrl);
+  const savedToken = useConnection((s) => s.token);
+  const errorKind = useConnection((s) => s.errorKind);
+  const lastBaseUrl = useConnection((s) => s.lastBaseUrl);
+  const lastToken = useConnection((s) => s.lastToken);
+  const params = useLocalSearchParams<{ reauth?: string }>();
+  // トークン再入力モード（設定/未接続バナーの「トークンを入力し直す」から来た、または 401 で開いた）。
+  // URL は残し、旧トークンは入れない（同じトークンでは直らないため）。
+  const [reauth] = useState(
+    () => params.reauth === "1" || (status === "error" && errorKind === "unauthorized"),
+  );
+  // 保存済み（または切断時に残した）接続先を初期表示する。
+  const [url, setUrl] = useState(savedUrl ?? lastBaseUrl ?? "");
+  const [token, setToken] = useState(reauth ? "" : (savedToken ?? lastToken ?? ""));
+  // 画面を開いた時点で残っている前回の接続エラーはクリアする（今回の試行の結果だけ表示する）。
+  useEffect(() => {
+    const st = useConnection.getState();
+    if (st.status === "error") useConnection.setState({ status: "idle", error: null });
+  }, []);
+  // 直近の試行で使ったトークンが空だったか（401 のときの文言を出し分ける）。
+  const [triedWithoutToken, setTriedWithoutToken] = useState(false);
+  // 入力を変えたら前回の試行のエラー表示は消す。
+  const clearError = () => {
+    const st = useConnection.getState();
+    if (st.status === "error") useConnection.setState({ status: "idle", error: null });
+  };
   const [scanning, setScanning] = useState(false);
   const [discovered, setDiscovered] = useState<DiscoveredService[]>([]);
 
@@ -55,6 +89,9 @@ export default function ConnectScreen() {
   const pairClientRef = useRef<ApiClient | null>(null);
 
   const connecting = status === "connecting";
+  // 接続失敗がデスクトップ不達（network/timeout）なら、ルートの接続監視が同じ接続先で自動再試行している
+  // （入力を変えると status が idle に戻り再試行も止まる）。そのときだけ自動接続の案内を添える（round-3 N3）。
+  const autoRetrying = status === "error" && (errorKind === "network" || errorKind === "timeout");
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current != null) {
@@ -85,11 +122,37 @@ export default function ConnectScreen() {
     };
   }, [pairingPhase]);
 
+  // URL 欄に `?token=` 付き URL が貼られたら URL とトークンへ自動分解する。
+  function handleChangeUrl(text: string) {
+    clearError();
+    const split = splitUrlToken(text);
+    if (split) {
+      setUrl(split.baseUrl);
+      setToken(split.token);
+    } else {
+      setUrl(text);
+    }
+  }
+
+  function handleChangeToken(text: string) {
+    clearError();
+    setToken(text);
+  }
+
   function connect(rawUrl: string, rawToken: string | null) {
-    void useConnection.getState().connect(rawUrl, rawToken && rawToken !== "" ? rawToken : null);
+    const t = rawToken && rawToken.trim() !== "" ? rawToken.trim() : null;
+    setTriedWithoutToken(t == null);
+    void useConnection.getState().connect(rawUrl, t);
   }
 
   function handleConnect() {
+    const split = splitUrlToken(url);
+    if (split) {
+      setUrl(split.baseUrl);
+      setToken(split.token);
+      connect(split.baseUrl, split.token);
+      return;
+    }
     connect(url, token);
   }
 
@@ -130,14 +193,14 @@ export default function ConnectScreen() {
             } catch (e) {
               stopPolling();
               setPairingPhase("pairError");
-              setPairingError(e instanceof Error ? e.message : "ポーリングエラー");
+              setPairingError(describeApiError(e, { action: "承認の確認" }));
               setPairingCode(null);
             }
           })();
         }, 2000);
       } catch (e) {
         setPairingPhase("pairError");
-        setPairingError(e instanceof Error ? e.message : "接続できませんでした");
+        setPairingError(describeApiError(e, { action: "接続" }));
       }
     },
     [stopPolling],
@@ -175,7 +238,16 @@ export default function ConnectScreen() {
   }
 
   return (
-    <Screen style={styles.root}>
+    <Screen>
+      {router.canGoBack() ? <BackButton /> : null}
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+      <ScrollView
+        contentContainerStyle={styles.root}
+        keyboardShouldPersistTaps="handled"
+      >
       <View style={styles.brand}>
         <Ionicons name="disc" size={48} color={PALETTE.accent} />
         <Text style={styles.title}>Crateforge に接続</Text>
@@ -187,8 +259,8 @@ export default function ConnectScreen() {
           <Text style={styles.fieldLabel}>サーバー URL</Text>
           <TextInput
             value={url}
-            onChangeText={setUrl}
-            placeholder="192.168.x.x:8787"
+            onChangeText={handleChangeUrl}
+            placeholder="例: http://192.168.x.x:ポート番号"
             placeholderTextColor={PALETTE.textFaint}
             autoCapitalize="none"
             autoCorrect={false}
@@ -197,12 +269,16 @@ export default function ConnectScreen() {
             style={styles.input}
             accessibilityLabel="サーバー URL"
           />
+          {/* ポートは環境ごとに変わる（使用中なら別ポートで起動する）ので固定値を例示しない（round-3 N8）。 */}
+          <Text style={styles.hint}>
+            デスクトップの「{DESKTOP_API_SETTINGS_PATH}」に表示された URL を入力してください。
+          </Text>
 
-          <Text style={styles.fieldLabel}>トークン（任意）</Text>
+          <Text style={styles.fieldLabel}>トークン（LAN 接続では必須）</Text>
           <TextInput
             value={token}
-            onChangeText={setToken}
-            placeholder="X-API-Token"
+            onChangeText={handleChangeToken}
+            placeholder="デスクトップに表示されたトークン"
             placeholderTextColor={PALETTE.textFaint}
             autoCapitalize="none"
             autoCorrect={false}
@@ -211,8 +287,25 @@ export default function ConnectScreen() {
             style={styles.input}
             accessibilityLabel="トークン"
           />
+          <Text style={styles.hint}>
+            同じ画面に表示されるトークンを入力するか、接続 URL（?token=…）を URL 欄に貼り付けてください。
+          </Text>
 
-          {status === "error" && error ? <Text style={styles.error}>{error}</Text> : null}
+          {reauth && status !== "error" ? (
+            <Text style={styles.hint}>
+              トークンが一致しませんでした。デスクトップに表示されている新しいトークンを入力してください。
+            </Text>
+          ) : null}
+
+          {/* 接続画面では「オフライン:」等の状態接頭辞は付けない（URL 違いなどはオフラインではない）。 */}
+          {status === "error" && error ? (
+            <Text style={styles.error} accessibilityLiveRegion="polite">
+              {errorKind === "unauthorized" && triedWithoutToken
+                ? "LAN 接続にはトークンが必要です。デスクトップの「設定 → モバイル / API」に表示されるトークンを入力してください"
+                : error}
+              {autoRetrying ? "\nデスクトップが起動すると自動で接続します。" : ""}
+            </Text>
+          ) : null}
 
           <Pressable
             onPress={handleConnect}
@@ -305,7 +398,7 @@ export default function ConnectScreen() {
                 <>
                   <Text style={styles.pairingCode}>{pairingCode}</Text>
                   <Text style={styles.pairingInstructions}>
-                    デスクトップの{"\n"}「設定 → API → 端末を承認」に{"\n"}このコードを入力してください
+                    デスクトップの{"\n"}「設定 → モバイル / API → 端末を承認」に{"\n"}このコードを入力してください
                   </Text>
                   {pairingBaseUrl ? (
                     <Text style={styles.pairingAddr}>{pairingBaseUrl}</Text>
@@ -343,6 +436,9 @@ export default function ConnectScreen() {
         </View>
       )}
 
+      </ScrollView>
+      </KeyboardAvoidingView>
+
       <Modal
         visible={scanning}
         animationType="slide"
@@ -355,8 +451,11 @@ export default function ConnectScreen() {
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
   root: {
+    flexGrow: 1,
     paddingHorizontal: 24,
+    paddingBottom: 24,
     justifyContent: "center",
   },
   brand: {
@@ -380,6 +479,11 @@ const styles = StyleSheet.create({
     color: PALETTE.textDim,
     fontSize: 13,
     marginTop: 4,
+  },
+  hint: {
+    color: PALETTE.textFaint,
+    fontSize: 12,
+    lineHeight: 17,
   },
   input: {
     backgroundColor: PALETTE.surface,

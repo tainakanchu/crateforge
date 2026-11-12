@@ -173,7 +173,7 @@ impl Converter<'_> {
             ),
             Err(reason) => {
                 // 旧評価器と同じく、解決できない参照は「どの曲も含まない」扱い。
-                self.warn(format!("{reason}; the inPlaylist condition never matches"));
+                self.warn(format!("{reason}。この inPlaylist 条件はどの曲にも一致しません"));
                 Node::Const(negate)
             }
         }
@@ -183,7 +183,7 @@ impl Converter<'_> {
         let field = c.field.as_str();
         if !smart::FIELDS.contains(&field) {
             self.warn(format!(
-                "unknown field \"{field}\"; it is treated as always empty"
+                "不明なフィールド「{field}」です。常に空として扱います"
             ));
         }
 
@@ -208,7 +208,7 @@ impl Converter<'_> {
         if let Some(needle) = &c.contains {
             if field == "rating" {
                 self.warn(
-                    "\"contains\" on rating is evaluated against stars (0-5), not 0-100".into(),
+                    "rating の contains は 0–100 ではなく星の数 (0–5) で判定します".into(),
                 );
             }
             let op = if negate {
@@ -253,7 +253,7 @@ impl Converter<'_> {
         }
 
         self.warn(format!(
-            "condition on field \"{field}\" has no operator; it never matches"
+            "フィールド「{field}」の条件に演算子がありません。どの曲にも一致しません"
         ));
         Node::Const(negate)
     }
@@ -265,8 +265,8 @@ impl Converter<'_> {
         }
         if v % 10.0 != 0.0 {
             self.warn(format!(
-                "rating {} is not a multiple of 10; smart playlists compare ratings in half stars, \
-                 so tracks near this boundary may be matched differently",
+                "rating {} は 10 の倍数ではありません。スマートプレイリストは半星単位で比べるため、\
+                 この境界付近の曲は一致の結果が変わることがあります",
                 format_number(v)
             ));
         }
@@ -289,7 +289,7 @@ impl Converter<'_> {
             serde_yaml::Value::Null => None,
             other => {
                 self.warn(format!(
-                    "unsupported value {other:?} for field \"{field}\"; it never matches"
+                    "フィールド「{field}」に使えない値 {other:?} です。どの曲にも一致しません"
                 ));
                 None
             }
@@ -301,7 +301,7 @@ impl Converter<'_> {
         for key in keys {
             if !smart::SORT_FIELDS.contains(&key.field.as_str()) {
                 self.warn(format!(
-                    "sort field \"{}\" is not supported; name order is used instead",
+                    "並べ替えのフィールド「{}」には対応していません。曲名順で並べます",
                     key.field
                 ));
             }
@@ -597,17 +597,17 @@ mod tests {
     fn constants_and_warnings() {
         let (c, w) = convert_one("field: genre");
         assert_eq!(c.rules, vec![never_rule()]);
-        assert!(w[0].contains("no operator"), "{w:?}");
+        assert!(w[0].contains("演算子がありません"), "{w:?}");
         assert!(!matches(&track(1), &c));
 
         let (c, w) = convert_one("field: mood\nequals: happy");
         assert_eq!(c.rules, vec![r("mood", SmartOp::Is, "happy")]);
-        assert!(w[0].contains("unknown field \"mood\""), "{w:?}");
+        assert!(w[0].contains("不明なフィールド「mood」"), "{w:?}");
 
         // 解決できない参照は「どの曲も含まない」: 肯定は偽、否定は真。
         let (c, w) = convert_one("inPlaylist:\n  source: existing\n  name: missing");
         assert_eq!(c.rules, vec![never_rule()]);
-        assert!(w[0].contains("never matches"), "{w:?}");
+        assert!(w[0].contains("どの曲にも一致しません"), "{w:?}");
         let (c, _) = convert_one(
             "all:\n  - field: genre\n    equals: House\n  - not:\n      inPlaylist:\n        source: existing\n        name: missing",
         );
@@ -670,7 +670,7 @@ mod tests {
             ]
         );
         assert_eq!(w.len(), 1);
-        assert!(w[0].contains("sort field \"mood\""));
+        assert!(w[0].contains("並べ替えのフィールド「mood」"));
     }
 
     /// generator で展開したルールもそのまま変換できる (source 参照 + 範囲)。

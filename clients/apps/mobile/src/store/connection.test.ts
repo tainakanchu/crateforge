@@ -112,3 +112,67 @@ describe("disconnect", () => {
     expect(st.client).toBeNull();
   });
 });
+
+describe("disconnect options", () => {
+  const seed = () =>
+    useConnection.setState({
+      baseUrl: "http://host:8787",
+      token: "tok",
+      status: "connected",
+      client: {} as never,
+    });
+
+  it("既定は URL もトークンも消す（TV 互換）", async () => {
+    seed();
+    await useConnection.getState().disconnect();
+    const st = useConnection.getState();
+    expect(st.baseUrl).toBeNull();
+    expect(st.token).toBeNull();
+    expect(st.lastBaseUrl).toBeNull();
+    expect(delItem).toHaveBeenCalledWith("crateforge.baseUrl");
+    expect(delItem).toHaveBeenCalledWith("crateforge.token");
+    expect(setItem).not.toHaveBeenCalled();
+  });
+
+  it("keepUrl のみ: URL だけ退避して永続化、トークンは消す", async () => {
+    seed();
+    await useConnection.getState().disconnect({ keepUrl: true });
+    const st = useConnection.getState();
+    expect(st.status).toBe("idle");
+    expect(st.client).toBeNull();
+    expect(st.baseUrl).toBeNull();
+    expect(st.lastBaseUrl).toBe("http://host:8787");
+    expect(st.lastToken).toBeNull();
+    expect(setItem).toHaveBeenCalledWith("crateforge.lastBaseUrl", "http://host:8787");
+    expect(setItem).not.toHaveBeenCalledWith("crateforge.lastToken", expect.anything());
+    expect(delItem).toHaveBeenCalledWith("crateforge.lastToken");
+  });
+
+  it("keepUrl + keepToken: 両方永続化", async () => {
+    seed();
+    await useConnection.getState().disconnect({ keepUrl: true, keepToken: true });
+    expect(useConnection.getState().lastToken).toBe("tok");
+    expect(setItem).toHaveBeenCalledWith("crateforge.lastToken", "tok");
+  });
+
+  it("再起動（hydrate）で退避した接続先を復元し、自動再接続はしない", async () => {
+    getItem.mockImplementation(async (k: string) =>
+      k === "crateforge.lastBaseUrl" ? "http://host:8787" : k === "crateforge.lastToken" ? "tok" : null,
+    );
+    await useConnection.getState().hydrate();
+    const st = useConnection.getState();
+    expect(st.status).toBe("idle");
+    expect(st.baseUrl).toBeNull();
+    expect(st.lastBaseUrl).toBe("http://host:8787");
+    expect(st.lastToken).toBe("tok");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("接続成功で退避情報を消す", async () => {
+    useConnection.setState({ lastBaseUrl: "http://old", lastToken: "t" });
+    fetchMock.mockResolvedValueOnce(jsonResponse(healthBody));
+    await useConnection.getState().connect("host:8787", "tok");
+    expect(useConnection.getState().lastBaseUrl).toBeNull();
+    expect(delItem).toHaveBeenCalledWith("crateforge.lastBaseUrl");
+  });
+});

@@ -49,7 +49,7 @@ export function castStateTone(state: CastConnectionState): "busy" | "bad" | "ok"
 export function castErrorText(err: CastError): string {
   switch (err.code) {
     case "LAN_DISABLED":
-      return "キャストには API サーバーの LAN 公開が必要です。設定 → AI 連携 / API から有効にしてください";
+      return "キャストには API サーバーの LAN 公開が必要です。設定 → モバイル / API から有効にしてください";
     case "DEVICE_NOT_FOUND":
       return "キャスト端末が見つかりません。電源と同じ LAN にいるかを確認し、再検索してください";
     case "CONNECT_FAILED":

@@ -165,3 +165,53 @@ describe("AlbumScreen", () => {
     expect(usePlayer.getState().current()?.trackId).toBe(101);
   });
 });
+
+/** router.push に渡った href を expo-router の useLocalSearchParams 相当に分解する。 */
+function paramsFromHref(href: string): Record<string, string> {
+  const [path, qs] = href.split("?");
+  const params: Record<string, string> = {};
+  const m = /^\/album\/(.+)$/.exec(path);
+  if (m) params.name = m[1];
+  for (const [k, v] of new URLSearchParams(qs ?? "")) params[k] = v;
+  return params;
+}
+
+describe("album list → detail granularity (M1)", () => {
+  test("album whose tracks have differing albumArtist shows all tracks when opened from the album list", async () => {
+    setTestConnection();
+    // 一覧は album 名単位で集計（代表 albumArtist = MAX(album_artist)）。
+    const albums: Album[] = [
+      { album: "Club Mix", albumArtist: "Various Artists", trackCount: 3, sampleTrackId: 201 },
+    ];
+    const tracks = [
+      makeTrack({ trackId: 201, name: "Opener", album: "Club Mix", albumArtist: "Various Artists", trackNumber: 1 }),
+      makeTrack({ trackId: 202, name: "Middle", album: "Club Mix", albumArtist: "DJ Foo", trackNumber: 2 }),
+      makeTrack({ trackId: 203, name: "Closer", album: "Club Mix", albumArtist: "Bar", trackNumber: 3 }),
+    ];
+    mockFetchByUrl(albums, tracks);
+
+    const Wrapper = createQueryWrapper();
+    const lib = await render(
+      <Wrapper>
+        <LibraryScreen />
+      </Wrapper>,
+    );
+    fireEvent.press(screen.getByText("アルバム"));
+    fireEvent.press(await screen.findByText("Club Mix"));
+    await waitFor(() => expect(router.push).toHaveBeenCalled());
+    const href = (router.push as jest.Mock).mock.calls[0][0] as string;
+    lib.unmount();
+
+    (useLocalSearchParams as jest.Mock).mockReturnValue(paramsFromHref(href));
+    await render(
+      <Wrapper>
+        <AlbumScreen />
+      </Wrapper>,
+    );
+
+    expect(await screen.findByText("Opener")).toBeTruthy();
+    expect(screen.getByText("Middle")).toBeTruthy();
+    expect(screen.getByText("Closer")).toBeTruthy();
+    expect(screen.getByText("3曲")).toBeTruthy();
+  });
+});

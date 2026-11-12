@@ -238,7 +238,7 @@ impl BuildOptions {
 }
 
 pub fn parse_rules_yaml(yaml: &str) -> Result<RulesFile, String> {
-    serde_yaml::from_str::<RulesFile>(yaml).map_err(|e| format!("Rule validation failed: {}", e))
+    serde_yaml::from_str::<RulesFile>(yaml).map_err(|e| format!("ルールの検証に失敗しました: {}", e))
 }
 
 /// v1 でサポートする Track フィールド名一覧 (camelCase)。React 側補完用。

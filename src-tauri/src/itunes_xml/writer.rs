@@ -110,24 +110,12 @@ fn write_track(buf: &mut String, t: &Track, indent: usize) {
     if let Some(ref s) = t.persistent_id {
         push_kv_str(buf, inner, "Persistent ID", s);
     }
-    if let Some(ref s) = t.name {
-        push_kv_str(buf, inner, "Name", s);
-    }
-    if let Some(ref s) = t.artist {
-        push_kv_str(buf, inner, "Artist", s);
-    }
-    if let Some(ref s) = t.album_artist {
-        push_kv_str(buf, inner, "Album Artist", s);
-    }
-    if let Some(ref s) = t.composer {
-        push_kv_str(buf, inner, "Composer", s);
-    }
-    if let Some(ref s) = t.album {
-        push_kv_str(buf, inner, "Album", s);
-    }
-    if let Some(ref s) = t.genre {
-        push_kv_str(buf, inner, "Genre", s);
-    }
+    push_kv_opt_str(buf, inner, "Name", t.name.as_deref());
+    push_kv_opt_str(buf, inner, "Artist", t.artist.as_deref());
+    push_kv_opt_str(buf, inner, "Album Artist", t.album_artist.as_deref());
+    push_kv_opt_str(buf, inner, "Composer", t.composer.as_deref());
+    push_kv_opt_str(buf, inner, "Album", t.album.as_deref());
+    push_kv_opt_str(buf, inner, "Genre", t.genre.as_deref());
     if let Some(ref s) = t.grouping {
         if !s.is_empty() {
             push_kv_str(buf, inner, "Grouping", s);
@@ -284,6 +272,14 @@ fn push_kv_str(buf: &mut String, indent: usize, key: &str, value: &str) {
         escape_xml(key),
         escape_xml(value)
     ));
+}
+
+/// 文字列キーを、値が空 (None / 空白のみ) なら書かずに省く。タグの無い曲は
+/// Artist / Album などを空文字で出さず、キーごと省略する (iTunes の XML と同じ扱い)。
+fn push_kv_opt_str(buf: &mut String, indent: usize, key: &str, value: Option<&str>) {
+    if let Some(v) = value.filter(|v| !v.trim().is_empty()) {
+        push_kv_str(buf, indent, key, v);
+    }
 }
 
 fn push_kv_int(buf: &mut String, indent: usize, key: &str, value: i64) {
@@ -455,5 +451,32 @@ mod tests {
         assert!(items.contains("<key>Track ID</key><integer>1</integer>"), "{items}");
         assert!(!items.contains("<integer>2</integer>"), "{items}");
         assert!(content.contains("<key>Grouping</key><string>Idol</string>"));
+    }
+
+    /// タグの無い曲: 空の Artist / Album / Album Artist はキーごと省く (フォルダ名なども書かない)。
+    #[test]
+    fn export_omits_empty_text_keys() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks (track_id, name, artist, album_artist, album, genre, file_exists) VALUES
+                   (1, 'Untagged', NULL, '', '  ', NULL, 1),
+                   (2, 'Tagged', 'Some Artist', 'Some Artist', 'Some Album', 'House', 1);",
+            )
+            .unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let out = tmp_dir.path().join("out.xml");
+        export_library(&db, &out.to_string_lossy()).unwrap();
+        let content = fs::read_to_string(&out).unwrap();
+        let start = content.find("<string>Untagged</string>").unwrap();
+        let untagged = &content[start..start + content[start..].find("</dict>").unwrap()];
+        for key in ["Artist", "Album Artist", "Album", "Genre"] {
+            assert!(
+                !untagged.contains(&format!("<key>{key}</key>")),
+                "{key} should be omitted: {untagged}"
+            );
+        }
+        assert!(content.contains("<key>Artist</key><string>Some Artist</string>"));
+        assert!(content.contains("<key>Album</key><string>Some Album</string>"));
     }
 }

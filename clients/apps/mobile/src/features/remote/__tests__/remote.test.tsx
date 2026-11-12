@@ -8,8 +8,16 @@ import {
   mockFetch,
   resetTestState,
 } from "@/test-utils";
-import { type PlaybackState, type RemoteQueue, type Track, ApiClient } from "@crateforge/core";
+import {
+  type PlaybackState,
+  type RemoteQueue,
+  type Track,
+  ApiClient,
+  ApiError,
+  NetworkError,
+} from "@crateforge/core";
 import RemoteScreen from "@/app/(tabs)/remote";
+import { useToast } from "@/components/Toast";
 
 // SafeAreaProvider をテストツリーに張らずに insets を固定で返す。
 jest.mock("react-native-safe-area-context", () => ({
@@ -139,15 +147,116 @@ describe("RemoteScreen", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
   });
 
-  test("キューの行をタップすると remoteSetQueue を呼ぶ", async () => {
+  test("キューの行をタップすると remotePlayAt でその位置から再生する", async () => {
     setTestConnection();
     mockFetch({ body: STATE_PLAYING }, { body: QUEUE }, { body: TRACKS });
+    const spy = jest.spyOn(ApiClient.prototype, "remotePlayAt").mockResolvedValue({ trackId: 43 });
+    const wrapper = createQueryWrapper();
+
+    await render(<RemoteScreen />, { wrapper });
+
+    fireEvent.press(await screen.findByText("Next Up"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(1));
+  });
+
+  test("play-at 未対応の古いホスト（404）では set-queue + play にフォールバックする", async () => {
+    setTestConnection();
+    mockFetch({ body: STATE_PLAYING }, { body: QUEUE }, { body: TRACKS });
+    jest
+      .spyOn(ApiClient.prototype, "remotePlayAt")
+      .mockRejectedValue(new ApiError(404, "HTTP 404"));
     const spy = jest.spyOn(ApiClient.prototype, "remoteSetQueue").mockResolvedValue({});
     const wrapper = createQueryWrapper();
 
     await render(<RemoteScreen />, { wrapper });
 
     fireEvent.press(await screen.findByText("Next Up"));
-    await waitFor(() => expect(spy).toHaveBeenCalledWith([42, 43], 1));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith([42, 43], 1, { play: true }));
+  });
+
+  test("操作が失敗したらトーストで通知する", async () => {
+    setTestConnection();
+    mockFetch({ body: STATE_PLAYING }, { body: QUEUE }, { body: TRACKS });
+    jest
+      .spyOn(ApiClient.prototype, "remoteNext")
+      .mockRejectedValue(new NetworkError("Network request failed"));
+    const wrapper = createQueryWrapper();
+
+    await render(<RemoteScreen />, { wrapper });
+
+    fireEvent.press(await screen.findByLabelText("次の曲"));
+    await waitFor(() =>
+      expect(useToast.getState().message).toMatch(/^次の曲に失敗しました: デスクトップに接続できません/),
+    );
+    expect(useToast.getState().kind).toBe("error");
+  });
+
+  describe("音量・シャッフル・リピート・シーク", () => {
+    const FULL: PlaybackState = { ...STATE_PLAYING, volume: 0.5, shuffle: false, repeat: "off" };
+
+    test("ホストが報告する項目だけ描画する（旧ホストでは出さない）", async () => {
+      setTestConnection();
+      mockFetch({ body: STATE_PLAYING }, { body: QUEUE }, { body: TRACKS });
+      await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
+      await screen.findByLabelText("一時停止");
+      expect(screen.queryByLabelText("音量")).toBeNull();
+      expect(screen.queryByLabelText(/^シャッフル/)).toBeNull();
+      expect(screen.queryByLabelText(/^リピート/)).toBeNull();
+    });
+
+    test("報告された項目ごとに表示する（volume だけ）", async () => {
+      setTestConnection();
+      mockFetch({ body: { ...STATE_PLAYING, volume: 0.3 } }, { body: QUEUE }, { body: TRACKS });
+      await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
+      expect(await screen.findByLabelText("音量")).toBeTruthy();
+      expect(screen.queryByLabelText(/^シャッフル/)).toBeNull();
+    });
+
+    test("シャッフルをタップすると setShuffle(true)", async () => {
+      setTestConnection();
+      mockFetch({ body: FULL }, { body: QUEUE }, { body: TRACKS });
+      const spy = jest.spyOn(ApiClient.prototype, "remoteShuffle").mockResolvedValue({});
+      await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
+      fireEvent.press(await screen.findByLabelText("シャッフル（オフ）"));
+      await waitFor(() => expect(spy).toHaveBeenCalledWith(true));
+    });
+
+    test("リピートは off → all → one → off と循環する", async () => {
+      setTestConnection();
+      mockFetch({ body: { ...FULL, repeat: "one" } }, { body: QUEUE }, { body: TRACKS });
+      const spy = jest.spyOn(ApiClient.prototype, "remoteRepeat").mockResolvedValue({});
+      await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
+      fireEvent.press(await screen.findByLabelText("リピート（1曲リピート）"));
+      await waitFor(() => expect(spy).toHaveBeenCalledWith("off"));
+    });
+
+    test("音量バーのドラッグを離すと setVolume(比率)", async () => {
+      setTestConnection();
+      mockFetch({ body: FULL }, { body: QUEUE }, { body: TRACKS });
+      const spy = jest.spyOn(ApiClient.prototype, "remoteVolume").mockResolvedValue({});
+      await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
+      const bar = await screen.findByLabelText("音量");
+      await fireEvent(bar, "layout", { nativeEvent: { layout: { width: 200, height: 44 } } });
+      await fireEvent(bar, "responderGrant", { nativeEvent: { locationX: 20, pageX: 120 } });
+      await fireEvent(bar, "responderMove", { nativeEvent: { locationX: 0, pageX: 220 } });
+      await fireEvent(bar, "responderRelease", { nativeEvent: { locationX: 0, pageX: 220 } });
+      // 20 + (220-120) = 120 / 200 = 0.6
+      await waitFor(() => expect(spy).toHaveBeenCalledWith(0.6));
+    });
+
+    test("シークバーのドラッグを離すと remoteSeek(ms)。ドラッグ中は呼ばない", async () => {
+      setTestConnection();
+      mockFetch({ body: FULL }, { body: QUEUE }, { body: TRACKS });
+      const spy = jest.spyOn(ApiClient.prototype, "remoteSeek").mockResolvedValue({});
+      await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
+      const bar = await screen.findByLabelText("シークバー");
+      await fireEvent(bar, "layout", { nativeEvent: { layout: { width: 200, height: 44 } } });
+      await fireEvent(bar, "responderGrant", { nativeEvent: { locationX: 0, pageX: 50 } });
+      await fireEvent(bar, "responderMove", { nativeEvent: { locationX: 0, pageX: 150 } });
+      expect(spy).not.toHaveBeenCalled();
+      await fireEvent(bar, "responderRelease", { nativeEvent: { locationX: 0, pageX: 150 } });
+      // 100/200 * 180000
+      await waitFor(() => expect(spy).toHaveBeenCalledWith(90000));
+    });
   });
 });

@@ -112,9 +112,10 @@ fn parse_releases(json: &serde_json::Value) -> Vec<ReleaseCandidate> {
     results
 }
 
+/// アーティストクレジットを連結する。クレジットが無い / 名前が無いときは空文字。
 fn artist_credit_string(value: Option<&serde_json::Value>) -> String {
     let Some(arr) = value.and_then(|v| v.as_array()) else {
-        return "(Unknown Artist)".to_string();
+        return String::new();
     };
     let mut out = String::new();
     for entry in arr {
@@ -131,11 +132,8 @@ fn artist_credit_string(value: Option<&serde_json::Value>) -> String {
             out.push_str(joinphrase);
         }
     }
-    if out.is_empty() {
-        "(Unknown Artist)".to_string()
-    } else {
-        out
-    }
+    // 不明なら空文字 (タグにも DB にもプレースホルダ文字列を書かない。表示側でラベル付けする)。
+    out
 }
 
 fn extract_tracks(release: &serde_json::Value) -> Vec<ReleaseTrack> {

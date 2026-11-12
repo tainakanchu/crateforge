@@ -6,29 +6,52 @@ import { FlatList, Text, View, StyleSheet } from "react-native";
 
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
+import ConnectionNotice from "@/components/ConnectionNotice";
 import TrackRow from "@/components/TrackRow";
 import IconButton from "@/components/IconButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { BRAND, PALETTE } from "@/constants/brand";
-import { trackTitle, trackArtist, type Track, useConnection } from "@crateforge/core";
+import { describeApiError, trackTitle, trackArtist, type Track, useConnection } from "@crateforge/core";
 import {
+  usePollingActive,
   useRemoteState,
   useRemoteQueue,
   useRemoteQueueTracks,
   useRemoteCommands,
 } from "@/features/remote/hooks";
 import SeekBar from "@/features/remote/SeekBar";
+import { disconnectedBody } from "@/lib/connectionStatus";
+import ModeControls from "@/features/remote/ModeControls";
 
 export default function RemoteScreen() {
   const client = useConnection((s) => s.client);
-  const state = useRemoteState();
-  const queue = useRemoteQueue();
-  const queueTracks = useRemoteQueueTracks();
+  const connStatus = useConnection((s) => s.status);
+  const connErrorKind = useConnection((s) => s.errorKind);
+  const connChecking = useConnection((s) => s.checking);
+  const connLastOkAt = useConnection((s) => s.lastOkAt);
+  const connBaseUrl = useConnection((s) => s.baseUrl);
+  // タブが裏に回っている間・アプリがバックグラウンドの間はポーリングしない。
+  const active = usePollingActive();
+  const state = useRemoteState(active);
+  const queue = useRemoteQueue(active);
+  const queueTracks = useRemoteQueueTracks(active);
   const cmd = useRemoteCommands();
 
-  const trackIds = queue.data?.trackIds ?? [];
+  const trackIds = useMemo(() => queue.data?.trackIds ?? [], [queue.data?.trackIds]);
   const currentIndex = queue.data?.currentIndex ?? null;
-  const tracks = queueTracks.data ?? [];
+  const tracks = useMemo(() => queueTracks.data ?? [], [queueTracks.data]);
+
+  // キューの行はサーバーの再生順（trackIds）の位置で持つ。by-ids は欠けた曲（削除済み等）を
+  // 返さないことがあるので、位置ずれを起こさないよう trackId で引き直す。
+  const rows = useMemo(() => {
+    const byId = new Map(tracks.map((t) => [t.trackId, t] as const));
+    const out: { track: Track; index: number }[] = [];
+    trackIds.forEach((id, index) => {
+      const track = byId.get(id);
+      if (track) out.push({ track, index });
+    });
+    return out;
+  }, [trackIds, tracks]);
 
   // currentTrackId に一致する Track を解決（キュー優先・無ければ currentIndex）。
   const currentTrack = useMemo<Track | null>(() => {
@@ -37,14 +60,27 @@ export default function RemoteScreen() {
       const hit = tracks.find((t) => t.trackId === id);
       if (hit) return hit;
     }
-    if (currentIndex != null && tracks[currentIndex]) return tracks[currentIndex];
+    if (currentIndex != null) {
+      const row = rows.find((r) => r.index === currentIndex);
+      if (row) return row.track;
+    }
     return null;
-  }, [state.data?.currentTrackId, tracks, currentIndex]);
+  }, [state.data?.currentTrackId, tracks, rows, currentIndex]);
 
   if (!client) {
+    // 本文はバナーと矛盾しないよう状態で出し分ける（オフライン中に「接続してください」と出さない。round-3 N2）。
+    const body = disconnectedBody({
+      status: connStatus,
+      errorKind: connErrorKind,
+      checking: connChecking,
+      lastOkAt: connLastOkAt,
+      baseUrl: connBaseUrl,
+    });
     return (
       <Screen>
-        <EmptyView message="サーバーに接続してください" icon="cloud-offline-outline" />
+        {/* 未接続の理由 1 行 + 復帰導線（トークン再入力 / 再試行 / 接続画面へ）。 */}
+        <ConnectionNotice />
+        <EmptyView message={body.message} icon={body.icon} />
       </Screen>
     );
   }
@@ -58,7 +94,7 @@ export default function RemoteScreen() {
   }
 
   if (state.isError && !state.data) {
-    const message = state.error instanceof Error ? state.error.message : "状態を取得できません";
+    const message = describeApiError(state.error, { action: "再生状態の取得" });
     return (
       <Screen>
         <ErrorView message={message} onRetry={() => void state.refetch()} />
@@ -75,15 +111,16 @@ export default function RemoteScreen() {
     else void cmd.resume();
   };
 
+  // 行タップ: キュー順を保ったままその位置から再生する（play-at。古いホストは set-queue+play）。
   const onPressRow = (track: Track, index: number) => {
-    if (trackIds.length > 0) void cmd.setQueue(trackIds, index);
+    if (trackIds.length > 0) void cmd.playAt(index, trackIds);
     else void cmd.play(track.trackId);
   };
 
   return (
     <Screen>
       <View style={styles.header}>
-        <Text style={styles.heading}>Remote</Text>
+        <Text style={styles.heading}>リモート</Text>
         <Text style={styles.sub}>デスクトップを操作</Text>
       </View>
 
@@ -140,22 +177,29 @@ export default function RemoteScreen() {
         />
       </View>
 
+      <ModeControls
+        state={state.data}
+        onVolume={(v) => void cmd.setVolume(v)}
+        onShuffle={(on) => void cmd.setShuffle(on)}
+        onRepeat={(m) => void cmd.setRepeat(m)}
+      />
+
       <Text style={styles.queueLabel}>キュー{trackIds.length > 0 ? ` (${trackIds.length})` : ""}</Text>
 
       {queueTracks.isPending && trackIds.length > 0 ? (
         <Loading />
-      ) : tracks.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyView message="キューは空です" icon="list-outline" />
       ) : (
         <FlatList
-          data={tracks}
-          keyExtractor={(t, i) => `${t.trackId}-${i}`}
-          renderItem={({ item, index }) => (
+          data={rows}
+          keyExtractor={(r) => `${r.track.trackId}-${r.index}`}
+          renderItem={({ item }) => (
             <TrackRow
-              track={item}
-              index={index + 1}
-              active={index === currentIndex}
-              onPress={() => onPressRow(item, index)}
+              track={item.track}
+              index={item.index + 1}
+              active={item.index === currentIndex}
+              onPress={() => onPressRow(item.track, item.index)}
             />
           )}
           contentContainerStyle={styles.listContent}

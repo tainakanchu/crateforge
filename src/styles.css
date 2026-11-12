@@ -4,6 +4,8 @@
    ============================================================ */
 
 :root {
+  /* ダークテーマ固定。ネイティブ部品 (select のドロップダウン・スクロールバー等) も暗色で描かせる。 */
+  color-scheme: dark;
   /* Cratebox tokens */
   --bg: #0e1113;
   --bg-side: #0a0d0f;
@@ -90,6 +92,42 @@ button {
 
 input {
   font-family: inherit;
+}
+
+/* select の共通スタイル。WebKitGTK 既定の描画 (明色の部品に暗色テキスト) だと判読
+   できないので、appearance を外して暗色 + 自前の矢印にそろえる。色・余白は各クラス
+   (.rip-select など) が上書きしてよい。矢印と右余白だけは :not([multiple]) で詳細度を
+   上げ、background ショートハンドを使うクラスでも消えないようにする。 */
+select {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--tx);
+  background-color: var(--bg2);
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+select:not([multiple]) {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 24px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239da2a8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 10px 6px;
+}
+select:focus {
+  outline: none;
+  border-color: var(--ac);
+}
+select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+select option,
+select optgroup {
+  background-color: var(--bg2);
+  color: var(--tx);
 }
 
 .mono {
@@ -301,39 +339,41 @@ input {
   border-bottom: 1px solid var(--bd);
   position: relative;
 }
-/* ツールバー本体の行。狭い幅では横スクロールさせ、ボタンが押せなくなるのを防ぐ。
-   ポップオーバー類はここではなく .cb-tb 基準／fixed で出すのでクリップされない。 */
+/* ツールバー本体の行。横スクロールはさせない (WebKitGTK ではスクロールバー領域が
+   ボタンのクリックを奪う)。幅は Toolbar.tsx が ResizeObserver で測って段階的に畳む。
+   右端のアクション群 (.cb-tb-actions) は常に見えるよう固定し、足りない分は左側
+   (.cb-tb-main) を詰める。ポップオーバー類は fixed で出すのでクリップされない。 */
 .cb-tb-row {
   display: flex;
   align-items: center;
   gap: 9px;
-  overflow-x: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--bd-strong) transparent;
+  min-width: 0;
+}
+.cb-tb-main {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  /* フォーカスリングが切れないよう少しだけ内側に余白を取る。 */
+  padding: 2px;
+  margin: -2px;
 }
 /* 縮めてよいのは検索ボックスだけ。他を縮めると日本語ラベルのセグメント
    (min-content が1文字幅) が1文字ずつ折り返して縦書き状に崩れる。 */
-.cb-tb-row > * {
+.cb-tb-main > *,
+.cb-tb-row > .cb-tb-actions {
   flex-shrink: 0;
 }
-.cb-tb-row > .cb-sbox {
+.cb-tb-main > .cb-sbox {
   flex-shrink: 1;
-}
-.cb-tb-row::-webkit-scrollbar {
-  height: 6px;
-}
-.cb-tb-row::-webkit-scrollbar-track {
-  background: transparent;
-}
-.cb-tb-row::-webkit-scrollbar-thumb {
-  background: var(--bd-strong);
-  border-radius: 3px;
 }
 
 .cb-sbox {
   flex: 1;
   /* アイコンだけに潰れないよう最小幅を確保する。 */
-  min-width: 140px;
+  min-width: 120px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -380,6 +420,14 @@ input {
   gap: 6px;
   border: none;
   background: transparent;
+}
+/* 畳んだツールバー (アイコンのみ) では横の余白を詰める (D1)。 */
+.cb-segb.iconly {
+  padding: 7px 9px;
+}
+.cb-btn.cb-btn-tight {
+  padding: 0 9px;
+  gap: 5px;
 }
 .cb-segb.on {
   background: var(--ac);
@@ -466,23 +514,37 @@ input {
   border-bottom: 1px solid var(--bd);
   min-height: 0;
 }
+/* 狭い幅でも見出し・件数を縦に折り返さない (日本語の見出しは 1 文字ずつ折れるため)。
+   足りない分はライブラリ統計 (.cb-stats) 側を省略する。 */
 .cb-title {
   font-weight: 680;
   font-size: 14px;
   color: var(--tx-strong);
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .cb-titlesub {
   color: var(--mut);
   font-size: 11.5px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .cb-titlesel {
   color: var(--ac);
   font-size: 11.5px;
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .cb-stats {
   margin-left: auto;
   display: flex;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
   gap: 7px;
   font-size: 11.5px;
   color: var(--tx2);
@@ -566,9 +628,14 @@ input {
   z-index: 3;
   background: var(--bg);
 }
+/* 曲名列は潰さない (TrackTable.tsx の NAME_MIN_WIDTH と揃える)。足りなければ一覧を横スクロール。 */
 .cb-h-id {
   flex: 1;
-  min-width: 0;
+  min-width: 180px;
+  /* ソート方向の矢印を見出しの横に並べる (.cb-h-f と同じ)。 */
+  display: flex;
+  align-items: center;
+  gap: 3px;
 }
 .cb-h-f {
   text-align: left;
@@ -660,7 +727,7 @@ input {
 .cb-list {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
   position: relative;
   background: var(--bg);
 }
@@ -729,7 +796,7 @@ input {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-width: 0;
+  min-width: 180px;
 }
 .cb-cov {
   flex-shrink: 0;
@@ -861,6 +928,19 @@ input {
   color: var(--mut);
   font-size: 13px;
   line-height: 1.6;
+}
+.cb-empty-title {
+  color: var(--tx);
+  font-size: 15px;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+.cb-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
 }
 
 /* ============================================================
@@ -1269,10 +1349,23 @@ input {
   line-height: 1.5;
   max-width: 460px;
 }
+/* コントロールは基本は縮めないが、長い選択肢を持つ select (出力デバイス等) で
+   ダイアログが横にはみ出さないよう、行幅を上限に縮められるようにする。 */
 .settings-rowctl {
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
+}
+.settings-rowctl > select,
+.settings-pathrow > select {
+  min-width: 0;
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+.settings-pathrow > select {
+  flex: 1 1 180px;
 }
 .settings-subrow {
   display: flex;
@@ -1286,6 +1379,8 @@ input {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
 }
 .settings-path {
   font-size: 12px;
@@ -1384,6 +1479,10 @@ input {
   width: 60px;
   color: var(--mut);
   flex-shrink: 0;
+}
+.settings-kv .k.k-wide {
+  width: auto;
+  white-space: nowrap;
 }
 .settings-kv .v {
   color: var(--tx2);
@@ -2566,8 +2665,8 @@ input {
   display: flex;
   align-items: center;
   gap: 11px;
-  /* 460px を上限に、狭い幅では 220px まで縮む（#147）。 */
-  width: clamp(220px, 40vw, 460px);
+  /* 幅は PlayerBar.tsx がプレイヤーバーの実幅から --seek-w で与える (D1)。 */
+  width: var(--seek-w, clamp(220px, 40vw, 460px));
   min-width: 0;
   font: 11px var(--mono);
   color: var(--mut);
@@ -2595,6 +2694,10 @@ input {
   pointer-events: none;
 }
 /* 進捗は clip-path (インライン style) で右側を切り落とすだけ。再描画は不要。 */
+/* 未解析: 平坦な薄いバー (実波形と見間違えないように)。 */
+.cb-wave.unanalyzed .cb-wave-canvas {
+  opacity: 0.5;
+}
 .cb-wave-on {
   position: absolute;
   inset: 0;
@@ -2683,7 +2786,7 @@ input {
   cursor: default;
 }
 .cb-player.audition .cb-seek {
-  width: clamp(220px, 44vw, 520px);
+  width: var(--seek-w, clamp(220px, 44vw, 520px));
 }
 .cb-player.preview .cb-pinfo .cj {
   color: var(--ac);
@@ -2725,11 +2828,21 @@ input {
   border-radius: 3px;
 }
 
-/* 狭いウィンドウでは音量スライダーを畳んでミュートボタンだけ残す (#147) */
-@media (max-width: 1100px) {
-  .cb-vbar {
-    display: none;
-  }
+/* 狭いプレイヤーバー (右ペイン表示中の 1024 幅など) では音量スライダーを短くし、
+   ボタン間隔を詰める。スライダー自体は消さない (D1)。幅は PlayerBar.tsx が実測する。 */
+.cb-player.narrow .cb-vbar {
+  width: 56px;
+}
+.cb-player.narrow .cb-pr {
+  gap: 9px;
+}
+.cb-player.narrow {
+  gap: 16px;
+}
+.cb-vbar {
+  flex-shrink: 0;
+  /* 音量 100% のときつまみ (幅 10px) の右半分が .cb-pr の overflow で切れないように。 */
+  margin-right: 5px;
 }
 
 /* ============================================================
@@ -2924,6 +3037,9 @@ input {
   z-index: 50;
   overflow: hidden;
   padding: 6px;
+  /* 低いウィンドウ (1024x600 など) でも下端の項目まで届くように。 */
+  max-height: calc(100vh - 70px);
+  overflow-y: auto;
 }
 .cb-sortitem {
   display: flex;
@@ -2969,6 +3085,18 @@ input {
 .cb-morepop .cb-sortitem:focus-visible {
   outline: 2px solid var(--ac);
   outline-offset: -2px;
+}
+/* 狭い幅では表示切替・並び順・列も ⋯ に入るので、低いウィンドウでも全項目へ届くようにする。 */
+.cb-morepop {
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+}
+.cb-morepop-section {
+  padding: 6px 10px 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--mut);
 }
 
 /* ============================================================
@@ -4433,8 +4561,71 @@ input {
   color: var(--tx2);
 }
 .dup-dialog {
-  width: 640px;
+  width: 720px;
   max-width: calc(100vw - 32px);
+}
+/* 取り込み確認の 1 行: 曲名 + (形式・長さ・パス) の 2 段。 */
+.dup-row {
+  cursor: default;
+}
+.dup-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dup-row-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--mut);
+}
+.dup-row-fmt {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid var(--bd-strong);
+  border-radius: 3px;
+  color: var(--tx2);
+}
+/* パスはフォルダ部分を先頭側から省略し (rtl + 前後の LRM で "…/A/" の形に)、
+   ファイル名は省略しない (長すぎるときだけ末尾を省略)。 */
+.dup-row-path {
+  display: flex;
+  min-width: 0;
+  white-space: nowrap;
+}
+.dup-row-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+.dup-row-file {
+  /* 縮むのはフォルダ側だけ。ファイル名は縮めず、極端に長いときだけ行幅の 8 割で省略する (E2)。 */
+  flex: 0 0 auto;
+  max-width: 80%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--tx2);
+}
+.dup-cancel-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--tx);
+}
+.dup-cancel-confirm > span {
+  margin-right: auto;
 }
 .dup-list {
   max-height: 320px;
@@ -4889,6 +5080,35 @@ input {
   height: 18px;
   background: var(--bd-strong);
   margin: 0 4px;
+}
+/* 「ライブラリに適用」が押せない理由 (未プレビュー / YAML 変更後)。 */
+.rules-apply-hint {
+  font-size: 11px;
+  color: var(--warn);
+}
+/* YAML の書き方の補足 (rating は 0–100 など)。 */
+.rules-help {
+  font-size: 11.5px;
+  color: var(--tx2);
+  line-height: 1.6;
+}
+.rules-help code,
+.rules-panel .modal code {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--bg3);
+}
+.rules-confirm-counts {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rules-confirm-counts .danger {
+  color: #ef9d9d;
 }
 .rules-msg {
   padding: 6px 10px;

@@ -113,8 +113,7 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
       <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>
-            <Icon name="settings" size={16} /> Convert {trackIds.length} track
-            {trackIds.length === 1 ? "" : "s"}
+            <Icon name="settings" size={16} /> {trackIds.length} 曲の形式を変換
           </h2>
           <button className="modal-close" onClick={onClose} disabled={running}>
             <Icon name="x" size={16} />
@@ -122,7 +121,7 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
         </div>
         <div className="modal-body" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
           <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ width: 96, color: "var(--mut)" }}>Format</span>
+            <span style={{ width: 96, color: "var(--mut)" }}>形式</span>
             <select
               ref={formatSelectRef}
               className="rip-input"
@@ -141,7 +140,7 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
 
           {isLossy && (
             <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ width: 96, color: "var(--mut)" }}>Bitrate</span>
+              <span style={{ width: 96, color: "var(--mut)" }}>ビットレート</span>
               <select
                 className="rip-input"
                 value={bitrate}
@@ -159,7 +158,7 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
           )}
 
           <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ width: 96, color: "var(--mut)" }}>Output</span>
+            <span style={{ width: 96, color: "var(--mut)" }}>出力先</span>
             <input
               className="rip-input"
               type="text"
@@ -169,7 +168,7 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
               style={{ flex: 1, minWidth: 0 }}
             />
             <button className="toolbar-btn" onClick={pickFolder} disabled={running} style={{ flexShrink: 0 }}>
-              <Icon name="folderPlus" size={14} /> Browse
+              <Icon name="folderPlus" size={14} /> 選択…
             </button>
           </label>
 
@@ -209,14 +208,14 @@ export function ConvertDialog({ trackIds, onClose, onLibraryChanged }: ConvertDi
         </div>
         <div className="modal-footer">
           <button className="toolbar-btn" onClick={onClose} disabled={running}>
-            {done ? "Close" : "Cancel"}
+            {done ? "閉じる" : "キャンセル"}
           </button>
           <button
             className="toolbar-btn primary"
             onClick={handleConvert}
             disabled={running || !outputDir}
           >
-            {running ? "Converting…" : "Convert"}
+            {running ? "変換中…" : "変換"}
           </button>
         </div>
       </div>

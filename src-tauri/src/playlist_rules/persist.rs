@@ -45,13 +45,13 @@ pub fn apply_in_txn(db: &Database, rules_file: &RulesFile) -> Result<Outcome, St
     let options = BuildOptions::resolve(rules_file.options.as_ref());
     let namespace = rules_file.namespace.as_str();
     if namespace.trim().is_empty() {
-        return Err("Rule validation failed: namespace must not be empty".to_string());
+        return Err("ルールの検証に失敗しました: namespace が空です".to_string());
     }
 
     let mut warnings = Vec::new();
     if options.case_sensitive_contains {
         warnings.push(
-            "caseSensitiveContains is not supported by smart playlists; text matching is always case-insensitive"
+            "caseSensitiveContains はスマートプレイリストでは使えません (文字列の一致は常に大文字小文字を区別しません)"
                 .to_string(),
         );
     }
@@ -67,7 +67,7 @@ pub fn apply_in_txn(db: &Database, rules_file: &RulesFile) -> Result<Outcome, St
 
     let nodes = db
         .get_playlist_nodes()
-        .map_err(db_err("Failed to load playlists"))?;
+        .map_err(db_err("プレイリストの読み込みに失敗しました"))?;
     // namespace ルート (トップレベルの同名フォルダ)。sort_order, playlist_id 順に並んでいる。
     let roots: Vec<&PlaylistNode> = nodes
         .iter()
@@ -108,7 +108,7 @@ pub fn apply_in_txn(db: &Database, rules_file: &RulesFile) -> Result<Outcome, St
             Some(root) => {
                 if roots.len() > 1 {
                     up.warnings.push(format!(
-                        "Found {} top-level folders named \"{}\"; using the first one and leaving the others untouched",
+                        "最上位に「{1}」という名前のフォルダが {0} 個あります。最初のものを使い、ほかはそのままにします",
                         roots.len(),
                         namespace
                     ));
@@ -119,10 +119,10 @@ pub fn apply_in_txn(db: &Database, rules_file: &RulesFile) -> Result<Outcome, St
             None => {
                 let pl = db
                     .create_playlist(namespace, None, true)
-                    .map_err(|e| format!("Failed to create folder \"{}\": {}", namespace, e))?;
+                    .map_err(|e| format!("フォルダ「{}」を作成できませんでした: {}", namespace, e))?;
                 up.created += 1;
                 pl.persistent_id
-                    .ok_or_else(|| format!("Failed to create folder \"{}\"", namespace))?
+                    .ok_or_else(|| format!("フォルダ「{}」を作成できませんでした", namespace))?
             }
         };
         up.upsert_folder(&root_pid, &spec)?;
@@ -137,14 +137,14 @@ pub fn apply_in_txn(db: &Database, rules_file: &RulesFile) -> Result<Outcome, St
             PlaylistSource::Generated => by_path
                 .get(&r.name)
                 .cloned()
-                .ok_or_else(|| format!("Generated playlist \"{}\" not found", r.name)),
+                .ok_or_else(|| format!("生成するプレイリスト「{}」が見つかりません", r.name)),
             PlaylistSource::Existing => existing.resolve(&r.name),
         }
     };
     for (rule_index, playlist_id) in &playlists {
         let criteria = to_smart::rule_to_criteria(&rules[*rule_index], &mut resolve, &mut warnings);
         db.set_smart_criteria(*playlist_id, &criteria)
-            .map_err(db_err("Failed to save smart criteria"))?;
+            .map_err(db_err("スマート条件の保存に失敗しました"))?;
     }
 
     // ---- 書いた条件をライブ評価してスナップショットを書く ----
@@ -152,17 +152,17 @@ pub fn apply_in_txn(db: &Database, rules_file: &RulesFile) -> Result<Outcome, St
     {
         let mut resolver = db
             .playlist_resolver()
-            .map_err(db_err("Failed to evaluate playlists"))?;
+            .map_err(db_err("プレイリストの評価に失敗しました"))?;
         for (rule_index, playlist_id) in &playlists {
             let ids = resolver
                 .track_ids(*playlist_id)
-                .map_err(db_err("Failed to evaluate playlists"))?;
+                .map_err(db_err("プレイリストの評価に失敗しました"))?;
             members.insert(*rule_index, ids);
         }
     }
     for (rule_index, playlist_id) in &playlists {
         db.overwrite_playlist_tracks(*playlist_id, &members[rule_index])
-            .map_err(db_err("Failed to write playlist tracks"))?;
+            .map_err(db_err("プレイリストの曲の書き込みに失敗しました"))?;
     }
 
     let tree = to_out(&spec, namespace, None, &mut members);
@@ -226,7 +226,7 @@ fn validate_refs(
             Condition::InPlaylist { in_playlist } => match in_playlist.source {
                 PlaylistSource::Generated if !seen.contains(in_playlist.name.as_str()) => {
                     Err(format!(
-                        "Generated playlist \"{}\" references later playlist \"{}\"",
+                        "生成するプレイリスト「{}」が、後ろで定義されたプレイリスト「{}」を参照しています",
                         current, in_playlist.name
                     ))
                 }
@@ -275,7 +275,7 @@ impl Upserter<'_> {
         self.removed += self
             .db
             .delete_playlist_subtree(node.playlist_id)
-            .map_err(|e| format!("Failed to remove \"{}\": {}", node.name, e))?;
+            .map_err(|e| format!("「{}」を削除できませんでした: {}", node.name, e))?;
         Ok(())
     }
 
@@ -309,9 +309,9 @@ impl Upserter<'_> {
                     {
                         claimed[i] = true;
                         self.delete_subtree(&existing[i])?;
-                        let kind = |folder: bool| if folder { "folder" } else { "playlist" };
+                        let kind = |folder: bool| if folder { "フォルダ" } else { "プレイリスト" };
                         self.warnings.push(format!(
-                            "Replaced existing {} \"{}\" with a {}",
+                            "既存の{}「{}」を{}に置き換えました",
                             kind(existing[i].is_folder),
                             self.full_path(path),
                             kind(is_folder)
@@ -320,11 +320,11 @@ impl Upserter<'_> {
                     let pl = self
                         .db
                         .create_playlist(name, Some(parent_pid), is_folder)
-                        .map_err(|e| format!("Failed to create \"{}\": {}", name, e))?;
+                        .map_err(|e| format!("「{}」を作成できませんでした: {}", name, e))?;
                     self.created += 1;
                     let pid = pl
                         .persistent_id
-                        .ok_or_else(|| format!("Failed to create \"{}\"", name))?;
+                        .ok_or_else(|| format!("「{}」を作成できませんでした", name))?;
                     (pl.playlist_id, pid)
                 }
             };
@@ -354,7 +354,7 @@ impl Upserter<'_> {
         let current: HashMap<i64, i64> = self
             .db
             .get_playlist_nodes()
-            .map_err(db_err("Failed to load playlists"))?
+            .map_err(db_err("プレイリストの読み込みに失敗しました"))?
             .into_iter()
             .map(|n| (n.playlist_id, n.sort_order))
             .collect();
@@ -368,7 +368,7 @@ impl Upserter<'_> {
             if current.get(id) != Some(&value) {
                 self.db
                     .set_playlist_sort_order(*id, value)
-                    .map_err(db_err("Failed to reorder playlists"))?;
+                    .map_err(db_err("プレイリストの並べ替えに失敗しました"))?;
             }
         }
         Ok(())

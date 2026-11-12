@@ -35,7 +35,8 @@ pub enum MatchKind {
     /// 曲名 + アーティスト一致、長さも許容差内 (アルバムが違う / 不明)。
     Probable,
     /// 長さで確かめられない (どちらかの長さが不明・壊れている)、
-    /// または曲名の括弧書きを外して初めて一致した。
+    /// または曲名の括弧書きを外して初めて一致した、
+    /// または双方ともアーティスト不明 (タグ無し) で曲名 + 長さだけが一致した。
     Weak,
 }
 
@@ -197,6 +198,9 @@ impl MatchIndex {
             }
         }
 
+        // クエリ側のアーティストが不明 (タグ無し)。空同士の一致はアーティスト一致とみなさない。
+        let query_artist_unknown = artist.is_empty() && album_artist.is_empty();
+
         let mut hits: Vec<MatchHit> = Vec::new();
         for (i, weak_title) in cands {
             let k = &self.keys[i];
@@ -204,7 +208,12 @@ impl MatchIndex {
                 && (artist == k.artist || artist == k.album_artist))
                 || (!k.album_artist.is_empty()
                     && (k.album_artist == album_artist || k.album_artist == artist));
-            if !artist_ok {
+            // 双方ともアーティスト不明 (タグの無いファイル同士)。曲名がファイル名由来の
+            // "Track 01" 等になりがちなので、曲名 + 長さが合うときだけ候補にし、
+            // 確からしさは常に Weak (既定は取り込む・「要確認」表示) に留める。
+            let both_artist_unknown =
+                query_artist_unknown && k.artist.is_empty() && k.album_artist.is_empty();
+            if !artist_ok && !both_artist_unknown {
                 continue;
             }
             let row = &self.rows[i];
@@ -219,8 +228,12 @@ impl MatchIndex {
                 }
                 _ => (false, None),
             };
+            if both_artist_unknown && !duration_checked {
+                continue;
+            }
+            // アルバムも空同士は一致とみなさない (album が空なら album_ok は常に false)。
             let album_ok = !album.is_empty() && album == k.album;
-            let kind = if weak_title || !duration_checked {
+            let kind = if both_artist_unknown || weak_title || !duration_checked {
                 MatchKind::Weak
             } else if album_ok {
                 MatchKind::Exact
@@ -457,5 +470,61 @@ mod tests {
         let idx = MatchIndex::new(vec![row(1, "", "Artist", "Album", Some(200_000))]);
         assert!(idx.find(&q("", "Artist", None, None)).is_empty());
         assert!(idx.find(&q("!!", "Artist", None, None)).is_empty());
+    }
+
+    fn untagged(id: i64, name: &str, ms: Option<i64>) -> LibraryRow {
+        LibraryRow {
+            track_id: id,
+            name: Some(name.to_string()),
+            artist: None,
+            album_artist: None,
+            album: None,
+            total_time_ms: ms,
+            location_path: Some(format!("/m/{id}.mp3")),
+            file_exists: true,
+        }
+    }
+
+    /// タグの無いファイル同士: 空のアーティスト / アルバムを「一致」とみなさない。
+    /// 曲名 + 長さが合うときだけ Weak (要確認・既定は取り込む) で出し、長さが違う /
+    /// 確かめられないときは出さない。
+    #[test]
+    fn untagged_files_need_title_and_length_and_stay_weak() {
+        let idx = MatchIndex::new(vec![
+            untagged(1, "Track 01", Some(200_000)),
+            untagged(2, "Track 01", Some(320_000)),
+            untagged(3, "Track 01", None),
+        ]);
+        // 長さが合う 1 だけ。Exact / Probable にはならない。
+        let h = idx.find(&q("Track 01", "", None, Some(201_000)));
+        assert_eq!(h.len(), 1, "{h:?}");
+        assert_eq!(h[0].track_id, 1);
+        assert_eq!(h[0].kind, MatchKind::Weak);
+        // 長さが不明なクエリは、空のアーティストだけでは何も一致させない。
+        assert!(idx.find(&q("Track 01", "", None, None)).is_empty());
+        // 長さがどれとも合わない。
+        assert!(idx.find(&q("Track 01", "", None, Some(100_000))).is_empty());
+        // 空アルバム同士でも Exact にしない (album_ok は空なら false)。
+        let h = idx.find(&q("Track 01", "", Some(""), Some(200_000)));
+        assert_eq!(h[0].kind, MatchKind::Weak);
+    }
+
+    /// 片側だけアーティストがある場合は従来どおり一致しない (空は何とも一致しない)。
+    #[test]
+    fn unknown_artist_does_not_match_known_artist() {
+        let idx = MatchIndex::new(vec![
+            untagged(1, "Song", Some(200_000)),
+            row(2, "Song", "Artist", "Album", Some(200_000)),
+        ]);
+        // タグ付きのクエリ → タグ付きの 2 だけ (未タグの 1 は出ない)。
+        let h = idx.find(&q("Song", "Artist", Some("Album"), Some(200_000)));
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].track_id, 2);
+        assert_eq!(h[0].kind, MatchKind::Exact);
+        // 未タグのクエリ → 未タグの 1 だけ (Weak)。
+        let h = idx.find(&q("Song", "", None, Some(200_000)));
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].track_id, 1);
+        assert_eq!(h[0].kind, MatchKind::Weak);
     }
 }

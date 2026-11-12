@@ -310,7 +310,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
         <div className="modal rip-dialog" onClick={(e) => e.stopPropagation()}>
           <div className="modal-header">
             <h2>
-              <Icon name="disc" size={16} /> Rip CD —{" "}
+              <Icon name="disc" size={16} /> CD を取り込む —{" "}
               {ripStatus.phase === "ripping"
                 ? "リッピング中"
                 : ripStatus.phase === "done"
@@ -347,7 +347,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
       <div className="modal rip-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>
-            <Icon name="disc" size={16} /> Rip CD
+            <Icon name="disc" size={16} /> CD を取り込む
           </h2>
           <button className="modal-close" onClick={onClose}>
             <Icon name="x" size={16} />
@@ -357,7 +357,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
         <div className="modal-body">
           {/* Device + detect */}
           <div className="rip-row">
-            <label>Drive:</label>
+            <label>ドライブ:</label>
             {drives.length > 0 && (
               <select
                 value={!customDevice && drives.includes(device) ? device : OTHER_DEVICE}
@@ -397,8 +397,8 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
               onClick={handleDetect}
               disabled={stage === "detecting" || stage === "looking-up" || stage === "ripping"}
             >
-              {stage === "detecting" ? "Reading TOC..." :
-                stage === "looking-up" ? "Looking up..." : "Detect Disc"}
+              {stage === "detecting" ? "TOC を読み取り中…" :
+                stage === "looking-up" ? "照会中…" : "ディスクを検出"}
             </button>
           </div>
 
@@ -423,7 +423,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
                 >
                   {candidates.map((c) => (
                     <option key={c.releaseId} value={c.releaseId}>
-                      {c.artist} — {c.title}
+                      {c.artist || "不明なアーティスト"} — {c.title}
                       {c.date ? ` (${c.date.slice(0, 4)})` : ""}
                       {c.country ? ` [${c.country}]` : ""}
                     </option>
@@ -431,7 +431,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
                 </select>
               ) : (
                 <div className="rip-note">
-                  No matching release. Files will be named "Track NN" unless you switch candidates manually.
+                  一致するリリースが見つかりません。候補を手動で切り替えない限り、ファイル名は「Track NN」になります。
                   <br />
                   Disc ID: <code>{toc.musicbrainzId}</code>
                 </div>
@@ -449,14 +449,14 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
               {/* Track list */}
               <div className="rip-section-title">
                 <span>
-                  Tracks
+                  曲
                   {dupChecking && <span className="dup-checking"> ライブラリと照合中…</span>}
                   {!dupChecking && dupHits.size > 0 && (
                     <span className="dup-checking"> {dupHits.size} 曲は取り込み済み</span>
                   )}
                 </span>
                 <button className="rip-link" onClick={toggleAll}>
-                  {selectedTracks.size === toc.trackCount ? "Deselect all" : "Select all"}
+                  {selectedTracks.size === toc.trackCount ? "すべて解除" : "すべて選択"}
                 </button>
               </div>
               <div className="rip-track-list">
@@ -492,7 +492,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
 
               {/* Format + output dir */}
               <div className="rip-row">
-                <label>Format:</label>
+                <label>形式:</label>
                 <select
                   className="rip-select"
                   value={format}
@@ -511,16 +511,16 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
               </div>
               {!organizeActive && (
                 <div className="rip-row">
-                  <label>Output:</label>
+                  <label>出力先:</label>
                   <input
                     type="text"
                     className="rip-input"
                     value={outputDir}
-                    placeholder="Select folder..."
+                    placeholder="フォルダを選択…"
                     onChange={(e) => setOutputDir(e.target.value)}
                   />
                   <button className="toolbar-btn" onClick={handlePickOutputDir}>
-                    <Icon name="folderOpen" size={14} /> Browse
+                    <Icon name="folderOpen" size={14} /> 選択…
                   </button>
                 </div>
               )}
@@ -532,7 +532,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
                       checked={addToLibrary}
                       onChange={(e) => setAddToLibrary(e.target.checked)}
                     />
-                    &nbsp;Add ripped tracks to library
+                    &nbsp;取り込んだ曲をライブラリに追加
                   </label>
                 </div>
               )}
@@ -543,14 +543,14 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
         </div>
         {toc && stage !== "ripping" && stage !== "done" && (
           <div className="modal-footer">
-            <button className="toolbar-btn" onClick={onClose}>Cancel</button>
+            <button className="toolbar-btn" onClick={onClose}>キャンセル</button>
             <button
               className="toolbar-btn primary"
               onClick={() => handleRip()}
               disabled={ripCount === 0 || (!organizeActive && !outputDir)}
             >
-              <Icon name="play" size={14} fill="currentColor" stroke={0} /> Start Ripping (
-              {ripCount})
+              <Icon name="play" size={14} fill="currentColor" stroke={0} /> 取り込み開始（
+              {ripCount} 曲）
             </button>
           </div>
         )}

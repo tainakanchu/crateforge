@@ -4,7 +4,7 @@ description: Local playback, the Up Next queue, the Crate for DJ curation, Audit
 ---
 
 Crateforge supports local playback (rodio + symphonia) and decodes a wide range of formats directly.
-You build up playback and curation in the right rail (the curation workbench): **Now Playing / Up Next / Crate / Similar**.
+You build up playback and curation in the right rail (the curation workbench): **"再生中" (Now Playing) / "次に再生" (Up Next) / Crate / "似た曲" (Similar)**.
 
 > Screenshots to be added
 
@@ -81,7 +81,7 @@ While casting, the button is highlighted, and states such as connecting / reconn
 - The PC and the cast device must be on the **same LAN**.
 - Crateforge's **built-in API server must be running with "LAN exposure" enabled**, so the cast device can fetch the audio from the PC.
   If it is off when you pick a device, a **confirmation dialog** appears and LAN exposure is turned on only if you agree (it is never exposed without asking).
-  You can turn it off again at any time in [Settings → AI integration / API](../api-server/).
+  You can turn it off again at any time in [Settings → Mobile / API](../api-server/).
 - mDNS (multicast) must get through. In the following cases the device may not be found or may fail to connect:
   - The router has **AP isolation** on, or the PC is on a different network such as a guest Wi-Fi
   - A firewall blocks **UDP 5353 (mDNS)** or **inbound connections on the API port (default 8787)**
@@ -151,7 +151,7 @@ Audition mode is session-only and is not carried over to the next launch.
 
 The **Up Next** in the right rail is the queue of what will be played next.
 
-- **"Play Next"** in the context menu inserts the selected tracks (multiple supported, selection order preserved)
+- **"次に再生" (Play Next)** in the context menu inserts the selected tracks (multiple supported, selection order preserved)
   right after the currently playing track.
 - The **"×"** that appears on row hover removes from the queue, and you can reorder with **drag and drop**.
 - The header shows the **count, total time, and a shuffle badge**.
@@ -164,14 +164,14 @@ The **Up Next** in the right rail is the queue of what will be played next.
 
 ## The right rail (curation workbench)
 
-The right rail has two tab groups: **Now / Up Next** and **Crate / Similar**.
+The right rail has two tab groups: **"再生中" (Now) / "次に再生" (Up Next)** and **Crate / "似た曲" (Similar)**.
 
 - Drag its left edge to **resize** (280–560px); double-click resets it to the default (348px). The width is persisted.
-- The **Split** button shows Crate and Similar stacked at the same time. Split is **only available on the Crate / Similar tabs**
+- The **"分割" (Split)** button shows Crate and Similar stacked at the same time. Split is **only available on the Crate / Similar tabs**
   and is shown disabled on the Now / Up Next tabs.
-- **Tabs never switch on their own.** Adding tracks to the Crate or running "Find similar" keeps you on the tab you were looking at.
+- **Tabs never switch on their own.** Adding tracks to the Crate or running "似た曲を探す" (Find similar) keeps you on the tab you were looking at.
   Instead, the **Crate tab gets a count badge** and the **Similar tab gets a dot** showing that a base track is pinned.
-  (The context menu's "Find similar" and `Ctrl/Cmd + Shift + S` are explicit actions, so they do move to the Similar tab.)
+  (The context menu's "似た曲を探す" (Find similar) and `Ctrl/Cmd + Shift + S` are explicit actions, so they do move to the Similar tab.)
 - `Ctrl + ]` shows the right rail, and `Ctrl + 1`–`4` switch to the Now / Up Next / Crate / Similar tabs.
 
 ## Crate (DJ curation)
@@ -180,7 +180,7 @@ The **Crate** in the right rail is a staging area for building a starting point 
 
 - Add tracks to the Crate, and once you have a batch you can **"Save as playlist."**
   `Ctrl + Shift + C` adds the selection in one go, and you can also drag rows from the list into the Crate.
-- The **smooth** button auto-sorts into a smooth flow using greedy nearest-neighbor based on analysis values.
+- The **"整列" (smooth)** button auto-sorts into a smooth flow using greedy nearest-neighbor based on analysis values.
 - Each row offers Preview / Find Similar / Play next / play from here / remove from the Crate.
 
 ### Set Workspace (Anchor / Section / Arc / Lint)
@@ -199,7 +199,7 @@ The Crate doubles as a **design surface for a set** (nothing is written to the d
 
 ### Gig Readiness and Snapshots
 
-**"Ready?"** in the Crate header checks the readiness of the Crate or the currently shown playlist on one screen.
+**"本番前" (Gig Readiness)** in the Crate header checks the readiness of the Crate or the currently shown playlist on one screen.
 
 - **Blockers**: no tracks / tracks whose files are missing
 - **Warnings**: unanalyzed tracks / duplicates / low bitrate (lossy files under 256 kbps; lossless files are excluded) / over or under the target duration / Set Lint findings / auto-export status
@@ -238,9 +238,9 @@ The done / later state is stored inside the app and requires no database schema 
 
 ## Now Playing (BPM / Key / Energy)
 
-The **Now Playing** in the right rail shows **Album / Artist / Genre / BPM / Key / Energy** along with the artwork of the playing track.
+The **"再生中" (Now Playing)** tab in the right rail shows **album / artist / genre / BPM / Key / Energy** along with the artwork of the playing track.
 BPM, Key (Camelot), and Energy are shown for [analyzed](../dj-analysis/) tracks and help you decide on transitions.
 
 The **Similar** tab presents "next moves" — Camelot-key compatible + close in tempo — for the playing track
-(or via right-click → "Find similar").
+(or via right-click → "似た曲を探す" (Find similar)).
 See [similarity-based curation (Similar Digging)](../dj-analysis/) for how to dig further.

@@ -116,6 +116,38 @@ impl Database {
     }
 }
 
+impl Database {
+    /// プレイリストの実際の曲数。スマートはライブ評価 (criteria の limit 適用後)、
+    /// フォルダは子孫の和集合、通常は静的メンバー数。`playlists.track_count`
+    /// (静的な playlist_tracks の行数) はスマートでは 0 になるので、表示にはこちらを使う。
+    /// 全スマートプレイリストのライブ評価件数 `(playlist_id, 件数)`。
+    /// サイドバーの件数表示用 (D9)。評価は 1 パス (全曲・解析は一度だけ読む) で、
+    /// スマートが 1 件も無ければ全曲は読まない。
+    pub fn smart_playlist_counts(&self) -> Result<Vec<(i64, usize)>> {
+        let ids: Vec<(i64, bool)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT playlist_id, is_smart FROM playlists WHERE is_folder = 0")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? != 0)))?;
+            rows.collect::<Result<Vec<_>>>()?
+        };
+        let mut resolver = self.playlist_resolver()?;
+        let mut out = Vec::new();
+        for (id, flagged_smart) in ids {
+            // 条件を持たないスマート (取り寄せたスナップショット等: is_smart=1, criteria=NULL) は
+            // 静的な行 (playlist_tracks) がメンバーなので、その件数を出す (E4)。
+            if resolver.is_smart(id) || flagged_smart {
+                out.push((id, resolver.track_ids(id)?.len()));
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn playlist_member_count(&self, playlist_id: i64) -> Result<usize> {
+        Ok(self.playlist_resolver()?.track_ids(playlist_id)?.len())
+    }
+}
+
 impl PlaylistResolver<'_> {
     /// スマートプレイリスト (フォルダ以外で criteria を持つ) か。
     pub fn is_smart(&self, playlist_id: i64) -> bool {
@@ -131,6 +163,12 @@ impl PlaylistResolver<'_> {
             .resolve(playlist_id)?
             .map(|r| r.ids.clone())
             .unwrap_or_default())
+    }
+
+    /// 評価パスで読み込んだ解析結果 (track_id → 解析)。実効 BPM での並び替えに使う。
+    pub fn analysis(&mut self) -> Result<&smart::AnalysisMap> {
+        self.ensure_library()?;
+        Ok(&self.library.as_ref().expect("library loaded").analysis)
     }
 
     /// スマートプレイリストの評価結果 (criteria の並び + limit 適用済み) を曲で返す。
@@ -261,7 +299,14 @@ impl PlaylistResolver<'_> {
             .collect();
         // criteria 自身の並び (無ければ name 昇順、第 2 キー以降は then_by)。limit はこの並びで切る。
         matched
-            .sort_by(|&a, &b| smart::compare_by_criteria(&lib.tracks[a], &lib.tracks[b], criteria));
+            .sort_by(|&a, &b| {
+            smart::compare_by_criteria(
+                &lib.tracks[a],
+                &lib.tracks[b],
+                criteria,
+                Some(&lib.analysis),
+            )
+        });
         if let Some(limit) = criteria.limit {
             matched.truncate(limit);
         }
@@ -347,6 +392,31 @@ mod tests {
         db.set_smart_criteria(30, &criteria(vec![rule("playlist", SmartOp::Is, "P020")]))
             .unwrap();
         assert_eq!(ids(&db, 30), vec![2, 4]);
+    }
+
+    /// D9: サイドバー用に全スマートのライブ件数をまとめて返す (静的・フォルダは含まない)。
+    #[test]
+    fn smart_playlist_counts_lists_only_smart() {
+        let db = db();
+        assert!(db.smart_playlist_counts().unwrap().is_empty());
+        db.set_smart_criteria(31, &criteria(vec![rule("genre", SmartOp::Is, "House")]))
+            .unwrap();
+        db.set_smart_criteria(32, &criteria(vec![rule("genre", SmartOp::Is, "Techno")]))
+            .unwrap();
+        let mut counts = db.smart_playlist_counts().unwrap();
+        counts.sort();
+        assert_eq!(counts, vec![(31, 3), (32, 2)]);
+    }
+
+    /// E4: 取り寄せたスマート (is_smart=1 だが criteria=NULL) は静的な行の件数を出す
+    /// (サイドバーの件数が空になっていた)。
+    #[test]
+    fn smart_playlist_counts_includes_smart_without_criteria() {
+        let db = db();
+        db.conn
+            .execute("UPDATE playlists SET is_smart = 1 WHERE playlist_id = 30", [])
+            .unwrap();
+        assert_eq!(db.smart_playlist_counts().unwrap(), vec![(30, 1)]);
     }
 
     /// スマートがスマートを参照する (iTunes の Favorite J-POP → Favorite SONGS と同じ形)。

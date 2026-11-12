@@ -75,8 +75,8 @@ export function hitTooltip(hits: DuplicateHit[]): string {
       const kind =
         h.kind === "exact" ? "一致" : h.kind === "probable" ? "ほぼ一致 (アルバム違い)" : "確証なし (長さで確認できず)";
       return [
-        `${h.name ?? "(no title)"} — ${h.artist ?? "(no artist)"}`,
-        `アルバム: ${h.album ?? "-"}  長さ: ${fmtTime(h.totalTimeMs)}  [${kind}]`,
+        `${h.name || "(no title)"} — ${h.artist || "(no artist)"}`,
+        `アルバム: ${h.album || "-"}  長さ: ${fmtTime(h.totalTimeMs)}  [${kind}]`,
         `${h.locationPath ?? "(パスなし)"}`,
       ].join("\n");
     })

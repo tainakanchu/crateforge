@@ -9,7 +9,7 @@ You can convert tracks to a different audio format (using ffmpeg). Tags and embe
 
 ## Converting
 
-1. **Right-click** a track (multiple selection supported) and choose **"Convert to…"**.
+1. **Right-click** a track (multiple selection supported) and choose **"形式を変換…" (Convert to…)**.
 2. Choose the **format, bitrate, and output destination**.
 3. If needed, enable "Add to library after conversion."
 4. Start the conversion and progress is displayed.

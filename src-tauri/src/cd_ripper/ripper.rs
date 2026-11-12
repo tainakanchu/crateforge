@@ -130,7 +130,13 @@ pub fn rip_cd(
             .release
             .as_ref()
             .and_then(|r| r.tracks.iter().find(|t| t.position == track_num))
-            .map(|t| format!("{} - {}", t.artist, t.title))
+            .map(|t| {
+                if t.artist.trim().is_empty() {
+                    t.title.clone()
+                } else {
+                    format!("{} - {}", t.artist, t.title)
+                }
+            })
             .unwrap_or_else(|| format!("Track {:02}", track_num));
 
         let _ = app.emit(
@@ -195,10 +201,12 @@ pub fn rip_cd(
             .release
             .as_ref()
             .and_then(|r| r.tracks.iter().find(|t| t.position == track_num));
-        let title = release_track.map(|t| t.title.as_str());
-        let track_artist = release_track.map(|t| t.artist.as_str());
-        let album_artist = req.release.as_ref().map(|r| r.artist.as_str());
-        let album = req.release.as_ref().map(|r| r.title.as_str());
+        // 空文字 (MusicBrainz にクレジットが無い等) はタグ / DB に書かず None にする。
+        let nonempty = |s: &str| !s.trim().is_empty();
+        let title = release_track.map(|t| t.title.as_str()).filter(|s| nonempty(s));
+        let track_artist = release_track.map(|t| t.artist.as_str()).filter(|s| nonempty(s));
+        let album_artist = req.release.as_ref().map(|r| r.artist.as_str()).filter(|s| nonempty(s));
+        let album = req.release.as_ref().map(|r| r.title.as_str()).filter(|s| nonempty(s));
         let date = req.release.as_ref().and_then(|r| r.date.as_deref());
         let track_count_meta = req.release.as_ref().map(|r| r.track_count as u32);
 

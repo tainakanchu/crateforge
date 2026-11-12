@@ -2,26 +2,33 @@
 // 曲を一覧し、タップでその位置からアルバム全体をキューにして再生する。
 
 import { useMemo } from "react";
-import { FlatList, Pressable, Text, View, StyleSheet } from "react-native";
+import { FlatList, Pressable, RefreshControl, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
 import {
   type ArtistGrouping,
   type Track,
-  trackArtist,
-  trackAlbumArtist,
+  albumLabel,
+  trackArtistKey,
+  filterAlbumTracks,
+  trackAlbumArtistKey,
   useConnection,
   usePlayer,
   useDownloads,
+  describeApiError,
 } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
+import BackButton from "@/components/BackButton";
+import DesktopPlayButton from "@/components/DesktopPlayButton";
 import TrackRow from "@/components/TrackRow";
 import DownloadButton from "@/components/DownloadButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { useAlbumTracks, useArtistTracks } from "@/features/browse/hooks";
 import { showTrackMenu } from "@/features/playback/trackMenu";
+import { usePullToRefresh } from "@/hooks/use-refresh";
+import { nameFromParams } from "@/lib/albumHref";
 
 /** disc 番号 → トラック番号 の収録順比較。 */
 function byDiscTrack(a: Track, b: Track): number {
@@ -32,22 +39,29 @@ export default function AlbumScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
     name?: string;
+    unknown?: string;
     noAlbum?: string;
     artist?: string;
     grouping?: string;
   }>();
-  // 「アルバムなし」モード: 指定アーティストの album が空の曲を集めて表示する。
+  // 「アーティストの不明なアルバム」モード: 指定アーティストの album が空の曲を集めて表示する
+  // （アーティスト詳細のアルバム一覧から来る。artist="" は不明なアーティスト）。
   const isNoAlbum = params.noAlbum === "1";
-  const album = params.name ? decodeURIComponent(params.name) : "";
+  // 名前は unknown=1 なら "" (= ライブラリ全体の不明なアルバム)、無ければ null。
+  const albumParam = nameFromParams(params);
+  const album = albumParam ?? "";
   const artist = params.artist ? decodeURIComponent(params.artist) : "";
   const grouping: ArtistGrouping = params.grouping === "albumArtist" ? "albumArtist" : "artist";
-  const title = isNoAlbum ? "アルバムなし" : album || "アルバム";
+  const title = isNoAlbum ? albumLabel("") : albumParam != null ? albumLabel(albumParam) : "アルバム";
   const client = useConnection((s) => s.client);
 
-  // 通常はアルバム名で取得。アルバムなしはアーティストの曲から album 空を抽出する。
-  const albumQuery = useAlbumTracks(isNoAlbum ? null : album || null);
-  const artistQuery = useArtistTracks(isNoAlbum ? artist || null : null, grouping);
+  // 通常はアルバム名（完全一致）で取得。一覧と同じ粒度にするため albumArtist では絞らない（round-2 M1）。
+  // 不明なアルバム（album=""）も albumExact で album が空の曲を引ける。
+  // アーティストの不明なアルバムはアーティストの曲から album 空を抽出する。
+  const albumQuery = useAlbumTracks(isNoAlbum ? null : albumParam);
+  const artistQuery = useArtistTracks(isNoAlbum ? artist : null, grouping);
   const query = isNoAlbum ? artistQuery : albumQuery;
+  const { refreshing, onRefresh } = usePullToRefresh(query.refetch);
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
 
   const onlineTracks = useMemo<Track[]>(() => {
@@ -60,16 +74,17 @@ export default function AlbumScreen() {
   const offlineTracks = useMemo(() => {
     if (client) return [] as Track[];
     if (isNoAlbum) {
-      const nameOf = grouping === "albumArtist" ? trackAlbumArtist : trackArtist;
+      // 束ねキー（不明なアーティストは ""）で突き合わせる（表示ラベルとは比べない）。
+      const nameOf = grouping === "albumArtist" ? trackAlbumArtistKey : trackArtistKey;
       return Object.values(entries)
         .map((e) => e.track)
         .filter((t) => nameOf(t) === artist && !t.album)
         .sort(byDiscTrack);
     }
-    return Object.values(entries)
-      .filter((e) => e.track.album === album)
-      .map((e) => e.track)
-      .sort(byDiscTrack);
+    return filterAlbumTracks(
+      Object.values(entries).map((e) => e.track),
+      album,
+    ).sort(byDiscTrack);
   }, [client, entries, album, isNoAlbum, artist, grouping]);
   const tracks = client ? onlineTracks : offlineTracks;
 
@@ -80,12 +95,22 @@ export default function AlbumScreen() {
 
   const onPlayAll = () => {
     if (tracks.length === 0) return;
+    // 「再生」は収録順（プレイリスト詳細と同じく、シャッフルは明示ボタンで）。
+    usePlayer.getState().setShuffle(false);
     usePlayer.getState().setQueue(tracks, 0);
+    router.push("/player");
+  };
+
+  const onShuffle = () => {
+    if (tracks.length === 0) return;
+    usePlayer.getState().setShuffle(true);
+    usePlayer.getState().setQueue(tracks, Math.floor(Math.random() * tracks.length));
     router.push("/player");
   };
 
   return (
     <Screen edges={["top"]}>
+      <BackButton />
       <View style={styles.header}>
         <View style={styles.headerText}>
           <Text style={styles.title} numberOfLines={2}>
@@ -114,8 +139,23 @@ export default function AlbumScreen() {
             <Ionicons name="play" size={18} color={BRAND.accentText} />
             <Text style={styles.playLabel}>再生</Text>
           </Pressable>
+          <Pressable
+            onPress={onShuffle}
+            accessibilityRole="button"
+            accessibilityLabel="シャッフル再生"
+            style={({ pressed }) => [styles.shuffleButton, pressed && styles.playPressed]}
+          >
+            <Ionicons name="shuffle" size={18} color={PALETTE.accent} />
+            <Text style={styles.shuffleLabel}>シャッフル</Text>
+          </Pressable>
+          <DesktopPlayButton tracks={tracks} />
           {client && !isNoAlbum ? (
-            <DownloadButton albumName={album} label="アルバムを保存" />
+            album ? (
+              <DownloadButton albumName={album} label="アルバムを保存" />
+            ) : (
+              // 不明なアルバムは名前で引き直せないので、表示中の曲をそのまま保存する。
+              <DownloadButton tracks={tracks} label="アルバムを保存" />
+            )
           ) : null}
         </View>
       ) : null}
@@ -142,6 +182,7 @@ export default function AlbumScreen() {
               />
             )}
             contentContainerStyle={styles.listContent}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PALETTE.accent} colors={[PALETTE.accent]} />}
           />
         )
       ) : offlineTracks.length === 0 ? (
@@ -171,7 +212,7 @@ export default function AlbumScreen() {
 }
 
 function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : "読み込みに失敗しました";
+  return describeApiError(e, { action: "読み込み" });
 }
 
 const styles = StyleSheet.create({
@@ -200,6 +241,7 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     gap: 12,
     paddingHorizontal: 16,
@@ -219,6 +261,21 @@ const styles = StyleSheet.create({
   },
   playLabel: {
     color: BRAND.accentText,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  shuffleButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: PALETTE.accent,
+  },
+  shuffleLabel: {
+    color: PALETTE.accent,
     fontSize: 14,
     fontWeight: "700",
   },
