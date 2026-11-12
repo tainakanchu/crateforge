@@ -232,9 +232,39 @@ jobs:
       - name: Frontend typecheck
         run: pnpm typecheck
 
+      # brew の libdiscid は install name が /opt/homebrew/... の絶対パスで、そのまま
+      # リンクすると brew で libdiscid を入れていない Mac で起動直後に dyld が落ちる
+      # (v0.17.0 で発生)。@rpath 化したコピーにリンクし、.app に同梱する。
+      - name: Stage libdiscid for bundling
+        run: |
+          dir="$RUNNER_TEMP/libdiscid"
+          bash scripts/macos-stage-libdiscid.sh "$dir"
+          # discid-sys (system-deps) のリンク検索パスをステージング先に差し替える。
+          echo "SYSTEM_DEPS_LIBDISCID_SEARCH_NATIVE=$dir" >> "$GITHUB_ENV"
+          echo "LIBDISCID_DYLIB=$dir/libdiscid.0.dylib" >> "$GITHUB_ENV"
+
       # 未署名ビルド（Gatekeeper 警告は出るが配布可能）。
+      # frameworks に dylib を渡すと tauri-build が rpath @executable_path/../Frameworks を
+      # 付与し、bundler が Contents/Frameworks にコピーする。
       - name: Tauri build (native, unsigned)
-        run: pnpm tauri build
+        run: pnpm tauri build --config "{\"bundle\":{\"macOS\":{\"frameworks\":[\"$LIBDISCID_DYLIB\"]}}}"
+
+      # 起動時クラッシュの再発防止: バイナリが Homebrew 配下の dylib を参照していないこと、
+      # libdiscid が同梱されていることを検証し、満たさなければリリースさせない。
+      - name: Verify bundled dylibs
+        run: |
+          app="$(ls -d src-tauri/target/release/bundle/macos/*.app | head -n 1)"
+          bin="$app/Contents/MacOS/crateforge"
+          echo "=== otool -L ==="; otool -L "$bin"
+          echo "=== LC_RPATH ==="; otool -l "$bin" | grep -A2 LC_RPATH || true
+          echo "=== Frameworks ==="; ls -la "$app/Contents/Frameworks"
+          if otool -L "$bin" | tail -n +2 | grep -E "/opt/homebrew|/usr/local"; then
+            echo "::error::binary links against Homebrew dylibs (will crash on Macs without them)"
+            exit 1
+          fi
+          otool -L "$bin" | grep -q "@rpath/libdiscid.0.dylib"
+          test -f "$app/Contents/Frameworks/libdiscid.0.dylib"
+          codesign --verify --verbose "$app/Contents/Frameworks/libdiscid.0.dylib"
 
       - name: Show built artifacts
         run: |
