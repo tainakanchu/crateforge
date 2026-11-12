@@ -385,21 +385,26 @@ function OfflineLibrary() {
           repTrackId: e.track.trackId,
         });
       }
-      // 表示アーティストは albumArtist 優先・非空のみを distinct 収集。
-      const artist = e.track.albumArtist ?? e.track.artist;
-      if (artist) map.get(album)!.artists.add(artist);
+      // 表示アーティストは albumArtist 優先で distinct 収集。通常のアルバムは非空のみ数える。
+      // 不明なアルバムは寄せ集めなので、アーティスト無しの曲も 1 値として数える
+      // （サーバーの /api/albums と同じ規則。数えないと特定アーティストのアルバムに見える）。
+      const artist = (e.track.albumArtist?.trim() || e.track.artist?.trim() || "");
+      if (artist || album === "") map.get(album)!.artists.add(artist);
     }
     return Array.from(map.entries())
       .map(([name, v]) => ({
         name,
         count: v.count,
         // distinct なアーティストが1つなら其れ、2つ以上なら "Various Artists"、空なら空文字。
+        // 不明なアルバムで複数アーティストなら、Various Artists ではなく空文字（サーバーの NULL に対応）。
         artist:
           v.artists.size === 0
             ? ""
             : v.artists.size === 1
               ? [...v.artists][0]
-              : "Various Artists",
+              : name === ""
+                ? ""
+                : "Various Artists",
         repTrackId: v.repTrackId,
       }))
       .sort(compareNamesUnknownLast((a) => a.name));

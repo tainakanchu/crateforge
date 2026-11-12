@@ -1784,9 +1784,11 @@ impl Database {
             // 代表アーティスト: album_artist (空なら artist) が曲ごとに複数ある / コンピなら
             // "Various Artists" (MAX だとコンピが特定アーティストのアルバムに見えた: E5)。
             // 不明なアルバムは寄せ集めなので、複数アーティストなら Various Artists ではなく NULL。
+            // その判定ではアーティスト無しの曲も 1 値として数える (COUNT(DISTINCT) は NULL を数えないため
+            // '' に寄せる)。数えないと「タグ無し + Aoi Tanaka」が Aoi Tanaka のアルバムに見える。
             "SELECT coalesce(nullif(trim(album),''), '') AS album_name,
                     CASE WHEN coalesce(nullif(trim(album),''), '') = '' THEN
-                           CASE WHEN COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))))) > 1
+                           CASE WHEN COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''), '')))) > 1
                                 THEN NULL
                                 ELSE MAX(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))) END
                          WHEN MAX(compilation) = 1
@@ -3505,6 +3507,25 @@ mod tests {
         assert_eq!(albums[1].sample_track_id, 1);
         // 複数アーティストの寄せ集めは Various Artists ではなく null。
         assert_eq!(albums[1].album_artist, None);
+    }
+
+    /// 不明なアルバムに「アーティスト無しの曲 + 1 アーティストの曲」が混ざる場合も寄せ集め扱い
+    /// (アーティスト無しを 1 値として数える)。特定アーティスト名を代表にしない。
+    #[test]
+    fn get_albums_legacy_unknown_album_counts_missing_artist() {
+        let db = Database::open_memory().unwrap();
+        insert_artist_fixture(&db, 1, None, None, None, 0);
+        insert_artist_fixture(&db, 2, Some("Aoi Tanaka"), None, None, 0);
+        let albums = db.get_albums_legacy().unwrap();
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].album, "");
+        assert_eq!(albums[0].album_artist, None);
+        // アーティスト 1 人だけの不明なアルバムは、そのアーティストを代表にしてよい。
+        let db = Database::open_memory().unwrap();
+        insert_artist_fixture(&db, 1, Some("Aoi Tanaka"), None, None, 0);
+        insert_artist_fixture(&db, 2, Some("Aoi Tanaka"), None, Some(""), 0);
+        let albums = db.get_albums_legacy().unwrap();
+        assert_eq!(albums[0].album_artist.as_deref(), Some("Aoi Tanaka"));
     }
 
     /// D4: 検索クエリでアーティストを絞り、件数も一致した曲で数える。0 件なら空。
