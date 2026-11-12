@@ -2,8 +2,10 @@
 // 値は 0..5（0.5 刻み、半星対応）。0 = 未設定。
 // 星の左半分 = 半星、右半分 = 整数星。同じ値を再タップすると 0 にクリアする。
 // 実際の rating(0..100) への変換は呼び出し側で star*20 として行う。
+// 半星のタップ領域が狭い（18px 程度）と押し分けにくいので、星の箱を広めに取り縦にも hitSlop を足す。
+// スクリーンリーダーでは adjustable（増減ジェスチャ = 0.5 刻み）で操作できる。
 
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, Pressable, StyleSheet, type AccessibilityActionEvent } from "react-native";
 
 import { PALETTE } from "@/constants/brand";
 
@@ -28,13 +30,25 @@ export default function RatingStars({
 }: RatingStarsProps) {
   // 各星の左半分 = n-0.5、右半分 = n。同じ値を再タップすると 0 にクリア。
   const press = (v: number) => onChange(v === value ? 0 : v);
-  const box = size + 8;
+  // 1 星の箱。半星 1 つあたり (size + 18) / 2 ≒ 22px（size=26 時）の幅を確保する。
+  const box = size + 18;
+  // スクリーンリーダーの増減（0.5 刻み、0..5 にクランプ）。
+  const onAccessibilityAction = (e: AccessibilityActionEvent) => {
+    if (disabled) return;
+    const step = e.nativeEvent.actionName === "increment" ? 0.5 : e.nativeEvent.actionName === "decrement" ? -0.5 : 0;
+    if (step === 0) return;
+    const next = Math.max(0, Math.min(5, value + step));
+    if (next !== value) onChange(next);
+  };
   return (
     <View
       style={styles.row}
       accessibilityRole="adjustable"
       accessibilityLabel="評価"
-      accessibilityValue={{ min: 0, max: 5, now: value }}
+      accessibilityValue={{ min: 0, max: 5, now: value, text: value > 0 ? `星${value}` : "未評価" }}
+      accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
+      onAccessibilityAction={onAccessibilityAction}
+      accessibilityState={{ disabled }}
     >
       {STARS.map((star) => {
         const fill = value >= star ? 1 : value >= star - 0.5 ? 0.5 : 0;
@@ -62,7 +76,7 @@ export default function RatingStars({
                 onPress={() => press(star - 0.5)}
                 accessibilityRole="button"
                 accessibilityLabel={`星${star - 0.5}`}
-                hitSlop={{ top: 6, bottom: 6, left: 0, right: 0 }}
+                hitSlop={{ top: 10, bottom: 10, left: 0, right: 0 }}
                 style={({ pressed }) => [styles.half, pressed && !disabled && styles.pressed]}
               />
               <Pressable
@@ -70,7 +84,7 @@ export default function RatingStars({
                 onPress={() => press(star)}
                 accessibilityRole="button"
                 accessibilityLabel={`星${star}`}
-                hitSlop={{ top: 6, bottom: 6, left: 0, right: 0 }}
+                hitSlop={{ top: 10, bottom: 10, left: 0, right: 0 }}
                 style={({ pressed }) => [styles.half, pressed && !disabled && styles.pressed]}
               />
             </View>

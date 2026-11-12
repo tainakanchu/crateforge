@@ -59,11 +59,16 @@ export function albumYearMap(tracks: Track[]): Map<string, number> {
  */
 export function useTracks(query?: TracksQuery, enabled = true) {
   const client = useConnection((s) => s.client);
+  // 絞り込み無しの全曲取得は重い（数万件）ので、フォーカス/前面復帰のたびに取り直さないよう
+  // staleTime を長めにする（既定は 1 分）。最新化はプル更新で行える。
+  const unfiltered = !query?.q && !query?.genre;
   return useQuery<Track[]>({
     queryKey: ["tracks", query ?? {}],
     enabled: !!client && enabled,
     queryFn: ({ signal }) => client!.listTracks(query, signal),
     placeholderData: keepPreviousData,
+    // undefined を渡すと既定（QueryClient の staleTime）を上書きしてしまうので、指定時だけ載せる。
+    ...(unfiltered ? { staleTime: 5 * 60 * 1000 } : {}),
   });
 }
 
@@ -140,17 +145,18 @@ export function useAlbums(enabled = true) {
 /** 指定アルバムの曲（album が null のときは無効）。disc→track 昇順でソート。
  * album 名は完全一致（`?album=` は部分一致なので "Dawn" が "Dawn (Remixes)" を含んでしまう）。
  * 新しいホストには albumExact=true で絞らせ、古いホスト向けにクライアントでも完全一致で絞る。
- * albumArtist を渡すと、album_artist が別の値の曲（同名の別アルバム）も除く（未設定の曲は残す）。
+ * albumArtist では絞らない: アルバム一覧（/api/albums）が album 名単位の集計なので、詳細も同じ粒度にする
+ * （コンピ/DJ ミックスで album_artist が曲ごとに違っても全曲出す。round-2 M1）。
  */
-export function useAlbumTracks(album: string | null, albumArtist?: string | null) {
+export function useAlbumTracks(album: string | null) {
   const client = useConnection((s) => s.client);
   return useQuery<Track[], Error, Track[]>({
-    queryKey: ["album-tracks", album, albumArtist ?? null],
+    queryKey: ["album-tracks", album],
     enabled: !!client && album != null,
     queryFn: ({ signal }) =>
       client!.listTracks({ album: album!, albumExact: true, limit: BROWSE_LIMIT }, signal),
     select: (tracks) =>
-      filterAlbumTracks(tracks, album ?? "", albumArtist).sort(
+      filterAlbumTracks(tracks, album ?? "").sort(
         (a, b) =>
           (a.discNumber ?? 0) - (b.discNumber ?? 0) ||
           (a.trackNumber ?? 0) - (b.trackNumber ?? 0),

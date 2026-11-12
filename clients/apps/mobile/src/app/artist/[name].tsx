@@ -2,8 +2,9 @@
 // アルバムは albumArtist 順にソート。タップでアルバム詳細へ。曲はその位置からアーティスト全体をキューにして再生する。
 
 import { albumHref } from "@/lib/albumHref";
+import { usePullToRefresh } from "@/hooks/use-refresh";
 import { useMemo } from "react";
-import { FlatList, Pressable, Text, View, StyleSheet } from "react-native";
+import { FlatList, Pressable, RefreshControl, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
@@ -38,6 +39,7 @@ export default function ArtistScreen() {
 
   // 全曲（オンライン）。オフライン時は DL 済み entries からアーティストで絞る。
   const query = useArtistTracks(artist || null, artistGrouping);
+  const { refreshing, onRefresh } = usePullToRefresh(query.refetch);
   const entries = useDownloads((s) => s.entries);
   const offlineTracks = useMemo(() => {
     if (client || !artist) return [] as Track[];
@@ -150,7 +152,7 @@ export default function ArtistScreen() {
                     // 「アルバムなし」(空アルバム) はこのアーティストの無アルバム曲を専用表示へ。
                     // 通常アルバムは従来どおり album 名で遷移（空セグメントのクラッシュは回避）。
                     if (item.album.album) {
-                      router.push(albumHref(item.album.album, item.album.albumArtist));
+                      router.push(albumHref(item.album.album));
                     } else {
                       router.push(
                         `/album/none?noAlbum=1&artist=${encodeURIComponent(artist)}&grouping=${artistGrouping}`,
@@ -172,6 +174,7 @@ export default function ArtistScreen() {
             );
           }}
           contentContainerStyle={styles.listContent}
+          refreshControl={client ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PALETTE.accent} colors={[PALETTE.accent]} /> : undefined}
         />
       )}
     </Screen>

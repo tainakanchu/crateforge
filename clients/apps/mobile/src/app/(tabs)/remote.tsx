@@ -6,6 +6,7 @@ import { FlatList, Text, View, StyleSheet } from "react-native";
 
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
+import ConnectionNotice from "@/components/ConnectionNotice";
 import TrackRow from "@/components/TrackRow";
 import IconButton from "@/components/IconButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
@@ -63,6 +64,8 @@ export default function RemoteScreen() {
   if (!client) {
     return (
       <Screen>
+        {/* 未接続の理由 1 行 + 復帰導線（トークン再入力 / 再試行 / 接続画面へ）。 */}
+        <ConnectionNotice />
         <EmptyView message="サーバーに接続してください" icon="cloud-offline-outline" />
       </Screen>
     );

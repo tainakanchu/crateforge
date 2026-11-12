@@ -11,7 +11,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import Screen from "@/components/Screen";
 import { showActionSheet } from "@/components/ActionSheet";
-import { connectionLabel } from "@/lib/connectionStatus";
+import { REAUTH_HREF, connectionLabel } from "@/lib/connectionStatus";
 import { type ArtistGrouping, type TrackMetaField, formatDuration, useConnection, useDownloads, useSettings } from "@crateforge/core";
 import QualityPicker from "@/features/offline/QualityPicker";
 import { formatBytes } from "@/features/offline/format";
@@ -47,6 +47,8 @@ export default function SettingsScreen() {
 
   const connected = status === "connected";
   const connecting = status === "connecting" || checking;
+  // トークン不一致は同じトークンで再接続しても直らない → 主ボタンを「トークンを入力し直す」にする（round-2 M6）。
+  const needsReauth = status === "error" && errorKind === "unauthorized";
   const label = connectionLabel({ status, errorKind, checking, lastOkAt, baseUrl });
 
   // オフライン関連ストア。
@@ -112,6 +114,11 @@ export default function SettingsScreen() {
     void useConnection.getState().connect(baseUrl, token);
   }
 
+  // URL 入りの接続画面へ（旧トークンは入れない）。
+  function handleReauth() {
+    router.push(REAUTH_HREF);
+  }
+
   async function doDisconnect(keepTarget: boolean) {
     await useConnection
       .getState()
@@ -165,21 +172,33 @@ export default function SettingsScreen() {
           {label.detail ? <Text style={styles.error}>{label.detail}</Text> : null}
 
           <View style={styles.actions}>
-            <Pressable
-              onPress={handleReconnect}
-              disabled={!baseUrl || connecting}
-              accessibilityRole="button"
-              accessibilityLabel="再接続"
-              style={({ pressed }) => [
-                styles.btn,
-                styles.btnPrimary,
-                (!baseUrl || connecting) && styles.btnDisabled,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Ionicons name="refresh" size={18} color={BRAND.accentText} />
-              <Text style={styles.btnPrimaryText}>再接続</Text>
-            </Pressable>
+            {needsReauth ? (
+              <Pressable
+                onPress={handleReauth}
+                accessibilityRole="button"
+                accessibilityLabel="トークンを入力し直す"
+                style={({ pressed }) => [styles.btn, styles.btnWide, styles.btnPrimary, pressed && styles.pressed]}
+              >
+                <Ionicons name="key-outline" size={18} color={BRAND.accentText} />
+                <Text style={styles.btnPrimaryText}>トークンを入力し直す</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={handleReconnect}
+                disabled={!baseUrl || connecting}
+                accessibilityRole="button"
+                accessibilityLabel="再接続"
+                style={({ pressed }) => [
+                  styles.btn,
+                  styles.btnPrimary,
+                  (!baseUrl || connecting) && styles.btnDisabled,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Ionicons name="refresh" size={18} color={BRAND.accentText} />
+                <Text style={styles.btnPrimaryText}>再接続</Text>
+              </Pressable>
+            )}
             <Pressable
               onPress={handleDisconnect}
               accessibilityRole="button"
@@ -506,6 +525,10 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingVertical: 12,
     borderRadius: 10,
+  },
+  // 文言の長いボタン（「トークンを入力し直す」）は隣の「切断」より広く取る（btn の flex:1 を上書き）。
+  btnWide: {
+    flex: 2,
   },
   btnPrimary: {
     backgroundColor: PALETTE.accent,

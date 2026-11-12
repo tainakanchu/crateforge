@@ -168,7 +168,8 @@ describe("error handling (#67)", () => {
     s().setQueue([track(1), track(2)]); // index 0
     engine.handlers.onError?.("boom");
     expect(warnSpy).toHaveBeenCalled();
-    expect(s().lastError?.message).toBe("boom");
+    // 生メッセージは日本語の利用者向け文言に包む。
+    expect(s().lastError?.message).toBe("再生できませんでした（boom）");
     expect(s().current()?.id).toBe(2); // skipped to next
   });
 

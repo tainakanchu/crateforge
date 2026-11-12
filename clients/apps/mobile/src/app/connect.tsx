@@ -16,7 +16,7 @@ import {
   StyleSheet,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Device from "expo-device";
 import {
   isAvailable as mdnsIsAvailable,
@@ -28,7 +28,6 @@ import {
 
 import Screen from "@/components/Screen";
 import BackButton from "@/components/BackButton";
-import { connectionLabel } from "@/lib/connectionStatus";
 import { splitUrlToken } from "@/features/connect/splitUrlToken";
 import { BRAND, PALETTE } from "@/constants/brand";
 import { ApiClient, describeApiError, useConnection, useDownloads } from "@crateforge/core";
@@ -48,19 +47,29 @@ export default function ConnectScreen() {
   const savedUrl = useConnection((s) => s.baseUrl);
   const savedToken = useConnection((s) => s.token);
   const errorKind = useConnection((s) => s.errorKind);
-  const checking = useConnection((s) => s.checking);
-  const lastOkAt = useConnection((s) => s.lastOkAt);
   const lastBaseUrl = useConnection((s) => s.lastBaseUrl);
   const lastToken = useConnection((s) => s.lastToken);
-  const label = connectionLabel({ status, errorKind, checking, lastOkAt, baseUrl: savedUrl });
+  const params = useLocalSearchParams<{ reauth?: string }>();
+  // トークン再入力モード（設定/未接続バナーの「トークンを入力し直す」から来た、または 401 で開いた）。
+  // URL は残し、旧トークンは入れない（同じトークンでは直らないため）。
+  const [reauth] = useState(
+    () => params.reauth === "1" || (status === "error" && errorKind === "unauthorized"),
+  );
   // 保存済み（または切断時に残した）接続先を初期表示する。
   const [url, setUrl] = useState(savedUrl ?? lastBaseUrl ?? "");
-  const [token, setToken] = useState(savedToken ?? lastToken ?? "");
+  const [token, setToken] = useState(reauth ? "" : (savedToken ?? lastToken ?? ""));
   // 画面を開いた時点で残っている前回の接続エラーはクリアする（今回の試行の結果だけ表示する）。
   useEffect(() => {
     const st = useConnection.getState();
     if (st.status === "error") useConnection.setState({ status: "idle", error: null });
   }, []);
+  // 直近の試行で使ったトークンが空だったか（401 のときの文言を出し分ける）。
+  const [triedWithoutToken, setTriedWithoutToken] = useState(false);
+  // 入力を変えたら前回の試行のエラー表示は消す。
+  const clearError = () => {
+    const st = useConnection.getState();
+    if (st.status === "error") useConnection.setState({ status: "idle", error: null });
+  };
   const [scanning, setScanning] = useState(false);
   const [discovered, setDiscovered] = useState<DiscoveredService[]>([]);
 
@@ -106,6 +115,7 @@ export default function ConnectScreen() {
 
   // URL 欄に `?token=` 付き URL が貼られたら URL とトークンへ自動分解する。
   function handleChangeUrl(text: string) {
+    clearError();
     const split = splitUrlToken(text);
     if (split) {
       setUrl(split.baseUrl);
@@ -115,8 +125,15 @@ export default function ConnectScreen() {
     }
   }
 
+  function handleChangeToken(text: string) {
+    clearError();
+    setToken(text);
+  }
+
   function connect(rawUrl: string, rawToken: string | null) {
-    void useConnection.getState().connect(rawUrl, rawToken && rawToken !== "" ? rawToken : null);
+    const t = rawToken && rawToken.trim() !== "" ? rawToken.trim() : null;
+    setTriedWithoutToken(t == null);
+    void useConnection.getState().connect(rawUrl, t);
   }
 
   function handleConnect() {
@@ -247,8 +264,8 @@ export default function ConnectScreen() {
           <Text style={styles.fieldLabel}>トークン（LAN 接続では必須）</Text>
           <TextInput
             value={token}
-            onChangeText={setToken}
-            placeholder="X-API-Token"
+            onChangeText={handleChangeToken}
+            placeholder="デスクトップに表示されたトークン"
             placeholderTextColor={PALETTE.textFaint}
             autoCapitalize="none"
             autoCorrect={false}
@@ -261,10 +278,18 @@ export default function ConnectScreen() {
             デスクトップの「設定 → モバイル / API」に表示されるトークン、または接続 URL（?token=…）を貼り付けてください。
           </Text>
 
+          {reauth && status !== "error" ? (
+            <Text style={styles.hint}>
+              トークンが一致しませんでした。デスクトップに表示されている新しいトークンを入力してください。
+            </Text>
+          ) : null}
+
+          {/* 接続画面では「オフライン:」等の状態接頭辞は付けない（URL 違いなどはオフラインではない）。 */}
           {status === "error" && error ? (
-            <Text style={styles.error}>
-              {label.text !== "エラー" ? `${label.text}: ` : ""}
-              {error}
+            <Text style={styles.error} accessibilityLiveRegion="polite">
+              {errorKind === "unauthorized" && triedWithoutToken
+                ? "LAN 接続にはトークンが必要です。デスクトップの「設定 → モバイル / API」に表示されるトークンを入力してください"
+                : error}
             </Text>
           ) : null}
 

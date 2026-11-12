@@ -5,8 +5,8 @@
 // アーティストモード: クライアント側集計のアーティスト一覧。タップで詳細へ。
 
 import { albumHref } from "@/lib/albumHref";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, Pressable, Text, TextInput, View, StyleSheet } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FlatList, Pressable, RefreshControl, Text, TextInput, View, StyleSheet } from "react-native";
 import { isSearchable, matchesNormalized, naturalCompare } from "@/lib/normalize";
 import { loadPref, savePref } from "@/lib/prefs";
 import { showActionSheet } from "@/components/ActionSheet";
@@ -22,10 +22,12 @@ import TrackRow from "@/components/TrackRow";
 import IconButton from "@/components/IconButton";
 import DownloadButton from "@/components/DownloadButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
+import ConnectionNotice from "@/components/ConnectionNotice";
 import { useTracks, useGenres, useAlbums, useArtists, BROWSE_LIMIT } from "@/features/browse/hooks";
 import GenreChips from "@/features/browse/GenreChips";
 import AlbumRow from "@/features/browse/AlbumRow";
 import ArtistRow from "@/features/browse/ArtistRow";
+import { usePullToRefresh, useRefetchStaleOnFocus } from "@/hooks/use-refresh";
 
 type Mode = "tracks" | "albums" | "artists";
 
@@ -98,6 +100,30 @@ export default function LibraryScreen() {
   const genresQuery = useGenres();
   const albumsQuery = useAlbums(mode === "albums");
   const artistsQuery = useArtists(mode === "artists");
+
+  // プル更新（表示中モードの一覧 + ジャンル）と、タブに戻ったときの再取得（stale のみ）。
+  const refetchActive = useCallback(
+    () =>
+      Promise.all([
+        mode === "tracks"
+          ? tracksQuery.refetch()
+          : mode === "albums"
+            ? albumsQuery.refetch()
+            : artistsQuery.refetch(),
+        genresQuery.refetch(),
+      ]),
+    [mode, tracksQuery, albumsQuery, artistsQuery, genresQuery],
+  );
+  const { refreshing, onRefresh } = usePullToRefresh(refetchActive);
+  useRefetchStaleOnFocus();
+  const refreshControl = (
+    <RefreshControl
+      refreshing={refreshing}
+      onRefresh={onRefresh}
+      tintColor={PALETTE.accent}
+      colors={[PALETTE.accent]}
+    />
+  );
 
   const tracks = tracksQuery.data ?? [];
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
@@ -233,6 +259,7 @@ export default function LibraryScreen() {
             }
             contentContainerStyle={tracks.length === 0 ? styles.emptyContent : styles.listContent}
             keyboardShouldPersistTaps="handled"
+            refreshControl={refreshControl}
           />
         </>
       ) : mode === "albums" ? (
@@ -244,7 +271,7 @@ export default function LibraryScreen() {
               album={item}
               onPress={() => {
                 if (!item.album) return;
-                router.push(albumHref(item.album, item.albumArtist));
+                router.push(albumHref(item.album));
               }}
             />
           )}
@@ -262,6 +289,7 @@ export default function LibraryScreen() {
           }
           contentContainerStyle={albums.length === 0 ? styles.emptyContent : styles.listContent}
           keyboardShouldPersistTaps="handled"
+          refreshControl={refreshControl}
         />
       ) : (
         <>
@@ -297,6 +325,7 @@ export default function LibraryScreen() {
             }
             contentContainerStyle={artists.length === 0 ? styles.emptyContent : styles.listContent}
             keyboardShouldPersistTaps="handled"
+            refreshControl={refreshControl}
           />
         </>
       )}
@@ -411,30 +440,11 @@ function OfflineLibrary() {
 
   return (
     <Screen>
-      <View style={styles.offlineBanner}>
-        <Ionicons name="cloud-offline-outline" size={15} color={PALETTE.textDim} />
-        <Text style={styles.offlineText}>
-          {tracks.length > 0
-            ? `サーバー未接続 ・ ダウンロード済み ${tracks.length}曲`
-            : "サーバー未接続"}
-        </Text>
-      </View>
+      {/* 未接続の理由 1 行 + 復帰導線（トークン再入力 / 再試行 / 接続画面へ）。 */}
+      <ConnectionNotice suffix={tracks.length > 0 ? `ダウンロード済み ${tracks.length}曲` : null} />
 
       {!hasAnything ? (
-        <>
-          <EmptyView message="ダウンロード済みの曲はありません" icon="cloud-offline-outline" />
-          <View style={styles.offlineActions}>
-            <Pressable
-              onPress={() => router.push("/connect")}
-              accessibilityRole="button"
-              accessibilityLabel="サーバーに接続"
-              style={({ pressed }) => [styles.connectBtn, pressed && styles.pressed]}
-            >
-              <Ionicons name="wifi" size={18} color={BRAND.accentText} />
-              <Text style={styles.connectBtnText}>サーバーに接続</Text>
-            </Pressable>
-          </View>
-        </>
+        <EmptyView message="ダウンロード済みの曲はありません" icon="cloud-offline-outline" />
       ) : (
         <FlatList
           data={tracks}
@@ -729,43 +739,6 @@ const styles = StyleSheet.create({
   },
   emptyContent: {
     flexGrow: 1,
-  },
-  offlineBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 4,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-  },
-  offlineText: {
-    color: PALETTE.textDim,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  offlineActions: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-  },
-  connectBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: PALETTE.accent,
-  },
-  connectBtnText: {
-    color: BRAND.accentText,
-    fontSize: 15,
-    fontWeight: "700",
   },
   sectionHeader: {
     color: PALETTE.textDim,

@@ -65,7 +65,9 @@ describe("ダウンロード失敗の保持（B9）", () => {
     expect(st.isDownloaded(7)).toBe(false);
     expect(st.downloading[7]).toBeUndefined();
     expect(st.failed[7]?.label).toBe("Broken");
-    expect(st.failed[7]?.message).toMatch(/^ダウンロードに失敗しました: /);
+    // 理由のみを持つ（トーストが「をダウンロードできませんでした: 」を前置するので二重文言にしない）。
+    expect(st.failed[7]?.message).not.toMatch(/ダウンロードに失敗しました/);
+    expect(st.failed[7]?.message).toBeTruthy();
     expect(st.lastFailure?.trackId).toBe(7);
 
     await useDownloads.getState().retryFailed();

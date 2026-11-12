@@ -1,12 +1,8 @@
 import { albumHref } from "./albumHref";
 
 describe("albumHref", () => {
-  it("albumArtist 無しは album のみ", () => {
+  it("album 名のみ（albumArtist では絞らない = 一覧と同じ粒度）", () => {
     expect(albumHref("A B")).toBe("/album/A%20B");
-    expect(albumHref("A", null)).toBe("/album/A");
-    expect(albumHref("A", "")).toBe("/album/A");
-  });
-  it("albumArtist を query に付ける", () => {
-    expect(albumHref("Dawn", "Foo & Bar")).toBe("/album/Dawn?albumArtist=Foo%20%26%20Bar");
+    expect(albumHref("Foo & Bar / Mix")).toBe("/album/Foo%20%26%20Bar%20%2F%20Mix");
   });
 });

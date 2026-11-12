@@ -360,7 +360,8 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
           ...failurePatch(s, {
             trackId: track.trackId,
             label,
-            message: describeApiError(e, { action: "ダウンロード" }),
+            // 理由のみ（UI 側が「「曲名」をダウンロードできませんでした: 」を前置するので二重にしない）。
+            message: describeApiError(e),
             at: Date.now(),
             track,
           }),

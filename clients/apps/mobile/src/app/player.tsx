@@ -21,6 +21,7 @@ import { BRAND, PALETTE } from "@/constants/brand";
 import { ApiError, type SimilarHit, type Track, formatDuration, ratingToHalfStars, trackTitle, trackArtist, trackAlbumArtist, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
+import ModeToggleButton from "@/components/ModeToggleButton";
 import IconButton from "@/components/IconButton";
 import TrackRow from "@/components/TrackRow";
 import RatingStars from "@/components/RatingStars";
@@ -337,7 +338,7 @@ function NowPlaying({
       {current.album != null && (
         <Pressable
           onPress={() =>
-            router.push(albumHref(current.album!, current.albumArtist))
+            router.push(albumHref(current.album!))
           }
           accessibilityRole="link"
           accessibilityLabel={`アルバム: ${current.album}`}
@@ -362,12 +363,11 @@ function NowPlaying({
 
       {/* メインコントロール行：-15s / prev / play / next / +15s */}
       <View style={styles.controls}>
-        <IconButton
-          name="shuffle"
-          size={22}
-          color={shuffle ? PALETTE.accent : PALETTE.textDim}
+        <ModeToggleButton
+          icon="shuffle"
+          active={shuffle}
           onPress={() => setShuffle(!shuffle)}
-          accessibilityLabel="シャッフル"
+          accessibilityLabel={shuffle ? "シャッフル（オン）" : "シャッフル（オフ）"}
         />
         <IconButton
           name="play-skip-back"
@@ -394,12 +394,14 @@ function NowPlaying({
           onPress={() => next()}
           accessibilityLabel="次の曲"
         />
-        <IconButton
-          name={repeat === "one" ? "repeat-outline" : "repeat"}
-          size={22}
-          color={repeat === "off" ? PALETTE.textDim : PALETTE.accent}
+        <ModeToggleButton
+          icon="repeat"
+          active={repeat !== "off"}
+          badge={repeat === "one" ? "1" : null}
           onPress={cycleRepeat}
-          accessibilityLabel="リピート"
+          accessibilityLabel={
+            repeat === "off" ? "リピート（なし）" : repeat === "all" ? "リピート（全曲）" : "リピート（1曲）"
+          }
         />
       </View>
       {repeat === "one" ? <Text style={styles.repeatHint}>1曲リピート</Text> : null}

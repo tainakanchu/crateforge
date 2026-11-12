@@ -40,6 +40,8 @@ export interface Connection {
    * 接続ストアが「接続済みのまま古い状態」にならないよう、ここで状態遷移を起こす。
    */
   onError?: (e: unknown) => void;
+  /** JSON API（request 経由）が成功するたびに呼ばれるフック（「最終接続」時刻の更新用）。 */
+  onSuccess?: () => void;
 }
 
 /** HTTP エラー。status とサーバーメッセージを保持する。 */
@@ -116,11 +118,13 @@ export class ApiClient {
   readonly baseUrl: string;
   readonly token: string | null;
   private readonly onError?: (e: unknown) => void;
+  private readonly onSuccess?: () => void;
 
   constructor(conn: Connection) {
     this.baseUrl = normalizeBaseUrl(conn.baseUrl);
     this.token = conn.token ?? null;
     this.onError = conn.onError;
+    this.onSuccess = conn.onSuccess;
   }
 
   /** onError フックへ通知する（AbortError は除外。フック内の例外は握りつぶす）。 */
@@ -156,12 +160,21 @@ export class ApiClient {
     path: string,
     opts: { query?: Record<string, unknown>; body?: unknown; signal?: AbortSignal } = {},
   ): Promise<T> {
+    let result: T;
     try {
-      return await this.requestInner<T>(method, path, opts);
+      result = await this.requestInner<T>(method, path, opts);
     } catch (e) {
       this.notifyError(e);
       throw e;
     }
+    if (this.onSuccess) {
+      try {
+        this.onSuccess();
+      } catch {
+        // フックの失敗で成功した応答を失わない。
+      }
+    }
+    return result;
   }
 
   private async requestInner<T>(

@@ -2,7 +2,7 @@
 // 曲を一覧し、タップでその位置からアルバム全体をキューにして再生する。
 
 import { useMemo } from "react";
-import { FlatList, Pressable, Text, View, StyleSheet } from "react-native";
+import { FlatList, Pressable, RefreshControl, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
@@ -26,6 +26,7 @@ import DownloadButton from "@/components/DownloadButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { useAlbumTracks, useArtistTracks } from "@/features/browse/hooks";
 import { showTrackMenu } from "@/features/playback/trackMenu";
+import { usePullToRefresh } from "@/hooks/use-refresh";
 
 /** disc 番号 → トラック番号 の収録順比較。 */
 function byDiscTrack(a: Track, b: Track): number {
@@ -38,23 +39,22 @@ export default function AlbumScreen() {
     name?: string;
     noAlbum?: string;
     artist?: string;
-    albumArtist?: string;
     grouping?: string;
   }>();
   // 「アルバムなし」モード: 指定アーティストの album が空の曲を集めて表示する。
   const isNoAlbum = params.noAlbum === "1";
   const album = params.name ? decodeURIComponent(params.name) : "";
   const artist = params.artist ? decodeURIComponent(params.artist) : "";
-  // 同名別アルバムを区別する albumArtist（遷移元が分かる場合のみ付く）。
-  const albumArtist = params.albumArtist ? decodeURIComponent(params.albumArtist) : null;
   const grouping: ArtistGrouping = params.grouping === "albumArtist" ? "albumArtist" : "artist";
   const title = isNoAlbum ? "アルバムなし" : album || "アルバム";
   const client = useConnection((s) => s.client);
 
-  // 通常はアルバム名で取得。アルバムなしはアーティストの曲から album 空を抽出する。
-  const albumQuery = useAlbumTracks(isNoAlbum ? null : album || null, albumArtist);
+  // 通常はアルバム名（完全一致）で取得。一覧と同じ粒度にするため albumArtist では絞らない（round-2 M1）。
+  // アルバムなしはアーティストの曲から album 空を抽出する。
+  const albumQuery = useAlbumTracks(isNoAlbum ? null : album || null);
   const artistQuery = useArtistTracks(isNoAlbum ? artist || null : null, grouping);
   const query = isNoAlbum ? artistQuery : albumQuery;
+  const { refreshing, onRefresh } = usePullToRefresh(query.refetch);
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
 
   const onlineTracks = useMemo<Track[]>(() => {
@@ -76,9 +76,8 @@ export default function AlbumScreen() {
     return filterAlbumTracks(
       Object.values(entries).map((e) => e.track),
       album,
-      albumArtist,
     ).sort(byDiscTrack);
-  }, [client, entries, album, albumArtist, isNoAlbum, artist, grouping]);
+  }, [client, entries, album, isNoAlbum, artist, grouping]);
   const tracks = client ? onlineTracks : offlineTracks;
 
   const onPressTrack = (index: number) => {
@@ -88,7 +87,16 @@ export default function AlbumScreen() {
 
   const onPlayAll = () => {
     if (tracks.length === 0) return;
+    // 「再生」は収録順（プレイリスト詳細と同じく、シャッフルは明示ボタンで）。
+    usePlayer.getState().setShuffle(false);
     usePlayer.getState().setQueue(tracks, 0);
+    router.push("/player");
+  };
+
+  const onShuffle = () => {
+    if (tracks.length === 0) return;
+    usePlayer.getState().setShuffle(true);
+    usePlayer.getState().setQueue(tracks, Math.floor(Math.random() * tracks.length));
     router.push("/player");
   };
 
@@ -123,9 +131,18 @@ export default function AlbumScreen() {
             <Ionicons name="play" size={18} color={BRAND.accentText} />
             <Text style={styles.playLabel}>再生</Text>
           </Pressable>
+          <Pressable
+            onPress={onShuffle}
+            accessibilityRole="button"
+            accessibilityLabel="シャッフル再生"
+            style={({ pressed }) => [styles.shuffleButton, pressed && styles.playPressed]}
+          >
+            <Ionicons name="shuffle" size={18} color={PALETTE.accent} />
+            <Text style={styles.shuffleLabel}>シャッフル</Text>
+          </Pressable>
           <DesktopPlayButton tracks={tracks} />
           {client && !isNoAlbum ? (
-            <DownloadButton albumName={album} albumArtist={albumArtist} label="アルバムを保存" />
+            <DownloadButton albumName={album} label="アルバムを保存" />
           ) : null}
         </View>
       ) : null}
@@ -152,6 +169,7 @@ export default function AlbumScreen() {
               />
             )}
             contentContainerStyle={styles.listContent}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PALETTE.accent} colors={[PALETTE.accent]} />}
           />
         )
       ) : offlineTracks.length === 0 ? (
@@ -230,6 +248,21 @@ const styles = StyleSheet.create({
   },
   playLabel: {
     color: BRAND.accentText,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  shuffleButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: PALETTE.accent,
+  },
+  shuffleLabel: {
+    color: PALETTE.accent,
     fontSize: 14,
     fontWeight: "700",
   },

@@ -126,3 +126,45 @@ async function waitForIdleRecheck(): Promise<void> {
     if (!useConnection.getState().checking) return;
   }
 }
+
+describe("接続先の永続化（round-2 M5）", () => {
+  const setItem = SecureStore.setItemAsync as jest.Mock;
+
+  it("connect 失敗 → 再試行(recheck)で復帰したら接続先を保存する（再起動で空にならない）", async () => {
+    // 前のテストで保存済みの接続先と別のホストにする。
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+    await expect(useConnection.getState().connect("h:9", "tok9")).resolves.toBe(false);
+    expect(useConnection.getState().status).toBe("error");
+    setItem.mockClear();
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(healthBody));
+    await expect(useConnection.getState().recheck()).resolves.toBe(true);
+    expect(useConnection.getState().status).toBe("connected");
+    expect(setItem).toHaveBeenCalledWith("crateforge.baseUrl", "http://h:9");
+    expect(setItem).toHaveBeenCalledWith("crateforge.token", "tok9");
+
+    // 保存済みになったら以後の recheck では書き直さない。
+    setItem.mockClear();
+    fetchMock.mockResolvedValueOnce(jsonResponse(healthBody));
+    await expect(useConnection.getState().recheck({ silent: true })).resolves.toBe(true);
+    expect(setItem).not.toHaveBeenCalled();
+  });
+
+  it("silent な recheck は checking を立てない", async () => {
+    await connected();
+    let resolveHealth: (r: Response) => void = () => undefined;
+    fetchMock.mockReturnValueOnce(new Promise<Response>((r) => (resolveHealth = r)));
+    const p = useConnection.getState().recheck({ silent: true });
+    expect(useConnection.getState().checking).toBe(false);
+    resolveHealth(jsonResponse(healthBody));
+    await expect(p).resolves.toBe(true);
+  });
+
+  it("API 成功で lastOkAt（最終接続）が更新される", async () => {
+    await connected();
+    useConnection.setState({ lastOkAt: 1 });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ trackCount: 3 }));
+    await useConnection.getState().client!.stats();
+    expect(useConnection.getState().lastOkAt).toBeGreaterThan(1);
+  });
+});

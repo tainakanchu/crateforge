@@ -16,6 +16,7 @@ import * as SecureStore from "expo-secure-store";
 import { create } from "zustand";
 
 import type { Track } from "../lib/types";
+import { describePlaybackError } from "../playback/errorMessage";
 
 export type RepeatMode = "off" | "all" | "one";
 
@@ -576,7 +577,8 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       return;
     }
     // (2) ユーザー通知用 state を立てる（UI が toast/alert を出す）。
-    set({ lastError: { message, at: Date.now() } });
+    // "Playback error (code 4)" 等の生メッセージは日本語の利用者向け文言にする。
+    set({ lastError: { message: describePlaybackError(message), at: Date.now() } });
     // (3) 自動で次の曲へスキップ。次が無い（単曲/末尾 repeat off）なら停止。
     const hasNext = get().repeat === "all" || orderPos + 1 < order.length;
     if (hasNext && queue.length > 0) {

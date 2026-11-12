@@ -96,3 +96,74 @@ describe("ConnectScreen ?token= の自動分解", () => {
     expect(screen.getByLabelText("トークン").props.value).toBe("tok");
   });
 });
+
+describe("ConnectScreen トークン再入力・文言（round-2 M6/M9）", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { useLocalSearchParams } = require("expo-router") as { useLocalSearchParams: jest.Mock };
+
+  beforeEach(() => {
+    resetTestState();
+    jest.restoreAllMocks();
+    useLocalSearchParams.mockReturnValue({});
+  });
+
+  it("reauth=1 では URL は残し、旧トークンは入れない", async () => {
+    useLocalSearchParams.mockReturnValue({ reauth: "1" });
+    useConnection.setState({ baseUrl: "http://10.0.0.2:8787", token: "old" });
+    await render(<ConnectScreen />);
+    expect(screen.getByLabelText("サーバー URL").props.value).toBe("http://10.0.0.2:8787");
+    expect(screen.getByLabelText("トークン").props.value).toBe("");
+    expect(screen.getByText(/新しいトークンを入力してください/)).toBeTruthy();
+  });
+
+  it("トークン不一致(401)の状態で開いたときも旧トークンは入れない", async () => {
+    useConnection.setState({
+      baseUrl: "http://10.0.0.2:8787",
+      token: "old",
+      status: "error",
+      errorKind: "unauthorized",
+      error: "トークンが違います",
+    });
+    await render(<ConnectScreen />);
+    expect(screen.getByLabelText("トークン").props.value).toBe("");
+  });
+
+  it("トークン空欄で 401 →「LAN 接続にはトークンが必要です」", async () => {
+    jest.spyOn(useConnection.getState(), "connect").mockImplementation(async () => {
+      useConnection.setState({ status: "error", errorKind: "unauthorized", error: "トークンが違います。…" });
+      return false;
+    });
+    await render(<ConnectScreen />);
+    await act(async () => {
+      fireEvent.changeText(screen.getByLabelText("サーバー URL"), "192.168.1.5:8787");
+    });
+    await act(async () => {
+      fireEvent.press(screen.getByLabelText("接続"));
+    });
+    expect(screen.getByText(/LAN 接続にはトークンが必要です/)).toBeTruthy();
+  });
+
+  it("エラーに「オフライン:」等の接頭辞を付けず、入力を変えたら消す", async () => {
+    await render(<ConnectScreen />);
+    await act(async () => {
+      useConnection.setState({
+        baseUrl: "http://h:1",
+        status: "error",
+        errorKind: "notCrateforge",
+        error: "Crateforge の API ではない URL です",
+      });
+    });
+    expect(screen.getByText("Crateforge の API ではない URL です")).toBeTruthy();
+    expect(screen.queryByText(/オフライン/)).toBeNull();
+
+    await act(async () => {
+      fireEvent.changeText(screen.getByLabelText("サーバー URL"), "192.168.1.6:8787");
+    });
+    expect(screen.queryByText("Crateforge の API ではない URL です")).toBeNull();
+  });
+
+  it("トークン欄の placeholder は利用者向け文言", async () => {
+    await render(<ConnectScreen />);
+    expect(screen.getByLabelText("トークン").props.placeholder).toBe("デスクトップに表示されたトークン");
+  });
+});

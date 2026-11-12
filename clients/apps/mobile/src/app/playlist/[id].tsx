@@ -1,8 +1,8 @@
 // Playlist 詳細。プレイリスト名 + 曲数 + 一括ダウンロードのヘッダを出し、
 // 曲を一覧する。タップでその位置からプレイリスト全体をキューにして再生する。
 
-import { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, Text, View, StyleSheet } from "react-native";
+import { useCallback, useMemo, useState } from "react";
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
@@ -16,6 +16,7 @@ import DownloadButton from "@/components/DownloadButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { usePlaylist, usePlaylistTracks } from "@/features/browse/hooks";
 import { showTrackMenu } from "@/features/playback/trackMenu";
+import { usePullToRefresh } from "@/hooks/use-refresh";
 
 export default function PlaylistScreen() {
   const router = useRouter();
@@ -24,6 +25,10 @@ export default function PlaylistScreen() {
   const client = useConnection((s) => s.client);
   const detailQuery = usePlaylist(playlistId);
   const query = usePlaylistTracks(playlistId);
+  // プル更新（曲とプレイリスト情報）。
+  const { refreshing, onRefresh } = usePullToRefresh(
+    useCallback(() => Promise.all([query.refetch(), detailQuery.refetch()]), [query, detailQuery]),
+  );
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
 
   // オフライン保存したプレイリストとその曲（client が無いときに使う）。
@@ -176,6 +181,7 @@ export default function PlaylistScreen() {
               />
             )}
             contentContainerStyle={styles.listContent}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PALETTE.accent} colors={[PALETTE.accent]} />}
           />
         )
       ) : offlineTracks.length === 0 ? (

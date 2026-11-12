@@ -23,7 +23,7 @@ import { showToast } from "@/components/Toast";
 import { COMMON_TRIAGE_TAGS, REVIEW_LATER_TAG } from "@/features/triage/commonTags";
 import { usePendingEdits } from "@/store/pendingEdits";
 import { startRadio } from "./radio";
-import { playOnDesktop } from "./desktopPlay";
+import { playTrackOnDesktop } from "./desktopPlay";
 
 /**
  * 曲ごとのアクションメニューを表示する。文脈（オンライン/アルバム有無/アーティスト名）で
@@ -43,7 +43,8 @@ export function showTrackMenu(track: Track): void {
 
   // デスクトップ側で再生（オンラインのみ）。
   if (online) {
-    actions.push({ label: "デスクトップで再生", onPress: () => void playOnDesktop([track], 0) });
+    // キューを黙って全置換しない（キューに曲があれば確認を出す）。
+    actions.push({ label: "デスクトップで再生…", onPress: () => void playTrackOnDesktop(track) });
   }
 
   // 次に再生。
@@ -66,7 +67,7 @@ export function showTrackMenu(track: Track): void {
   if (online && track.album) {
     actions.push({
       label: "アルバムを保存",
-      onPress: () => void useDownloads.getState().downloadAlbum(track.album!, track.albumArtist),
+      onPress: () => void useDownloads.getState().downloadAlbum(track.album!),
     });
   }
 

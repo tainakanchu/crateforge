@@ -2,7 +2,7 @@
 // 3 モード:
 //  - track:     1 曲。ダウンロード済みなら✓（タップで削除確認）。失敗は赤アイコン（タップで再試行）/ 進行中はスピナー / 未取得はDLアイコン。
 //  - tracks[]:  複数曲。タップで未取得分を順次DL。進行中は件数（done/total）を表示。
-//  - albumName: album 名で引いて一括DL。進行中はスピナー。
+//  - albumName: album 名（完全一致。アルバム一覧と同じ粒度）で引いて一括DL。進行中はスピナー。
 // いずれも 1 つの props で受け、track > tracks > albumName の優先で振る舞う。
 
 import { useMemo, useState } from "react";
@@ -20,8 +20,6 @@ export interface DownloadButtonProps {
   tracks?: Track[];
   /** album 一括モード。 */
   albumName?: string;
-  /** albumName と併用。同名別アルバムを混ぜないための完全一致用。 */
-  albumArtist?: string | null;
   /** プレイリストとして記録しつつ一括DLする（tracks と併用）。 */
   playlist?: { id: number; name: string };
   size?: number;
@@ -33,7 +31,6 @@ export default function DownloadButton({
   track,
   tracks,
   albumName,
-  albumArtist,
   playlist,
   size = 22,
   label,
@@ -78,7 +75,8 @@ export default function DownloadButton({
       }
     };
 
-    const label = isBusy
+    // a11y 用の状態説明。表示用の prop `label` とは別名にする（同名で隠すと全行に文字が出る）。
+    const a11yLabel = isBusy
       ? "ダウンロード中"
       : isDone
         ? "ダウンロード済み（タップで削除）"
@@ -87,7 +85,7 @@ export default function DownloadButton({
           : "ダウンロード";
 
     return (
-      <Shell onPress={onPress} disabled={isBusy} accessibilityLabel={label}>
+      <Shell onPress={onPress} disabled={isBusy} accessibilityLabel={a11yLabel}>
         {isBusy ? (
           <ActivityIndicator size="small" color={PALETTE.accent} />
         ) : (
@@ -97,6 +95,7 @@ export default function DownloadButton({
             color={isDone ? PALETTE.accent : isFailed ? PALETTE.danger : PALETTE.textDim}
           />
         )}
+        {/* 表示文字は呼び出し側が label prop を渡したときだけ（行内はアイコンのみ）。 */}
         {label ? <Text style={styles.label}>{label}</Text> : null}
       </Shell>
     );
@@ -112,7 +111,7 @@ export default function DownloadButton({
     try {
       if (playlist && tracks && tracks.length) await downloadPlaylist(playlist.id, playlist.name, tracks);
       else if (tracks && tracks.length) await downloadMany(tracks);
-      else if (albumName) await downloadAlbum(albumName, albumArtist);
+      else if (albumName) await downloadAlbum(albumName);
     } finally {
       setBatchBusy(false);
     }

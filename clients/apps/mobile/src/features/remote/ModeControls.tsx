@@ -1,10 +1,11 @@
 // Remote 画面の音量・シャッフル・リピート。ホストが値を報告しない項目（旧ホスト）は出さない。
 // 各ボタンは 44pt 以上。
 
-import { Pressable, Text, View, StyleSheet } from "react-native";
+import { View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { BRAND, PALETTE } from "@/constants/brand";
+import { PALETTE } from "@/constants/brand";
+import ModeToggleButton from "@/components/ModeToggleButton";
 import type { PlaybackState, RepeatMode } from "@crateforge/core";
 import DragBar from "./DragBar";
 
@@ -36,32 +37,24 @@ export default function ModeControls({ state, onVolume, onShuffle, onRepeat }: M
       {shuffle != null || repeat != null ? (
         <View style={styles.row}>
           {shuffle != null ? (
-            <Pressable
+            <ModeToggleButton
+              icon="shuffle"
+              size={24}
+              active={shuffle}
               onPress={() => onShuffle(!shuffle)}
-              accessibilityRole="button"
               accessibilityLabel={shuffle ? "シャッフル（オン）" : "シャッフル（オフ）"}
-              accessibilityState={{ selected: shuffle }}
-              style={({ pressed }) => [styles.btn, pressed && styles.pressed]}
-            >
-              <Ionicons name="shuffle" size={24} color={shuffle ? BRAND.accent : PALETTE.textDim} />
-            </Pressable>
+            />
           ) : null}
           {repeat != null ? (
-            <Pressable
+            <ModeToggleButton
+              icon="repeat"
+              size={24}
+              active={repeat !== "off"}
+              badge={repeat === "one" ? "1" : null}
               onPress={() => onRepeat(nextRepeat(repeat))}
-              accessibilityRole="button"
               accessibilityLabel={`リピート（${REPEAT_LABEL[repeat]}）`}
               accessibilityHint="タップで切り替え"
-              accessibilityState={{ selected: repeat !== "off" }}
-              style={({ pressed }) => [styles.btn, pressed && styles.pressed]}
-            >
-              <Ionicons
-                name={repeat === "one" ? "repeat-outline" : "repeat"}
-                size={24}
-                color={repeat !== "off" ? BRAND.accent : PALETTE.textDim}
-              />
-              {repeat === "one" ? <Text style={styles.badge}>1</Text> : null}
-            </Pressable>
+            />
           ) : null}
         </View>
       ) : null}
@@ -96,21 +89,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "center",
     gap: 24,
-  },
-  btn: {
-    minWidth: 44,
-    minHeight: 44,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  pressed: { opacity: 0.6 },
-  badge: {
-    position: "absolute",
-    right: 6,
-    top: 6,
-    color: BRAND.accent,
-    fontSize: 11,
-    fontWeight: "700",
   },
   volRow: {
     flexDirection: "row",

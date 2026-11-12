@@ -1,4 +1,4 @@
-import { connectionLabel, formatClock } from "./connectionStatus";
+import { REAUTH_HREF, connectionLabel, connectionRecovery, formatClock } from "./connectionStatus";
 
 const base = { status: "idle", errorKind: null, checking: false, lastOkAt: null, baseUrl: "http://h:1" } as const;
 
@@ -30,5 +30,30 @@ describe("connectionLabel", () => {
   it("その他のエラー / 未接続", () => {
     expect(connectionLabel({ ...base, status: "error", errorKind: "server" }).text).toBe("エラー");
     expect(connectionLabel(base).text).toBe("未接続");
+  });
+});
+
+describe("connectionRecovery（未接続時の理由と導線）", () => {
+  it("トークン不一致 → トークンを入力し直す", () => {
+    const r = connectionRecovery({ ...base, status: "error", errorKind: "unauthorized" });
+    expect(r.action).toBe("reauth");
+    expect(r.actionLabel).toBe("トークンを入力し直す");
+    expect(REAUTH_HREF).toBe("/connect?reauth=1");
+  });
+  it("オフライン → 再試行（最終接続つき）", () => {
+    const at = new Date(2026, 0, 2, 9, 5).getTime();
+    const r = connectionRecovery({ ...base, status: "error", errorKind: "network", lastOkAt: at });
+    expect(r.action).toBe("retry");
+    expect(r.reason).toBe("デスクトップに届きません（最終接続 09:05）");
+  });
+  it("Crateforge ではない URL → 接続先を変更", () => {
+    const r = connectionRecovery({ ...base, status: "error", errorKind: "notCrateforge" });
+    expect(r.action).toBe("connect");
+    expect(r.actionLabel).toBe("接続先を変更");
+  });
+  it("未設定 → サーバーに接続", () => {
+    const r = connectionRecovery({ ...base, baseUrl: null });
+    expect(r.action).toBe("connect");
+    expect(r.actionLabel).toBe("サーバーに接続");
   });
 });

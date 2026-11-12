@@ -68,8 +68,9 @@ export interface ConnectionState {
    * 保存済みの baseUrl/token で health を叩き直し、状態を更新する（前面復帰・オフライン中の再試行用）。
    * 成功で "connected"（client を再生成）、失敗で "error"（client=null → オフライン表示）。
    * 同時呼び出しは 1 本にまとめる。接続情報が無ければ false。
+   * silent=true は定期的な死活監視用で、checking を立てない（「再接続中…」を点滅させない）。
    */
-  recheck: () => Promise<boolean>;
+  recheck: (opts?: { silent?: boolean }) => Promise<boolean>;
   /**
    * API 呼び出しの失敗を通知する（ApiClient の onError から自動で呼ばれる。UI から呼んでもよい）。
    * - 401: 即 "error"（unauthorized）にして client を外す。
@@ -107,10 +108,42 @@ async function probe(baseUrl: string, token: string | null): Promise<void> {
 /** recheck の再入防止（モジュールスコープ）。 */
 let recheckInFlight: Promise<boolean> | null = null;
 
+/** API 成功で lastOkAt を更新する最小間隔（毎リクエストで再描画しないため）。 */
+const LAST_OK_THROTTLE_MS = 5000;
+
+/**
+ * SecureStore に保存済みの接続先（`${baseUrl}\n${token}`）。recheck 成功時に未保存なら保存する判定に使う。
+ * hydrate で復元した値・connect 成功で保存した値を入れ、disconnect で null に戻す。
+ */
+let persistedKey: string | null = null;
+const connKey = (baseUrl: string, token: string | null) => `${baseUrl}\n${token ?? ""}`;
+
+/** 接続先を保存し、切断時に退避した接続先は消す（connect 成功・recheck 成功で共通）。 */
+async function persistConnection(baseUrl: string, token: string | null): Promise<void> {
+  await Promise.all([
+    SecureStore.setItemAsync(KEY_URL, baseUrl),
+    token ? SecureStore.setItemAsync(KEY_TOKEN, token) : SecureStore.deleteItemAsync(KEY_TOKEN),
+    SecureStore.deleteItemAsync(KEY_LAST_URL),
+    SecureStore.deleteItemAsync(KEY_LAST_TOKEN),
+  ]);
+  persistedKey = connKey(baseUrl, token);
+}
+
 export const useConnection = create<ConnectionState>((set, get) => {
   /** ストアへ失敗を通知する client を作る（probe 用の client とは別）。 */
   const makeClient = (baseUrl: string, token: string | null) =>
-    new ApiClient({ baseUrl, token, onError: (e) => get().reportError(e) });
+    new ApiClient({
+      baseUrl,
+      token,
+      onError: (e) => get().reportError(e),
+      // 「最終接続」= 最後に通信が成功した時刻（health に限らず全 API の成功で更新）。
+      onSuccess: () => {
+        const cur = get();
+        if (cur.baseUrl !== baseUrl || cur.token !== token) return;
+        const now = Date.now();
+        if (cur.lastOkAt == null || now - cur.lastOkAt >= LAST_OK_THROTTLE_MS) set({ lastOkAt: now });
+      },
+    });
 
   const failState = (e: unknown) => ({
     status: "error" as const,
@@ -152,6 +185,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
           return;
         }
         set({ baseUrl, token: token ?? null, status: "connecting", error: null, errorKind: null });
+        persistedKey = connKey(baseUrl, token ?? null);
         try {
           await probe(baseUrl, token ?? null);
           set({
@@ -184,14 +218,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
       set({ status: "connecting", error: null, errorKind: null, baseUrl, token });
       try {
         await probe(baseUrl, token);
-        await Promise.all([
-          SecureStore.setItemAsync(KEY_URL, baseUrl),
-          token
-            ? SecureStore.setItemAsync(KEY_TOKEN, token)
-            : SecureStore.deleteItemAsync(KEY_TOKEN),
-          SecureStore.deleteItemAsync(KEY_LAST_URL),
-          SecureStore.deleteItemAsync(KEY_LAST_TOKEN),
-        ]);
+        await persistConnection(baseUrl, token);
         set({
           lastBaseUrl: null,
           lastToken: null,
@@ -222,6 +249,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
           ? SecureStore.setItemAsync(KEY_LAST_TOKEN, token as string)
           : SecureStore.deleteItemAsync(KEY_LAST_TOKEN),
       ]);
+      persistedKey = null;
       set({
         baseUrl: null,
         token: null,
@@ -236,20 +264,33 @@ export const useConnection = create<ConnectionState>((set, get) => {
       });
     },
 
-    recheck: () => {
+    recheck: (opts) => {
       if (recheckInFlight) return recheckInFlight;
       const { baseUrl, token } = get();
       if (!baseUrl) return Promise.resolve(false);
+      const silent = !!opts?.silent;
       const run = async (): Promise<boolean> => {
-        set({ checking: true });
+        if (!silent) set({ checking: true });
         try {
           await probe(baseUrl, token);
           // 確認中に切断/別ホストへ接続し直された場合は結果を捨てる。
           const cur = get();
           if (cur.baseUrl !== baseUrl || cur.token !== token) return false;
+          // 接続画面での connect が失敗（デスクトップ停止中など）→ オフライン再試行で復帰した場合、
+          // 接続先がまだ保存されていない。ここで保存しないと再起動で接続先が空になる（round-2 M5）。
+          if (persistedKey !== connKey(baseUrl, token)) {
+            try {
+              await persistConnection(baseUrl, token);
+            } catch (e) {
+              console.warn("[connection] persist on recheck failed:", e);
+            }
+            if (get().baseUrl !== baseUrl || get().token !== token) return false;
+          }
           // 既に接続済みなら client を作り直さない（全画面の再取得を避ける）。
           set({
-            client: cur.client ?? makeClient(baseUrl, token),
+            client: get().client ?? makeClient(baseUrl, token),
+            lastBaseUrl: null,
+            lastToken: null,
             status: "connected",
             error: null,
             errorKind: null,
@@ -262,7 +303,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
           set(failState(e));
           return false;
         } finally {
-          set({ checking: false });
+          if (!silent) set({ checking: false });
         }
       };
       recheckInFlight = run().finally(() => {
