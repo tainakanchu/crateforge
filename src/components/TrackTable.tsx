@@ -932,7 +932,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 <span
                   key={g}
                   className="cb-tag"
-                  title={`Add "${g}" to filters`}
+                  title={`「${g}」で絞り込む`}
                   onClick={(e) => {
                     e.stopPropagation();
                     addFilterTag(g);

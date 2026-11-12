@@ -1236,7 +1236,7 @@ impl CoordinatorEnv for TauriEnv {
                 .app
                 .state::<crate::transient::TransientTracks>()
                 .get(track_id)
-                .ok_or("Track not found")?;
+                .ok_or("曲が見つかりません")?;
             return Ok(TrackInfo {
                 track_id,
                 path: t.path,
@@ -1251,12 +1251,12 @@ impl CoordinatorEnv for TauriEnv {
         let track = db
             .get_track_by_track_id(track_id)
             .map_err(|e| e.to_string())?
-            .ok_or("Track not found")?;
+            .ok_or("曲が見つかりません")?;
         let path = track
             .location_path
             .clone()
             .filter(|p| !p.is_empty())
-            .ok_or("No file path for this track")?;
+            .ok_or("この曲にはファイルの場所がありません")?;
         let gain_db = db
             .get_analysis(track_id)
             .ok()
@@ -1377,7 +1377,7 @@ mod tests {
             self.tracks
                 .get(&track_id)
                 .cloned()
-                .ok_or_else(|| "Track not found".to_string())
+                .ok_or_else(|| "曲が見つかりません".to_string())
         }
         fn apply_report(&self, report: Option<PlayReport>) {
             if let Some(r) = report {

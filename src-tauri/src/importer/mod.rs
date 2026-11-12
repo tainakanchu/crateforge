@@ -58,15 +58,40 @@ fn is_replaced_dir(path: &Path) -> bool {
 
 /// 登録済みの曲ファイルの索引 (取り込みの二重登録防止用)。
 ///
-/// 文字列としてのパス一致に加え、シンボリックリンク経由など表記の違う「同じ実体の
-/// ファイル」も同一とみなす (D11: リンク経由で取り込んだフォルダを実体のパスで
-/// 取り込み直すと、自分自身が「取り込み済み (別ファイル)」として出て二重登録されていた)。
-/// 実体の比較 (canonicalize) は、ファイル名 (小文字) が同じ登録済みパスだけに絞り、
-/// 結果はメモ化するので 10 万曲規模でも走査は 1 回のクエリ + 候補分の stat で済む。
+/// 文字列としてのパス一致に加え、シンボリックリンク / ハードリンク経由など表記の違う
+/// 「同じ実体のファイル」も同一とみなす (D11 / E1: ディレクトリのリンクに加え、別名の
+/// ファイル単位リンクやハードリンクで取り込み直すと二重登録されていた)。
+///
+/// 実体の比較は、候補を「ファイル名 (小文字) が同じ」または「記録済みのファイルサイズが
+/// 同じ」登録済みパスだけに絞って行う (リンクもハードリンクも実体のサイズは同じ)。
+/// 実体の識別子 (unix は (dev, ino)、それ以外は canonicalize したパス) はメモ化するので、
+/// 10 万曲規模でもライブラリ全体を stat することはなく、1 回のクエリ + 候補分の stat で済む。
 pub(crate) struct ExistingFiles {
     exact: HashSet<String>,
     by_name: HashMap<String, Vec<String>>,
-    canonical: HashMap<String, Option<PathBuf>>,
+    by_size: HashMap<u64, Vec<String>>,
+    ids: HashMap<String, Option<FileId>>,
+}
+
+/// ファイル実体の識別子。unix は (デバイス, inode) でハードリンクも同一と分かる。
+/// それ以外 (Windows) はリンクを解決した正規パスで比べる (ハードリンクは対象外)。
+#[cfg(unix)]
+type FileId = (u64, u64);
+#[cfg(not(unix))]
+type FileId = PathBuf;
+
+/// リンクを辿った実体の識別子とサイズ。読めなければ None。
+fn file_id_and_size(path: &Path) -> Option<(FileId, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(((meta.dev(), meta.ino()), meta.len()))
+    }
+    #[cfg(not(unix))]
+    {
+        Some((std::fs::canonicalize(path).ok()?, meta.len()))
+    }
 }
 
 fn file_name_key(path: &Path) -> Option<String> {
@@ -78,49 +103,62 @@ impl ExistingFiles {
         let mut me = ExistingFiles {
             exact: HashSet::new(),
             by_name: HashMap::new(),
-            canonical: HashMap::new(),
+            by_size: HashMap::new(),
+            ids: HashMap::new(),
         };
-        for p in db.existing_location_paths().unwrap_or_default() {
-            me.insert(&p);
+        for (p, size) in db.existing_location_paths().unwrap_or_default() {
+            me.add(&p, size.and_then(|n| u64::try_from(n).ok()));
         }
         me
     }
 
-    /// 新たに登録したパスを索引に加える (同じ呼び出し内の重複指示を防ぐ)。
-    pub(crate) fn insert(&mut self, path: &str) {
+    fn add(&mut self, path: &str, size: Option<u64>) {
         if !self.exact.insert(path.to_string()) {
             return;
         }
         if let Some(key) = file_name_key(Path::new(path)) {
             self.by_name.entry(key).or_default().push(path.to_string());
         }
+        if let Some(size) = size {
+            self.by_size.entry(size).or_default().push(path.to_string());
+        }
     }
 
-    fn canonical_of(&mut self, path: &str) -> Option<PathBuf> {
-        self.canonical
+    /// 新たに登録したパスを索引に加える (同じ呼び出し内の重複指示 / ハードリンクを防ぐ)。
+    pub(crate) fn insert(&mut self, path: &str) {
+        let size = file_id_and_size(Path::new(path)).map(|(_, size)| size);
+        self.add(path, size);
+    }
+
+    fn id_of(&mut self, path: &str) -> Option<FileId> {
+        self.ids
             .entry(path.to_string())
-            .or_insert_with(|| std::fs::canonicalize(path).ok())
+            .or_insert_with(|| file_id_and_size(Path::new(path)).map(|(id, _)| id))
             .clone()
+    }
+
+    /// `path` と同じファイル (文字列一致 or 同じ実体) として登録済みのパス。
+    /// ファイル名が違っても、リンク / ハードリンクなら見つける (E1)。
+    pub(crate) fn registered_same_file(&mut self, path: &Path) -> Option<String> {
+        let as_str = path.to_string_lossy();
+        if self.exact.contains(as_str.as_ref()) {
+            return Some(as_str.into_owned());
+        }
+        let (target, size) = file_id_and_size(path)?;
+        let by_name = file_name_key(path)
+            .and_then(|k| self.by_name.get(&k))
+            .cloned()
+            .unwrap_or_default();
+        let by_size = self.by_size.get(&size).cloned().unwrap_or_default();
+        by_name
+            .into_iter()
+            .chain(by_size)
+            .find(|c| self.id_of(c).is_some_and(|id| id == target))
     }
 
     /// `path` が登録済みのファイルそのもの (文字列一致 or 同じ実体) か。
     pub(crate) fn contains_file(&mut self, path: &Path) -> bool {
-        let as_str = path.to_string_lossy();
-        if self.exact.contains(as_str.as_ref()) {
-            return true;
-        }
-        let Some(key) = file_name_key(path) else {
-            return false;
-        };
-        let Some(candidates) = self.by_name.get(&key).cloned() else {
-            return false;
-        };
-        let Some(target) = self.canonical_of(as_str.as_ref()) else {
-            return false;
-        };
-        candidates
-            .iter()
-            .any(|c| self.canonical_of(c).is_some_and(|cc| cc == target))
+        self.registered_same_file(path).is_some()
     }
 
     /// `registered` (登録済みパス) と `path` が同じ実体のファイルか。
@@ -129,7 +167,7 @@ impl ExistingFiles {
         if registered == as_str.as_ref() {
             return true;
         }
-        match (self.canonical_of(registered), self.canonical_of(as_str.as_ref())) {
+        match (self.id_of(registered), self.id_of(as_str.as_ref())) {
             (Some(a), Some(b)) => a == b,
             _ => false,
         }
@@ -664,8 +702,9 @@ pub fn plan_import(
     let mut out = Vec::with_capacity(total);
     for (i, file) in files.iter().enumerate() {
         let path_str = file.to_string_lossy().to_string();
-        // 文字列一致だけでなく、リンク経由など表記の違う同じ実体も「同じパス」とみなす (D11)。
-        let same_path = existing.contains_file(file);
+        // 文字列一致だけでなく、リンク / ハードリンク経由など表記の違う同じ実体も
+        // 「同じパス」とみなす (D11 / E1)。表記が違うときは登録済みのパスを添える。
+        let mut registered = existing.registered_same_file(file);
         let tags = read_source_tags(file).unwrap_or_default();
         let hits = match (&tags.title, &tags.artist) {
             (Some(title), Some(artist)) => {
@@ -677,22 +716,27 @@ pub fn plan_import(
                     track_number: tags.track_number,
                     duration_ms: tags.duration_ms,
                 };
-                let found: Vec<_> = index
-                    .find(&q)
-                    .into_iter()
-                    .filter(|h| match index.row(h.row_index).location_path.as_deref() {
-                        Some(p) => !existing.same_file(p, file),
-                        None => true,
-                    })
-                    .collect();
+                let mut found = Vec::new();
+                for h in index.find(&q) {
+                    match index.row(h.row_index).location_path.as_deref() {
+                        // 一致が自分自身 (同じ実体) なら一致には出さず「同じパス」に寄せる。
+                        // 記録済みサイズが古いなどで索引から漏れても、ここで拾える (E1)。
+                        Some(p) if existing.same_file(p, file) => {
+                            registered.get_or_insert_with(|| p.to_string());
+                        }
+                        _ => found.push(h),
+                    }
+                }
                 library_match::to_duplicate_hits(&index, &found, &mut health_cache)
             }
             _ => Vec::new(),
         };
         // 取り込む側のファイルにも既存曲と同じゼロ埋め破損チェックを掛ける
         // (同じパスで取り込み済みならどうせスキップするので読まない)。
+        let same_path = registered.is_some();
         let source_broken =
             !same_path && library_match::health::looks_zero_filled(file).unwrap_or(false);
+        let registered_path = registered.filter(|p| *p != path_str);
         out.push(ImportPlanItem {
             path: path_str,
             title: tags.title,
@@ -701,6 +745,7 @@ pub fn plan_import(
             duration_ms: tags.duration_ms,
             hits,
             already_imported_same_path: same_path,
+            registered_path,
             source_broken,
         });
         on_progress(i + 1, total);
@@ -1410,5 +1455,172 @@ mod tests {
         assert_eq!((s.imported, s.skipped), (0, 1));
         assert_eq!(db.get_all_tracks().unwrap().len(), 1);
         assert!(via_link.is_file());
+    }
+
+    /// E1 の再現 (Round 3): 登録済みのファイルを「別名の」ファイル単位シンボリックリンク /
+    /// ハードリンクで取り込み直すと、ファイル名が違うため同一実体と判定されず、しかも
+    /// 一致 (自分自身) はヒットから除外されるので確認ダイアログにも出ずに二重登録されていた
+    /// (ダイアログは 6 行「取り込む 6」なのに実際は 7 曲入る)。
+    /// 名前に依らず同一実体を「登録済み (同じファイル)」として扱い、ダイアログ相当の指示
+    /// (すべて取り込む) で取り込まれる件数が、計画から数えた件数と一致することを固定する。
+    #[cfg(unix)]
+    #[test]
+    fn differently_named_file_link_and_hardlink_are_same_file() {
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("media/A/02_daybreak.wav");
+        tagged_wav(&real, "Daybreak", "Aoi Tanaka", "Morning Set", 2);
+        let db = Database::open_memory().unwrap();
+        assert_eq!(import_folders(&db, &[real.clone()], |_, _| {}).imported, 1);
+        let real_str = real.to_string_lossy().to_string();
+
+        let mixed = tmp.path().join("media/Mixed");
+        fs::create_dir_all(&mixed).unwrap();
+        let link = mixed.join("link_daybreak.wav");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let hard = mixed.join("hard_daybreak.wav");
+        fs::hard_link(&real, &hard).unwrap();
+        // 同じタグの別ファイル (コピー) = 一致として確認に出る (同一実体ではない)。
+        let copy = mixed.join("daybreak_copy.wav");
+        fs::copy(&real, &copy).unwrap();
+        // 新しい曲 = 確認に出ずにそのまま取り込まれる。
+        let fresh = mixed.join("new_song.wav");
+        tagged_wav(&fresh, "New Song", "Aoi Tanaka", "Morning Set", 3);
+
+        let plan = plan_import(&db, &[mixed.clone()], |_, _| {}).unwrap();
+        assert_eq!(plan.len(), 4);
+        let by = |p: &Path| {
+            plan.iter()
+                .find(|i| i.path == p.to_string_lossy())
+                .unwrap_or_else(|| panic!("{p:?} not in plan"))
+        };
+        for p in [&link, &hard] {
+            let it = by(p);
+            assert!(it.already_imported_same_path, "{it:?}");
+            assert_eq!(it.registered_path.as_deref(), Some(real_str.as_str()), "{it:?}");
+            assert!(it.hits.is_empty(), "{it:?}");
+        }
+        let c = by(&copy);
+        assert!(!c.already_imported_same_path && c.registered_path.is_none());
+        assert_eq!(c.hits.len(), 1);
+        let f = by(&fresh);
+        assert!(!f.already_imported_same_path && f.hits.is_empty());
+
+        // フロント (importFlow) と同じ組み立て: 同一実体はスキップ固定、確認に出た曲は
+        // 「すべて取り込む」、それ以外はそのまま取り込む。
+        let items: Vec<ImportActionItem> = plan
+            .iter()
+            .map(|i| ImportActionItem {
+                path: i.path.clone(),
+                action: if i.already_imported_same_path {
+                    ItemAction::Skip
+                } else {
+                    ItemAction::Import
+                },
+                replace_track_id: None,
+            })
+            .collect();
+        let expected_import = items
+            .iter()
+            .filter(|i| i.action == ItemAction::Import)
+            .count();
+        assert_eq!(expected_import, 2, "コピーと新曲だけ");
+        let before = db.get_all_tracks().unwrap().len();
+        let s = import_with_actions(&db, &items, |_, _| {});
+        assert_eq!((s.imported, s.skipped, s.failed), (expected_import, 2, 0));
+        assert_eq!(db.get_all_tracks().unwrap().len(), before + expected_import);
+
+        // 防御側: 計画を通さずに「取り込む」が来ても、フォルダ取り込みでも二重登録しない。
+        let item = |p: &Path| ImportActionItem {
+            path: p.to_string_lossy().into(),
+            action: ItemAction::Import,
+            replace_track_id: None,
+        };
+        let s = import_with_actions(&db, &[item(&link), item(&hard)], |_, _| {});
+        assert_eq!((s.imported, s.skipped), (0, 2));
+        let s = import_folders(&db, &[mixed.clone()], |_, _| {});
+        assert_eq!((s.imported, s.skipped), (0, 4));
+        assert_eq!(db.get_all_tracks().unwrap().len(), before + expected_import);
+    }
+
+    /// 逆向き: 別名のリンク / ハードリンクのパスで登録済み → 実体のパスで取り込み直しても
+    /// 同じファイルとして扱う。同じ呼び出しの中のハードリンク同士も 1 件だけ登録する。
+    #[cfg(unix)]
+    #[test]
+    fn registered_via_link_name_then_real_path_is_same_file() {
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("media/A/01_sunrise.wav");
+        tagged_wav(&real, "Sunrise", "Aoi Tanaka", "Morning Set", 2);
+        let link = tmp.path().join("links/my_fav.wav");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let db = Database::open_memory().unwrap();
+        assert_eq!(import_folders(&db, &[link.clone()], |_, _| {}).imported, 1);
+
+        let plan = plan_import(&db, &[real.clone()], |_, _| {}).unwrap();
+        assert!(plan[0].already_imported_same_path, "{:?}", plan[0]);
+        assert_eq!(
+            plan[0].registered_path.as_deref(),
+            Some(link.to_string_lossy().as_ref())
+        );
+        assert_eq!(import_folders(&db, &[real.clone()], |_, _| {}).imported, 0);
+
+        // 未登録のハードリンク 2 つを同時に取り込む → 1 件だけ。
+        let b = tmp.path().join("media/B/x.wav");
+        tagged_wav(&b, "X", "Y", "Z", 2);
+        let b2 = tmp.path().join("media/B/x_hard.wav");
+        fs::hard_link(&b, &b2).unwrap();
+        let s = import_folders(&db, &[b.parent().unwrap().to_path_buf()], |_, _| {});
+        assert_eq!((s.imported, s.skipped), (1, 1));
+        assert_eq!(db.get_all_tracks().unwrap().len(), 2);
+    }
+
+    /// 記録済みサイズが古い (タグ書き込みで変わった等) と索引の候補から漏れるが、
+    /// タグ照合の一致が自分自身 (同じ実体) なら「同じパス」として扱う (E1)。
+    #[cfg(unix)]
+    #[test]
+    fn hardlink_with_stale_recorded_size_is_caught_by_match_hit() {
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("A/01.wav");
+        tagged_wav(&real, "Song", "Artist", "Album", 2);
+        let db = Database::open_memory().unwrap();
+        assert_eq!(import_folders(&db, &[real.clone()], |_, _| {}).imported, 1);
+        db.conn
+            .execute("UPDATE tracks SET file_size_bytes = 1", [])
+            .unwrap();
+        let hard = tmp.path().join("B/renamed.wav");
+        fs::create_dir_all(hard.parent().unwrap()).unwrap();
+        fs::hard_link(&real, &hard).unwrap();
+        let plan = plan_import(&db, &[hard.clone()], |_, _| {}).unwrap();
+        assert!(plan[0].already_imported_same_path, "{:?}", plan[0]);
+        assert_eq!(
+            plan[0].registered_path.as_deref(),
+            Some(real.to_string_lossy().as_ref())
+        );
+        assert!(plan[0].hits.is_empty());
+    }
+
+    /// 誤検出しない: 同じ名前・同じサイズでも中身が別のファイルは別の曲として取り込む。
+    #[test]
+    fn same_name_and_size_different_file_is_not_same_file() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("A/01.wav");
+        tagged_wav(&a, "Song A", "Artist", "Album", 2);
+        let b = tmp.path().join("B/01.wav");
+        tagged_wav(&b, "Song B", "Artist", "Album", 2);
+        assert_eq!(
+            fs::metadata(&a).unwrap().len(),
+            fs::metadata(&b).unwrap().len(),
+            "サイズ一致の候補になる条件で確かめる"
+        );
+        let db = Database::open_memory().unwrap();
+        assert_eq!(import_folders(&db, &[a.clone()], |_, _| {}).imported, 1);
+
+        let plan = plan_import(&db, &[b.clone()], |_, _| {}).unwrap();
+        assert!(!plan[0].already_imported_same_path, "{:?}", plan[0]);
+        assert!(plan[0].registered_path.is_none());
+        assert!(plan[0].hits.is_empty());
+        let s = import_folders(&db, &[b.clone()], |_, _| {});
+        assert_eq!((s.imported, s.skipped), (1, 0));
+        assert_eq!(db.get_all_tracks().unwrap().len(), 2);
     }
 }

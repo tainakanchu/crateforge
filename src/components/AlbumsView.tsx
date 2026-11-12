@@ -725,7 +725,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                           </div>
                           <button
                             className="cov-play"
-                            title="Play album"
+                            title="アルバムを再生"
                             onClick={(e) => {
                               e.stopPropagation();
                               playAlbum(al);
@@ -737,14 +737,14 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                             <span
                               className="addbtn"
                               style={{ opacity: 1, transform: "none" }}
-                              title="All in crate"
+                              title="すべて Crate に追加済み"
                             >
                               <Icon name="check" size={17} />
                             </span>
                           ) : (
                             <button
                               className="addbtn"
-                              title="Add album to crate"
+                              title="アルバムを Crate に追加"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 addAlbumToCrate(al);
@@ -961,7 +961,7 @@ function AlbumExpansion({
                   </span>
                 )}
                 {!t.fileExists && (
-                  <span className="cb-warn" title="File not found">
+                  <span className="cb-warn" title="ファイルが見つかりません">
                     <Icon name="warning" size={11} />
                   </span>
                 )}
@@ -983,13 +983,13 @@ function AlbumExpansion({
               })()}
               <span className="tm cb-fmono">{formatTime(t.totalTimeMs)}</span>
               {isIn ? (
-                <span className="cov-trk-add in" title="In crate">
+                <span className="cov-trk-add in" title="Crate に追加済み">
                   <Icon name="check" size={15} />
                 </span>
               ) : (
                 <button
                   className="cov-trk-add"
-                  title="Add to crate"
+                  title="Crate に追加"
                   onClick={(e) => {
                     e.stopPropagation();
                     onAddTrack(t);

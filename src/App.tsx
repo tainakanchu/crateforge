@@ -1004,6 +1004,13 @@ export default function App() {
     reloadPlaylists();
   }, [reloadPlaylists, scheduleAutoExport]);
 
+  // 取り寄せ / 送信の完了後は、曲一覧に加えて解析結果 (BPM/Key/Energy) も読み直す
+  // (取り寄せた解析値がリロードするまで一覧に出なかった: E3)。
+  const reloadAfterSync = useCallback(() => {
+    triggerReload();
+    void loadAnalyses();
+  }, [triggerReload, loadAnalyses]);
+
   // CD リッピング進捗のグローバル購読
   useEffect(() => {
     if (!isTauri) return;
@@ -1529,7 +1536,7 @@ export default function App() {
       {syncProvisionOpen && (
         <SyncProvisionDialog
           onClose={() => setSyncProvisionOpen(false)}
-          onLibraryChanged={triggerReload}
+          onLibraryChanged={reloadAfterSync}
         />
       )}
       {usbExportIds && (

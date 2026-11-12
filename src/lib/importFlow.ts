@@ -24,6 +24,8 @@ export function planDefaultDecision(p: ImportPlanItem): DuplicateDecision {
 
 interface PendingDuplicates {
   items: ImportPlanItem[];
+  /** ダイアログに出さずそのまま取り込む曲の数 (「ほかの N 曲はそのまま取り込みます」)。 */
+  otherCount: number;
   resolve: (decisions: Map<string, DuplicateDecision> | null) => void;
 }
 
@@ -32,13 +34,17 @@ export const useImportDuplicates = create<{ pending: PendingDuplicates | null }>
   pending: null,
 }));
 
-function askDuplicates(items: ImportPlanItem[]): Promise<Map<string, DuplicateDecision> | null> {
+function askDuplicates(
+  items: ImportPlanItem[],
+  otherCount: number,
+): Promise<Map<string, DuplicateDecision> | null> {
   return new Promise((resolve) => {
     // 前の確認が残っていたらキャンセル扱いで閉じる。
     useImportDuplicates.getState().pending?.resolve(null);
     useImportDuplicates.setState({
       pending: {
         items,
+        otherCount,
         resolve: (d) => {
           useImportDuplicates.setState({ pending: null });
           resolve(d);
@@ -96,12 +102,17 @@ export async function importWithDuplicateCheck(
   }
 
   // 確認が要るもの: 取り込み済みの一致がある / 取り込む側のファイルが破損の疑い。
-  const conflicts = plan.filter(
-    (p) => !p.alreadyImportedSamePath && (p.hits.length > 0 || p.sourceBroken),
-  );
+  const needsDecision = (p: ImportPlanItem) =>
+    !p.alreadyImportedSamePath && (p.hits.length > 0 || p.sourceBroken);
+  // 表記の違う同じファイル (別名のリンク / ハードリンク) は、確認を出すときは
+  // 「登録済み（同じファイル）」の行として並べ、ダイアログの件数と取り込み結果を合わせる (E1)。
+  // 文字列として同じパスの曲は従来どおり黙ってスキップする。
+  const linkedSame = (p: ImportPlanItem) => p.alreadyImportedSamePath && !!p.registeredPath;
   let decisions: Map<string, DuplicateDecision> | null = new Map();
-  if (conflicts.length > 0) {
-    decisions = await askDuplicates(conflicts);
+  if (plan.some(needsDecision)) {
+    const shown = plan.filter((p) => needsDecision(p) || linkedSame(p));
+    const otherCount = plan.filter((p) => !p.alreadyImportedSamePath && !needsDecision(p)).length;
+    decisions = await askDuplicates(shown, otherCount);
     if (!decisions) return null;
   }
 

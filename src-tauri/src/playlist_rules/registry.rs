@@ -78,15 +78,15 @@ impl ExistingIndex {
         match self.by_name.get(name).map(Vec::as_slice) {
             Some([only]) => Ok(only.clone()),
             Some(list) if list.len() > 1 => Err(format!(
-                "Multiple existing playlists matched name \"{}\"; use nested path when available",
+                "既存のプレイリストで「{}」という名前のものが複数あります。フォルダを含むパスで指定してください",
                 name
             )),
             _ if self.in_namespace.contains(name) => Err(format!(
-                "Referenced existing playlist \"{}\" is inside namespace \"{}\"; reference it with source: generated",
+                "参照した既存のプレイリスト「{}」は namespace「{}」の中にあります。source: generated で参照してください",
                 name, self.namespace
             )),
             _ => Err(format!(
-                "Referenced existing playlist not found: \"{}\"",
+                "参照した既存のプレイリストが見つかりません: 「{}」",
                 name
             )),
         }

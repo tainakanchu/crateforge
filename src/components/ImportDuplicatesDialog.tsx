@@ -46,14 +46,23 @@ function fmtLength(ms: number | null): string {
 export function ImportDuplicatesDialog() {
   const pending = useImportDuplicates((s) => s.pending);
   if (!pending) return null;
-  return <ImportDuplicatesDialogBody key={pending.items.map((i) => i.path).join("\n")} items={pending.items} resolve={pending.resolve} />;
+  return (
+    <ImportDuplicatesDialogBody
+      key={pending.items.map((i) => i.path).join("\n")}
+      items={pending.items}
+      otherCount={pending.otherCount}
+      resolve={pending.resolve}
+    />
+  );
 }
 
 function ImportDuplicatesDialogBody({
   items,
+  otherCount,
   resolve,
 }: {
   items: ImportPlanItem[];
+  otherCount: number;
   resolve: (d: Map<string, DuplicateDecision> | null) => void;
 }) {
   const [decisions, setDecisions] = useState<Map<string, DuplicateDecision>>(
@@ -177,7 +186,11 @@ function ImportDuplicatesDialogBody({
                   {sameFile ? (
                     <span
                       className="dup-badge"
-                      title="このファイル自体がすでにライブラリに登録されています (取り込むと二重登録になるためスキップします)"
+                      title={
+                        i.registeredPath
+                          ? `同じファイルが別のパスで登録済みです (リンク / ハードリンク): ${i.registeredPath}\n取り込むと二重登録になるためスキップします`
+                          : "このファイル自体がすでにライブラリに登録されています (取り込むと二重登録になるためスキップします)"
+                      }
                     >
                       登録済み（同じファイル）
                     </span>
@@ -197,7 +210,7 @@ function ImportDuplicatesDialogBody({
           </div>
           <div style={{ fontSize: 12, color: "var(--tx2)" }}>
             取り込む {counts.import} / スキップ {counts.skip} / 置き換え {counts.replace}
-            （ほかの曲はそのまま取り込みます）
+            {otherCount > 0 ? `（ほかの ${otherCount} 曲はそのまま取り込みます）` : ""}
           </div>
           {confirmCancel ? (
             <div className="dup-cancel-confirm" role="alertdialog" aria-label="取り込みのキャンセル確認">

@@ -342,7 +342,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                         })()}
                         <button
                           className="cov-play"
-                          title="Play track"
+                          title="再生"
                           onClick={(e) => {
                             e.stopPropagation();
                             void playTrack(t);
@@ -354,14 +354,14 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                           <span
                             className="addbtn"
                             style={{ opacity: 1, transform: "none" }}
-                            title="In crate"
+                            title="Crate に追加済み"
                           >
                             <Icon name="check" size={17} />
                           </span>
                         ) : (
                           <button
                             className="addbtn"
-                            title="Add to crate"
+                            title="Crate に追加"
                             onClick={(e) => {
                               e.stopPropagation();
                               addToCrate(t);

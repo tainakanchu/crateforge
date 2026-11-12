@@ -387,7 +387,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                           </div>
                           <button
                             className="cov-play"
-                            title="Play artist"
+                            title="このアーティストを再生"
                             onClick={(e) => {
                               e.stopPropagation();
                               artistTracks(a).then((ts) => playTracks(ts));
@@ -399,14 +399,14 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                             <span
                               className="addbtn"
                               style={{ opacity: 1, transform: "none" }}
-                              title="All in crate"
+                              title="すべて Crate に追加済み"
                             >
                               <Icon name="check" size={17} />
                             </span>
                           ) : (
                             <button
                               className="addbtn"
-                              title="Add artist to crate"
+                              title="このアーティストを Crate に追加"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 artistTracks(a).then(crateTracks);
@@ -422,12 +422,11 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                         <div
                           className="cov-meta"
                           onClick={() => toggleArtist(a)}
-                          title={`${a.name} — ${a.albumCount} albums · ${a.trackCount} tracks`}
+                          title={`${a.name} — ${a.albumCount} アルバム · ${a.trackCount} 曲`}
                         >
                           <div className="cj">{a.name}</div>
                           <div className="la">
-                            {a.trackCount} track{a.trackCount === 1 ? "" : "s"} ·{" "}
-                            {a.albumCount} album{a.albumCount === 1 ? "" : "s"}
+                            {a.trackCount} 曲 · {a.albumCount} アルバム
                           </div>
                         </div>
                       </div>
@@ -509,18 +508,17 @@ function ArtistExpansion({
           <div className="cov-exp-title">
             <span className="t">{artist.name}</span>
             <span className="s">
-              {artist.albumCount} album{artist.albumCount === 1 ? "" : "s"} ·{" "}
-              {artist.trackCount} track{artist.trackCount === 1 ? "" : "s"}
+              {artist.albumCount} アルバム · {artist.trackCount} 曲
             </span>
           </div>
           <div className="art-exp-actions">
-            <button className="cb-btn" title="Play all" onClick={onPlayArtist}>
-              <Icon name="play" size={13} fill="currentColor" stroke={0} /> Play
+            <button className="cb-btn" title="すべて再生" onClick={onPlayArtist}>
+              <Icon name="play" size={13} fill="currentColor" stroke={0} /> 再生
             </button>
-            <button className="cb-btn" title="Add all to queue" onClick={onQueueArtist}>
-              <Icon name="list" size={13} /> Queue
+            <button className="cb-btn" title="すべてキューに追加" onClick={onQueueArtist}>
+              <Icon name="list" size={13} /> キュー
             </button>
-            <button className="cb-btn" title="Add all to crate" onClick={onCrateArtist}>
+            <button className="cb-btn" title="すべて Crate に追加" onClick={onCrateArtist}>
               <Icon name="plus" size={13} /> Crate
             </button>
             <button className="cov-exp-close" title="Collapse" onClick={onClose}>
@@ -549,13 +547,13 @@ function ArtistExpansion({
                       <div className="t">{al.album}</div>
                       <div className="s">
                         {al.year != null ? `${al.year} · ` : ""}
-                        {al.trackCount} track{al.trackCount === 1 ? "" : "s"}
+                        {al.trackCount} 曲
                         {al.totalTimeMs > 0 ? ` · ${formatTime(al.totalTimeMs)}` : ""}
                       </div>
                     </div>
                     <button
                       className="art-alb-btn"
-                      title="Play album"
+                      title="アルバムを再生"
                       onClick={(e) => {
                         e.stopPropagation();
                         onPlayAlbum(al);
@@ -565,7 +563,7 @@ function ArtistExpansion({
                     </button>
                     <button
                       className="art-alb-btn"
-                      title="Add album to queue"
+                      title="アルバムをキューに追加"
                       onClick={(e) => {
                         e.stopPropagation();
                         onQueueAlbum(al);
@@ -575,7 +573,7 @@ function ArtistExpansion({
                     </button>
                     <button
                       className="art-alb-btn"
-                      title="Add album to crate"
+                      title="アルバムを Crate に追加"
                       onClick={(e) => {
                         e.stopPropagation();
                         onCrateAlbum(al);
@@ -614,7 +612,7 @@ function ArtistExpansion({
                                   </span>
                                 )}
                                 {!t.fileExists && (
-                                  <span className="cb-warn" title="File not found">
+                                  <span className="cb-warn" title="ファイルが見つかりません">
                                     <Icon name="warning" size={11} />
                                   </span>
                                 )}
@@ -623,13 +621,13 @@ function ArtistExpansion({
                               </span>
                               <span className="tm cb-fmono">{formatTime(t.totalTimeMs)}</span>
                               {isIn ? (
-                                <span className="cov-trk-add in" title="In crate">
+                                <span className="cov-trk-add in" title="Crate に追加済み">
                                   <Icon name="check" size={15} />
                                 </span>
                               ) : (
                                 <button
                                   className="cov-trk-add"
-                                  title="Add to crate"
+                                  title="Crate に追加"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onCrateTrack(t);

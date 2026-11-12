@@ -533,7 +533,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKe
           {n.mode === "inbox" && inboxCount > 0 && (
             <span
               className="cb-nav-badge"
-              title={`Inbox ${inboxCount} 曲（直近追加枠 + later）`}
+              title={`Inbox ${inboxCount} 曲（最近追加した曲 +「あとで」に回した曲）`}
             >
               {inboxCount > 999 ? "999+" : inboxCount}
             </span>

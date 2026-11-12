@@ -459,6 +459,9 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
   const analyzedKey = single
     ? (analysisByTrack.get(tracks[0].trackId)?.keyCamelot ?? null)
     : null;
+  const analyzedBpmRaw = single ? (analysisByTrack.get(tracks[0].trackId)?.bpm ?? null) : null;
+  const analyzedBpm =
+    analyzedBpmRaw != null && analyzedBpmRaw > 0 ? Math.round(analyzedBpmRaw) : null; // 一覧と同じ丸め
   const glyph = single ? tracks[0].name : `${tracks.length}`;
 
   return (
@@ -617,17 +620,29 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               />
             </Field>
             <Field label="BPM">
-              <input
-                className="rip-input"
-                type="number"
-                value={form.bpm}
-                placeholder={ph(initial.bpm.mixed)}
-                onChange={(e) => update("bpm", e.target.value)}
-              />
+              <div className="track-editor-rating" style={{ padding: 0 }}>
+                <input
+                  className="rip-input"
+                  style={{ flex: 1, minWidth: 0 }}
+                  type="number"
+                  value={form.bpm}
+                  placeholder={ph(initial.bpm.mixed)}
+                  onChange={(e) => update("bpm", e.target.value)}
+                />
+                {/* Key と同じく、タグとは別に解析値を常に見せる (E8)。 */}
+                {single && (
+                  <span
+                    style={{ fontSize: 12, color: "var(--mut)", whiteSpace: "nowrap" }}
+                    title="解析で求めた BPM（タグの BPM が空のときは一覧にこの値が出ます）"
+                  >
+                    解析値: {analyzedBpm ?? "—"}
+                  </span>
+                )}
+              </div>
             </Field>
           </div>
 
-          <Field label="Key">
+          <Field label="キー">
             <div className="track-editor-rating">
               <select
                 className="rip-input"
@@ -713,7 +728,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
                 className="track-editor-clear"
                 onClick={() => update("rating", 0)}
               >
-                clear
+                クリア
               </button>
               {initial.rating.mixed && !dirty.has("rating") && (
                 <span style={{ fontSize: 12, color: "var(--mut)" }}>(複数の値)</span>

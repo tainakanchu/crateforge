@@ -40,6 +40,11 @@ export interface ImportPlanItem {
   hits: DuplicateHit[];
   /** このパスそのものが既にライブラリにある (黙ってスキップする)。 */
   alreadyImportedSamePath: boolean;
+  /**
+   * 表記の違うパス (リンク / ハードリンク経由など) で同じ実体が登録済みのとき、その登録済みの
+   * パス。文字列として同じパスなら null。確認ダイアログで「登録済み（同じファイル）」の行に出す。
+   */
+  registeredPath?: string | null;
   /** 取り込む側のファイル自体にゼロ埋め破損の疑いがある (既定でスキップ)。 */
   sourceBroken: boolean;
 }

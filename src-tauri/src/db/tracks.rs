@@ -247,8 +247,10 @@ fn album_agg_sql(filter: &str, order_by: &str, tail: &str) -> String {
             SELECT
               album_key,
               MAX(coalesce(nullif(trim(album),''), name, '(unknown)'))          AS album,
-              MAX(CASE WHEN compilation=1 THEN 'Various Artists'
-                       ELSE coalesce(nullif(trim(album_artist),''), artist, '') END) AS album_artist,
+              CASE WHEN MAX(compilation) = 1
+                     OR COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), artist, '')))) > 1
+                   THEN 'Various Artists'
+                   ELSE MAX(coalesce(nullif(trim(album_artist),''), artist, '')) END AS album_artist,
               MAX(compilation)                                                   AS is_compilation,
               COUNT(*)                                                           AS track_count,
               MAX(CASE WHEN rn=1 THEN track_id END)                              AS cover_track_id,
@@ -1752,7 +1754,14 @@ impl Database {
     /// album が NULL/空 の曲は除外。`sample_track_id` はアルバム内最小 track_id (代表曲)。
     pub fn get_albums_legacy(&self) -> Result<Vec<AlbumInfo>> {
         let mut stmt = self.conn.prepare(
-            "SELECT album, MAX(album_artist), COUNT(*), MIN(track_id) FROM tracks
+            // 代表アーティスト: album_artist (空なら artist) が曲ごとに複数ある / コンピなら
+            // "Various Artists" (MAX だとコンピが特定アーティストのアルバムに見えた: E5)。
+            "SELECT album,
+                    CASE WHEN MAX(compilation) = 1
+                           OR COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))))) > 1
+                         THEN 'Various Artists'
+                         ELSE MAX(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))) END,
+                    COUNT(*), MIN(track_id) FROM tracks
              WHERE album IS NOT NULL AND album != '' GROUP BY album ORDER BY album COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -2062,13 +2071,15 @@ impl Database {
 
     /// ライブラリに登録済みの `location_path` を全て集めた集合を返す。
     /// フォルダ取り込みで「既にライブラリにあるファイル」を弾くために使う。
-    pub fn existing_location_paths(&self) -> Result<HashSet<String>> {
+    /// 登録済みの曲ファイルのパスと、記録済みのファイルサイズ (取り込みの同一実体判定の
+    /// 候補絞り込みに使う。未記録なら None)。
+    pub fn existing_location_paths(&self) -> Result<Vec<(String, Option<i64>)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT location_path FROM tracks
+            "SELECT location_path, file_size_bytes FROM tracks
              WHERE location_path IS NOT NULL AND location_path != ''",
         )?;
         let paths = stmt
-            .query_map([], |r| r.get::<_, String>(0))?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)))?
             .filter_map(|r| r.ok())
             .collect();
         Ok(paths)
@@ -3134,6 +3145,46 @@ mod tests {
         // 同一 album 内の最小 track_id が代表曲。
         assert_eq!(albums[1].sample_track_id, 10);
         assert_eq!(albums[1].album_artist.as_deref(), Some("AA1"));
+    }
+
+    /// E5: 曲ごとにアーティストが違うアルバム (album_artist 無しのコンピ) は、MAX で
+    /// 特定アーティストに見せず "Various Artists" にする。album_artist が揃っていれば
+    /// それを、空なら artist を出す (大文字小文字のゆれは同じ人とみなす)。
+    #[test]
+    fn get_albums_legacy_uses_various_artists_for_mixed_artists() {
+        let db = Database::open_memory().unwrap();
+        let rows = [
+            // (track_id, album, artist, album_artist)
+            (1, "Comp", Some("Aoi"), None),
+            (2, "Comp", Some("Kumo"), Some("")),
+            (3, "Solo", Some("Aoi"), None),
+            (4, "Solo", Some("aoi "), None),
+            (5, "Split", Some("X"), Some("Label")),
+            (6, "Split", Some("Y"), Some("Label")),
+        ];
+        for (tid, album, artist, aa) in rows {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, album, artist, album_artist, file_exists)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+                    rusqlite::params![tid, format!("t{tid}"), album, artist, aa],
+                )
+                .unwrap();
+        }
+        let albums = db.get_albums_legacy().unwrap();
+        let by = |n: &str| albums.iter().find(|a| a.album == n).unwrap().album_artist.clone();
+        assert_eq!(by("Comp").as_deref(), Some("Various Artists"));
+        assert!(matches!(by("Solo").as_deref(), Some("Aoi") | Some("aoi")), "{:?}", by("Solo"));
+        assert_eq!(by("Split").as_deref(), Some("Label"));
+
+        // デスクトップの Albums ビュー (get_albums) はアルバムアーティストごとに束ねるので、
+        // 1 枚のカードの代表アーティストは 1 人 (ゆれは同じ人) か、コンピなら Various Artists。
+        let rows = db.get_albums(None, None, 100, 0).unwrap();
+        let solo = rows.iter().find(|r| r.album == "Solo").unwrap();
+        assert_eq!(solo.track_count, 2);
+        assert_ne!(solo.album_artist, "Various Artists");
+        let split = rows.iter().find(|r| r.album == "Split").unwrap();
+        assert_eq!(split.album_artist, "Label");
     }
 
     /// get_artists_legacy (HTTP /api/artists) は grouping ごとに表示名でグループ化し、

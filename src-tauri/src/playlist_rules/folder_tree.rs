@@ -42,11 +42,11 @@ pub fn build_spec_tree(namespace: &str, rules: &[PlaylistRule]) -> Result<Folder
     for (rule_index, rule) in rules.iter().enumerate() {
         let path = rule.name.as_str();
         if !seen.insert(path) {
-            return Err(format!("Duplicate generated playlist path: \"{}\"", path));
+            return Err(format!("生成するプレイリストのパスが重複しています: 「{}」", path));
         }
         let segments: Vec<&str> = path.split('/').collect();
         if segments.iter().any(|s| s.trim().is_empty()) {
-            return Err(format!("Invalid generated playlist path: \"{}\"", path));
+            return Err(format!("生成するプレイリストのパスが不正です: 「{}」", path));
         }
         let (name, folders) = segments.split_last().expect("split yields at least one");
         let mut current = &mut root;
@@ -60,7 +60,7 @@ pub fn build_spec_tree(namespace: &str, rules: &[PlaylistRule]) -> Result<Folder
                 Some(i) => {
                     if matches!(current.children[i], SpecNode::Playlist(_)) {
                         return Err(format!(
-                            "Generated playlist path \"{}\" uses playlist \"{}\" as a folder",
+                            "生成するプレイリストのパス「{}」が、プレイリスト「{}」をフォルダとして使っています",
                             path, folder_path
                         ));
                     }
@@ -85,7 +85,7 @@ pub fn build_spec_tree(namespace: &str, rules: &[PlaylistRule]) -> Result<Folder
             SpecNode::Playlist(p) => p.name == *name,
         }) {
             return Err(format!(
-                "Generated playlist path \"{}\" is also used as a folder",
+                "生成するプレイリストのパス「{}」はフォルダとしても使われています",
                 path
             ));
         }
@@ -181,15 +181,15 @@ mod tests {
     fn rejects_bad_paths() {
         assert!(build_spec_tree("N", &rules(&["A", "A"]))
             .unwrap_err()
-            .contains("Duplicate"));
+            .contains("重複"));
         assert!(build_spec_tree("N", &rules(&["A", "A/b"]))
             .unwrap_err()
-            .contains("as a folder"));
+            .contains("フォルダとして使っています"));
         assert!(build_spec_tree("N", &rules(&["A/b", "A"]))
             .unwrap_err()
-            .contains("also used as a folder"));
+            .contains("フォルダとしても使われています"));
         assert!(build_spec_tree("N", &rules(&["A//b"]))
             .unwrap_err()
-            .contains("Invalid"));
+            .contains("不正"));
     }
 }

@@ -20,7 +20,7 @@ Enable the API server under **"Mobile / API"** in settings.
 It has been hardened to restart only after the server has reliably stopped (`SO_REUSEADDR`),
 resolving the "can't start because the previous server hasn't fully shut down (address in use)" problem.
 If another Crateforge is already listening on the same port, it does not double-bind that port and switches to a free one instead
-(the actual port is shown in the connection URL in Settings).
+(the actual port is shown in the connection URL in Settings, along with a note such as "8787 は使用中のため 9797 で起動しました" — 8787 was in use, so it started on 9797).
 
 ## Authentication, tokens, and pairing
 

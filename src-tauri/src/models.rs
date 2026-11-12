@@ -546,6 +546,11 @@ pub struct ImportPlanItem {
     pub hits: Vec<DuplicateHit>,
     /// このパスそのものが既にライブラリにある (従来どおり黙ってスキップする対象)。
     pub already_imported_same_path: bool,
+    /// `already_imported_same_path` のうち、表記の違うパス (リンク / ハードリンク経由など) で
+    /// 同じ実体が登録済みのとき、その登録済みのパス。文字列として同じパスなら None。
+    /// 確認ダイアログで「登録済み（同じファイル）」の行として見せるのに使う (E1)。
+    #[serde(default)]
+    pub registered_path: Option<String>,
     /// 取り込む側のファイル自体にゼロ埋め破損の疑いがある (既定でスキップする)。
     #[serde(default)]
     pub source_broken: bool,

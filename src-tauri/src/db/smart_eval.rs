@@ -124,17 +124,19 @@ impl Database {
     /// サイドバーの件数表示用 (D9)。評価は 1 パス (全曲・解析は一度だけ読む) で、
     /// スマートが 1 件も無ければ全曲は読まない。
     pub fn smart_playlist_counts(&self) -> Result<Vec<(i64, usize)>> {
-        let ids: Vec<i64> = {
+        let ids: Vec<(i64, bool)> = {
             let mut stmt = self
                 .conn
-                .prepare("SELECT playlist_id FROM playlists WHERE is_folder = 0")?;
-            let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+                .prepare("SELECT playlist_id, is_smart FROM playlists WHERE is_folder = 0")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? != 0)))?;
             rows.collect::<Result<Vec<_>>>()?
         };
         let mut resolver = self.playlist_resolver()?;
         let mut out = Vec::new();
-        for id in ids {
-            if resolver.is_smart(id) {
+        for (id, flagged_smart) in ids {
+            // 条件を持たないスマート (取り寄せたスナップショット等: is_smart=1, criteria=NULL) は
+            // 静的な行 (playlist_tracks) がメンバーなので、その件数を出す (E4)。
+            if resolver.is_smart(id) || flagged_smart {
                 out.push((id, resolver.track_ids(id)?.len()));
             }
         }
@@ -404,6 +406,17 @@ mod tests {
         let mut counts = db.smart_playlist_counts().unwrap();
         counts.sort();
         assert_eq!(counts, vec![(31, 3), (32, 2)]);
+    }
+
+    /// E4: 取り寄せたスマート (is_smart=1 だが criteria=NULL) は静的な行の件数を出す
+    /// (サイドバーの件数が空になっていた)。
+    #[test]
+    fn smart_playlist_counts_includes_smart_without_criteria() {
+        let db = db();
+        db.conn
+            .execute("UPDATE playlists SET is_smart = 1 WHERE playlist_id = 30", [])
+            .unwrap();
+        assert_eq!(db.smart_playlist_counts().unwrap(), vec![(30, 1)]);
     }
 
     /// スマートがスマートを参照する (iTunes の Favorite J-POP → Favorite SONGS と同じ形)。

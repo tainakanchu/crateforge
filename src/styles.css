@@ -4600,6 +4600,7 @@ select optgroup {
   white-space: nowrap;
 }
 .dup-row-dir {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4607,7 +4608,9 @@ select optgroup {
   text-align: left;
 }
 .dup-row-file {
-  flex: 0 1 auto;
+  /* 縮むのはフォルダ側だけ。ファイル名は縮めず、極端に長いときだけ行幅の 8 割で省略する (E2)。 */
+  flex: 0 0 auto;
+  max-width: 80%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

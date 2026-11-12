@@ -1575,7 +1575,7 @@ export function RightRail({
               {similar.length !== filteredSimilar.length && (
                 <span className="cb-sim-count-raw">/{similar.length}</span>
               )}
-              {" hits"}
+              {" 曲"}
             </>
           )}
         </span>
@@ -1718,9 +1718,9 @@ export function RightRail({
         <button
           className={"cb-tab" + (energyClose ? " on" : "")}
           onClick={() => setSimilarFilters({ energyClose: !energyClose })}
-          title="Energy 差 ≤ 0.15 のみ"
+          title="エネルギー差 ≤ 0.15 のみ"
         >
-          Energy 近い
+          エネルギー近い
         </button>
         <label className="cb-sim-check" title="クレート内の曲を除外">
           <input
@@ -1736,7 +1736,7 @@ export function RightRail({
             checked={excludeSameArtist}
             onChange={(e) => setSimilarFilters({ excludeSameArtist: e.target.checked })}
           />
-          除外: 同一Artist
+          除外: 同じアーティスト
         </label>
         <label className="cb-sim-check" title="レーティング ★★★ 以上のみ">
           <input
@@ -1755,7 +1755,7 @@ export function RightRail({
           </div>
         ) : !baseAnalyzed ? (
           <div className="cb-rail-empty">
-            基準曲が未解析です。右クリック →「Analyze」で BPM/Key/Energy を解析してください。
+            基準曲が未解析です。右クリック →「解析 (BPM / Key / Energy)」で解析してください。
           </div>
         ) : simLoading ? (
           <div className="cb-rail-empty">探索中…</div>
@@ -1763,13 +1763,13 @@ export function RightRail({
           <div className="cb-rail-empty">
             似た曲が見つかりませんでした。
             {harmonic || bpmTol != null || energyClose
-              ? " Harmonic / BPM / Energy フィルタを緩めると広がります。"
+              ? " キー互換 / BPM / エネルギー近いの絞り込みを緩めると広がります。"
               : ""}
           </div>
         ) : filteredSimilar.length === 0 ? (
           <div className="cb-rail-empty">
             {clientFilterNote ||
-              "クライアントフィルタで全件除外されました。除外条件を外してください。"}
+              "除外条件ですべて除外されました。除外条件を外してください。"}
           </div>
         ) : (
           filteredSimilar.map((h) => {
@@ -1901,7 +1901,7 @@ export function RightRail({
               style={compact ? { height: 32, fontSize: 12 } : undefined}
             >
               <Icon name="layers" size={15} />
-              {allInCrate ? " All added" : " Add all to Crate"}
+              {allInCrate ? " すべて追加済み" : " すべて Crate に追加"}
             </button>
           </div>
         );

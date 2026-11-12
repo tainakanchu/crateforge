@@ -2493,9 +2493,13 @@ async fn play_by_id_for_remote(
         .db()?
         .get_track_by_track_id(track_id)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| ApiError::not_found("track not found"))?;
+        // リモート操作の失敗はモバイルにそのまま表示されうるので日本語にする (E9)。
+        .ok_or_else(|| ApiError::not_found("曲が見つかりません"))?;
     if track.location_path.as_deref().unwrap_or("").is_empty() {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "no file path"));
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "この曲にはファイルの場所がありません",
+        ));
     }
     // リモート API 経由は常に通常再生 (preview ではない)。
     remote_coordinator(app)
@@ -2635,7 +2639,7 @@ async fn play_queue_index_for_remote(
     if order_index >= len {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            format!("index {order_index} out of range (queue length {len})"),
+            format!("キューの範囲外です（位置 {order_index} / {len} 曲）"),
         ));
     }
     let tid = crate::commands::playback::play_queue_at(app.clone(), order_index)

@@ -253,7 +253,7 @@ fn kind_mismatch_is_replaced() {
     assert!(
         res.warnings
             .iter()
-            .any(|w| w.contains("Replaced existing playlist \"Gen/X\" with a folder")),
+            .any(|w| w.contains("既存のプレイリスト「Gen/X」をフォルダに置き換えました")),
         "{:?}",
         res.warnings
     );
@@ -275,7 +275,7 @@ fn duplicate_root_folders_warn() {
     assert!(
         res.warnings
             .iter()
-            .any(|w| w.contains("Found 2 top-level folders")),
+            .any(|w| w.contains("フォルダが 2 個あります")),
         "{:?}",
         res.warnings
     );
@@ -393,7 +393,7 @@ fn fail_on_missing_playlist() {
     let before = snapshot(&db);
     let err = apply_rules(&db, strict).unwrap_err();
     assert!(
-        err.contains("Referenced existing playlist not found: \"Nope\""),
+        err.contains("参照した既存のプレイリストが見つかりません: 「Nope」"),
         "{err}"
     );
     assert_eq!(snapshot(&db), before);
@@ -403,7 +403,7 @@ fn fail_on_missing_playlist() {
     assert!(
         res.warnings
             .iter()
-            .any(|w| w.starts_with("P: Referenced existing playlist not found")),
+            .any(|w| w.starts_with("P: 参照した既存のプレイリストが見つかりません")),
         "{:?}",
         res.warnings
     );
@@ -420,7 +420,7 @@ fn existing_reference_into_namespace_is_rejected() {
         "{FAVORITES}  - name: Again\n    match:\n      inPlaylist: {{source: existing, name: \"Favorite SONGS\"}}\n"
     );
     let err = apply_rules(&db, &yaml).unwrap_err();
-    assert!(err.contains("inside namespace \"Gen\""), "{err}");
+    assert!(err.contains("namespace「Gen」の中にあります"), "{err}");
 }
 
 /// generated の前方参照 (= 循環の可能性) はエラー。
@@ -429,7 +429,7 @@ fn forward_reference_is_rejected() {
     let db = db();
     let yaml = "namespace: Gen\nplaylists:\n  - name: A\n    match:\n      inPlaylist: {source: generated, name: B}\n  - name: B\n    match: {field: genre, equals: Rock}\n";
     let err = apply_rules(&db, yaml).unwrap_err();
-    assert!(err.contains("references later playlist \"B\""), "{err}");
+    assert!(err.contains("後ろで定義されたプレイリスト「B」を参照しています"), "{err}");
     assert!(find(&db, "Gen").is_none(), "何も書かない");
 }
 

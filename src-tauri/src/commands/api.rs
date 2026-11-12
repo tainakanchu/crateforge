@@ -36,6 +36,8 @@ pub struct ApiServerStatus {
     pub running: bool,
     /// 稼働中は実 bind ポート (フォールバック後の実ポート)、停止中は設定値。
     pub port: u16,
+    /// 設定上の希望ポート。稼働中に `port` と違えば、使用中のためフォールバックした (E7)。
+    pub configured_port: u16,
     /// running 時のみ `http://127.0.0.1:{port}` (port は実 bind ポート)。
     pub url: Option<String>,
     /// LAN 公開が有効かどうか。
@@ -147,6 +149,7 @@ pub fn get_api_server_status(
         enabled,
         running,
         port: effective_port,
+        configured_port: port,
         url,
         lan_enabled,
         token: token_out,

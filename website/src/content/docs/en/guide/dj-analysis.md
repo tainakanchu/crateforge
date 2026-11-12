@@ -73,7 +73,7 @@ Each candidate carries chips describing its relation to the base track.
 
 - **"キー互換" (Harmonic)** — Camelot-compatible keys only (independent of the BPM filter)
 - **BPM tolerance** — the allowed difference relative to the base
-- **"Energy 近い" (Energy close)** — only an Energy difference of 0.15 or less
+- **"エネルギー近い" (Energy close)** — only an Energy difference of 0.15 or less
 - **Exclude tracks in the Crate** / **exclude the same artist** / **★★★ and above only**
 
 These filters are saved and carried over to the next launch.
@@ -82,7 +82,7 @@ These filters are saved and carried over to the next launch.
 
 Each row offers **Preview / set as the dig base / play next / add to the Crate**.
 Candidates can also be dragged and dropped into the Crate, and double-clicking previews them.
-When everything has been added, "Add all" is disabled ("All added").
+"すべて Crate に追加" (add all to Crate) below the list adds every candidate at once; when everything has been added it is disabled and reads "すべて追加済み" (all added).
 
 ## Search filter syntax
 

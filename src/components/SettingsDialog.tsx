@@ -173,7 +173,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     // API サーバーの初期状態を取得。
     serverApi.getApiServerStatus().then((s) => {
       setApiStatus(s);
-      setPortInput(String(s.port));
+      setPortInput(String(s.configuredPort));
     }).catch(() => {});
     // フォント設定の初期読み込み（重い OS フォント列挙 listSystemFonts は
     // 「表示(fonts)」セクションを開いた時に遅延ロードする＝設定を開くだけでは走らせない）。
@@ -342,17 +342,17 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const handleToggleApiServer = useCallback(async () => {
     if (!apiStatus) return;
     const nextEnabled = !apiStatus.enabled;
-    const port = Number(portInput) || apiStatus.port;
+    const port = Number(portInput) || apiStatus.configuredPort;
     try {
       const next = await serverApi.setApiServerConfig(nextEnabled, port);
       setApiStatus(next);
-      setPortInput(String(next.port));
+      setPortInput(String(next.configuredPort));
     } catch (err) {
       pushToast("error", `API サーバーの設定に失敗しました: ${err}`);
       // 失敗した場合は最新状態を再取得してトグルをリセット。
       serverApi.getApiServerStatus().then((s) => {
         setApiStatus(s);
-        setPortInput(String(s.port));
+        setPortInput(String(s.configuredPort));
       }).catch(() => {});
     }
   }, [apiStatus, portInput, pushToast]);
@@ -363,7 +363,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     const port = Number(portInput);
     if (!port || port < 1 || port > 65535) {
       pushToast("error", `ポート番号が不正です: ${portInput}`);
-      setPortInput(String(apiStatus.port));
+      setPortInput(String(apiStatus.configuredPort));
       return;
     }
     if (!apiStatus.enabled) {
@@ -373,12 +373,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     try {
       const next = await serverApi.setApiServerConfig(true, port);
       setApiStatus(next);
-      setPortInput(String(next.port));
+      setPortInput(String(next.configuredPort));
     } catch (err) {
       pushToast("error", `ポートの変更に失敗しました: ${err}`);
       serverApi.getApiServerStatus().then((s) => {
         setApiStatus(s);
-        setPortInput(String(s.port));
+        setPortInput(String(s.configuredPort));
       }).catch(() => {});
     }
   }, [apiStatus, portInput, pushToast]);
@@ -1315,6 +1315,14 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     <Icon name="check" size={14} />
                     <span>
                       稼働中: <code>{apiStatus.url}</code>
+                      {/* 希望ポートが使用中で別ポートに逃げたときは明示する (E7)。 */}
+                      {apiStatus.port !== apiStatus.configuredPort && (
+                        <>
+                          <br />
+                          {apiStatus.configuredPort} は使用中のため {apiStatus.port} で起動しました。
+                          モバイルアプリなどにはこのポートの URL を使ってください。
+                        </>
+                      )}
                     </span>
                   </div>
                 )}
