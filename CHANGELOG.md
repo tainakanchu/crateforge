@@ -10,6 +10,22 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.18.1] - 2026-11-13
+
+### 日本語
+
+#### デスクトップ
+- **Linux 版（AppImage / deb）が Release に添付されるように**: v0.18.0 では Linux 版が Release に添付されていなかった。リリースビルドの最後にある「AppImage に libdiscid が同梱されているか」の確認処理が誤って失敗していたためで（同梱自体は正しく行われていた）、確認方法を直して Linux 版を配布できるようにした。 (#245)
+- **アルバム表示の曲一覧で星レーティングを付けられるように**: アルバムを展開した曲一覧の各行で、半星単位のレーティングを付けられるようにした（同じ値をもう一度クリックすると解除。未評価の行はマウスを重ねたときだけ星を表示）。右クリックメニューから付けたレーティングも展開中の一覧にすぐ反映される。あわせて、アルバム表示に切り替えた直後にタイルが倍の幅で表示される問題と、アルバムを展開すると次の行が曲一覧に重なる問題を修正した。 (#246)
+- **CD 取り込みで前回の結果が表示される問題を修正**: 取り込み結果を閉じないまま次の CD を入れて取り込むと、前回の結果ログが表示されていた。 (#246)
+
+### English
+
+#### Desktop
+- **Linux builds (AppImage / deb) are attached to the Release again**: The v0.18.0 Release was missing the Linux builds. The final release-build check that verifies libdiscid is bundled in the AppImage failed by mistake (the bundling itself was correct), so we fixed the check and Linux builds can now be distributed. (#245)
+- **Rate tracks in the Albums view**: each row of an expanded album's track list now has star ratings in half-star steps (click the same value again to clear; unrated rows show the stars only on hover). Ratings set from the context menu also show up in the expanded list right away. Also fixed album tiles appearing at double width right after switching to the Albums view, and the next row overlapping an expanded album's track list. (#246)
+- **Fixed CD ripping showing the previous result**: ripping the next CD without closing the previous result showed the previous result log. (#246)
+
 ## [v0.18.0] - 2026-11-12
 
 ### 日本語
