@@ -1238,6 +1238,17 @@ select optgroup {
   font-weight: 650;
   flex-shrink: 0;
 }
+.cov-trk .rt {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.cov-trk .rt.empty {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.cov-trk:hover .rt.empty {
+  opacity: 1;
+}
 .cov-trk .tm {
   font-size: 12px;
   color: var(--mut);
