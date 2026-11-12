@@ -105,7 +105,7 @@ discid = "0.6"
 
 # === Windows-only: `zip` は on-demand ffmpeg ダウンロード解凍 (BtbN win64) に使用 ===
 [target.'cfg(target_os = "windows")'.dependencies]
-zip = "2"
+zip = "9"
 
 # === Windows 以外: rbx-cli (USB 書き出しエンジン) の Release アセット (tar.gz) の展開用 ===
 # Windows のアセットは zip なので上の `zip` を使う。
