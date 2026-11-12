@@ -16,6 +16,7 @@ import DownloadButton from "@/components/DownloadButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { usePlaylist, usePlaylistTracks } from "@/features/browse/hooks";
 import { showTrackMenu } from "@/features/playback/trackMenu";
+import { positionalTrackKey } from "@/lib/listKeys";
 import { usePullToRefresh } from "@/hooks/use-refresh";
 
 export default function PlaylistScreen() {
@@ -169,7 +170,7 @@ export default function PlaylistScreen() {
         ) : (
           <FlatList
             data={tracks}
-            keyExtractor={(t) => String(t.trackId)}
+            keyExtractor={positionalTrackKey}
             renderItem={({ item, index }: { item: Track; index: number }) => (
               <TrackRow
                 track={item}
@@ -192,7 +193,7 @@ export default function PlaylistScreen() {
       ) : (
         <FlatList
           data={tracks}
-          keyExtractor={(t) => String(t.trackId)}
+          keyExtractor={positionalTrackKey}
           renderItem={({ item, index }: { item: Track; index: number }) => (
             <TrackRow
               track={item}

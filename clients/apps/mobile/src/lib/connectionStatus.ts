@@ -3,6 +3,7 @@
 
 import {
   type ConnectionState,
+  DESKTOP_API_SETTINGS_PATH,
   apiErrorKindMessage,
   selectIsOffline,
 } from "@crateforge/core";
@@ -38,7 +39,12 @@ export function connectionLabel(s: Input): ConnectionLabel {
   }
   if (s.status === "error") {
     if (s.errorKind === "unauthorized") {
-      return { text: "トークン不一致", tone: "error", detail: apiErrorKindMessage("unauthorized") };
+      // 状態行が「トークン不一致」なので、補足は確認場所だけにする（同じ趣旨を 2 回出さない。round-3 N2）。
+      return {
+        text: "トークン不一致",
+        tone: "error",
+        detail: `デスクトップの ${DESKTOP_API_SETTINGS_PATH} で現在のトークンを確認してください`,
+      };
     }
     if (selectIsOffline(s)) {
       const text = s.lastOkAt != null ? `オフライン（最終接続 ${formatClock(s.lastOkAt)}）` : "オフライン";
@@ -75,8 +81,9 @@ export const REAUTH_HREF = "/connect?reauth=1";
  */
 export function connectionRecovery(s: Input): ConnectionRecovery {
   if (s.status === "error" && s.errorKind === "unauthorized") {
+    // バナーで 1 行に収まる長さにする（ボタンと並ぶため。round-3 N2）。
     return {
-      reason: "トークンが一致しません（デスクトップでトークンが変更された可能性があります）",
+      reason: "トークンが一致しません",
       action: "reauth",
       actionLabel: "トークンを入力し直す",
     };
@@ -93,4 +100,28 @@ export function connectionRecovery(s: Input): ConnectionRecovery {
     return { reason: apiErrorKindMessage(s.errorKind), action: "connect", actionLabel: "サーバーに接続" };
   }
   return { reason: "サーバー未接続", action: "connect", actionLabel: "サーバーに接続" };
+}
+
+/**
+ * 未接続時の本文（リモートタブなど、バナーの下に出す説明）。バナーと矛盾しないよう状態で出し分ける（round-3 N2）。
+ * - トークン不一致: トークンを入れ直せば操作できる旨
+ * - オフライン（自動再試行中）: 再接続待ち
+ * - 接続先はあるがその他のエラー: 接続先の確認
+ * - 未設定: サーバーに接続してください
+ */
+export function disconnectedBody(s: Input): { message: string; icon: "key-outline" | "cloud-offline-outline" } {
+  const r = connectionRecovery(s);
+  if (r.action === "reauth") {
+    return { message: "トークンを入力し直すと、デスクトップを操作できます", icon: "key-outline" };
+  }
+  if (r.action === "retry") {
+    return {
+      message: "デスクトップへの再接続を待っています（起動すると自動で再接続します）",
+      icon: "cloud-offline-outline",
+    };
+  }
+  if (s.baseUrl && s.status === "error") {
+    return { message: "接続先を確認してください", icon: "cloud-offline-outline" };
+  }
+  return { message: "サーバーに接続してください", icon: "cloud-offline-outline" };
 }

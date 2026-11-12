@@ -173,6 +173,17 @@ describe("error handling (#67)", () => {
     expect(s().current()?.id).toBe(2); // skipped to next
   });
 
+  it("lastError に失敗した曲（スキップ前）の曲名を載せる（round-3 N1）", () => {
+    s().setQueue([track(1), track(2), track(3)]);
+    engine.handlers.onError?.("boom");
+    expect(s().lastError?.title).toBe("T1");
+    expect(s().lastError?.stopped).toBeFalsy();
+    engine.handlers.onError?.("boom");
+    engine.handlers.onError?.("boom"); // 3 回目で停止
+    expect(s().lastError?.title).toBe("T3");
+    expect(s().lastError?.stopped).toBe(true);
+  });
+
   it("clearError clears the notification state", () => {
     s().setQueue([track(1), track(2)]);
     engine.handlers.onError?.("boom");

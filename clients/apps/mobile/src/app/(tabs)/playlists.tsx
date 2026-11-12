@@ -16,7 +16,10 @@ import ConnectionNotice from "@/components/ConnectionNotice";
 import { usePlaylists } from "@/features/browse/hooks";
 import { rootItems } from "@/features/browse/playlistTree";
 import PlaylistRow from "@/features/browse/PlaylistRow";
-import { usePullToRefresh, useRefetchStaleOnFocus } from "@/hooks/use-refresh";
+import { LIGHT_LIST_FRESH_MS, usePullToRefresh, useRefetchStaleOnFocus } from "@/hooks/use-refresh";
+
+// タブに戻ったら（このタブの）プレイリスト一覧だけ、10 秒以上経っていれば取り直す（round-3 N5）。
+const PLAYLISTS_FOCUS_TARGETS = [{ queryKey: ["playlists"], freshMs: LIGHT_LIST_FRESH_MS }] as const;
 
 export default function PlaylistsScreen() {
   const router = useRouter();
@@ -24,7 +27,7 @@ export default function PlaylistsScreen() {
   const query = usePlaylists();
   // プル更新 + タブに戻ったときの再取得（stale のみ）。
   const { refreshing, onRefresh } = usePullToRefresh(query.refetch);
-  useRefetchStaleOnFocus();
+  useRefetchStaleOnFocus(PLAYLISTS_FOCUS_TARGETS);
 
   // 階層のルート項目だけを表示する。空のプレイリスト・スマートプレイリストも隠さない
   // （スマートの件数は評価結果に依存するため 0 でも表示する）。

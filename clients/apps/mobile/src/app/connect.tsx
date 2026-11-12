@@ -30,7 +30,13 @@ import Screen from "@/components/Screen";
 import BackButton from "@/components/BackButton";
 import { splitUrlToken } from "@/features/connect/splitUrlToken";
 import { BRAND, PALETTE } from "@/constants/brand";
-import { ApiClient, describeApiError, useConnection, useDownloads } from "@crateforge/core";
+import {
+  ApiClient,
+  DESKTOP_API_SETTINGS_PATH,
+  describeApiError,
+  useConnection,
+  useDownloads,
+} from "@crateforge/core";
 import QrScanner, { parseConnectionQr } from "@/features/connect/QrScanner";
 
 // ネイティブ mDNS モジュールが使えるか（Expo Go / web では false）。
@@ -83,6 +89,9 @@ export default function ConnectScreen() {
   const pairClientRef = useRef<ApiClient | null>(null);
 
   const connecting = status === "connecting";
+  // 接続失敗がデスクトップ不達（network/timeout）なら、ルートの接続監視が同じ接続先で自動再試行している
+  // （入力を変えると status が idle に戻り再試行も止まる）。そのときだけ自動接続の案内を添える（round-3 N3）。
+  const autoRetrying = status === "error" && (errorKind === "network" || errorKind === "timeout");
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current != null) {
@@ -251,7 +260,7 @@ export default function ConnectScreen() {
           <TextInput
             value={url}
             onChangeText={handleChangeUrl}
-            placeholder="192.168.x.x:8787"
+            placeholder="例: http://192.168.x.x:ポート番号"
             placeholderTextColor={PALETTE.textFaint}
             autoCapitalize="none"
             autoCorrect={false}
@@ -260,6 +269,10 @@ export default function ConnectScreen() {
             style={styles.input}
             accessibilityLabel="サーバー URL"
           />
+          {/* ポートは環境ごとに変わる（使用中なら別ポートで起動する）ので固定値を例示しない（round-3 N8）。 */}
+          <Text style={styles.hint}>
+            デスクトップの「{DESKTOP_API_SETTINGS_PATH}」に表示された URL を入力してください。
+          </Text>
 
           <Text style={styles.fieldLabel}>トークン（LAN 接続では必須）</Text>
           <TextInput
@@ -275,7 +288,7 @@ export default function ConnectScreen() {
             accessibilityLabel="トークン"
           />
           <Text style={styles.hint}>
-            デスクトップの「設定 → モバイル / API」に表示されるトークン、または接続 URL（?token=…）を貼り付けてください。
+            同じ画面に表示されるトークンを入力するか、接続 URL（?token=…）を URL 欄に貼り付けてください。
           </Text>
 
           {reauth && status !== "error" ? (
@@ -290,6 +303,7 @@ export default function ConnectScreen() {
               {errorKind === "unauthorized" && triedWithoutToken
                 ? "LAN 接続にはトークンが必要です。デスクトップの「設定 → モバイル / API」に表示されるトークンを入力してください"
                 : error}
+              {autoRetrying ? "\nデスクトップが起動すると自動で接続します。" : ""}
             </Text>
           ) : null}
 

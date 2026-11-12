@@ -131,7 +131,7 @@ export default function RootLayout() {
             {/* ミニプレイヤーは全画面で常時表示（出し分けは MiniPlayer 内でルート判定）。
                 Stack の兄弟に置くことでスタック/タブどちらの画面にも重ねられる。 */}
             <MiniPlayer />
-            {/* 再生エラーの通知（描画なし。Toast/Alert を出す） */}
+            {/* 再生エラーの通知（描画なし。アプリ内トーストを出す） */}
             <PlaybackErrorToast />
             <DownloadFailureToast />
             <ToastHost />

@@ -63,8 +63,44 @@ export function isAuthError(e: unknown): boolean {
 
 /** デスクトップに届いていない系（ネットワーク断・タイムアウト・別サーバー）か。オフライン切替の判定に使う。 */
 export function isConnectivityError(e: unknown): boolean {
-  const k = classifyApiError(e);
+  return isConnectivityKind(classifyApiError(e));
+}
+
+function isConnectivityKind(k: ApiErrorKind): boolean {
   return k === "network" || k === "timeout" || k === "notCrateforge";
+}
+
+/**
+ * デスクトップ API が返す既知のエラー文言（英語）→ 利用者向けの日本語。小文字・部分一致で引く。
+ * デスクトップ側（src-tauri/src/api, audio）の文言が増えたらここに足す。
+ */
+const KNOWN_SERVER_MESSAGES: ReadonlyArray<readonly [string, string]> = [
+  ["no audio output available", "デスクトップで音声出力が見つかりません（出力デバイスを確認してください）"],
+  ["audio file not found on disk", "デスクトップで音声ファイルが見つかりません（移動・削除された可能性があります）"],
+  ["no file path for this track", "デスクトップで音声ファイルが見つかりません（移動・削除された可能性があります）"],
+  ["no known trackids", "デスクトップのライブラリに該当する曲がありません"],
+  ["track not found", "曲が見つかりません（デスクトップ側で削除された可能性があります）"],
+  ["playlist not found", "プレイリストが見つかりません（デスクトップ側で削除された可能性があります）"],
+];
+
+const JAPANESE_TEXT = /[\u3040-\u30ff\u3400-\u9fff]/;
+
+/**
+ * ApiError の本文由来の文言を利用者向けにして返す（無ければ null）。
+ * - 既知の英語文言は日本語へ。
+ * - 既に日本語の文言（デスクトップ側で日本語化済み）はそのまま。
+ * - "HTTP 500" のような本文なし・未知の英語文言は null（種別の既定文言に任せる）。
+ */
+export function serverErrorMessage(e: unknown): string | null {
+  if (!(e instanceof ApiError) || e.htmlBody) return null;
+  const raw = e.message.trim();
+  if (raw === "" || /^HTTP \d+$/.test(raw)) return null;
+  const lower = raw.toLowerCase();
+  for (const [needle, ja] of KNOWN_SERVER_MESSAGES) {
+    if (lower.includes(needle)) return ja;
+  }
+  if (JAPANESE_TEXT.test(raw)) return raw;
+  return null;
 }
 
 /** 種別ごとの既定の日本語メッセージ。 */
@@ -101,6 +137,11 @@ export function apiErrorKindMessage(kind: ApiErrorKind): string {
  */
 export function describeApiError(e: unknown, opts?: { action?: string }): string {
   const kind = classifyApiError(e);
+  // 本文に具体的な理由（「音声出力が見つかりません」等）があればそれを優先する（round-3 N7）。
+  // 認証・到達不能系は対処が決まっているので種別の文言のまま。
+  const fromServer =
+    kind === "unauthorized" || isConnectivityKind(kind) ? null : serverErrorMessage(e);
+  if (fromServer) return opts?.action ? `${opts.action}に失敗しました: ${fromServer}` : fromServer;
   let msg = apiErrorKindMessage(kind);
   if (kind === "server" && e instanceof ApiError) msg += `（HTTP ${e.status}）`;
   if (kind === "unknown") {

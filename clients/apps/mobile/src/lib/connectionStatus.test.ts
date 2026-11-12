@@ -25,7 +25,9 @@ describe("connectionLabel", () => {
   it("トークン不一致", () => {
     const l = connectionLabel({ ...base, status: "error", errorKind: "unauthorized" });
     expect(l.text).toBe("トークン不一致");
-    expect(l.detail).toContain("トークンが違います");
+    // 状態行と同じ趣旨（不一致）を補足で繰り返さない（round-3 N2）。確認場所だけ添える。
+    expect(l.detail).toContain("設定 → モバイル / API");
+    expect(l.detail).not.toMatch(/違います|一致しません|不一致/);
   });
   it("その他のエラー / 未接続", () => {
     expect(connectionLabel({ ...base, status: "error", errorKind: "server" }).text).toBe("エラー");

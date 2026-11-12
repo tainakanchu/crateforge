@@ -15,6 +15,7 @@
 import * as SecureStore from "expo-secure-store";
 import { create } from "zustand";
 
+import { trackTitle } from "../lib/format";
 import type { Track } from "../lib/types";
 import { describePlaybackError } from "../playback/errorMessage";
 
@@ -83,8 +84,10 @@ export interface PlayerState {
    * 直近の再生エラー（UI 通知用）。message は表示文言、at は発生時刻(ms)。
    * at を持たせることで「同じ文言の再発」もUI側が新規イベントとして検知できる。
    * 通知の購読側が消費したら null に戻してよい。
+   * title は失敗した曲の表示名（UI が「『曲名』を再生できませんでした」と出す用。不明なら null）。
+   * stopped は連続失敗で再生を止めた通知か（UI がまとめ表示を締める用）。
    */
-  lastError: { message: string; at: number } | null;
+  lastError: { message: string; at: number; title?: string | null; stopped?: boolean } | null;
 
   /** 現在トラック（無ければ null）。 */
   current: () => Track | null;
@@ -562,6 +565,9 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     console.warn("[playback] error:", message);
     consecutiveFailures += 1;
     const { queue, order, orderPos } = get();
+    // 失敗した曲（スキップ前の現在曲）の表示名。UI 通知に曲名を含めるため。
+    const failed = get().current();
+    const title = failed ? trackTitle(failed) : null;
     // 連続失敗が上限に達したら、無限スキップを避けて停止し通知する。
     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
       get().engine.pause();
@@ -571,6 +577,8 @@ export const usePlayer = create<PlayerState>((set, get) => ({
         lastError: {
           message: "再生できない曲が続いたため停止しました",
           at: Date.now(),
+          title,
+          stopped: true,
         },
       });
       resetFailureCount();
@@ -578,7 +586,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     }
     // (2) ユーザー通知用 state を立てる（UI が toast/alert を出す）。
     // "Playback error (code 4)" 等の生メッセージは日本語の利用者向け文言にする。
-    set({ lastError: { message: describePlaybackError(message), at: Date.now() } });
+    set({ lastError: { message: describePlaybackError(message), at: Date.now(), title } });
     // (3) 自動で次の曲へスキップ。次が無い（単曲/末尾 repeat off）なら停止。
     const hasNext = get().repeat === "all" || orderPos + 1 < order.length;
     if (hasNext && queue.length > 0) {

@@ -5,6 +5,7 @@
 import {
   ApiError,
   type Track,
+  describeApiError,
   trackArtist,
   trackAlbumArtist,
   ratingToHalfStars,
@@ -19,6 +20,7 @@ import { router } from "expo-router";
 
 import { type ActionSheetAction, showActionSheet } from "@/components/ActionSheet";
 import { showToast } from "@/components/Toast";
+import { albumHref } from "@/lib/albumHref";
 
 import { COMMON_TRIAGE_TAGS, REVIEW_LATER_TAG } from "@/features/triage/commonTags";
 import { usePendingEdits } from "@/store/pendingEdits";
@@ -61,6 +63,12 @@ export function showTrackMenu(track: Track): void {
       label: "アーティストを見る",
       onPress: () => router.push(`/artist/${encodeURIComponent(artistName)}`),
     });
+  }
+
+  // アルバムを見る（album 名があれば。アルバム詳細はオフラインでも DL 済みの曲を出せる。round-3 N4）。
+  const albumName = track.album?.trim() ? track.album : null;
+  if (albumName) {
+    actions.push({ label: "アルバムを見る", onPress: () => router.push(albumHref(albumName)) });
   }
 
   // アルバムを保存（オンライン かつ album があるとき）。
@@ -175,7 +183,7 @@ async function applyReviewLater(track: Track): Promise<void> {
   showToast("オフライン: 再接続時に「あとで聴く」を同期します");
 }
 
+// API の生本文（{"error":...} / "HTTP 500"）を出さず、日本語の理由にする（round-3 N7）。
 function errorMessage(e: unknown): string {
-  if (e instanceof Error) return e.message;
-  return String(e);
+  return describeApiError(e);
 }

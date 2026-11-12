@@ -1,7 +1,7 @@
 // 「デスクトップで再生」: 曲リストを PC 側の再生キューに載せて指定位置から再生する。
 // remoteSetQueue(ids, start, { play: true })（新しいホスト）。古いホストは play を無視してキュー置換のみ。
 
-import { type Track, useConnection } from "@crateforge/core";
+import { type Track, describeApiError, useConnection } from "@crateforge/core";
 
 import { showActionSheet } from "@/components/ActionSheet";
 import { showToast } from "@/components/Toast";
@@ -22,7 +22,8 @@ export async function playOnDesktop(tracks: Track[], startIndex = 0): Promise<bo
     showToast("デスクトップで再生を開始しました");
     return true;
   } catch (e) {
-    showToast(`デスクトップで再生できませんでした${e instanceof Error ? `（${e.message}）` : ""}`, "error");
+    // 生の本文（{"error":...}）を出さず、日本語の理由にする（round-3 N7）。
+    showToast(`デスクトップで再生できませんでした: ${describeApiError(e)}`, "error");
     return false;
   }
 }

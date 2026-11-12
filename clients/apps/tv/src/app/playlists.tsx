@@ -157,7 +157,8 @@ export default function PlaylistsScreen() {
         // 詳細: プレイリスト内の曲を縦リスト表示。
         <LibraryList
           data={tracks}
-          keyExtractor={(t) => String(t.trackId)}
+          // 同じ曲を 2 回含むプレイリストで key が重複しないよう位置を添える（round-3 N6）。
+          keyExtractor={(t, index) => `${t.trackId}-${index}`}
           isLoading={tracksQuery.isLoading}
           isError={tracksQuery.isError}
           errorMessage="曲の読み込みに失敗しました"

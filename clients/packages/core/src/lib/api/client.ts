@@ -45,6 +45,27 @@ export interface Connection {
 }
 
 /** HTTP エラー。status とサーバーメッセージを保持する。 */
+/**
+ * エラー応答の本文から表示用の文言を取り出す。`{"error": "..."}` / `{"message": "..."}` は中身、
+ * それ以外（プレーンテキスト・解釈できない JSON）は本文をそのまま返す。
+ */
+export function extractErrorBodyMessage(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const body = JSON.parse(trimmed) as unknown;
+      if (body && typeof body === "object") {
+        const { error, message } = body as { error?: unknown; message?: unknown };
+        if (typeof error === "string" && error.trim() !== "") return error.trim();
+        if (typeof message === "string" && message.trim() !== "") return message.trim();
+      }
+    } catch {
+      // JSON として読めなければ本文のまま。
+    }
+  }
+  return text;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -209,7 +230,8 @@ export class ApiClient {
         if (text) {
           if (/^\s*</.test(text)) html = true;
           // HTML 本文をそのままメッセージに載せない（UI に生 HTML が出るのを防ぐ）。
-          if (!html) msg = text;
+          // JSON の `{"error": "..."}` は中身の文言だけを取り出す（round-3 N7）。
+          if (!html) msg = extractErrorBodyMessage(text);
         }
       } catch {
         // ignore

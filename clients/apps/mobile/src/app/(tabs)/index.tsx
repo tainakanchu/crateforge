@@ -27,7 +27,7 @@ import { useTracks, useGenres, useAlbums, useArtists, BROWSE_LIMIT } from "@/fea
 import GenreChips from "@/features/browse/GenreChips";
 import AlbumRow from "@/features/browse/AlbumRow";
 import ArtistRow from "@/features/browse/ArtistRow";
-import { usePullToRefresh, useRefetchStaleOnFocus } from "@/hooks/use-refresh";
+import { LIGHT_LIST_FRESH_MS, usePullToRefresh, useRefetchStaleOnFocus } from "@/hooks/use-refresh";
 
 type Mode = "tracks" | "albums" | "artists";
 
@@ -115,7 +115,15 @@ export default function LibraryScreen() {
     [mode, tracksQuery, albumsQuery, artistsQuery, genresQuery],
   );
   const { refreshing, onRefresh } = usePullToRefresh(refetchActive);
-  useRefetchStaleOnFocus();
+  // タブに戻ったら表示中モードの一覧だけ取り直す（他タブのクエリは対象外。ジャンルは曲モードのみ表示。round-3 N5）。
+  // アルバム/アーティストは軽いので 10 秒の鮮度閾値、全曲一覧は従来どおり stale（5 分）のときだけ。
+  useRefetchStaleOnFocus(
+    mode === "tracks"
+      ? [{ queryKey: ["tracks"] }, { queryKey: ["genres"] }]
+      : mode === "albums"
+        ? [{ queryKey: ["albums"], freshMs: LIGHT_LIST_FRESH_MS }]
+        : [{ queryKey: ["artists"], freshMs: LIGHT_LIST_FRESH_MS }],
+  );
   const refreshControl = (
     <RefreshControl
       refreshing={refreshing}

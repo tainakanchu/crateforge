@@ -20,10 +20,16 @@ import {
   useRemoteCommands,
 } from "@/features/remote/hooks";
 import SeekBar from "@/features/remote/SeekBar";
+import { disconnectedBody } from "@/lib/connectionStatus";
 import ModeControls from "@/features/remote/ModeControls";
 
 export default function RemoteScreen() {
   const client = useConnection((s) => s.client);
+  const connStatus = useConnection((s) => s.status);
+  const connErrorKind = useConnection((s) => s.errorKind);
+  const connChecking = useConnection((s) => s.checking);
+  const connLastOkAt = useConnection((s) => s.lastOkAt);
+  const connBaseUrl = useConnection((s) => s.baseUrl);
   // タブが裏に回っている間・アプリがバックグラウンドの間はポーリングしない。
   const active = usePollingActive();
   const state = useRemoteState(active);
@@ -62,11 +68,19 @@ export default function RemoteScreen() {
   }, [state.data?.currentTrackId, tracks, rows, currentIndex]);
 
   if (!client) {
+    // 本文はバナーと矛盾しないよう状態で出し分ける（オフライン中に「接続してください」と出さない。round-3 N2）。
+    const body = disconnectedBody({
+      status: connStatus,
+      errorKind: connErrorKind,
+      checking: connChecking,
+      lastOkAt: connLastOkAt,
+      baseUrl: connBaseUrl,
+    });
     return (
       <Screen>
         {/* 未接続の理由 1 行 + 復帰導線（トークン再入力 / 再試行 / 接続画面へ）。 */}
         <ConnectionNotice />
-        <EmptyView message="サーバーに接続してください" icon="cloud-offline-outline" />
+        <EmptyView message={body.message} icon={body.icon} />
       </Screen>
     );
   }

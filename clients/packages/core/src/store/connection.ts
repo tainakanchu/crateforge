@@ -51,7 +51,7 @@ export interface ConnectionState {
   /** 最後に疎通確認が成功した時刻（epoch ms）。 */
   lastOkAt: number | null;
 
-  /** 切断時に残した接続先（接続画面の初期表示用）。接続成功/全破棄で null。 */
+  /** 切断時・接続失敗時に残した接続先（接続画面の初期表示用）。接続成功/全破棄で null。 */
   lastBaseUrl: string | null;
   lastToken: string | null;
 
@@ -230,7 +230,19 @@ export const useConnection = create<ConnectionState>((set, get) => {
         });
         return true;
       } catch (e) {
-        set(failState(e));
+        // 失敗しても入力した接続先は退避して残す（再起動後も接続画面に入力済みで出す。round-3 N3）。
+        // 自動再接続の対象（KEY_URL）にはしない。接続が成功したら persistConnection が消す。
+        set({ ...failState(e), lastBaseUrl: baseUrl, lastToken: token });
+        try {
+          await Promise.all([
+            SecureStore.setItemAsync(KEY_LAST_URL, baseUrl),
+            token
+              ? SecureStore.setItemAsync(KEY_LAST_TOKEN, token)
+              : SecureStore.deleteItemAsync(KEY_LAST_TOKEN),
+          ]);
+        } catch (persistError) {
+          console.warn("[connection] remember failed target failed:", persistError);
+        }
         return false;
       }
     },
