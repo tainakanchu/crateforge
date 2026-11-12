@@ -81,7 +81,7 @@ While casting, the button is highlighted, and states such as connecting / reconn
 - The PC and the cast device must be on the **same LAN**.
 - Crateforge's **built-in API server must be running with "LAN exposure" enabled**, so the cast device can fetch the audio from the PC.
   If it is off when you pick a device, a **confirmation dialog** appears and LAN exposure is turned on only if you agree (it is never exposed without asking).
-  You can turn it off again at any time in [Settings → AI integration / API](../api-server/).
+  You can turn it off again at any time in [Settings → Mobile / API](../api-server/).
 - mDNS (multicast) must get through. In the following cases the device may not be found or may fail to connect:
   - The router has **AP isolation** on, or the PC is on a different network such as a guest Wi-Fi
   - A firewall blocks **UDP 5353 (mDNS)** or **inbound connections on the API port (default 8787)**
@@ -151,7 +151,7 @@ Audition mode is session-only and is not carried over to the next launch.
 
 The **Up Next** in the right rail is the queue of what will be played next.
 
-- **"Play Next"** in the context menu inserts the selected tracks (multiple supported, selection order preserved)
+- **"次に再生" (Play Next)** in the context menu inserts the selected tracks (multiple supported, selection order preserved)
   right after the currently playing track.
 - The **"×"** that appears on row hover removes from the queue, and you can reorder with **drag and drop**.
 - The header shows the **count, total time, and a shuffle badge**.
@@ -169,9 +169,9 @@ The right rail has two tab groups: **Now / Up Next** and **Crate / Similar**.
 - Drag its left edge to **resize** (280–560px); double-click resets it to the default (348px). The width is persisted.
 - The **Split** button shows Crate and Similar stacked at the same time. Split is **only available on the Crate / Similar tabs**
   and is shown disabled on the Now / Up Next tabs.
-- **Tabs never switch on their own.** Adding tracks to the Crate or running "Find similar" keeps you on the tab you were looking at.
+- **Tabs never switch on their own.** Adding tracks to the Crate or running "似た曲を探す" (Find similar) keeps you on the tab you were looking at.
   Instead, the **Crate tab gets a count badge** and the **Similar tab gets a dot** showing that a base track is pinned.
-  (The context menu's "Find similar" and `Ctrl/Cmd + Shift + S` are explicit actions, so they do move to the Similar tab.)
+  (The context menu's "似た曲を探す" (Find similar) and `Ctrl/Cmd + Shift + S` are explicit actions, so they do move to the Similar tab.)
 - `Ctrl + ]` shows the right rail, and `Ctrl + 1`–`4` switch to the Now / Up Next / Crate / Similar tabs.
 
 ## Crate (DJ curation)
@@ -242,5 +242,5 @@ The **Now Playing** in the right rail shows **Album / Artist / Genre / BPM / Key
 BPM, Key (Camelot), and Energy are shown for [analyzed](../dj-analysis/) tracks and help you decide on transitions.
 
 The **Similar** tab presents "next moves" — Camelot-key compatible + close in tempo — for the playing track
-(or via right-click → "Find similar").
+(or via right-click → "似た曲を探す" (Find similar)).
 See [similarity-based curation (Similar Digging)](../dj-analysis/) for how to dig further.

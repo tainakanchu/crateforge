@@ -75,6 +75,30 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
   const [preview, setPreview] = useState<EvaluationResult | null>(null);
   const [applyResult, setApplyResult] = useState<ApplyResult | null>(null);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
+  // Preview した時点の YAML。編集後は再 Preview するまで Apply させない。
+  const [previewYaml, setPreviewYaml] = useState<string | null>(null);
+  // Apply 前の確認 (アプリ内ダイアログ)。
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const previewStale = preview != null && previewYaml !== yamlText;
+  const applyDisabledReason = !preview
+    ? "先に「プレビュー」で結果を確認してください"
+    : previewStale
+      ? "YAML が変更されました。もう一度「プレビュー」してください"
+      : null;
+
+  // Esc で閉じる (確認ダイアログが開いていればそちらだけ閉じる)。
+  // エディタが Esc を使った (補完を閉じた等で preventDefault 済み) ときは閉じない。
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      if (confirmOpen) setConfirmOpen(false);
+      else if (!busy) onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isOpen, confirmOpen, busy, onClose]);
 
   // Restore last YAML across opens (session-local).
   useEffect(() => {
@@ -94,7 +118,7 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
     setErrorMsg("");
     try {
       await rulesApi.validateRules(yamlText);
-      setErrorMsg("✓ Syntactically valid.");
+      setErrorMsg("✓ 構文に問題はありません。");
     } catch (e) {
       setErrorMsg(`${e}`);
     } finally {
@@ -109,8 +133,10 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
     try {
       const result = await rulesApi.previewRules(yamlText);
       setPreview(result);
+      setPreviewYaml(yamlText);
     } catch (e) {
       setPreview(null);
+      setPreviewYaml(null);
       setErrorMsg(`${e}`);
     } finally {
       setBusy(false);
@@ -118,13 +144,7 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
   }, [yamlText]);
 
   const handleApply = useCallback(async () => {
-    if (
-      !confirm(
-        "Apply rules to the library?\n\nEach rule is saved as a smart playlist under the namespace folder. Playlists at the same path are updated in place (their IDs and references are kept). If `removeExistingNamespace` is true (default), playlists and folders under the namespace that are not in the rules will be removed.",
-      )
-    ) {
-      return;
-    }
+    setConfirmOpen(false);
     setBusy(true);
     setErrorMsg("");
     try {
@@ -147,9 +167,9 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
       const content = await rulesApi.readTextFile(path);
       setYamlText(content);
       setCurrentPath(path);
-      setErrorMsg(`Loaded ${path}`);
+      setErrorMsg(`読み込みました: ${path}`);
     } catch (e) {
-      setErrorMsg(`Failed to load: ${e}`);
+      setErrorMsg(`読み込みに失敗しました: ${e}`);
     }
   }, []);
 
@@ -164,9 +184,9 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
     try {
       await rulesApi.writeTextFile(path, yamlText);
       setCurrentPath(path);
-      setErrorMsg(`Saved → ${path}`);
+      setErrorMsg(`保存しました: ${path}`);
     } catch (e) {
-      setErrorMsg(`Failed to save: ${e}`);
+      setErrorMsg(`保存に失敗しました: ${e}`);
     }
   }, [yamlText, currentPath]);
 
@@ -179,23 +199,26 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
     try {
       await rulesApi.writeTextFile(path, yamlText);
       setCurrentPath(path);
-      setErrorMsg(`Saved → ${path}`);
+      setErrorMsg(`保存しました: ${path}`);
     } catch (e) {
-      setErrorMsg(`Failed to save: ${e}`);
+      setErrorMsg(`保存に失敗しました: ${e}`);
     }
   }, [yamlText, currentPath]);
 
   if (!isOpen) return null;
 
+  const isOkMsg = (m: string) =>
+    m.startsWith("✓") || m.startsWith("読み込みました") || m.startsWith("保存しました");
+
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={busy ? undefined : onClose}>
       <div className="modal rules-panel" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>
-            <Icon name="settings" size={16} /> Playlist Rules
+            <Icon name="settings" size={16} /> プレイリストルール (Rules)
             {currentPath && <span className="rules-path"> — {currentPath}</span>}
           </h2>
-          <button className="modal-close" onClick={onClose}>
+          <button className="modal-close" onClick={onClose} title="閉じる (Esc)">
             <Icon name="x" size={16} />
           </button>
         </div>
@@ -203,28 +226,42 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
         <div className="modal-body rules-body">
           <div className="rules-toolbar">
             <button className="toolbar-btn" onClick={handleOpen} disabled={busy}>
-              <Icon name="folderOpen" size={14} /> Open
+              <Icon name="folderOpen" size={14} /> 開く
             </button>
             <button className="toolbar-btn" onClick={handleSave} disabled={busy}>
-              <Icon name="save" size={14} /> Save
+              <Icon name="save" size={14} /> 保存
             </button>
             <button className="toolbar-btn" onClick={handleSaveAs} disabled={busy}>
-              <Icon name="save" size={14} /> Save As…
+              <Icon name="save" size={14} /> 名前を付けて保存…
             </button>
             <span className="rules-toolbar-sep" />
             <button className="toolbar-btn" onClick={handleValidate} disabled={busy}>
-              <Icon name="check" size={14} /> Validate
+              <Icon name="check" size={14} /> 構文チェック
             </button>
             <button className="toolbar-btn primary" onClick={handlePreview} disabled={busy}>
-              <Icon name="eye" size={14} /> Preview
+              <Icon name="eye" size={14} /> プレビュー
             </button>
-            <button className="toolbar-btn" onClick={handleApply} disabled={busy || !preview}>
-              <Icon name="play" size={14} fill="currentColor" stroke={0} /> Apply to Library
+            <button
+              className="toolbar-btn"
+              onClick={() => setConfirmOpen(true)}
+              disabled={busy || applyDisabledReason != null}
+              title={applyDisabledReason ?? "プレビューの内容でライブラリに適用する"}
+            >
+              <Icon name="play" size={14} fill="currentColor" stroke={0} /> ライブラリに適用…
             </button>
+            {applyDisabledReason && (
+              <span className="rules-apply-hint">{applyDisabledReason}</span>
+            )}
+          </div>
+
+          <div className="rules-help">
+            各ルールは namespace フォルダの下にスマートプレイリストとして保存されます。
+            <code>rating</code> は 0–100 で指定します（★1 = 20、★3 = 60、★4 = 80、★5 = 100。半星は 10 刻み）。
+            <code>bpm</code> はタグの BPM、無ければ解析値で判定します。
           </div>
 
           {errorMsg && (
-            <div className={`rules-msg ${errorMsg.startsWith("✓") || errorMsg.startsWith("Loaded") || errorMsg.startsWith("Saved") ? "ok" : "err"}`}>
+            <div className={`rules-msg ${isOkMsg(errorMsg) ? "ok" : "err"}`}>
               {errorMsg.startsWith("✓")
                 ? <><Icon name="check" size={13} style={{ verticalAlign: "-2px" }} /> {errorMsg.slice(1).trimStart()}</>
                 : errorMsg}
@@ -233,8 +270,8 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
 
           {applyResult && (
             <div className="rules-msg ok" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <Icon name="checkCircle" size={14} style={{ flexShrink: 0 }} /> Applied: {applyResult.generatedPlaylistCount} smart playlists, {applyResult.generatedFolderCount} folders
-              {" "}({formatChanges(applyResult)})
+              <Icon name="checkCircle" size={14} style={{ flexShrink: 0 }} /> 適用しました: スマートプレイリスト {applyResult.generatedPlaylistCount} 件・フォルダ {applyResult.generatedFolderCount} 件
+              {" "}（{formatChanges(applyResult)}）
             </div>
           )}
           {applyResult && <Warnings warnings={applyResult.warnings} />}
@@ -260,20 +297,25 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
             <div className="rules-preview">
               {!preview ? (
                 <div className="rules-preview-empty">
-                  Click <strong>Preview</strong> to evaluate rules against the current library.
+                  <strong>プレビュー</strong> を押すと、今のライブラリでルールを評価した結果をここに表示します。
                 </div>
               ) : (
                 <>
+                  {previewStale && (
+                    <div className="rules-msg warn">
+                      YAML が変更されています。この結果は変更前のものです。もう一度プレビューしてください。
+                    </div>
+                  )}
                   <div className="rules-stats" style={{ flexWrap: "wrap" }}>
-                    <span><strong>{preview.playlistCount}</strong> smart playlists</span>
+                    <span>スマートプレイリスト <strong>{preview.playlistCount}</strong></span>
                     <span>·</span>
-                    <span><strong>{preview.folderCount}</strong> folders</span>
+                    <span>フォルダ <strong>{preview.folderCount}</strong></span>
                     <span>·</span>
-                    <span><strong>{preview.referencedTrackCount}</strong> tracks</span>
+                    <span>曲 <strong>{preview.referencedTrackCount}</strong></span>
                     {!applyResult && (
                       <>
                         <span>·</span>
-                        <span>Apply will {formatChanges(preview)}</span>
+                        <span>適用すると {formatChanges(preview)}</span>
                       </>
                     )}
                   </div>
@@ -285,13 +327,69 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
           </div>
         </div>
       </div>
+
+      {confirmOpen && preview && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => {
+            e.stopPropagation();
+            setConfirmOpen(false);
+          }}
+        >
+          <div className="modal" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>
+                <Icon name="play" size={16} /> ライブラリに適用
+              </h2>
+              <button className="modal-close" onClick={() => setConfirmOpen(false)}>
+                <Icon name="x" size={16} />
+              </button>
+            </div>
+            <div
+              className="modal-body"
+              style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}
+            >
+              <div>プレビューの内容でライブラリに適用します。</div>
+              <ul className="rules-confirm-counts">
+                <li>
+                  新規作成 <strong>{preview.createdCount}</strong> 件
+                </li>
+                <li>
+                  更新 <strong>{preview.updatedCount}</strong> 件（ID・参照はそのまま）
+                </li>
+                <li className={preview.removedCount > 0 ? "danger" : undefined}>
+                  削除 <strong>{preview.removedCount}</strong> 件
+                </li>
+              </ul>
+              {preview.removedCount > 0 && (
+                <div style={{ fontSize: 12, color: "#ef9d9d" }}>
+                  namespace フォルダ配下で、ルールに無いプレイリスト / フォルダは削除されます
+                  （<code>removeExistingNamespace: false</code> で残せます）。
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button className="toolbar-btn" onClick={() => setConfirmOpen(false)}>
+                  キャンセル
+                </button>
+                <button
+                  className={"toolbar-btn " + (preview.removedCount > 0 ? "danger" : "primary")}
+                  onClick={() => void handleApply()}
+                  autoFocus
+                >
+                  適用する
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-/// 作成 / 更新 / 削除の件数 ("2 created, 5 updated, 1 removed")。
+/// 作成 / 更新 / 削除の件数 ("作成 2・更新 5・削除 1")。
 function formatChanges(r: { createdCount: number; updatedCount: number; removedCount: number }): string {
-  return `${r.createdCount} created, ${r.updatedCount} updated, ${r.removedCount} removed`;
+  return `作成 ${r.createdCount}・更新 ${r.updatedCount}・削除 ${r.removedCount}`;
 }
 
 /// 変換・適用時の警告 (スマート条件で再現しきれない指定など)。
@@ -300,7 +398,7 @@ function Warnings({ warnings }: { warnings: string[] }) {
   return (
     <div className="rules-msg warn">
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-        <Icon name="warning" size={13} style={{ flexShrink: 0 }} /> {warnings.length} warning{warnings.length > 1 ? "s" : ""}
+        <Icon name="warning" size={13} style={{ flexShrink: 0 }} /> 警告 {warnings.length} 件
       </div>
       <ul className="rules-warnings">
         {warnings.map((w, i) => (

@@ -13,6 +13,7 @@ import { TrackContextMenu } from "./TrackContextMenu";
 import { DeleteTracksDialog } from "./DeleteTracksDialog";
 import { GenreTagInput } from "./GenreTagInput";
 import { bpmColor } from "../lib/art";
+import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import { formatChannels, formatFileSize, formatSampleRate } from "../lib/techMeta";
 import {
   anchorsForDrop,
@@ -22,6 +23,14 @@ import {
 import { FIELD_DEFS } from "../types";
 import type { Track, FieldKey, Playlist } from "../types";
 import { describeKey, effectiveKeyCamelot, formatKey, isKeyOverridden } from "../lib/keyNotation";
+import { EmptyState } from "./EmptyState";
+import { joinGenre, splitGenre } from "../lib/genre";
+
+// 曲名列の最小幅 (未固定 = flex のとき)。styles.css の .cb-id / .cb-h-id と揃える。
+const NAME_MIN_WIDTH = 180;
+// .cb-row / .cb-head の左右パディングと、末尾の追加ボタン列 (.cb-add-cell) の幅。
+const ROW_SIDE_PADDING = 18;
+const ADD_CELL_WIDTH = 40;
 
 function formatTime(ms: number | null): string {
   if (!ms) return "";
@@ -146,6 +155,13 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const nameResizeRef = useRef<{ startX: number; startW: number } | null>(null);
   // 曲名列の最小幅。カバー/曲名が潰れないよう他列より広めにクランプ。
   const clampNameWidth = (w: number) => Math.max(160, Math.min(900, w));
+  // 行の最小幅 = 左右パディング + 曲名列 (未固定なら最小 NAME_MIN_WIDTH) + 各列 + 追加ボタン列。
+  // 一覧の幅がこれを下回ったら曲名列を潰さずに横スクロールさせる (列を増やしたとき / 最小ウィンドウ)。
+  const rowMinWidth =
+    ROW_SIDE_PADDING * 2 +
+    (nameColWidth ?? NAME_MIN_WIDTH) +
+    fields.reduce((sum, id) => sum + (fieldWidths[id] ?? FIELD_DEFS[id].width), 0) +
+    ADD_CELL_WIDTH;
   const nameHeadRef = useRef<HTMLSpanElement>(null);
   const onNameResizePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
@@ -398,7 +414,8 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const [genreSuggestions, setGenreSuggestions] = useState<string[]>([]);
 
   const inCrate = useMemo(() => new Set(crate.map((t) => t.trackId)), [crate]);
-  const showArtist = rowH >= 50;
+  // 行が高いときは曲名の下にアーティストを出す (Artist 列を表示中なら重複するので出さない)。
+  const showArtist = rowH >= 50 && !fields.includes("artist");
   const nameFontSize = rowH < 44 ? 13 : 14.5;
 
   const rowVirtualizer = useVirtualizer({
@@ -495,15 +512,17 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       const ids = ctxIds();
       if (ids.length === 0) return;
       try {
-        await playlistsApi.addTracksToPlaylist(playlistId, ids);
+        const added = await playlistsApi.addTracksToPlaylist(playlistId, ids);
         pushRecentPlaylist(playlistId);
         onTracksChanged();
+        const name = playlists.find((p) => p.playlistId === playlistId)?.name ?? "プレイリスト";
+        pushToast("success", `「${name}」に ${added} 曲を追加しました`);
       } catch (err) {
         pushToast("error", `追加に失敗しました: ${err}`);
       }
       setContextMenu(null);
     },
-    [ctxIds, pushRecentPlaylist, onTracksChanged, pushToast],
+    [ctxIds, pushRecentPlaylist, onTracksChanged, pushToast, playlists],
   );
 
   const handleAddSelectionToCrate = useCallback(() => {
@@ -640,7 +659,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         trackId: track.trackId,
         x: e.clientX,
         y: e.clientY,
-        tags: (track.genre || "").split(/\s+/).filter(Boolean),
+        tags: splitGenre(track.genre),
       });
     },
     [loadGenreSuggestions],
@@ -648,7 +667,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const saveGenreEdit = useCallback(async () => {
     if (!genreEdit) return;
-    const next = genreEdit.tags.join(" ");
+    const next = joinGenre(genreEdit.tags);
     setGenreEdit(null);
     try {
       await libraryApi.updateTrack(genreEdit.trackId, { genre: next });
@@ -691,6 +710,27 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   }, [pushToast]);
 
   const closeMenu = useCallback(() => setContextMenu(null), []);
+
+  // Delete (macOS は Cmd+Backspace も) で選択中の曲の削除確認ダイアログを開く。
+  // 入力欄にフォーカスがあるとき・モーダル表示中は何もしない。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const isDeleteKey = e.key === "Delete" || (e.metaKey && e.key === "Backspace");
+      if (!isDeleteKey) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable) return;
+      if (document.querySelector(".modal-overlay")) return;
+      if (selectedTrackIds.size === 0) return;
+      const sel = tracks.filter((t) => selectedTrackIds.has(t.trackId));
+      if (sel.length === 0) return;
+      e.preventDefault();
+      setContextMenu(null);
+      setDeleteTargets(sel);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tracks, selectedTrackIds]);
 
   // アプリケーションキー / Shift+F10 でコンテキストメニューを開く（D）
   useEffect(() => {
@@ -850,11 +890,11 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     .map((id) => targetPlaylists.find((p) => p.playlistId === id))
     .filter((p): p is Playlist => Boolean(p));
   const ctxGenreTags = ctxTrack?.genre
-    ? ctxTrack.genre.split(/\s+/).filter(Boolean)
+    ? splitGenre(ctxTrack.genre)
     : [];
   const ctxHeaderLabel =
     selectedTrackIds.size > 1
-      ? `${selectedTrackIds.size} tracks selected`
+      ? `${selectedTrackIds.size} 曲を選択中`
       : ctxTrack?.name || "(unknown)";
 
   const renderField = (id: FieldKey, t: Track, rowIndex: number): React.ReactNode => {
@@ -862,12 +902,25 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       case "rowIndex":
         // 現在の表示順での連番 (1 始まり)。アルバムの trackNumber とは別物。
         return <span className="cb-fmono cb-dim">{rowIndex + 1}</span>;
-      case "bpm":
-        return t.bpm != null ? (
-          <span className="cb-fmono" style={{ color: bpmColor(t.bpm), fontWeight: 650 }}>
-            {t.bpm}
+      case "bpm": {
+        // 実効 BPM (タグ ?? 解析値)。解析値は薄く表示してツールチップで区別する。
+        const b = effectiveBpm(t, analysisByTrack.get(t.trackId));
+        return b ? (
+          <span
+            className="cb-fmono"
+            style={{
+              color: bpmColor(b.value),
+              fontWeight: 650,
+              opacity: b.fromAnalysis ? 0.6 : undefined,
+            }}
+            title={b.fromAnalysis ? ANALYZED_BPM_TITLE : undefined}
+          >
+            {b.value}
           </span>
         ) : null;
+      }
+      case "artist":
+        return <span className="cb-v ell" title={t.artist || ""}>{t.artist || ""}</span>;
       case "album":
         return <span className="cb-v ell" title={t.album || ""}>{t.album || ""}</span>;
       case "albumArtist":
@@ -875,10 +928,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       case "genre":
         return (
           <span className="cb-tags">
-            {(t.genre || "")
-              .split(/\s+/)
-              .filter(Boolean)
-              .map((g) => (
+            {splitGenre(t.genre).map((g) => (
                 <span
                   key={g}
                   className="cb-tag"
@@ -986,7 +1036,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   return (
     <div className="cb-list" ref={parentRef} onScroll={handleScroll} onClick={closeMenu}>
       {/* Column header */}
-      <div className="cb-head" ref={headRef}>
+      <div className="cb-head" ref={headRef} style={{ minWidth: rowMinWidth }}>
         <span
           ref={nameHeadRef}
           className={"cb-h-id sortable" + (sortField === "name" ? " sorted" : "")}
@@ -1082,7 +1132,13 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       </div>
 
       {/* Rows */}
-      <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
+      <div
+        style={{
+          height: `${rowVirtualizer.getTotalSize()}px`,
+          position: "relative",
+          minWidth: rowMinWidth,
+        }}
+      >
         {items.map((virtualRow) => {
           const t = tracks[virtualRow.index];
           const isCurrent = playback.currentTrackId === t.trackId;
@@ -1226,9 +1282,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         </div>
       )}
       {tracks.length === 0 && !isLoading && (
-        <div className="cb-empty">
-          No tracks. Import an iTunes Library XML, rip a CD, or add files to get started.
-        </div>
+        <EmptyState />
       )}
 
       {/* Context menu */}
@@ -1279,7 +1333,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           <div className="modal" style={{ width: 360 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>
-                <Icon name="tag" size={16} /> Add genre tag
+                <Icon name="tag" size={16} /> ジャンルタグを追加
               </h2>
               <button className="modal-close" onClick={() => setShowAddTagDialog(false)}>
                 <Icon name="x" size={16} />
@@ -1290,7 +1344,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 autoFocus
                 type="text"
                 className="rip-input"
-                placeholder="e.g. House"
+                placeholder="例: Deep House"
                 value={newTag}
                 onChange={(e) => setNewTag(e.target.value)}
                 onKeyDown={(e) => {
@@ -1303,10 +1357,10 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}
               >
                 <button className="toolbar-btn" onClick={() => setShowAddTagDialog(false)}>
-                  Cancel
+                  キャンセル
                 </button>
                 <button className="toolbar-btn primary" onClick={handleApplyAddTag}>
-                  Add
+                  追加
                 </button>
               </div>
             </div>
@@ -1353,6 +1407,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
               value={genreEdit.tags}
               suggestions={genreSuggestions}
               placeholder="タグを入力して Enter / 候補から選択"
+              allowSpaces
               onChange={(tags) => setGenreEdit((g) => (g ? { ...g, tags } : g))}
             />
             <div className="genre-pop-foot">

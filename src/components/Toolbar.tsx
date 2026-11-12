@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import * as libraryApi from "../api/library";
+import * as playlistsApi from "../api/playlists";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import { ColumnPicker } from "./ColumnPicker";
@@ -8,7 +9,11 @@ import { SmartRestoreDialog } from "./SmartRestoreDialog";
 import type { LibraryStats, SortField, ViewMode } from "../types";
 import { ALBUM_SORT_FIELDS, ARTIST_SORT_FIELDS } from "../types";
 import { AUDIO_EXTENSIONS } from "../lib/audioExtensions";
-import { importWithDuplicateCheck, summarizeImport } from "../lib/importFlow";
+import {
+  importWithDuplicateCheck,
+  registerImportHandler,
+  summarizeImport,
+} from "../lib/importFlow";
 
 interface ToolbarProps {
   onLibraryChanged: () => void;
@@ -63,11 +68,22 @@ const ARTIST_SORT_LABELS: Partial<Record<SortField, string>> = {
 const ARTIST_SORT_OPTIONS: { field: SortField; label: string }[] =
   ARTIST_SORT_FIELDS.map((f) => ({ field: f, label: ARTIST_SORT_LABELS[f] ?? f }));
 
+// 1 文字でも検索する文字 (かな・カナ・漢字・ハングル・半角カナ)。
+const CJK_CHAR = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\uff66-\uff9f]/;
+
 // 完了 status をサブバーから自動で消すまでの時間 (#152)。
 const STATUS_CLEAR_MS = 8000;
 
-// ツールバー(行)の実効幅がこれを下回ったら、右側のアクション群を ⋯ メニューに畳む。
+// ツールバー(行)の実効幅 (= 右ペイン・サイドバーを除いた実際に使える幅) に応じて段階的に畳む。
+// - COMPACT_WIDTH 未満: 右側のアクション群を ⋯ メニューに畳む。
+// - NARROW_WIDTH 未満: 表示切替・列ボタンをアイコンのみ、ソートは項目名だけにする。
+// - TINY_WIDTH 未満: ソートも方向矢印だけにする (項目名はツールチップ)。
+// 横スクロールはしない (WebKitGTK ではスクロールバー領域がクリックを奪うため)。
+// プレイリスト表示中は検索範囲の切替 (このプレイリスト / ライブラリ全体) が増える分だけ早めに畳む。
 const COMPACT_WIDTH = 1200;
+const NARROW_WIDTH = 900;
+const TINY_WIDTH = 640;
+const SCOPE_SEG_EXTRA = 150;
 const MORE_MENU_WIDTH = 248;
 
 // ⋯ メニューにも通常のボタンにも同じ定義から描画するためのアクション記述。
@@ -163,7 +179,8 @@ export function Toolbar({
     setStatusRaw(text);
     if (!text) return;
     const inProgress = text.endsWith("…") || text.includes("…中");
-    const isError = /error|失敗/i.test(text);
+    // 取り込み結果の「失敗 0」は失敗ではないので自動で消す。
+    const isError = /error|失敗(?!\s*0(?!\d))/i.test(text);
     if (inProgress || isError) return;
     statusTimerRef.current = window.setTimeout(() => {
       statusTimerRef.current = null;
@@ -184,8 +201,12 @@ export function Toolbar({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
-  // 幅が足りないときだけアクション群を ⋯ に畳む。
-  const [compact, setCompact] = useState(false);
+  // ツールバー行の実効幅。幅に応じてアクション群を ⋯ に畳み、ラベルを段階的に省く。
+  const [rowWidth, setRowWidth] = useState(Number.POSITIVE_INFINITY);
+  const scopeExtra = viewMode === "playlist" ? SCOPE_SEG_EXTRA : 0;
+  const compact = rowWidth < COMPACT_WIDTH;
+  const narrow = rowWidth < NARROW_WIDTH + scopeExtra;
+  const tiny = rowWidth < TINY_WIDTH + scopeExtra;
   // 検索ボックス: 表示用ローカル state（即時反映）。store への反映はデバウンス。
   const [localSearch, setLocalSearch] = useState(searchQuery);
 
@@ -197,13 +218,14 @@ export function Toolbar({
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const isListLike = viewMode !== "artists";
 
-  // ツールバー幅を監視して compact を切り替える（初回描画前に確定させたいので layout effect）。
+  // ツールバー幅を監視して畳み具合を切り替える（初回描画前に確定させたいので layout effect）。
+  // 行の幅は右ペインの表示・リサイズに追従する (grid の中央列の幅)。
   useLayoutEffect(() => {
     const el = rowRef.current;
     if (!el) return;
-    setCompact(el.clientWidth < COMPACT_WIDTH);
+    setRowWidth(el.clientWidth);
     const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setCompact(e.contentRect.width < COMPACT_WIDTH);
+      for (const e of entries) setRowWidth(e.contentRect.width);
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -262,9 +284,10 @@ export function Toolbar({
     }
   }, []);
 
+  // 曲数だけでなくプレイリストの増減 (作成・削除) でも統計を取り直す。
   useEffect(() => {
     refreshStats();
-  }, [refreshStats, tracks.length]);
+  }, [refreshStats, tracks.length, playlists.length]);
 
   useEffect(() => {
     libraryApi
@@ -295,13 +318,15 @@ export function Toolbar({
       const value = e.target.value;
       // 表示は即時反映（制御入力）
       setLocalSearch(value);
-      // store 反映はデバウンス。ただし1文字のときはタイマー自体セットしない（空文字クリアは通す）。
+      // store 反映はデバウンス。英数 1 文字は候補が多すぎるので検索しないが、
+      // 前の検索結果を残さないよう検索自体は解除する。CJK は 1 文字でも意味があるので検索する。
       clearTimeout(searchTimer.current);
-      if (value.length === 1) return;
+      const trimmed = value.trim();
+      const effective = [...trimmed].length === 1 && !CJK_CHAR.test(trimmed) ? "" : value;
       searchTimer.current = setTimeout(() => {
         // 表示中のビューは変えない。プレイリスト表示中は検索スコープ
         // （このプレイリスト / ライブラリ全体）が対象を決める。
-        setSearchQuery(value);
+        setSearchQuery(effective);
       }, 300);
     },
     [setSearchQuery],
@@ -330,17 +355,17 @@ export function Toolbar({
     const path = await open({ filters: [{ name: "iTunes Library XML", extensions: ["xml"] }] });
     if (!path) return;
     setImporting(true);
-    setStatus("Importing…");
+    setStatus("取り込み中…");
     try {
       const r = await libraryApi.importLibrary(path as string);
       setStatus(
-        `Imported ${r.trackCount} tracks, ${r.playlistCount} playlists` +
-          (r.missingFiles > 0 ? ` (${r.missingFiles} missing)` : ""),
+        `${r.trackCount} 曲・${r.playlistCount} プレイリストを取り込みました` +
+          (r.missingFiles > 0 ? `（ファイルなし ${r.missingFiles} 曲）` : ""),
       );
       onLibraryChanged();
       refreshStats();
     } catch (err) {
-      setStatus(`Import error: ${err}`);
+      setStatus(`取り込みに失敗しました: ${err}`);
     } finally {
       setImporting(false);
     }
@@ -399,7 +424,7 @@ export function Toolbar({
     try {
       await runImportWithDuplicateCheck(paths as string[]);
     } catch (err) {
-      setStatus(`Import files error: ${err}`);
+      setStatus(`ファイルの取り込みに失敗しました: ${err}`);
       useStore.getState().pushToast("error", `取り込みエラー: ${err}`);
     } finally {
       setImportingFiles(false);
@@ -417,12 +442,23 @@ export function Toolbar({
     try {
       await runImportWithDuplicateCheck(paths);
     } catch (err) {
-      setStatus(`Import folder error: ${err}`);
+      setStatus(`フォルダの取り込みに失敗しました: ${err}`);
       useStore.getState().pushToast("error", `フォルダ取り込みエラー: ${err}`);
     } finally {
       setImportingFolders(false);
     }
   }, [runImportWithDuplicateCheck]);
+
+  // 空状態のボタン (EmptyState) からの取り込み要求をツールバーと同じ処理で受ける。
+  useEffect(
+    () =>
+      registerImportHandler((kind) => {
+        if (kind === "folder") void handleImportFolders();
+        else if (kind === "files") void handleImportFiles();
+        else void handleImport();
+      }),
+    [handleImportFolders, handleImportFiles, handleImport],
+  );
 
   const handleExport = useCallback(async () => {
     const path = await save({
@@ -431,14 +467,14 @@ export function Toolbar({
     });
     if (!path) return;
     setExporting(true);
-    setStatus("Exporting…");
+    setStatus("書き出し中…");
     try {
       const r = await libraryApi.exportLibrary(path);
       // 自動エクスポートの出力先として記憶する。
       setAutoExport(autoExportEnabled, path);
-      setStatus(`Exported ${r.trackCount} tracks → ${r.outputPath}`);
+      setStatus(`${r.trackCount} 曲を書き出しました → ${r.outputPath}`);
     } catch (err) {
-      setStatus(`Export error: ${err}`);
+      setStatus(`書き出しに失敗しました: ${err}`);
     } finally {
       setExporting(false);
     }
@@ -503,19 +539,51 @@ export function Toolbar({
       ? playlists.find((p) => p.playlistId === selectedPlaylistId)
       : null;
   const isSearching = !!searchQuery || filterTags.length > 0;
+  // スマートプレイリスト / フォルダの実際の曲数。playlists の trackCount は静的な
+  // playlist_tracks の行数なのでスマートでは 0 になる → 表示中にライブ評価で数える。
+  const [liveCount, setLiveCount] = useState<{ id: number; count: number } | null>(null);
+  const needsLiveCount = !!activePlaylist && (activePlaylist.isSmart || activePlaylist.isFolder);
+  const activePlaylistId = activePlaylist?.playlistId ?? null;
+  useEffect(() => {
+    if (!needsLiveCount || activePlaylistId == null) return;
+    let cancelled = false;
+    playlistsApi
+      .getPlaylistTrackCount(activePlaylistId)
+      .then((count) => {
+        if (!cancelled) setLiveCount({ id: activePlaylistId, count });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // tracks が読み直されたら (ライブラリ変更・条件編集) 数え直す。
+  }, [needsLiveCount, activePlaylistId, tracks]);
   const title = isSearching
-    ? "Search"
+    ? "検索結果"
     : activePlaylist
       ? activePlaylist.name
       : VIEW_TITLE[viewMode];
-  // Artists ビューは tracks を全件持たない (サーバ集約) ので、件数はライブラリ統計を使う。
+  // Artists ビューは tracks を全件持たない (サーバ集約) ので、件数はライブラリ統計を使う
+  // (アーティスト数を出す)。スマート / フォルダはライブ評価した曲数。
+  const playlistCount =
+    activePlaylist && needsLiveCount
+      ? liveCount?.id === activePlaylist.playlistId
+        ? liveCount.count
+        : null
+      : (activePlaylist?.trackCount ?? null);
   const subCount = isSearching
-    ? tracks.length.toLocaleString()
+    ? `${tracks.length.toLocaleString()} 曲`
     : activePlaylist
-      ? activePlaylist.trackCount.toLocaleString()
-      : (viewMode === "library" || viewMode === "artists") && stats
-        ? stats.trackCount.toLocaleString()
-        : tracks.length.toLocaleString();
+      ? playlistCount != null
+        ? `${playlistCount.toLocaleString()} 曲`
+        : "…"
+      : viewMode === "artists"
+        ? stats
+          ? `${stats.artistCount.toLocaleString()} アーティスト`
+          : "…"
+        : viewMode === "library" && stats
+          ? `${stats.trackCount.toLocaleString()} 曲`
+          : `${tracks.length.toLocaleString()} 曲`;
 
   // Albums モードはアルバム粒度のソートのみ (ALBUM_SORT_FIELDS の順序を維持)。
   const albumSortOptions = ALBUM_SORT_FIELDS.map(
@@ -559,9 +627,9 @@ export function Toolbar({
     },
     {
       id: "import",
-      label: "Import XML",
+      label: "iTunes XML を取り込む",
       icon: "download",
-      title: "Import an existing iTunes Library.xml",
+      title: "既存の iTunes Library.xml を取り込む",
       onClick: handleImport,
       disabled: importing,
       primary: true,
@@ -577,15 +645,15 @@ export function Toolbar({
     },
     {
       id: "importFiles",
-      label: "Add Files",
+      label: "ファイルを追加",
       icon: "filePlus",
-      title: "Add audio files to the library",
+      title: "音楽ファイルをライブラリに追加",
       onClick: handleImportFiles,
       disabled: importingFiles,
     },
     {
       id: "importFolders",
-      label: "Add Folder",
+      label: "フォルダを追加",
       icon: "folder",
       title: "フォルダを丸ごと取り込む (サブフォルダも再帰的に走査)",
       onClick: handleImportFolders,
@@ -593,16 +661,16 @@ export function Toolbar({
     },
     {
       id: "rip",
-      label: "Rip CD",
+      label: "CD を取り込む",
       icon: "disc",
-      title: "Rip an audio CD",
+      title: "音楽 CD を取り込む (リッピング)",
       onClick: onOpenRipDialog,
     },
     {
       id: "rules",
-      label: "Rules",
+      label: "プレイリストルール (Rules)",
       icon: "layers",
-      title: "Build playlists from YAML rules",
+      title: "YAML のルールからスマートプレイリストを作る",
       onClick: onOpenRulesPanel,
     },
     {
@@ -617,9 +685,9 @@ export function Toolbar({
     },
     {
       id: "export",
-      label: "Export XML",
+      label: "iTunes XML に書き出し",
       icon: "upload",
-      title: "Export library to iTunes-compatible XML",
+      title: "ライブラリを iTunes 互換の XML に書き出す",
       onClick: handleExport,
       disabled: exporting || (stats?.trackCount ?? 0) === 0,
     },
@@ -649,8 +717,10 @@ export function Toolbar({
   return (
     <>
       <div className="cb-tb">
-        {/* 狭い幅では横スクロールさせ、どのボタンも必ず届くようにする。 */}
+        {/* 横スクロールはさせず、幅に応じて段階的に畳む。アクション群は右端に固定し、
+            はみ出す場合は左側 (検索・表示切替) の側を詰める。 */}
         <div className="cb-tb-row" ref={rowRef}>
+          <div className="cb-tb-main">
           <div className="cb-sbox" style={{ position: "relative" }}>
             <Icon name="search" size={15} />
             <input
@@ -658,7 +728,7 @@ export function Toolbar({
               ref={searchInputRef}
               type="text"
               placeholder={
-                'Search… artist:"daft punk"  genre:house  year:2015-2020  rating:4-5  ' +
+                '検索… artist:"daft punk"  genre:house  year:2015-2020  rating:4-5  ' +
                 "bpm:120-128  key:compat:8A  tag:mood:dreamy  analyzed:no  missing:yes  (/ or Ctrl+F)"
               }
               value={localSearch}
@@ -701,7 +771,7 @@ export function Toolbar({
                 title="このプレイリストの中だけを検索"
                 aria-pressed={searchScope === "playlist"}
               >
-                このプレイリスト
+                {narrow ? "プレイリスト" : "このプレイリスト"}
               </button>
               <button
                 className={"cb-segb2" + (searchScope === "library" ? " on" : "")}
@@ -709,7 +779,7 @@ export function Toolbar({
                 title="ライブラリ全体を検索"
                 aria-pressed={searchScope === "library"}
               >
-                ライブラリ全体
+                {narrow ? "全体" : "ライブラリ全体"}
               </button>
             </div>
           )}
@@ -718,23 +788,29 @@ export function Toolbar({
             <button
               className={"cb-segb" + (displayMode === "list" ? " on" : "")}
               onClick={() => setDisplayMode("list")}
-              title="List view"
+              title="リスト表示"
+              aria-label="リスト表示"
             >
-              <Icon name="list" size={14} /> List
+              <Icon name="list" size={14} />
+              {!narrow && " List"}
             </button>
             <button
               className={"cb-segb" + (displayMode === "albums" ? " on" : "")}
               onClick={() => setDisplayMode("albums")}
-              title="Albums view"
+              title="アルバム表示"
+              aria-label="アルバム表示"
             >
-              <Icon name="grid" size={14} /> Albums
+              <Icon name="grid" size={14} />
+              {!narrow && " Albums"}
             </button>
             <button
               className={"cb-segb" + (displayMode === "tracks" ? " on" : "")}
               onClick={() => setDisplayMode("tracks")}
-              title="Track wall"
+              title="トラックウォール表示"
+              aria-label="トラックウォール表示"
             >
-              <Icon name="disc" size={14} /> Tracks
+              <Icon name="disc" size={14} />
+              {!narrow && " Tracks"}
             </button>
           </div>
 
@@ -747,11 +823,11 @@ export function Toolbar({
                 setPickerOpen(false);
                 setMoreOpen(false);
               }}
-              title="Sort"
+              title={`並び順: ${curSort?.label ?? "—"}`}
             >
-              {/* ソートフィールド名＋現在の昇順/降順を常時表示 */}
-              Sort: {curSort?.label ?? "—"}{" "}
-              {manualSortActive ? "" : sortOrder === "asc" ? "↑" : "↓"}
+              {/* ソートフィールド名＋現在の昇順/降順を常時表示 (狭いときは項目名を省く) */}
+              {tiny ? "" : narrow ? `${curSort?.label ?? "—"} ` : `Sort: ${curSort?.label ?? "—"} `}
+              {manualSortActive ? (tiny ? "≡" : "") : sortOrder === "asc" ? "↑" : "↓"}
               <Icon name="chevronD" size={12} />
             </button>
             {sortOpen && (
@@ -792,20 +868,23 @@ export function Toolbar({
             <>
               <button
                 className={"cb-btn" + (pickerOpen ? " on" : "")}
+                data-colpicker-toggle
                 onClick={() => {
                   setPickerOpen((v) => !v);
                   setSortOpen(false);
                   setMoreOpen(false);
                 }}
-                title="Customize columns"
+                title="表示する列を選ぶ"
+                aria-label="表示する列を選ぶ"
               >
-                <Icon name="sliders" size={15} /> Columns
+                <Icon name="sliders" size={15} />
+                {!narrow && " Columns"}
                 <span className="cb-btn-badge">{fields.length}</span>
               </button>
             </>
           )}
 
-          <div className="cb-tb-spacer" />
+          </div>
 
           <div className="cb-tb-actions">
             {/* 幅に余裕があるときは従来どおり横並び、狭いときは ⋯ メニューに畳む。 */}
@@ -912,7 +991,7 @@ export function Toolbar({
         <span className="cb-title">{title}</span>
         <span className="cb-titlesub">· {subCount}</span>
         {selectedTrackIds.size > 0 && (
-          <span className="cb-titlesel">· {selectedTrackIds.size.toLocaleString()} selected</span>
+          <span className="cb-titlesel">· {selectedTrackIds.size.toLocaleString()} 曲を選択中</span>
         )}
         <div className="cb-stats">
           {analysisActive && (
@@ -924,11 +1003,11 @@ export function Toolbar({
           {stats && (
             <>
               <span>
-                <b>{stats.trackCount.toLocaleString()}</b> tracks
+                <b>{stats.trackCount.toLocaleString()}</b> 曲
               </span>
               <span>·</span>
               <span>
-                <b>{stats.playlistCount}</b> playlists
+                <b>{stats.playlistCount.toLocaleString()}</b> プレイリスト
               </span>
               {stats.totalTimeMs > 0 && (
                 <>
@@ -948,7 +1027,7 @@ export function Toolbar({
             <button
               key={t}
               className="cb-fchip"
-              title={`Remove "${t}"`}
+              title={`「${t}」を外す`}
               onClick={() => removeFilterTag(t)}
             >
               {t}
@@ -956,7 +1035,7 @@ export function Toolbar({
             </button>
           ))}
           <button className="cb-fclear" onClick={clearFilterTags}>
-            clear all
+            すべて外す
           </button>
         </div>
       )}

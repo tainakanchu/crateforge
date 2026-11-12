@@ -28,6 +28,7 @@ import type {
 } from "../types";
 import {
   DEFAULT_FIELDS,
+  LEGACY_DEFAULT_FIELDS_V23,
   ALBUM_SORT_FIELDS,
   ARTIST_SORT_FIELDS,
   DEFAULT_SET_META,
@@ -1074,7 +1075,7 @@ export const useStore = create<AppState>()(
     {
       name: "itunes-viewer-settings",
       storage: createJSONStorage(() => localStorage),
-      version: 23,
+      version: 24,
       partialize: (state) =>
         ({
           fields: state.fields,
@@ -1295,6 +1296,19 @@ export const useStore = create<AppState>()(
           if (typeof p.usbExport === "object" && p.usbExport !== null) {
             const u = p.usbExport as Record<string, unknown>;
             if (typeof u.keepDeviceChanges !== "boolean") u.keepDeviceChanges = false;
+          }
+        }
+        // v24: List ビューに Artist 列を追加。既定の列のままの利用者だけ新しい既定
+        // (Artist 列入り) へ移行し、列をカスタマイズ済みの利用者はそのままにする。
+        if (version < 24 && persisted && typeof persisted === "object") {
+          const p = persisted as Record<string, unknown>;
+          const f = p.fields;
+          if (
+            Array.isArray(f) &&
+            f.length === LEGACY_DEFAULT_FIELDS_V23.length &&
+            f.every((k, i) => k === LEGACY_DEFAULT_FIELDS_V23[i])
+          ) {
+            p.fields = DEFAULT_FIELDS;
           }
         }
         return persisted as PersistedSettings;

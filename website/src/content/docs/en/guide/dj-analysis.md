@@ -25,7 +25,7 @@ Of the analysis results, **Key / Energy** can be shown as columns in the track t
 - **Notation** — In **Settings → "一般" (General) → "Key 表記" (Key notation)**, choose how keys are displayed:
   **Camelot** (`8A`) / **Open Key** (`1m`) / **Classic** (`Am` / `F#m`).
   Only the display changes; stored values, compatibility checks and search stay in Camelot. Search accepts any notation: `key:8A`, `key:1m` and `key:Am` all match the same keys.
-- **Manual override** — If the analyzed key is wrong, pick the correct one in the **Key** field of the track editor (Get Info / `Ctrl + I`).
+- **Manual override** — If the analyzed key is wrong, pick the correct one in the **Key** field of the track editor (right-click → "情報を見る / 編集" (Get Info / Edit) / `Ctrl + I`).
   The override is stored separately from the analyzed value and **survives re-analysis**. Choose "解析値を使う" (use analyzed value) to clear it.
   Overridden keys are shown with a `*` in the track table.
 - When a track has an override, the **override** is used everywhere: display, search (`key:` / `key:compat:`), smart playlists,
@@ -36,7 +36,7 @@ Of the analysis results, **Key / Energy** can be shown as columns in the track t
 Analysis runs in the background only for "the tracks you use often." It is triggered by either of the following.
 
 - When you **play** a track
-- When you run **"Analyze"** via right-click
+- When you run **"解析" (Analyze)** via right-click
 
 Analyzed BPM / Key are also **written to the actual file tags** when you edit a track
 (BPM and InitialKey — see [Library import](../import/) for details).
@@ -48,7 +48,7 @@ it focuses on the tracks you actually use, so it works without waste.
 
 The **Similar** tab in the right rail suggests "next moves" based on analysis values.
 
-- Right-click a track and choose **"Find similar"** (or press `Ctrl/Cmd + Shift + S`) to show candidates that are
+- Right-click a track and choose **"似た曲を探す" (Find similar)** (or press `Ctrl/Cmd + Shift + S`) to show candidates that are
   **Camelot-key compatible + close in tempo**.
 - The base track can be the selected track or the playing track; unpin it and it follows whatever is playing.
 

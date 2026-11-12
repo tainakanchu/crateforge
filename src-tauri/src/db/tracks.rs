@@ -94,25 +94,59 @@ fn compute_search_text(fields: [Option<&str>; 6]) -> String {
         .join("\n")
 }
 
-/// 既存 genre 文字列 (空白区切り) に tag を追加。重複は無視。
+/// genre 文字列をタグに分割する。区切りは明示区切り (`;` `,` `/`) のみで、空白では割らない
+/// ("Deep House" は 1 タグ)。前後の空白は落とし、空要素は捨てる。
+/// フロント (`src/lib/genre.ts`) とモバイルの分割規則と一致させること。
+pub(crate) fn split_genre_tags(genre: &str) -> Vec<&str> {
+    genre
+        .split([';', ',', '/'])
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// タグを genre 文字列へ戻すときの区切り。
+const GENRE_JOIN: &str = "; ";
+
+/// 既存 genre 文字列に tag を追加。重複 (大小無視) は無視し、元の文字列はそのまま保つ。
 fn merge_tag(current: &str, tag: &str) -> String {
     let tag = tag.trim();
     if tag.is_empty() {
         return current.to_string();
     }
-    let mut tags: Vec<&str> = current.split_whitespace().collect();
-    if !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
-        tags.push(tag);
+    let tags = split_genre_tags(current);
+    if tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+        return current.to_string();
     }
-    tags.join(" ")
+    if tags.is_empty() {
+        return tag.to_string();
+    }
+    format!("{}{GENRE_JOIN}{tag}", current.trim())
 }
 
 fn remove_tag(current: &str, tag: &str) -> String {
-    current
-        .split_whitespace()
-        .filter(|t| !t.eq_ignore_ascii_case(tag.trim()))
+    let tag = tag.trim();
+    let tags = split_genre_tags(current);
+    if !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+        return current.trim().to_string();
+    }
+    tags.into_iter()
+        .filter(|t| !t.eq_ignore_ascii_case(tag))
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(GENRE_JOIN)
+}
+
+/// 実効 BPM (タグの BPM ?? 解析 BPM) の SQL 式。`prefix` は tracks の別名 + ドット。
+/// タグの 0 は「未設定」とみなして解析値へ倒す。
+/// 一覧のソート・`bpm:` 検索で使い、スマート条件 (`smart::effective_bpm`) と同じ定義にする。
+/// prefix が空 (`FROM tracks` で別名なし) のときは相関サブクエリの track_id が
+/// track_analysis 側に解決されてしまうので、`tracks.` で明示的に修飾する。
+pub(crate) fn effective_bpm_expr(prefix: &str) -> String {
+    let prefix = if prefix.is_empty() { "tracks." } else { prefix };
+    format!(
+        "COALESCE(NULLIF({prefix}bpm, 0), \
+         (SELECT bpm FROM track_analysis WHERE track_id = {prefix}track_id))"
+    )
 }
 
 /// UI 側の sortField → (DB カラム名, テキスト列か).
@@ -467,10 +501,8 @@ fn parse_field_filter(
         "bpm" => {
             let (lo, hi) = parse_range(val, 2.0)?;
             Some((
-                format!(
-                    "(COALESCE((SELECT bpm FROM track_analysis WHERE track_id = {prefix}track_id), \
-                     {prefix}bpm) BETWEEN ? AND ?)"
-                ),
+                // 実効 BPM (タグ ?? 解析値)。
+                format!("({} BETWEEN ? AND ?)", effective_bpm_expr(prefix)),
                 vec![Value::Real(lo), Value::Real(hi)],
             ))
         }
@@ -697,8 +729,13 @@ pub(super) fn build_order_by(
     };
     let collate = if is_text { " COLLATE NOCASE" } else { "" };
 
-    // 主キー (NULL は最後)。
-    let mut order = format!("({prefix}{col} IS NULL), {prefix}{col}{collate} {dir}");
+    // 主キー (NULL は最後)。bpm は実効 BPM (タグ ?? 解析値) で並べる。
+    let key = if col == "bpm" {
+        effective_bpm_expr(prefix)
+    } else {
+        format!("{prefix}{col}")
+    };
+    let mut order = format!("({key} IS NULL), {key}{collate} {dir}");
 
     // アルバム文脈のソートだけ、収録順のタイブレークを足す (主キーと同じ列はスキップ)。
     if matches!(
@@ -1634,7 +1671,7 @@ impl Database {
         rows.collect()
     }
 
-    /// genre を空白区切りタグ集合として扱い、tag を追加。重複は無視。
+    /// genre を明示区切り (`;` `,` `/`) のタグ集合として扱い、tag を追加。重複は無視。
     pub fn add_genre_tag(&self, track_id: i64, tag: &str) -> Result<()> {
         let current: Option<String> = self
             .conn
@@ -1688,7 +1725,7 @@ impl Database {
         Ok(())
     }
 
-    /// DB 中の全 genre 値を空白区切りでバラして頻度順に返す。
+    /// DB 中の全 genre 値を明示区切り (`;` `,` `/`) でバラして頻度順に返す (空白では割らない)。
     pub fn get_all_genre_tags(&self) -> Result<Vec<GenreTagCount>> {
         let mut stmt = self
             .conn
@@ -1698,7 +1735,7 @@ impl Database {
         let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         for row in rows {
             let g = row?;
-            for tag in g.split_whitespace() {
+            for tag in split_genre_tags(&g) {
                 *counts.entry(tag.to_string()).or_insert(0) += 1;
             }
         }
@@ -1817,6 +1854,38 @@ impl Database {
             })
         })?;
         rows.collect()
+    }
+
+    /// API 応答用: タグの BPM が無い (NULL / 0) 曲の `bpm` を解析 BPM (四捨五入) で埋め、
+    /// 実効 BPM (タグ ?? 解析値) にそろえる。DB の値は変えない。
+    /// 同期 (federation) の取り寄せでタグ値として保存されないよう、呼び出しは表示用の
+    /// エンドポイント (/api/tracks 系) に限る。
+    pub fn fill_effective_bpm(&self, tracks: &mut [Track]) -> Result<()> {
+        if !tracks.iter().any(|t| t.bpm.is_none_or(|b| b <= 0)) {
+            return Ok(());
+        }
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT bpm FROM track_analysis WHERE track_id = ?1")?;
+        for t in tracks.iter_mut().filter(|t| t.bpm.is_none_or(|b| b <= 0)) {
+            let analyzed: Option<f64> = stmt
+                .query_row(params![t.track_id], |r| r.get(0))
+                .optional()?
+                .flatten();
+            if let Some(b) = analyzed.filter(|b| *b > 0.0) {
+                t.bpm = Some(b.round() as i64);
+            }
+        }
+        Ok(())
+    }
+
+    /// Artists ビューに並ぶアーティスト数 (get_artists と同じ束ね方)。
+    pub fn artist_count(&self) -> Result<i64> {
+        self.conn.query_row(
+            &format!("SELECT COUNT(DISTINCT {}) FROM tracks", artist_key_expr()),
+            [],
+            |r| r.get(0),
+        )
     }
 
     /// Artists ビュー向けの集約クエリ。ARTIST_NAME_EXPR で束ね (コンピレーションは
@@ -2154,7 +2223,10 @@ mod tests {
 
     use rusqlite::params;
 
-    use super::{album_order_by, artist_order_by, common_dir_prefix, compute_search_text};
+    use super::{
+        album_order_by, artist_order_by, common_dir_prefix, compute_search_text, merge_tag,
+        remove_tag, split_genre_tags,
+    };
     use crate::db::Database;
 
     /// album_order_by は全分岐で `album_key ASC` を最終タイブレークに持つこと
@@ -2457,6 +2529,58 @@ mod tests {
         );
     }
 
+    /// API 応答用の実効 BPM 補完: タグが無い曲だけ解析値 (四捨五入) で埋める。
+    #[test]
+    fn fill_effective_bpm_uses_analysis_only_when_tag_missing() {
+        let db = fielded_db();
+        db.conn
+            .execute_batch(
+                "UPDATE tracks SET bpm = 140 WHERE track_id = 2;
+                 INSERT INTO track_analysis (persistent_id, track_id, version, bpm)
+                 VALUES ('P2', 2, 1, 99.0);",
+            )
+            .unwrap();
+        let mut ts = db.get_tracks_by_ids(&[1, 2, 3]).unwrap();
+        db.fill_effective_bpm(&mut ts).unwrap();
+        let bpm = |id: i64| ts.iter().find(|t| t.track_id == id).unwrap().bpm;
+        assert_eq!(bpm(1), Some(123)); // 解析 123.0
+        assert_eq!(bpm(2), Some(140)); // タグ優先
+        assert_eq!(bpm(3), None); // どちらも無し
+        // DB の値は変えない。
+        assert_eq!(db.get_track_by_track_id(1).unwrap().unwrap().bpm, None);
+    }
+
+    /// ジャンルは明示区切り (`;` `,` `/`) でのみ分割し、空白では割らない。
+    #[test]
+    fn genre_tags_split_on_explicit_separators_only() {
+        assert_eq!(split_genre_tags("Deep House"), vec!["Deep House"]);
+        assert_eq!(
+            split_genre_tags(" Deep House; Tech House ,Hip-Hop/Rap ;; "),
+            vec!["Deep House", "Tech House", "Hip-Hop", "Rap"]
+        );
+        assert_eq!(merge_tag("Deep House", "Techno"), "Deep House; Techno");
+        assert_eq!(merge_tag("Deep House", "deep house"), "Deep House");
+        assert_eq!(merge_tag("", "Techno"), "Techno");
+        assert_eq!(remove_tag("Deep House; Techno", "techno"), "Deep House");
+        // "House" は "Deep House" の一部であってタグではないので消さない。
+        assert_eq!(remove_tag("Deep House", "House"), "Deep House");
+
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks (track_id, name, genre, file_exists) VALUES
+                   (1, 'a', 'Deep House', 1),
+                   (2, 'b', 'Deep House; Techno', 1);",
+            )
+            .unwrap();
+        let tags = db.get_all_genre_tags().unwrap();
+        let pairs: Vec<(String, i64)> = tags.into_iter().map(|t| (t.tag, t.count)).collect();
+        assert_eq!(
+            pairs,
+            vec![("Deep House".to_string(), 2), ("Techno".to_string(), 1)]
+        );
+    }
+
     /// `tag:` 検索: value のみ / namespace+value の両方。
     #[test]
     fn search_tracks_tag_filter() {
@@ -2659,6 +2783,40 @@ mod tests {
             db.get_track_by_track_id(3).unwrap().unwrap().rating,
             Some(70)
         );
+    }
+
+    /// 実効 BPM (タグ ?? 解析値) で検索・ソートする。タグがあれば解析値より優先。
+    #[test]
+    fn effective_bpm_search_and_sort() {
+        let db = fielded_db();
+        db.conn
+            .execute_batch(
+                "UPDATE tracks SET bpm = 140 WHERE track_id = 1;
+                 UPDATE tracks SET bpm = 100 WHERE track_id = 2;
+                 INSERT INTO track_analysis (persistent_id, track_id, version, bpm)
+                 VALUES ('P3', 3, 1, 125.0);",
+            )
+            .unwrap();
+        // 1: タグ 140 (解析 123 は無視) / 2: タグ 100 / 3: 解析 125 / 4: 無し。
+        assert_eq!(ids(&db, "bpm:120-128"), vec![3]);
+        assert_eq!(ids(&db, "bpm:138-142"), vec![1]);
+        let order = |dir: &str| -> Vec<i64> {
+            db.get_tracks(100, 0, Some("bpm"), Some(dir))
+                .unwrap()
+                .into_iter()
+                .map(|t| t.track_id)
+                .collect()
+        };
+        // NULL は昇順・降順とも末尾。
+        assert_eq!(order("asc"), vec![2, 3, 1, 4]);
+        assert_eq!(order("desc"), vec![1, 3, 2, 4]);
+        let searched: Vec<i64> = db
+            .search_tracks("", 100, 0, Some("bpm"), Some("asc"))
+            .unwrap()
+            .into_iter()
+            .map(|t| t.track_id)
+            .collect();
+        assert_eq!(searched, vec![2, 3, 1, 4]);
     }
 
     /// analyzed: yes/no で track_analysis 行の有無を絞り込む。

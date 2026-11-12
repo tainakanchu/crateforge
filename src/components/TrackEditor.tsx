@@ -12,6 +12,7 @@ import { useStore } from "../store/useStore";
 import type { Track, TrackEdit } from "../types";
 import { formatTagStr } from "../types";
 import { ALL_CAMELOT_KEYS, describeKey, formatKey } from "../lib/keyNotation";
+import { joinGenre, splitGenre } from "../lib/genre";
 
 function formatDuration(ms: number | null | undefined): string {
   if (!ms || ms <= 0) return "—";
@@ -285,8 +286,16 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
 
   const ph = (mixed: boolean) => (mixed && !dirty.size ? "— 複数の値 —" : undefined);
 
+  // 単曲の曲名を空にして保存させない (一覧で "(unknown)" になり探せなくなる)。
+  const nameEmpty = single && dirty.has("name") && form.name.trim() === "";
+
   const handleSave = useCallback(async () => {
     if (busy) return;
+    if (nameEmpty) {
+      setError("曲名を入力してください");
+      firstInputRef.current?.focus();
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -316,7 +325,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
       }
       // 複数曲のジャンルは初期セットとの差分を add/remove で各曲にマージ（既存タグを保持）。
       if (!single && dirty.has("genre")) {
-        const splitTags = (s: string) => s.split(/\s+/).filter(Boolean);
+        const splitTags = splitGenre;
         const eqi = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
         const before = splitTags(initial.genre.value);
         const after = splitTags(form.genre);
@@ -353,6 +362,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
     }
   }, [
     busy,
+    nameEmpty,
     form,
     dirty,
     trackIds,
@@ -441,6 +451,9 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
   const artUrl = baseArt
     ? `${baseArt}${baseArt.includes("?") ? "&" : "?"}v=${artVersion}`
     : null;
+  // アートワークが無い / 読めない曲は壊れ画像を出さず、頭文字のプレースホルダに倒す。
+  const [artFailedUrl, setArtFailedUrl] = useState<string | null>(null);
+  const showArt = artUrl != null && artFailedUrl !== artUrl;
   const seed = single ? tracks[0].album : "multi";
   // 単曲時に Key 欄の横へ出す解析値 (上書きとは別に常に見せる)。
   const analyzedKey = single
@@ -477,11 +490,12 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
                 placeItems: "center",
               }}
             >
-              {artUrl ? (
+              {showArt ? (
                 <img
                   src={artUrl}
                   alt=""
                   style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  onError={() => setArtFailedUrl(artUrl)}
                 />
               ) : (
                 <span
@@ -561,14 +575,15 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           </Field>
           <Field label="Genre tags">
             <GenreTagInput
-              value={form.genre.split(/\s+/).filter(Boolean)}
+              value={splitGenre(form.genre)}
+              allowSpaces
               suggestions={genreSuggestions}
               placeholder={
                 initial.genre.mixed && !dirty.has("genre")
                   ? "— 複数の値 — タグを足すと全曲へ適用"
                   : "タグを入力して Enter / 候補から選択"
               }
-              onChange={(tags) => update("genre", tags.join(" "))}
+              onChange={(tags) => update("genre", joinGenre(tags))}
             />
           </Field>
           <Field label="Tags">
@@ -764,11 +779,16 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
         </div>
         <div className="modal-footer">
           <button className="toolbar-btn" onClick={requestClose} disabled={busy}>
-            Cancel
+            キャンセル
           </button>
-          <button className="toolbar-btn primary" onClick={handleSave} disabled={busy}>
+          <button
+            className="toolbar-btn primary"
+            onClick={handleSave}
+            disabled={busy || nameEmpty}
+            title={nameEmpty ? "曲名を入力してください" : undefined}
+          >
             {/* 保存中はスピナー相当のラベルに変更してボタンを無効化 */}
-            {busy ? "保存中…" : single ? "Save" : `${tracks.length} 曲を保存`}
+            {busy ? "保存中…" : single ? "保存" : `${tracks.length} 曲を保存`}
           </button>
         </div>
       </div>

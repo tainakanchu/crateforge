@@ -29,7 +29,7 @@ const SECTIONS: { key: Section; label: string; icon: string }[] = [
   { key: "fonts", label: "フォント", icon: "sliders" },
   { key: "ffmpeg", label: "変換 (ffmpeg)", icon: "waveform" },
   { key: "usb", label: "USB 書き出し (rbx-cli)", icon: "upload" },
-  { key: "api", label: "AI 連携 / API", icon: "info" },
+  { key: "api", label: "モバイル / API", icon: "info" },
   { key: "updates", label: "アップデート", icon: "download" },
   { key: "about", label: "情報・ライセンス", icon: "info" },
 ];
@@ -1272,8 +1272,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 <div className="settings-note">
                   <Icon name="info" size={14} />
                   <span>
-                    ループバック（127.0.0.1）のみで待受するローカル HTTP API サーバーです。
-                    デフォルトは <b>無効</b> です。AI エージェントや外部ツールとの連携に使います。
+                    ローカル HTTP API サーバーです（既定はループバック 127.0.0.1 のみで待受）。
+                    デフォルトは <b>無効</b> です。モバイルアプリ・ウェブプレイヤー（下の「LAN 公開」）や、
+                    AI エージェント・外部ツールとの連携に使います。
                   </span>
                 </div>
 
@@ -1326,11 +1327,11 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 )}
 
                 {/* LAN 公開セクション */}
-                <div className="settings-sectitle">LAN 公開（ウェブプレイヤー）</div>
+                <div className="settings-sectitle">LAN 公開（モバイルアプリ・ウェブプレイヤー）</div>
 
                 <Row
-                  title="LAN 公開（スマホ/TV で再生）"
-                  desc="同じ Wi-Fi の端末のブラウザからライブラリを再生できます。読み取り専用＋トークン必須。"
+                  title="LAN 公開（モバイルアプリ・ウェブプレイヤー）"
+                  desc="同じ Wi-Fi のスマホの Crateforge モバイルアプリや、スマホ / TV のブラウザ（ウェブプレイヤー）からライブラリを再生・操作できます。アクセスにはトークンが必要です。"
                 >
                   <Toggle
                     on={apiStatus?.lanEnabled ?? false}
@@ -1444,6 +1445,23 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                             ? `${apiStatus.token.slice(0, 8)}…`
                             : "（未設定）"}
                         </span>
+                        {apiStatus.token && (
+                          <button
+                            className="toolbar-btn"
+                            onClick={() => handleCopyUrl(apiStatus.token!)}
+                            title="モバイルアプリの「トークン」欄に貼り付けます"
+                          >
+                            {copiedUrl === apiStatus.token ? (
+                              <>
+                                <Icon name="check" size={13} /> コピーしました
+                              </>
+                            ) : (
+                              <>
+                                <Icon name="filePlus" size={13} /> トークンをコピー
+                              </>
+                            )}
+                          </button>
+                        )}
                         <button className="toolbar-btn" onClick={handleRegenerateToken}>
                           <Icon name="sparkle" size={14} /> 再生成
                         </button>

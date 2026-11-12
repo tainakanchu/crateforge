@@ -65,6 +65,7 @@ const GROUPS: Group[] = [
       { keys: ["↑", "↓"], label: "選択を上下に移動" },
       { keys: ["Ctrl", "A"], label: "すべて選択" },
       { keys: ["Ctrl", "I"], label: "選択した曲を編集" },
+      { keys: ["Delete"], label: "選択した曲をライブラリから削除（確認あり）" },
       {
         keys: ["Alt", "↑"],
         label: "選択曲を 1 つ上へ (プレイリストを Playlist Order で表示中)",

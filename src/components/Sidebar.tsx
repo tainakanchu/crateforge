@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { useStore } from "../store/useStore";
 import * as playlistsApi from "../api/playlists";
 import { Icon } from "./Icon";
+import { DeletePlaylistDialog } from "./DeletePlaylistDialog";
 import { getTrackIdsData, hasTrackIdsData } from "../lib/trackDrag";
 import appIcon from "../assets/app-icon.png";
 import type { Playlist, ViewMode } from "../types";
@@ -214,7 +215,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
       await playlistsApi.createPlaylist(name, null, isFolder);
       onPlaylistsChanged();
     } catch (err) {
-      pushToast("error", `Failed to create: ${err}`);
+      pushToast("error", `作成に失敗しました: ${err}`);
     }
   }, [creating, creatingName, onPlaylistsChanged, pushToast]);
 
@@ -231,7 +232,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
         await playlistsApi.renamePlaylist(editingId, name);
         onPlaylistsChanged();
       } catch (err) {
-        pushToast("error", `Rename failed: ${err}`);
+        pushToast("error", `名前を変更できませんでした: ${err}`);
       }
     }
     setEditingId(null);
@@ -241,7 +242,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
   const handleDuplicate = useCallback(
     async (pl: Playlist) => {
       if (pl.isFolder) {
-        pushToast("info", "Folders can't be duplicated");
+        pushToast("info", "フォルダは複製できません");
         return;
       }
       const newName = `${pl.name} copy`;
@@ -268,22 +269,34 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
     [onPlaylistsChanged, pushToast],
   );
 
-  const handleDelete = useCallback(
-    async (pl: Playlist) => {
-      if (!confirm(`Delete "${pl.name}"?`)) return;
-      try {
-        await playlistsApi.deletePlaylist(pl.playlistId);
-        if (selectedPlaylistId === pl.playlistId) {
-          setSelectedPlaylistId(null);
-          setViewMode("library");
+  // 削除確認ダイアログの対象 (null で非表示)。window.confirm は使わない。
+  const [deleteTarget, setDeleteTarget] = useState<Playlist | null>(null);
+  const handleDelete = useCallback((pl: Playlist) => setDeleteTarget(pl), []);
+
+  // 削除後: 表示中のプレイリスト (中身ごと削除ならフォルダ配下も) が消えたらライブラリへ戻る。
+  const handleDeleted = useCallback(
+    (pl: Playlist, withContents: boolean) => {
+      const sel = playlists.find((p) => p.playlistId === selectedPlaylistId);
+      let gone = selectedPlaylistId === pl.playlistId;
+      if (!gone && withContents && sel && pl.persistentId) {
+        // 選択中のプレイリストの祖先に削除したフォルダがあるか。
+        let cur: Playlist | undefined = sel;
+        for (let guard = 0; cur && guard < 64; guard++) {
+          if (cur.parentPersistentId === pl.persistentId) {
+            gone = true;
+            break;
+          }
+          const parent: string | null = cur.parentPersistentId;
+          cur = parent ? playlists.find((p) => p.persistentId === parent) : undefined;
         }
-        onPlaylistsChanged();
-        pushToast("success", `Deleted "${pl.name}"`);
-      } catch (err) {
-        pushToast("error", `Delete failed: ${err}`);
       }
+      if (gone) {
+        setSelectedPlaylistId(null);
+        setViewMode("library");
+      }
+      onPlaylistsChanged();
     },
-    [selectedPlaylistId, setSelectedPlaylistId, setViewMode, onPlaylistsChanged, pushToast],
+    [playlists, selectedPlaylistId, setSelectedPlaylistId, setViewMode, onPlaylistsChanged],
   );
 
   // 対象プレイリスト/フォルダ向けのメニュー項目を組み立てる
@@ -291,13 +304,13 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
     (pl: Playlist): SidebarMenuAction[] => {
       const editable = pl.isSmart && !pl.isFolder;
       const actions: SidebarMenuAction[] = [
-        { id: "rename", icon: "edit", label: "Rename", run: () => startRename(pl) },
+        { id: "rename", icon: "edit", label: "名前を変更", run: () => startRename(pl) },
       ];
       if (!pl.isFolder) {
         actions.push({
           id: "duplicate",
           icon: "filePlus",
-          label: "Duplicate",
+          label: "複製",
           run: () => handleDuplicate(pl),
         });
       }
@@ -311,14 +324,14 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
         actions.push({
           id: "edit",
           icon: "sliders",
-          label: "Edit rules",
+          label: "条件を編集",
           run: () => onEditSmart(pl.playlistId, pl.name),
         });
       }
       actions.push({
         id: "delete",
         icon: "trash",
-        label: "Delete",
+        label: "削除…",
         danger: true,
         run: () => handleDelete(pl),
       });
@@ -561,7 +574,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
         {rootPlaylists.length === 0 ? (
           !creating && (
             <div className="cb-side-empty">
-              No playlists yet. Import a library XML or create one.
+              プレイリストはまだありません。iTunes XML を取り込むか、新しく作成してください。
             </div>
           )
         ) : (
@@ -597,19 +610,19 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
                 {
                   id: "new-playlist",
                   icon: "plus",
-                  label: "New playlist",
+                  label: "新規プレイリスト",
                   run: () => startCreate(false),
                 },
                 {
                   id: "new-folder",
                   icon: "folderPlus",
-                  label: "New folder",
+                  label: "新規フォルダ",
                   run: () => startCreate(true),
                 },
                 {
                   id: "new-smart",
                   icon: "sliders",
-                  label: "New smart playlist",
+                  label: "新規スマートプレイリスト",
                   run: () => onEditSmart(null),
                 },
               ]}
@@ -617,6 +630,15 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
             />
           )}
         </>
+      )}
+
+      {deleteTarget && (
+        <DeletePlaylistDialog
+          playlist={deleteTarget}
+          playlists={playlists}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={(withContents) => handleDeleted(deleteTarget, withContents)}
+        />
       )}
     </aside>
   );

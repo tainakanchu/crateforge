@@ -56,6 +56,8 @@ tokio = { version = "1", features = ["net", "sync", "rt", "macros", "io-util", "
 tower-http = { version = "0.6", features = ["fs"] }
 # ServeFile を 1 リクエストに oneshot で適用する (ストリーミング配信)。tests でも使う。
 tower = { version = "0.5", features = ["util"] }
+# API の JSON 応答の gzip 圧縮 (全曲一覧など大きい応答用) と、非 Windows の rbx-cli tar.gz 展開に使う。
+flate2 = "1"
 # USB 書き出し (rbx-cli): リクエストの一時ファイル (本人だけが読める 0600) と、
 # rbx-cli 取得時の衝突しない一時ファイル。テストでも使う。
 tempfile = "3"
@@ -108,7 +110,6 @@ zip = "2"
 # === Windows 以外: rbx-cli (USB 書き出しエンジン) の Release アセット (tar.gz) の展開用 ===
 # Windows のアセットは zip なので上の `zip` を使う。
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-flate2 = "1"
 tar = "0.4"
 
 [dev-dependencies]

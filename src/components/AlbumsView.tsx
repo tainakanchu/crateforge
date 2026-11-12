@@ -14,6 +14,9 @@ import { DeleteTracksDialog } from "./DeleteTracksDialog";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
 import { ALBUM_SORT_FIELDS } from "../types";
 import type { Track, Playlist, AlbumRow, SortField, SortOrder } from "../types";
+import { EmptyState } from "./EmptyState";
+import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
+import { splitGenre } from "../lib/genre";
 
 const GAP = 18;
 const PAD_X = 20;
@@ -457,7 +460,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         tracks: ts,
         trackIds: ts.map((t) => t.trackId),
         primary: ts[0],
-        headerLabel: ts.length > 1 ? `${vm.album} · ${ts.length} tracks` : vm.album,
+        headerLabel: ts.length > 1 ? `${vm.album} · ${ts.length} 曲` : vm.album,
       });
     },
     [ensureTracks],
@@ -579,15 +582,17 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     async (playlistId: number) => {
       if (!contextMenu) return;
       try {
-        await playlistsApi.addTracksToPlaylist(playlistId, contextMenu.trackIds);
+        const added = await playlistsApi.addTracksToPlaylist(playlistId, contextMenu.trackIds);
         pushRecentPlaylist(playlistId);
         onTracksChanged();
+        const name = playlists.find((p) => p.playlistId === playlistId)?.name ?? "プレイリスト";
+        pushToast("success", `「${name}」に ${added} 曲を追加しました`);
       } catch (err) {
         pushToast("error", `追加に失敗しました: ${err}`);
       }
       closeMenu();
     },
-    [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast],
+    [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast, playlists],
   );
 
   const handleRemoveFromPlaylist = useCallback(async () => {
@@ -649,14 +654,12 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const recentPlaylists = recentPlaylistIds
     .map((id) => targetPlaylists.find((p) => p.playlistId === id))
     .filter((p): p is Playlist => Boolean(p));
-  const ctxGenreTags = ctxPrimary?.genre ? ctxPrimary.genre.split(/\s+/).filter(Boolean) : [];
+  const ctxGenreTags = ctxPrimary?.genre ? splitGenre(ctxPrimary.genre) : [];
 
   if (albums.length === 0 && !isLoading) {
     return (
       <div className="cb-grid-wrap">
-        <div className="cb-empty">
-          No tracks. Import an iTunes Library XML, rip a CD, or add files to get started.
-        </div>
+        <EmptyState />
       </div>
     );
   }
@@ -851,7 +854,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           <div className="modal" style={{ width: 360 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>
-                <Icon name="tag" size={16} /> Add genre tag
+                <Icon name="tag" size={16} /> ジャンルタグを追加
               </h2>
               <button className="modal-close" onClick={() => setShowAddTagDialog(false)}>
                 <Icon name="x" size={16} />
@@ -862,7 +865,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 autoFocus
                 type="text"
                 className="rip-input"
-                placeholder="e.g. House"
+                placeholder="例: Deep House"
                 value={newTag}
                 onChange={(e) => setNewTag(e.target.value)}
                 onKeyDown={(e) => {
@@ -875,10 +878,10 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}
               >
                 <button className="toolbar-btn" onClick={() => setShowAddTagDialog(false)}>
-                  Cancel
+                  キャンセル
                 </button>
                 <button className="toolbar-btn primary" onClick={handleApplyAddTag}>
-                  Add
+                  追加
                 </button>
               </div>
             </div>
@@ -910,6 +913,7 @@ function AlbumExpansion({
   onTrackContextMenu,
   onClose,
 }: AlbumExpansionProps) {
+  const analysisByTrack = useStore((s) => s.analysisByTrack);
   // ライブラリスコープでは曲を遅延取得中の場合がある。
   if (!tracks) {
     return (
@@ -964,11 +968,19 @@ function AlbumExpansion({
                 <span className="ell">{t.name || "(unknown)"}</span>
                 {showArtist && <span className="sub"> — {t.artist}</span>}
               </span>
-              {t.bpm != null && (
-                <span className="bpm cb-fmono" style={{ color: bpmColor(t.bpm) }}>
-                  {t.bpm}
-                </span>
-              )}
+              {(() => {
+                // 実効 BPM (タグ ?? 解析値)。解析値は薄く表示する。
+                const b = effectiveBpm(t, analysisByTrack.get(t.trackId));
+                return b ? (
+                  <span
+                    className="bpm cb-fmono"
+                    style={{ color: bpmColor(b.value), opacity: b.fromAnalysis ? 0.6 : undefined }}
+                    title={b.fromAnalysis ? ANALYZED_BPM_TITLE : undefined}
+                  >
+                    {b.value}
+                  </span>
+                ) : null;
+              })()}
               <span className="tm cb-fmono">{formatTime(t.totalTimeMs)}</span>
               {isIn ? (
                 <span className="cov-trk-add in" title="In crate">

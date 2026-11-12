@@ -330,7 +330,8 @@ pub(crate) async fn pair_poll(
 /// - ループバック (127.x, ::1) は無条件通過。
 /// - public パス (PWA 資産) はトークン不要で通過。
 /// - それ以外は token クエリパラメータまたは X-API-Token ヘッダを照合する。
-/// - remote は従来どおり GET、lookup POST、/api/remote/*、rating/artwork のみ許可。
+/// - remote は従来どおり GET、lookup POST (lookup / analysis lookup / by-ids)、/api/remote/*、
+///   rating/artwork のみ許可。
 /// - sync は同期に必要な曲メタデータ・プレイリスト書き込みも追加で許可。
 async fn auth_guard(
     axum::extract::State(state): axum::extract::State<ApiState>,
@@ -403,7 +404,7 @@ async fn auth_guard(
     }
 
     // LAN からの書き込みは原則 /api/remote/* と GET のみ許可する。
-    // federation lookup は POST だが DB を変更しない読み取り API なので例外として許可する。
+    // federation lookup / by-ids は POST だが DB を変更しない読み取り API なので例外として許可する。
     // 例外: `POST /api/tracks/{id}/rating`・`POST /api/tracks/tags/{add,remove}` と
     // `PUT`/`DELETE /api/tracks/{id}/artwork` を許可する。
     // rating / first-class tags は DB のみ（ファイルタグには触れない）で、モバイルの
@@ -412,8 +413,13 @@ async fn auth_guard(
     // ジャンル一括書き込み・プレイリスト編集は引き続き remote から拒否する。
     let method = req.method().clone();
     let is_read_only_method = method == axum::http::Method::GET;
+    // `/api/tracks/by-ids` も ID → Track の読み取り専用 lookup (モバイルのリモート画面が
+    // キューの曲名を引くのに使う)。DB を変更しないので lookup と同列に許可する (#B2)。
     let is_read_only_lookup = method == axum::http::Method::POST
-        && matches!(path.as_str(), "/api/tracks/lookup" | "/api/analysis/lookup");
+        && matches!(
+            path.as_str(),
+            "/api/tracks/lookup" | "/api/analysis/lookup" | "/api/tracks/by-ids"
+        );
     let is_remote_path = path.starts_with("/api/remote");
     let is_rating_write = method == axum::http::Method::POST && is_rating_path(&path);
     // first-class Tags (Genre とは独立) は DB のみなので remote からも許可する (#125)。
@@ -442,6 +448,99 @@ async fn auth_guard(
     }
 
     next.run(req).await
+}
+
+/// gzip 圧縮する JSON 応答の最小サイズ。小さい応答は圧縮しても得が無い。
+const GZIP_MIN_BYTES: usize = 1024;
+
+/// `Accept-Encoding` ヘッダ値が gzip を受け付けるか (`gzip` / `x-gzip` / `*`、`q=0` は拒否)。
+pub(crate) fn accepts_gzip(header: &str) -> bool {
+    header.split(',').any(|item| {
+        let mut parts = item.split(';');
+        let coding = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+        if !matches!(coding.as_str(), "gzip" | "x-gzip" | "*") {
+            return false;
+        }
+        // q=0 (明示的に拒否) 以外なら可。
+        !parts.any(|p| {
+            let p = p.trim();
+            p.strip_prefix("q=")
+                .or_else(|| p.strip_prefix("Q="))
+                .and_then(|q| q.trim().parse::<f32>().ok())
+                .is_some_and(|q| q <= 0.0)
+        })
+    })
+}
+
+/// JSON 応答を gzip 圧縮するミドルウェア (#B10)。
+/// モバイルは全曲一覧 (`/api/tracks?limit=100000`) を一括で取るため、数万曲だと数十 MB の
+/// JSON になる。JSON は圧縮率が高い (概ね 1/8〜1/10) ので LAN 転送時間を大きく減らせる。
+/// - `Accept-Encoding` に gzip があり、`Content-Type: application/json` で、未エンコードかつ
+///   `GZIP_MIN_BYTES` 以上の応答だけを圧縮する。音声ストリーム・画像・HTML は触らない
+///   (Range 応答や chunked ストリーミングを壊さないため)。
+/// - RN の fetch (iOS NSURLSession / Android OkHttp) は透過的に展開する。
+async fn gzip_json(
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::header::{
+        HeaderValue, ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, VARY,
+    };
+    use axum::response::IntoResponse;
+
+    let wants_gzip = req
+        .headers()
+        .get_all(ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(accepts_gzip);
+    let resp = next.run(req).await;
+    if !wants_gzip || resp.headers().contains_key(CONTENT_ENCODING) {
+        return resp;
+    }
+    let is_json = resp
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.trim_start().to_ascii_lowercase().starts_with("application/json"));
+    if !is_json {
+        return resp;
+    }
+
+    let (mut parts, body) = resp.into_parts();
+    // axum::Json の応答は既にメモリ上にあるので、全量を読み出しても追加のメモリ負担は小さい。
+    let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(b) => b,
+        Err(_) => return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if bytes.len() < GZIP_MIN_BYTES {
+        return axum::response::Response::from_parts(parts, axum::body::Body::from(bytes));
+    }
+    // 大きい応答の圧縮は CPU を食うので blocking プールで行う。
+    let compressed = tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(
+            Vec::with_capacity(bytes.len() / 4),
+            flate2::Compression::fast(),
+        );
+        enc.write_all(&bytes).and_then(|_| enc.finish()).map_err(|_| bytes)
+    })
+    .await;
+    match compressed {
+        Ok(Ok(gz)) => {
+            parts
+                .headers
+                .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+            parts.headers.remove(CONTENT_LENGTH);
+            parts
+                .headers
+                .append(VARY, HeaderValue::from_static("accept-encoding"));
+            axum::response::Response::from_parts(parts, axum::body::Body::from(gz))
+        }
+        // 圧縮失敗時は元の本文をそのまま返す。
+        Ok(Err(orig)) => axum::response::Response::from_parts(parts, axum::body::Body::from(orig)),
+        Err(_) => axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// アートワーク設定 (PUT artwork) のリクエストボディ上限 (20 MiB)。
@@ -574,6 +673,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/remote/prev", post(handlers::remote_prev))
         .route("/api/remote/seek", post(handlers::remote_seek))
         .route("/api/remote/set-queue", post(handlers::remote_set_queue))
+        .route("/api/remote/play-at", post(handlers::remote_play_at))
         .route("/api/remote/volume", post(handlers::remote_volume))
         .route("/api/remote/shuffle", post(handlers::remote_shuffle))
         .route("/api/remote/repeat", post(handlers::remote_repeat))
@@ -584,6 +684,8 @@ pub fn router(state: ApiState) -> Router {
             state.clone(),
             auth_guard,
         ))
+        // JSON 応答の gzip 圧縮 (認証の外側。401/403 は空ボディなので素通り)。
+        .layer(axum::middleware::from_fn(gzip_json))
         .with_state(state)
 }
 
@@ -2285,14 +2387,27 @@ mod tests {
         let resp = app.clone().oneshot(lookup).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        // 5. lookup 以外の一般 POST は、同じ有効トークンでも引き続き 403。
-        let unrelated_post = with_lan(
+        // 5. by-ids も読み取り専用 lookup なので有効トークン付き LAN から 200 (#B2)。
+        let by_ids = with_lan(
             Request::builder()
                 .method("POST")
                 .uri("/api/tracks/by-ids")
                 .header("X-API-Token", "devtok")
                 .header("content-type", "application/json")
                 .body(Body::from(json!({ "trackIds": [1] }).to_string()))
+                .unwrap(),
+        );
+        let resp = app.clone().oneshot(by_ids).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // 5b. lookup 以外の一般 POST (プレイリスト作成) は、同じ有効トークンでも引き続き 403。
+        let unrelated_post = with_lan(
+            Request::builder()
+                .method("POST")
+                .uri("/api/playlists")
+                .header("X-API-Token", "devtok")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "name": "x" }).to_string()))
                 .unwrap(),
         );
         let resp = app.clone().oneshot(unrelated_post).await.unwrap();
@@ -3285,5 +3400,328 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    // ===== Round 1 (#B1/#B2/#B3/#B4/#B5/#B10) =====
+
+    /// #B1: stream のクエリ真偽値は 1/0/true/false を受ける (旧モバイルは native=1 を送っていた)。
+    /// クエリ文字列 → StreamQuery のデシリアライズ契約を固定する。
+    #[test]
+    fn stream_query_accepts_lenient_bools() {
+        use axum::extract::Query;
+        use handlers::StreamQuery;
+        let parse = |q: &str| -> Result<StreamQuery, String> {
+            let uri: axum::http::Uri = format!("/api/tracks/1/stream?{q}").parse().unwrap();
+            Query::<StreamQuery>::try_from_uri(&uri)
+                .map(|Query(v)| v)
+                .map_err(|e| e.to_string())
+        };
+        for (q, native, original) in [
+            ("native=1", Some(true), None),
+            ("native=0", Some(false), None),
+            ("native=true", Some(true), None),
+            ("native=false", Some(false), None),
+            ("native=TRUE&original=1", Some(true), Some(true)),
+            ("original=1&native=1&token=abc", Some(true), Some(true)),
+            ("original=0", None, Some(false)),
+            ("native=", None, None),
+            ("fmt=aac&br=192", None, None),
+            ("", None, None),
+        ] {
+            let parsed = parse(q).unwrap_or_else(|e| panic!("{q}: {e}"));
+            assert_eq!(parsed.native, native, "{q}");
+            assert_eq!(parsed.original, original, "{q}");
+        }
+        assert!(parse("native=maybe").is_err());
+        assert!(parse("original=2").is_err());
+    }
+
+    /// #B1: ルーター経由でも native=1 / original=1 は 400 にならない (曲にファイルが無いので 404)。
+    #[tokio::test]
+    async fn stream_route_accepts_numeric_bool_query() {
+        let (_dir, app) = setup();
+        for q in [
+            "native=1",
+            "original=1&native=1",
+            "native=true",
+            "original=false",
+        ] {
+            let (status, _) = req(app.clone(), "GET", &format!("/api/tracks/1/stream?{q}"), None).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{q}");
+        }
+        let (status, _) = req(app, "GET", "/api/tracks/1/stream?native=maybe", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// #B1: 他の真偽値クエリ (analyzed / keyCompatible) も 1/0 を受ける。
+    #[tokio::test]
+    async fn tracks_query_accepts_numeric_bool() {
+        let (_dir, app) = setup();
+        let (status, body) = req(app.clone(), "GET", "/api/tracks?analyzed=1", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let mut ids: Vec<i64> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["trackId"].as_i64().unwrap())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![1, 2]);
+        let (status, body) = req(app.clone(), "GET", "/api/tracks?analyzed=0", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 3);
+        let (status, _) = req(app, "GET", "/api/tracks/1/similar?keyCompatible=1", None).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// #B2: by-ids は有効トークン付き LAN から読める (入力順で返す)。トークン無しは 401。
+    #[tokio::test]
+    async fn by_ids_allowed_from_lan_with_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        let tokens = crate::devices::ValidTokens::default();
+        tokens.insert("remote-token".into());
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens,
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
+        });
+        let (status, body) = lan_req(
+            app.clone(),
+            Some("remote-token"),
+            "POST",
+            "/api/tracks/by-ids",
+            Some(json!({ "trackIds": [3, 1] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let ids: Vec<i64> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["trackId"].as_i64().unwrap())
+            .collect();
+        assert_eq!(ids, vec![3, 1]);
+
+        let (status, _) = lan_req(
+            app,
+            None,
+            "POST",
+            "/api/tracks/by-ids",
+            Some(json!({ "trackIds": [1] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// #B3: 停止後の resume はキューの現在位置 (無ければ先頭) から再生し直す。
+    #[test]
+    fn resume_after_stop_plays_from_queue_position() {
+        use handlers::{plan_resume, ResumePlan};
+        // 一時停止中 (曲が読み込まれている) は通常の resume。
+        assert_eq!(plan_resume(Some(42), Some(1), 3), ResumePlan::Resume);
+        // 停止中 (曲なし) はキュー位置から再生。
+        assert_eq!(plan_resume(None, Some(1), 3), ResumePlan::PlayQueueAt(1));
+        // 位置が無ければ先頭から。
+        assert_eq!(plan_resume(None, None, 3), ResumePlan::PlayQueueAt(0));
+        // キュー縮小で位置が範囲外なら先頭へ。
+        assert_eq!(plan_resume(None, Some(5), 3), ResumePlan::PlayQueueAt(0));
+        // キューが空なら何もしない。
+        assert_eq!(plan_resume(None, None, 0), ResumePlan::Nothing);
+    }
+
+    /// #B3: play-at は /api/remote 配下なので LAN からトークン付きで認証を通る
+    /// (テストの ApiState は AppHandle を持たないので 500 = ハンドラまで到達)。
+    /// トークン無しは 401、壊れたボディは 4xx。
+    #[tokio::test]
+    async fn play_at_route_is_remote_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let tokens = crate::devices::ValidTokens::default();
+        tokens.insert("remote-token".into());
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens,
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
+        });
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("remote-token"),
+            "POST",
+            "/api/remote/play-at",
+            Some(json!({ "index": 1 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        let (status, _) = lan_req(
+            app.clone(),
+            None,
+            "POST",
+            "/api/remote/play-at",
+            Some(json!({ "index": 1 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = lan_req(
+            app.clone(),
+            Some("remote-token"),
+            "POST",
+            "/api/remote/play-at",
+            Some(json!({ "index": -1 })),
+        )
+        .await;
+        assert!(status.is_client_error(), "{status}");
+        // set-queue の play フラグは省略可 (後方互換) かつ受理される。
+        let (status, _) = lan_req(
+            app,
+            Some("remote-token"),
+            "POST",
+            "/api/remote/set-queue",
+            Some(json!({ "trackIds": [1, 2], "startIndex": 1, "play": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// #B4: プレイリスト一覧・単体のスマートプレイリストの trackCount はライブ評価の件数。
+    #[tokio::test]
+    async fn smart_playlist_track_count_in_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        // genre に "house" を含む曲 = 1 (House) と 3 (Deep House)。
+        let criteria: crate::models::SmartCriteria = serde_json::from_value(json!({
+            "matchAll": true,
+            "rules": [{ "field": "genre", "op": "contains", "value": "house" }],
+            "limit": null,
+            "sortBy": null,
+        }))
+        .unwrap();
+        let smart = db.create_smart_playlist("Houseish", &criteria).unwrap();
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens: crate::devices::ValidTokens::default(),
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
+        });
+
+        let (status, body) = req(app.clone(), "GET", "/api/playlists", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let list = body.as_array().unwrap();
+        let find = |id: i64| {
+            list.iter()
+                .find(|p| p["playlistId"].as_i64() == Some(id))
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(find(smart.playlist_id)["trackCount"], 2);
+        assert_eq!(find(smart.playlist_id)["isSmart"], true);
+        // 通常プレイリストは従来どおり静的行数。
+        assert_eq!(find(100)["trackCount"], 1);
+
+        let (status, body) = req(
+            app,
+            "GET",
+            &format!("/api/playlists/{}", smart.playlist_id),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["trackCount"], 2);
+    }
+
+    /// #B5: albumExact=true は album を完全一致で絞る (部分一致で別アルバムを含めない)。
+    #[tokio::test]
+    async fn tracks_album_exact_filter() {
+        let (dir, app) = setup();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, persistent_id, name, artist, album, total_time_ms, file_exists)
+                 VALUES (6, 'X6', 'Remix', 'Alpha', 'Dawn (Remixes)', 1000, 1)",
+                [],
+            )
+            .unwrap();
+        let ids = |body: &Value| -> Vec<i64> {
+            let mut v: Vec<i64> = body
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["trackId"].as_i64().unwrap())
+                .collect();
+            v.sort();
+            v
+        };
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?album=Dawn", None).await;
+        assert_eq!(ids(&body), vec![1, 6]);
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?album=Dawn&albumExact=true", None).await;
+        assert_eq!(ids(&body), vec![1]);
+        let (_, body) = req(app, "GET", "/api/tracks?album=Dawn&albumExact=1", None).await;
+        assert_eq!(ids(&body), vec![1]);
+    }
+
+    /// #B10: Accept-Encoding: gzip のとき大きい JSON 応答は gzip で返り、展開すると同じ JSON。
+    #[tokio::test]
+    async fn json_responses_are_gzipped_when_accepted() {
+        use std::io::Read;
+        let (_dir, app) = setup();
+        let plain = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/tracks").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(plain.headers().get("content-encoding").is_none());
+        let plain_bytes = axum::body::to_bytes(plain.into_body(), usize::MAX).await.unwrap();
+        assert!(plain_bytes.len() >= GZIP_MIN_BYTES, "fixture should be large enough");
+
+        let gz = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/tracks")
+                    .header("accept-encoding", "br;q=1.0, gzip;q=0.8")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(gz.status(), StatusCode::OK);
+        assert_eq!(gz.headers()["content-encoding"], "gzip");
+        let gz_bytes = axum::body::to_bytes(gz.into_body(), usize::MAX).await.unwrap();
+        let mut out = Vec::new();
+        flate2::read::GzDecoder::new(&gz_bytes[..])
+            .read_to_end(&mut out)
+            .unwrap();
+        assert_eq!(out, plain_bytes.to_vec());
+
+        // 小さい応答 (health) は圧縮しない。
+        let small = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .header("accept-encoding", "gzip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(small.headers().get("content-encoding").is_none());
+    }
+
+    #[test]
+    fn accepts_gzip_parses_header() {
+        assert!(accepts_gzip("gzip"));
+        assert!(accepts_gzip("gzip, deflate, br"));
+        assert!(accepts_gzip("br;q=1.0, GZIP;q=0.5"));
+        assert!(accepts_gzip("*"));
+        assert!(!accepts_gzip("gzip;q=0"));
+        assert!(!accepts_gzip("br, deflate"));
+        assert!(!accepts_gzip(""));
+        assert!(!accepts_gzip("identity"));
     }
 }

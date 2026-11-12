@@ -116,6 +116,15 @@ impl Database {
     }
 }
 
+impl Database {
+    /// プレイリストの実際の曲数。スマートはライブ評価 (criteria の limit 適用後)、
+    /// フォルダは子孫の和集合、通常は静的メンバー数。`playlists.track_count`
+    /// (静的な playlist_tracks の行数) はスマートでは 0 になるので、表示にはこちらを使う。
+    pub fn playlist_member_count(&self, playlist_id: i64) -> Result<usize> {
+        Ok(self.playlist_resolver()?.track_ids(playlist_id)?.len())
+    }
+}
+
 impl PlaylistResolver<'_> {
     /// スマートプレイリスト (フォルダ以外で criteria を持つ) か。
     pub fn is_smart(&self, playlist_id: i64) -> bool {
@@ -131,6 +140,12 @@ impl PlaylistResolver<'_> {
             .resolve(playlist_id)?
             .map(|r| r.ids.clone())
             .unwrap_or_default())
+    }
+
+    /// 評価パスで読み込んだ解析結果 (track_id → 解析)。実効 BPM での並び替えに使う。
+    pub fn analysis(&mut self) -> Result<&smart::AnalysisMap> {
+        self.ensure_library()?;
+        Ok(&self.library.as_ref().expect("library loaded").analysis)
     }
 
     /// スマートプレイリストの評価結果 (criteria の並び + limit 適用済み) を曲で返す。
@@ -261,7 +276,14 @@ impl PlaylistResolver<'_> {
             .collect();
         // criteria 自身の並び (無ければ name 昇順、第 2 キー以降は then_by)。limit はこの並びで切る。
         matched
-            .sort_by(|&a, &b| smart::compare_by_criteria(&lib.tracks[a], &lib.tracks[b], criteria));
+            .sort_by(|&a, &b| {
+            smart::compare_by_criteria(
+                &lib.tracks[a],
+                &lib.tracks[b],
+                criteria,
+                Some(&lib.analysis),
+            )
+        });
         if let Some(limit) = criteria.limit {
             matched.truncate(limit);
         }

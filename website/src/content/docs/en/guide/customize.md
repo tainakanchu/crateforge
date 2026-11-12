@@ -13,6 +13,10 @@ You can fine-tune the track table and the right rail to match how you work. Sett
 - **Reordering columns** — reorder by dragging the header directly, or with the pointer in the column picker (customize menu).
 - **Toggling visible columns** — show / hide columns in the column picker.
 - **Track number columns** — you can show two kinds: "Track #" (the track number within the album) and "No." (the sequential number in the current display order).
+- **Artist column** — shown by default (separate from the artist line under the track name at taller row heights, and sortable).
+- **The track-name column never collapses** — when columns or a narrow window leave too little room, the track-name column keeps a minimum width and the list scrolls horizontally instead.
+- **BPM column** — shows the tag BPM; tracks without one show the analyzed value in a dimmer color (sorting, `bpm:` search and smart playlists use the same "tag first, then analysis" value).
+- **Genre tags** — the genre is split into tags only at `;` `,` `/`, never at spaces, so "Deep House" is a single tag (newly added tags are saved with a `; ` separator).
 
 ## Row height, covers, and the right rail
 
@@ -20,6 +24,7 @@ You can fine-tune the track table and the right rail to match how you work. Sett
 - **Artwork (cover) size** — choose from none / small (20px) / medium (28px).
 - **List / Albums / Tracks view** — switch with the segment in the toolbar. Albums groups the same album into a single card, and clicking it expands the in-album track list in place. Tracks is an art wall with one card per track.
 - **Show / hide the right rail** — hide it with a toggle (drag its left edge to resize, double-click to reset to the default).
+  When the window is narrower than 1200px the right rail collapses automatically and comes back when you widen it (you can still open it with the toggle).
 
 Truncated cells (track name / album / album artist) show the full text as a tooltip on hover.
 
@@ -34,9 +39,10 @@ Truncated cells (track name / album / album artist) show the full text as a tool
 
 ## Toolbar
 
-- When the window is narrow, the actions on the right (Import XML / Add Files / Add Folder / Rip CD / Rules /
-  organize folder / Export XML / auto-export / fetch from server) collapse into a **⋯ menu**.
-  They behave exactly the same when collapsed, and the search box keeps a minimum width.
+- When the window is narrow, the actions on the right (Import iTunes XML / Add Files / Add Folder / Rip CD / Playlist Rules /
+  organize folder / Export iTunes XML / auto-export / fetch from server; labels are shown in Japanese) collapse into a **⋯ menu**.
+  They behave exactly the same when collapsed, and the search box keeps a minimum width. When it gets even narrower, the view
+  switcher (List / Albums / Tracks) and the columns button become icon-only and Sort shrinks to the field name / arrow (the toolbar never scrolls sideways).
 - The **`?` button** at the far right opens the keyboard shortcut list (same as the `?` key).
 
 ## Sorting
@@ -148,7 +154,8 @@ Press `?` (or the `?` button in the toolbar) to show the shortcut list overlay.
 | `↑` / `↓` | Move the selection up / down |
 | `Shift` + `↑` / `↓` | Extend the selection |
 | `Ctrl` + `A` | Select all |
-| `Ctrl` + `I` | Edit the selected track (Get Info) |
+| `Ctrl` + `I` | Edit the selected track ("情報を見る / 編集" — Get Info / Edit) |
+| `Delete` | Delete the selected tracks from the library (opens a confirmation dialog) |
 | `Alt` + `↑` | Move the selected tracks up one (while a playlist is shown in Playlist Order) |
 | `Alt` + `↓` | Move the selected tracks down one (while a playlist is shown in Playlist Order) |
 | Drag and drop | Drag rows: reorder within a playlist / add to a sidebar playlist or the Crate |

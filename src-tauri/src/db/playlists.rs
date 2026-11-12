@@ -510,20 +510,24 @@ impl Database {
         Ok(())
     }
 
+    /// プレイリスト (またはフォルダ) を 1 つ削除する。フォルダの中身 (直下の子) は消さず、
+    /// 削除したフォルダの親へ繰り上げる (トップレベルのフォルダならルートへ)。
+    /// 中身ごと消すときは [`Database::delete_playlist_subtree`] を使う。
     pub fn delete_playlist(&self, playlist_id: i64) -> Result<()> {
-        let persistent_id: Option<String> = self
+        let row: Option<(Option<String>, Option<String>)> = self
             .conn
             .query_row(
-                "SELECT persistent_id FROM playlists WHERE playlist_id = ?1",
+                "SELECT persistent_id, parent_persistent_id FROM playlists WHERE playlist_id = ?1",
                 params![playlist_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .ok();
+            .optional()?;
 
-        if let Some(pid) = persistent_id {
+        if let Some((Some(pid), parent)) = row {
+            let parent = parent.filter(|p| !p.is_empty() && *p != pid);
             self.conn.execute(
-                "UPDATE playlists SET parent_persistent_id = NULL WHERE parent_persistent_id = ?1",
-                params![pid],
+                "UPDATE playlists SET parent_persistent_id = ?1 WHERE parent_persistent_id = ?2",
+                params![parent, pid],
             )?;
         }
 
@@ -860,7 +864,13 @@ impl Database {
 
         // UI のソート指定があれば表示順だけ並べ替える ("playlistOrder" は criteria の並びのまま)。
         if let Some(field) = sort_field.filter(|f| *f != "playlistOrder") {
-            crate::smart::sort_tracks(&mut matched, field, matches!(sort_order, Some("desc")));
+            let analysis = resolver.analysis()?;
+            crate::smart::sort_tracks(
+                &mut matched,
+                field,
+                matches!(sort_order, Some("desc")),
+                Some(analysis),
+            );
         }
 
         // プレイリスト内検索: 同じ DSL の結果 (track_id 集合) と積を取る。
@@ -881,6 +891,45 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// フォルダ削除の 2 モード: 中身を残す (親へ繰り上げ) / 中身ごと削除。
+    #[test]
+    fn delete_folder_keeps_or_removes_contents() {
+        let db = Database::open_memory().unwrap();
+        let top = db.create_playlist("Top", None, true).unwrap();
+        let top_pid = top.persistent_id.clone().unwrap();
+        let mid = db.create_playlist("Mid", Some(&top_pid), true).unwrap();
+        let mid_pid = mid.persistent_id.clone().unwrap();
+        let a = db.create_playlist("A", Some(&mid_pid), false).unwrap();
+        let b = db.create_playlist("B", Some(&mid_pid), false).unwrap();
+
+        // 中身を残す: Mid の子 (A, B) は Mid の親 (Top) へ繰り上がる (ルートには散らばらない)。
+        db.delete_playlist(mid.playlist_id).unwrap();
+        let parent_of = |id: i64| -> Option<String> {
+            db.conn
+                .query_row(
+                    "SELECT parent_persistent_id FROM playlists WHERE playlist_id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(parent_of(a.playlist_id).as_deref(), Some(top_pid.as_str()));
+        assert_eq!(parent_of(b.playlist_id).as_deref(), Some(top_pid.as_str()));
+
+        // 中身ごと削除: Top と子孫 (A, B) がすべて消える。
+        let other = db.create_playlist("Other", None, false).unwrap();
+        assert_eq!(db.delete_playlist_subtree(top.playlist_id).unwrap(), 3);
+        let left: Vec<i64> = db
+            .conn
+            .prepare("SELECT playlist_id FROM playlists")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(left, vec![other.playlist_id]);
+    }
 
     /// プレイリスト内検索用のライブラリ。P(10) に 1..3 を入れる。
     fn playlist_search_db() -> Database {

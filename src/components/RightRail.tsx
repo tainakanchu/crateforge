@@ -24,6 +24,8 @@ import { Icon, Stars } from "./Icon";
 import { ratingToStars } from "../lib/rating";
 import { Cover, ArtworkImg } from "./Cover";
 import { SetArc } from "./SetArc";
+import { useCurrentTrack } from "../hooks/useCurrentTrack";
+import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import { GigReadinessDialog } from "./GigReadinessDialog";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
 import type { RailTab, Track, SimilarHit, CrateSection } from "../types";
@@ -268,9 +270,9 @@ export function RightRail({
   const showNow = railTab === "now" && !workbenchSplit;
   const showNext = railTab === "next" && !workbenchSplit;
 
-  const now = playback.currentTrackId
-    ? tracks.find((t) => t.trackId === playback.currentTrackId) ?? null
-    : null;
+  // 再生中の曲 (表示中の一覧に無ければ ID で取り直す)。
+  const now = useCurrentTrack();
+  const nowBpm = now ? effectiveBpm(now, analysisByTrack.get(now.trackId)) : null;
 
   const switchRailTab = useCallback(
     (tab: RailTab) => {
@@ -1924,8 +1926,13 @@ export function RightRail({
               {/* 大きく出すヒーローなので size を渡さず原本を読む (1 枚だけなので負荷は小さい)。 */}
               <ArtworkImg path={now.fileExists ? now.locationPath : null} />
               <div className="ov">
-                {now.bpm != null && (
-                  <span style={{ color: bpmColor(now.bpm) }}>{now.bpm} BPM</span>
+                {nowBpm && (
+                  <span
+                    style={{ color: bpmColor(nowBpm.value), opacity: nowBpm.fromAnalysis ? 0.6 : undefined }}
+                    title={nowBpm.fromAnalysis ? ANALYZED_BPM_TITLE : undefined}
+                  >
+                    {nowBpm.value} BPM
+                  </span>
                 )}
                 {now.rating != null && now.rating > 0 && (
                   <Stars value={ratingToStars(now.rating)} size={10} />
@@ -2041,7 +2048,10 @@ export function RightRail({
                 <NowRow label="Album" value={now.album} />
                 <NowRow label="Artist" value={now.artist} />
                 <NowRow label="Genre" value={now.genre} />
-                <NowRow label="BPM" value={now.bpm != null ? String(now.bpm) : null} />
+                <NowRow
+                  label="BPM"
+                  value={nowBpm ? `${nowBpm.value}${nowBpm.fromAnalysis ? "（解析値）" : ""}` : null}
+                />
                 {nowKey != null && <NowRow label="Key" value={nowKey} />}
                 {na?.energy != null && (
                   <NowRow label="Energy" value={String(Math.round(na.energy * 100)) + "%"} />

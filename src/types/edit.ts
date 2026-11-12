@@ -103,6 +103,7 @@ export const ARTIST_SORT_FIELDS: SortField[] = ["name", "trackCount", "albumCoun
 // ここに含めない。ここで定義するのは右側の固定幅フィールド群。
 export type FieldKey =
   | "rowIndex"
+  | "artist"
   | "bpm"
   | "key"
   | "energy"
@@ -136,6 +137,7 @@ export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
   // 現在の表示順での連番 (1,2,3…)。アルバムのトラック番号(trackNumber)とは別物。
   // 表示インデックスを描画するだけなのでソート対象外 (sortField: null)。
   rowIndex: { key: "rowIndex", label: "No.", width: 48, sortField: null },
+  artist: { key: "artist", label: "Artist", width: 120, sortField: "artist" },
   bpm: { key: "bpm", label: "BPM", width: 64, sortField: "bpm" },
   // key / energy は track_analysis 由来。tracks テーブルに無いのでソート対象外 (sortField: null)。
   key: { key: "key", label: "Key", width: 56, sortField: null },
@@ -162,6 +164,7 @@ export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
 /// ColumnPicker の "Available" 列挙順。
 export const ALL_FIELDS: FieldKey[] = [
   "rowIndex",
+  "artist",
   "bpm",
   "key",
   "energy",
@@ -184,4 +187,7 @@ export const ALL_FIELDS: FieldKey[] = [
 ];
 
 /// 既定の表示列（順序 = 表示順）。
-export const DEFAULT_FIELDS: FieldKey[] = ["bpm", "album", "genre", "rating"];
+export const DEFAULT_FIELDS: FieldKey[] = ["artist", "bpm", "album", "genre", "rating"];
+
+/// v23 以前の既定列。永続化された列がこれと同じなら v24 で Artist 列入りの既定へ移行する。
+export const LEGACY_DEFAULT_FIELDS_V23: FieldKey[] = ["bpm", "album", "genre", "rating"];

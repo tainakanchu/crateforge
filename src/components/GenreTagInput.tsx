@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Icon } from "./Icon";
+import { GENRE_SEPARATORS } from "../lib/genre";
 
 interface GenreTagInputProps {
   /// 現在のタグ（順序保持・重複なし）。
@@ -9,16 +10,21 @@ interface GenreTagInputProps {
   suggestions?: string[];
   placeholder?: string;
   autoFocus?: boolean;
+  /// true なら空白を含むタグを許す (ジャンル: "Deep House" を 1 タグにする)。
+  /// 区切りは `;` `,` `/` (lib/genre の GENRE_SEPARATORS) と Enter / Tab のみ。
+  /// false (既定) は従来どおり空白・カンマでも区切る (Tags 欄)。
+  allowSpaces?: boolean;
 }
 
-/// ジャンルを「タグチップ＋補完」で編集する入力。
-/// タグは半角空白を含めない単一トークン（保存時は空白区切りで連結する前提）。
+/// ジャンル / タグを「タグチップ＋補完」で編集する入力。
+/// allowSpaces=false のタグは半角空白を含めない単一トークン。
 export function GenreTagInput({
   value,
   onChange,
   suggestions = [],
   placeholder,
   autoFocus,
+  allowSpaces = false,
 }: GenreTagInputProps) {
   const [text, setText] = useState("");
   const [open, setOpen] = useState(false);
@@ -37,9 +43,9 @@ export function GenreTagInput({
   }, [suggestions, lower, text]);
 
   const addTag = (raw: string) => {
-    // 空白区切りで複数まとめて貼られても分解して取り込む。
+    // 区切りで複数まとめて貼られても分解して取り込む。
     const parts = raw
-      .split(/\s+/)
+      .split(allowSpaces ? GENRE_SEPARATORS : /\s+/)
       .map((p) => p.trim())
       .filter(Boolean);
     if (parts.length === 0) return;
@@ -68,7 +74,10 @@ export function GenreTagInput({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" || e.key === "," || e.key === " " || e.key === "Tab") {
+    const isSeparatorKey = allowSpaces
+      ? e.key === ";" || e.key === "," || e.key === "/"
+      : e.key === "," || e.key === " ";
+    if (e.key === "Enter" || e.key === "Tab" || isSeparatorKey) {
       // Tab: テキストあり or 候補ハイライト中なら確定してフォーカス移動を抑止
       if (e.key === "Tab") {
         if (open && filtered[hi] && text.trim()) {
@@ -86,7 +95,7 @@ export function GenreTagInput({
         // 入力が空のときは通常の Tab 移動を許可（preventDefault しない）
         return;
       }
-      // Enter / , / スペースはこのフィールドが消費する。上位の保存ハンドラ
+      // Enter / 区切りキーはこのフィールドが消費する。上位の保存ハンドラ
       // （TrackEditor の document リスナー等）へ伝播させてタグ追加と同時に
       // 保存・クローズが走る事故を防ぐ。
       e.stopPropagation();

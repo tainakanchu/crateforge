@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import { FIELD_DEFS, ALL_FIELDS } from "../types";
@@ -26,6 +26,26 @@ export function ColumnPicker({ onClose }: ColumnPickerProps) {
   } = useStore();
 
   const listRef = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+
+  // ポップオーバーの外を押す / Esc で閉じる (scrim が他の層に隠れても確実に閉じるため)。
+  // 開閉ボタン自身 ([data-colpicker-toggle]) はボタンの onClick に任せる。
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t || popRef.current?.contains(t) || t.closest("[data-colpicker-toggle]")) return;
+      onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
   // ドラッグ中の元インデックス。pointerdown で記録し、move 中に reorder する。
   const dragIdx = useRef<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
@@ -73,9 +93,9 @@ export function ColumnPicker({ onClose }: ColumnPickerProps) {
   return (
     <>
       <div className="cb-scrim" onClick={onClose} />
-      <div className="cb-pop" onClick={(e) => e.stopPropagation()}>
+      <div className="cb-pop" ref={popRef} onClick={(e) => e.stopPropagation()}>
         <div className="cb-pophd">
-          <div className="t">Customize columns</div>
+          <div className="t">表示する列</div>
           <div className="s">グリップをドラッグで並べ替え・チェックで表示切替</div>
         </div>
 
@@ -103,7 +123,7 @@ export function ColumnPicker({ onClose }: ColumnPickerProps) {
             </div>
           ))}
 
-          {available.length > 0 && <div className="cb-popavail">Available</div>}
+          {available.length > 0 && <div className="cb-popavail">追加できる列</div>}
           {available.map((id: FieldKey) => (
             <div key={id} className="cb-pi off" onClick={() => toggleField(id)}>
               <span className="grip">
@@ -120,7 +140,7 @@ export function ColumnPicker({ onClose }: ColumnPickerProps) {
         <div className="cb-popft">
           <div className="cb-ctrlrow">
             <div className="cb-ctrll">
-              <span>Row height</span>
+              <span>行の高さ</span>
               <span className="cb-ctrlv">{rowH}px</span>
             </div>
             <input
@@ -135,7 +155,7 @@ export function ColumnPicker({ onClose }: ColumnPickerProps) {
           </div>
           <div className="cb-ctrlrow">
             <div className="cb-ctrll">
-              <span>Artwork</span>
+              <span>アートワーク</span>
             </div>
             <div className="cb-seg2">
               {([0, 20, 28] as CoverSize[]).map((s) => (
@@ -153,7 +173,7 @@ export function ColumnPicker({ onClose }: ColumnPickerProps) {
             </div>
           </div>
           <button className="cb-reset" onClick={resetColumns}>
-            Reset to defaults
+            既定に戻す
           </button>
         </div>
       </div>

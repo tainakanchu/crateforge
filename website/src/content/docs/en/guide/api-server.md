@@ -10,7 +10,7 @@ Enabling it lets you integrate with AI agents (such as dj-curator) and play and 
 
 ## Enabling and listen address
 
-Enable the API server under **"AI integration / API"** in settings.
+Enable the API server under **"Mobile / API"** in settings.
 
 - It is **OFF** by default. The default port is **8787**.
 - By default it listens on **`127.0.0.1` (loopback only)**.
@@ -38,12 +38,17 @@ It exposes a REST API for reading and writing the library, analysis data, and pl
 ### Read
 
 - `GET /api/health` — server identity + current track count
-- `GET /api/tracks` (`?q` search, `?album` / `?genre` partial match, offset/limit)
-- `GET /api/tracks/{id}` / `POST /api/tracks/by-ids`
+- `GET /api/tracks` (`?q` search, `?album` / `?genre` partial match, offset/limit). Add `?albumExact=true` to match `album` exactly
+- `GET /api/tracks/{id}` / `POST /api/tracks/by-ids` (IDs → tracks; read-only, so it also works from the LAN with a token)
+- `GET /api/tracks/{id}/stream` — audio streaming (`?native=true` serves device-playable formats as-is / `?original=true` original bytes / `?fmt=aac&br=192` AAC transcode)
 - `GET /api/tracks/{id}/analysis` — analysis results (null if not analyzed)
 - `GET /api/tracks/{id}/similar` — similar tracks
 - `GET /api/stats` / `GET /api/genres` / `GET /api/albums`
 - `GET /api/playlists` / `GET /api/playlists/{id}` (includes the smart criteria `smartCriteria`) / `GET /api/playlists/{id}/tracks`
+  (for smart playlists, `trackCount` is the live-evaluated count)
+
+Boolean query parameters accept `1` / `0` as well as `true` / `false`.
+When the client sends `Accept-Encoding: gzip`, large JSON responses (such as the full track list) are gzip-compressed.
 
 ### Write (metadata)
 
@@ -112,6 +117,9 @@ On iOS, you can make it a full-screen app (**PWA**) with **"Add to Home Screen."
 The remote has **play / pause, previous/next, seek, a volume slider, and shuffle / repeat toggles**,
 with state via `GET /api/remote/state` (including volume / shuffle / repeat) and operations via `POST /api/remote/*`
 (`play` / `pause` / `resume` / `next` / `prev` / `seek` / `volume` / `shuffle` / `repeat`, etc.).
+After a stop, `resume` starts again from the track at the current queue position. To play from any queue position use
+`POST /api/remote/play-at` (`{index}`, a position in the `trackIds` of `GET /api/remote/queue`);
+to replace the queue and start playing right away, add `play: true` to `POST /api/remote/set-queue`.
 
 The web UI has **keyboard shortcuts** close to the desktop app, and `?` opens the list
 (`Space` play / pause, `J` / `K` previous / next, `Shift + ←` / `Shift + →` seek 5 seconds, `S` shuffle, `R` repeat,

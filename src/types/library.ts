@@ -40,6 +40,8 @@ export interface ImportPlanItem {
   hits: DuplicateHit[];
   /** このパスそのものが既にライブラリにある (黙ってスキップする)。 */
   alreadyImportedSamePath: boolean;
+  /** 取り込む側のファイル自体にゼロ埋め破損の疑いがある (既定でスキップ)。 */
+  sourceBroken: boolean;
 }
 
 export interface ImportActionItem {
@@ -95,4 +97,6 @@ export interface LibraryStats {
   trackCount: number;
   playlistCount: number;
   totalTimeMs: number;
+  /** Artists ビューのアーティスト数。 */
+  artistCount: number;
 }

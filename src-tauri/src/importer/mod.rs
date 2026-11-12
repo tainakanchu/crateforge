@@ -45,12 +45,23 @@ fn is_hidden(path: &Path) -> bool {
         .is_some_and(|n| n.starts_with('.'))
 }
 
+/// 置き換えで退避した旧ファイルの置き場 (`library_match::replace` の `_replaced/<date>/`)。
+/// フォルダ取り込みで再び候補に出さないよう走査から除外する。
+const REPLACED_DIR: &str = "_replaced";
+
+/// 走査で辿らないフォルダか (`_replaced` 退避フォルダ)。大文字小文字は無視する。
+fn is_replaced_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case(REPLACED_DIR))
+}
+
 /// `roots` に含まれるファイル / フォルダを再帰的に走査し、対応オーディオファイルの
 /// パスをソート済み・重複なしで返す。
 ///
 /// - フォルダは深さ優先で再帰的に辿る (`std::fs::read_dir`)。
-/// - 隠しファイル / 隠しフォルダ (`.` 始まり) はスキップする。ただし利用者が
-///   明示的に指定した root 自身は隠しでも対象にする。
+/// - 隠しファイル / 隠しフォルダ (`.` 始まり) と、置き換えの退避先 `_replaced` フォルダは
+///   スキップする。ただし利用者が明示的に指定した root 自身は対象にする。
 /// - シンボリックリンクのループは訪問済みディレクトリ (canonicalize 済み) の
 ///   集合と深さ上限で防ぐ。
 /// - 読めないディレクトリは黙って読み飛ばす (権限エラーなどで全体を止めない)。
@@ -97,6 +108,9 @@ pub fn collect_audio_files(roots: &[PathBuf]) -> Vec<PathBuf> {
             // `file_type()` はリンク自身を指すので、リンク先の種別は `path.is_dir()`
             // (= metadata 追従) で判定する。ループは visited 側で止める。
             if path.is_dir() {
+                if is_replaced_dir(&path) {
+                    continue;
+                }
                 stack.push((path, depth + 1));
             } else if path.is_file() && is_audio_file(&path) {
                 out.push(path);
@@ -588,6 +602,10 @@ pub fn plan_import(
             }
             _ => Vec::new(),
         };
+        // 取り込む側のファイルにも既存曲と同じゼロ埋め破損チェックを掛ける
+        // (同じパスで取り込み済みならどうせスキップするので読まない)。
+        let source_broken =
+            !same_path && library_match::health::looks_zero_filled(file).unwrap_or(false);
         out.push(ImportPlanItem {
             path: path_str,
             title: tags.title,
@@ -596,6 +614,7 @@ pub fn plan_import(
             duration_ms: tags.duration_ms,
             hits,
             already_imported_same_path: same_path,
+            source_broken,
         });
         on_progress(i + 1, total);
     }
@@ -793,6 +812,22 @@ mod tests {
 
         let files = collect_audio_files(&[root.to_path_buf()]);
         assert_eq!(rel(root, &files), vec!["ok.mp3", "sub/ok2.flac"]);
+    }
+
+    /// 置き換えの退避先 `_replaced/` は走査しない (再取り込みの候補に出さない)。
+    /// 利用者が明示的に root として渡した場合は対象にする。
+    #[test]
+    fn skips_replaced_backup_dir() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        touch(&root.join("A/ok.mp3"));
+        touch(&root.join("_replaced/20261110/A/old.mp3"));
+        touch(&root.join("A/_Replaced/x.flac"));
+
+        let files = collect_audio_files(&[root.to_path_buf()]);
+        assert_eq!(rel(root, &files), vec!["A/ok.mp3"]);
+        let explicit = collect_audio_files(&[root.join("_replaced")]);
+        assert_eq!(explicit.len(), 1);
     }
 
     #[test]
@@ -1146,6 +1181,26 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert!(plan[0].already_imported_same_path);
         assert!(plan[0].hits.is_empty());
+    }
+
+    /// 取り込む側のファイルがゼロ埋め破損の疑いなら source_broken で知らせる。
+    #[test]
+    fn plan_import_flags_zero_filled_source() {
+        let tmp = TempDir::new().unwrap();
+        // 非ゼロのデータ + 末尾 70 KiB のゼロ埋め (OneDrive 同期失敗の再現)。
+        let mut data: Vec<u8> = (0..1_400_000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8 | 1)
+            .collect();
+        data.extend(std::iter::repeat_n(0u8, 70 * 1024));
+        let bad = tmp.path().join("bad.flac");
+        fs::write(&bad, &data).unwrap();
+        let good = tmp.path().join("good.wav");
+        tagged_wav(&good, "Song", "Artist", "Album", 2);
+        let db = Database::open_memory().unwrap();
+        let plan = plan_import(&db, &[tmp.path().to_path_buf()], |_, _| {}).unwrap();
+        let by = |n: &str| plan.iter().find(|p| p.path.ends_with(n)).unwrap();
+        assert!(by("bad.flac").source_broken);
+        assert!(!by("good.wav").source_broken);
     }
 
     #[test]

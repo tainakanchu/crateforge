@@ -49,6 +49,9 @@ import {
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
 import type { PlaybackState, RepeatMode, SortField, SortOrder, Track } from "./types";
 
+// 窓の幅がこれ未満なら右ペインを自動で畳む (最小 1024px でも曲名列が潰れないように)。
+const RAIL_AUTO_HIDE_WIDTH = 1200;
+
 const isTauri = "__TAURI_INTERNALS__" in window;
 
 /// Rust プレイヤー側の「フロントのストアと二重管理になっている値」。
@@ -707,6 +710,17 @@ export default function App() {
           dropPending();
           setAnalysisActive(null);
           loadAnalyses();
+          // 解析完了を知らせる (失敗があればエラー扱いで残す)。
+          if (p.analyzed + p.failed > 0) {
+            useStore
+              .getState()
+              .pushToast(
+                p.failed > 0 ? "error" : "success",
+                p.failed > 0
+                  ? `解析が完了しました（成功 ${p.analyzed} 曲 / 失敗 ${p.failed} 曲）`
+                  : `解析が完了しました（${p.analyzed} 曲）`,
+              );
+          }
         }
       });
       if (cancelled) u();
@@ -1348,6 +1362,27 @@ export default function App() {
       el.style.removeProperty("--rail-w");
     }
   }, [rightRailVisible, rightRailWidth]);
+
+  // 狭い窓 (幅 < RAIL_AUTO_HIDE_WIDTH) では右ペインを自動で畳み、一覧 (曲名列) の幅を確保する。
+  // 自動で畳んだ場合だけ、広げたときに戻す (利用者が自分で閉じた状態は変えない)。
+  // 狭いまま利用者が開き直した場合は、そのまま尊重する。
+  const railAutoHiddenRef = useRef(false);
+  useEffect(() => {
+    const check = () => {
+      const narrow = window.innerWidth < RAIL_AUTO_HIDE_WIDTH;
+      const st = useStore.getState();
+      if (narrow && st.rightRailVisible && !railAutoHiddenRef.current) {
+        railAutoHiddenRef.current = true;
+        st.setRightRailVisible(false);
+      } else if (!narrow && railAutoHiddenRef.current) {
+        railAutoHiddenRef.current = false;
+        if (!st.rightRailVisible) st.setRightRailVisible(true);
+      }
+    };
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   const handleRemoveFromInbox = useCallback(
     (_trackId: number) => {

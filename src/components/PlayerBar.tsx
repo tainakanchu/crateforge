@@ -2,14 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import * as analysisApi from "../api/analysis";
-import * as libraryApi from "../api/library";
 import * as openWithApi from "../api/openWith";
-import type { Track } from "../types";
 import { Icon } from "./Icon";
 import { Cover } from "./Cover";
 import { CastDevicePicker } from "./CastDevicePicker";
 import { WaveBars } from "./WaveBars";
+import { useCurrentTrack } from "../hooks/useCurrentTrack";
 import { bpmColor } from "../lib/art";
+import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import * as audition from "../lib/audition";
 
 // 残り時間を "-mm:ss" 形式でフォーマット。
@@ -38,7 +38,6 @@ const JUMP_MARKERS = [0.25, 0.5, 0.75] as const;
 export function PlayerBar() {
   const {
     playback,
-    tracks,
     volume,
     shuffle,
     repeat,
@@ -53,35 +52,19 @@ export function PlayerBar() {
     toggleRemainingTime,
     auditionMode,
     previewActive,
+    analysisByTrack,
   } = useStore();
 
   // ミュート前の音量を保持（復帰用）。
   const lastVolumeRef = useRef(volume > 0 ? volume : 1);
 
-  // 再生中の曲が表示中の一覧 (tracks) に無いとき (起動時に復元した曲 #159 / 別ビューの曲) は
-  // ID で取り直して表示する。
-  const [fetchedTrack, setFetchedTrack] = useState<Track | null>(null);
-  const listedTrack = playback.currentTrackId
-    ? tracks.find((t) => t.trackId === playback.currentTrackId) ?? null
+  // 再生中の曲 (表示中の一覧 (tracks) に無いときは ID で取り直す #159)。
+  const currentTrack = useCurrentTrack();
+
+  // 実効 BPM (タグ ?? 解析値)。
+  const currentBpm = currentTrack
+    ? effectiveBpm(currentTrack, analysisByTrack.get(currentTrack.trackId))
     : null;
-  useEffect(() => {
-    const id = playback.currentTrackId;
-    if (id == null || listedTrack || !isTauri) return;
-    if (fetchedTrack?.trackId === id) return;
-    let alive = true;
-    libraryApi
-      .getTracksByIds([id])
-      .then((r) => {
-        if (alive) setFetchedTrack(r[0] ?? null);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [playback.currentTrackId, listedTrack, fetchedTrack]);
-  const currentTrack =
-    listedTrack ??
-    (fetchedTrack && fetchedTrack.trackId === playback.currentTrackId ? fetchedTrack : null);
 
   // 「このアプリで開く」で再生中のライブラリ外ファイル (一時再生曲) をライブラリへ取り込む。
   // 再生は止まらず、取り込み後はキュー / 再生中の曲がライブラリの曲に付け替わる。
@@ -101,14 +84,14 @@ export function PlayerBar() {
     }
   }, [currentTrack, pushToast]);
 
-  // フォールバック用の決定的な波形バー（解析前/未解析時）。
-  const waveHeights = useMemo(
-    () =>
-      Array.from({ length: WAVE_N }, (_, i) => 6 + Math.abs(Math.sin(i * 0.6) * 18) + (i % 3) * 2),
-    [],
-  );
+  // 未解析時のフォールバック: 実波形と見間違えないよう、低く平坦なバーにする
+  // (「未解析」と分かる見た目。ツールチップでも知らせる)。
+  const waveHeights = useMemo(() => Array.from({ length: WAVE_N }, () => 3), []);
 
   // 再生中トラックの実波形ピークを取得（無ければフォールバック）。
+  // 再生中に解析が終わったら (analysisByTrack に載ったら) 取り直す。
+  const currentAnalyzed =
+    playback.currentTrackId != null && analysisByTrack.has(playback.currentTrackId);
   const [peaks, setPeaks] = useState<number[]>([]);
   useEffect(() => {
     const id = playback.currentTrackId;
@@ -128,7 +111,7 @@ export function PlayerBar() {
     return () => {
       alive = false;
     };
-  }, [playback.currentTrackId]);
+  }, [playback.currentTrackId, currentAnalyzed]);
 
   // 参照が変わると波形 canvas を描き直すので、peaks / waveHeights が変わるときだけ作り直す。
   const bars = useMemo(
@@ -278,10 +261,18 @@ export function PlayerBar() {
               )}
               <div className="la">
                 {currentTrack.artist || ""}
-                {currentTrack.bpm != null && (
+                {currentBpm && (
                   <>
                     {currentTrack.artist ? " · " : ""}
-                    <b style={{ color: bpmColor(currentTrack.bpm) }}>{currentTrack.bpm} BPM</b>
+                    <b
+                      style={{
+                        color: bpmColor(currentBpm.value),
+                        opacity: currentBpm.fromAnalysis ? 0.6 : undefined,
+                      }}
+                      title={currentBpm.fromAnalysis ? ANALYZED_BPM_TITLE : undefined}
+                    >
+                      {currentBpm.value} BPM
+                    </b>
                   </>
                 )}
               </div>
@@ -355,8 +346,17 @@ export function PlayerBar() {
           {/* ドラッグシーク対応: pointerDown/Move/Up + setPointerCapture でドラッグを捕捉 */}
           <div
             ref={waveRef}
-            className={"cb-wave" + (auditionMode ? " audition" : "")}
+            className={
+              "cb-wave" +
+              (auditionMode ? " audition" : "") +
+              (playback.currentTrackId != null && peaks.length === 0 ? " unanalyzed" : "")
+            }
             style={{ touchAction: "none", cursor: "pointer" }}
+            title={
+              playback.currentTrackId != null && peaks.length === 0
+                ? "未解析のため波形はありません（右クリック →「解析」で表示されます）"
+                : undefined
+            }
             onPointerDown={handleWavePointerDown}
             onPointerMove={handleWavePointerMove}
             onPointerUp={handleWavePointerUp}

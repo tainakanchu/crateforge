@@ -9,6 +9,7 @@ import { ArtworkImg } from "./Cover";
 import { artGradient, leadingGlyph } from "../lib/art";
 import { ARTIST_SORT_FIELDS } from "../types";
 import type { AlbumRow, ArtistRow, SortField, Track } from "../types";
+import { EmptyState } from "./EmptyState";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -293,9 +294,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   if (artists.length === 0 && !isLoading) {
     return (
       <div className="cb-grid-wrap">
-        <div className="cb-empty">
-          No tracks. Import an iTunes Library XML, rip a CD, or add files to get started.
-        </div>
+        <EmptyState ignoresSearch />
       </div>
     );
   }
