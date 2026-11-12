@@ -35,23 +35,25 @@ Truncated cells (track name / album / album artist) show the full text as a tool
 - **Artists** — the artist list is aggregated on the server side (SQLite) and rendered virtualized.
   Compilations roll up into **Various Artists**; tracks with an empty album artist fall back to the artist name,
   and to "Unknown Artist" when neither is present. Track and album counts match the Albums view.
-  Sort in the Artists view offers **Artist / Tracks / Albums**.
+  Sort in the Artists view offers **"アーティスト名" / "曲数" / "アルバム数"** (artist / tracks / albums).
+  The search box and genre filters also apply to the Artists view: only artists with matching tracks are shown (counted by the matching tracks).
 
 ## Toolbar
 
 - When the window is narrow, the actions on the right (Import iTunes XML / Add Files / Add Folder / Rip CD / Playlist Rules /
   organize folder / Export iTunes XML / auto-export / fetch from server; labels are shown in Japanese) collapse into a **⋯ menu**.
   They behave exactly the same when collapsed, and the search box keeps a minimum width. When it gets even narrower, the view
-  switcher (List / Albums / Tracks) and the columns button become icon-only and Sort shrinks to the field name / arrow (the toolbar never scrolls sideways).
+  switcher (List / Albums / Tracks) and the columns button become icon-only and Sort shrinks to the field name / arrow. If it still does not fit (e.g. 1024 px wide with the right pane open),
+  the view switcher, Sort, columns and the playlist search scope move into the ⋯ menu as well. Collapsing is decided by whether the controls actually overflow (the toolbar never scrolls sideways).
 - The **`?` button** at the far right opens the keyboard shortcut list (same as the `?` key).
 
 ## Sorting
 
 - Sort is **remembered per view (per scope)**. The library, Inbox, recently played, Albums, Artists —
   and **each playlist** — keep their own sort, so reopening one shows the same order as before.
-- Opening a regular playlist in List view defaults to **"Playlist Order"** (the manual order stored in the playlist).
+- Opening a regular playlist in List view defaults to **"プレイリスト順" (Playlist Order)** (the manual order stored in the playlist).
   Only in that order can you drag rows to reorder tracks, and `Alt` + `↑` / `↓` moves them one step at a time
-  (a multiple selection moves as a block). "Playlist Order" appears in the Sort menu only in that situation.
+  (a multiple selection moves as a block). "プレイリスト順" (Playlist Order) appears in the Sort menu only in that situation.
 - You can also **drag and drop rows onto a playlist in the sidebar** to add them (dropping onto the Crate works the same way).
 
 ## CJK variant-normalizing search

@@ -162,14 +162,14 @@ export function TrackContextMenu({
 
   // ── メニュー項目（フォーカス可能なものだけ）を上から順に id 化 ──
   const navIds = useMemo(() => {
-    const ids = ["play", "rating", "crate", "playnext", "queue", "analyze", "similar", "convert", "info"];
+    // 「プレイリストに追加…」は Crate に追加の直下 (D5: 長いメニューの下に隠れないように)。
+    const ids = ["play", "rating", "crate", "playlist", "playnext", "queue", "analyze", "similar", "convert", "info"];
     // ファイルが無い曲では「表示」できないので、キーボード移動の対象からも外す。
     if (revealPath) ids.push("reveal");
     if (relocateTrack) ids.push("relocate");
     if (showRemoveFromPlaylist) ids.push("remove");
     if (deleteCount > 0) ids.push("delete");
     for (const p of recentPlaylists) ids.push(`recent:${p.playlistId}`);
-    ids.push("playlist");
     ids.push("addtag");
     for (const t of genreTags) ids.push(`tag:${t}`);
     return ids;
@@ -251,7 +251,9 @@ export function TrackContextMenu({
     [run, onPlay, onAddToCrate, onPlayNext, onEnqueue, onAnalyze, onFindSimilar, onConvert, onGetInfo, onRemoveFromPlaylist, onReveal, onRelocate, onDelete, onAddTag, onAddToPlaylist, onRemoveTag],
   );
 
-  const openSubmenu = useCallback(() => {
+  // フライアウトの位置を「プレイリストに追加…」項目の現在位置に合わせる。
+  // 開いた後にメニューがスクロールしても追従する (D5)。
+  const placeSubmenu = useCallback(() => {
     const it = submenuItemRef.current;
     if (it) {
       const r = it.getBoundingClientRect();
@@ -265,10 +267,27 @@ export function TrackContextMenu({
       }
       setSubPos({ left, top });
     }
+  }, []);
+
+  const openSubmenu = useCallback(() => {
+    // 項目が一部スクロールで隠れていたら見える位置へ寄せてから配置する。
+    submenuItemRef.current?.scrollIntoView({ block: "nearest" });
+    placeSubmenu();
     setSubIndex(0);
     setFilter("");
     setSubmenuOpen(true);
-  }, []);
+  }, [placeSubmenu]);
+
+  useEffect(() => {
+    if (!submenuOpen) return;
+    const el = containerRef.current;
+    el?.addEventListener("scroll", placeSubmenu, { passive: true });
+    window.addEventListener("resize", placeSubmenu);
+    return () => {
+      el?.removeEventListener("scroll", placeSubmenu);
+      window.removeEventListener("resize", placeSubmenu);
+    };
+  }, [submenuOpen, placeSubmenu]);
 
   const closeSubmenu = useCallback(() => {
     setSubmenuOpen(false);
@@ -472,6 +491,19 @@ export function TrackContextMenu({
       <div {...itemProps("crate")} onClick={run(onAddToCrate)}>
         <Icon name="layers" size={14} /> Crate に追加
       </div>
+      {/* プレイリストへ追加（B：サブメニュー）。よく使うので Crate の直下に置く (D5)。 */}
+      <div
+        ref={submenuItemRef}
+        {...itemProps("playlist", true)}
+        className={
+          "context-menu-item has-sub" + (activeId === "playlist" || submenuOpen ? " active" : "")
+        }
+        onClick={openSubmenu}
+      >
+        <Icon name="folderPlus" size={14} />
+        <span className="ell">プレイリストに追加…</span>
+        <Icon name="chevronR" size={14} className="ctx-sub-caret" />
+      </div>
       <div {...itemProps("playnext")} onClick={run(onPlayNext)}>
         <Icon name="next" size={14} /> 次に再生
       </div>
@@ -558,22 +590,6 @@ export function TrackContextMenu({
           ))}
         </>
       )}
-
-      {/* プレイリストへ追加（B：サブメニュー） */}
-      <div
-        ref={submenuItemRef}
-        {...itemProps("playlist", true)}
-        className={
-          "context-menu-item has-sub" + (activeId === "playlist" || submenuOpen ? " active" : "")
-        }
-        onClick={openSubmenu}
-      >
-        <Icon name="folderPlus" size={14} />
-        <span className="ell">プレイリストに追加…</span>
-        <Icon name="chevronR" size={14} className="ctx-sub-caret" />
-      </div>
-
-      <div className="context-menu-divider" />
 
       {/* ジャンルタグ */}
       <div className="context-menu-section">ジャンルタグ</div>

@@ -103,7 +103,7 @@ impl Database {
     }
 }
 
-/// SQL から呼べるアプリ定義スカラー関数を登録する。`open` / `open_memory` の両方で使う。
+/// SQL から呼べるアプリ定義スカラー関数・照合順序を登録する。`open` / `open_memory` の両方で使う。
 /// `fold(text, level)`: CJK 字体ゆれを `level` (0=Off/1=Light/2=Standard) まで畳む。
 /// NULL 列は NULL のまま返す。決定的なので SQLITE_DETERMINISTIC を付ける。
 fn register_functions(conn: &Connection) -> Result<()> {
@@ -118,6 +118,9 @@ fn register_functions(conn: &Connection) -> Result<()> {
                 .map(|t| crate::text_fold::fold(&t, crate::text_fold::FoldLevel::from_i64(level))))
         },
     )?;
+    // 自然順の照合順序 (D10): "Song 2" < "Song 10"、大文字小文字は区別しない。
+    // 一覧の ORDER BY 専用 (インデックス・ビューには使わない = 外部ツールで DB を開いても壊れない)。
+    conn.create_collation("NATSORT", crate::natural_sort::natural_cmp)?;
     Ok(())
 }
 

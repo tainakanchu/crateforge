@@ -9,6 +9,22 @@ function baseName(p: string): string {
   return p.split(/[\\/]/).pop() ?? p;
 }
 
+/** パスのフォルダ部分 (末尾の区切り込み)。ファイル名だけなら空。 */
+function dirName(p: string): string {
+  const name = baseName(p);
+  return p.slice(0, p.length - name.length);
+}
+
+/**
+ * 登録済みのファイルそのもの (同じパス) か。計画の段階で除かれているはずだが、
+ * 念のため一致の中に同じパスがあるものも含めて「取り込む」を選ばせない (D11)。
+ */
+function isSameFile(i: ImportPlanItem): boolean {
+  return i.alreadyImportedSamePath || i.hits.some((h) => h.locationPath === i.path);
+}
+
+const SKIP: DuplicateDecision = { action: "skip", replaceTrackId: null };
+
 /** 拡張子から表示用の形式名 (FLAC / MP3 …)。 */
 function formatOf(p: string): string {
   const m = /\.([^./\\]+)$/.exec(p);
@@ -41,31 +57,40 @@ function ImportDuplicatesDialogBody({
   resolve: (d: Map<string, DuplicateDecision> | null) => void;
 }) {
   const [decisions, setDecisions] = useState<Map<string, DuplicateDecision>>(
-    () => new Map(items.map((i) => [i.path, planDefaultDecision(i)])),
+    () => new Map(items.map((i) => [i.path, isSameFile(i) ? SKIP : planDefaultDecision(i)])),
   );
+  // Esc は誤操作で取り込み全体が消えないよう、キャンセルしてよいか確認を挟む (D6)。
+  const [confirmCancel, setConfirmCancel] = useState(false);
 
   const cancel = useCallback(() => resolve(null), [resolve]);
-  const proceed = useCallback(() => resolve(decisions), [resolve, decisions]);
+  const proceed = useCallback(() => {
+    // 同じファイルは指示に関係なくスキップ (バックエンドも二重登録を拒否する)。
+    const out = new Map(decisions);
+    for (const i of items) if (isSameFile(i)) out.set(i.path, SKIP);
+    resolve(out);
+  }, [resolve, decisions, items]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        cancel();
+        // 1 回目は確認を出すだけ。確認中の Esc は確認を閉じて選択に戻る。
+        setConfirmCancel((v) => !v);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cancel]);
+  }, []);
 
   // 一括指定。「すべて取り込む」でも破損の疑いがあるファイルは明示的に選ばない限り
   // 取り込まない (スキップのまま)。置き換えは一致がある曲だけ (無い曲は取り込む)。
+  // 登録済みの同じファイルはどの一括指定でもスキップのまま (D11)。
   const setAll = (action: ItemAction) => {
     setDecisions(
       new Map(
         items.map((i): [string, DuplicateDecision] => {
-          if (action === "skip") return [i.path, { action, replaceTrackId: null }];
-          if (i.sourceBroken) return [i.path, { action: "skip", replaceTrackId: null }];
+          if (action === "skip" || isSameFile(i)) return [i.path, SKIP];
+          if (i.sourceBroken) return [i.path, SKIP];
           if (action === "replace" && i.hits.length > 0) {
             return [i.path, { action, replaceTrackId: replaceTargetOf(i.hits) }];
           }
@@ -122,7 +147,8 @@ function ImportDuplicatesDialogBody({
           </div>
           <div className="rip-track-list dup-list">
             {items.map((i) => {
-              const d = decisions.get(i.path) ?? planDefaultDecision(i);
+              const sameFile = isSameFile(i);
+              const d = sameFile ? SKIP : (decisions.get(i.path) ?? planDefaultDecision(i));
               return (
                 <div key={i.path} className="rip-track-row dup-row" title={i.path}>
                   <div className="dup-row-main">
@@ -133,7 +159,11 @@ function ImportDuplicatesDialogBody({
                     <span className="dup-row-meta">
                       <span className="dup-row-fmt">{formatOf(i.path)}</span>
                       <span className="rip-track-len">{fmtLength(i.durationMs)}</span>
-                      <span className="dup-row-path">{i.path}</span>
+                      {/* 長いパスは先頭側を省略し、ファイル名は必ず見せる (D6)。 */}
+                      <span className="dup-row-path">
+                        <span className="dup-row-dir">{"\u200e" + dirName(i.path) + "\u200e"}</span>
+                        <span className="dup-row-file">{baseName(i.path)}</span>
+                      </span>
                     </span>
                   </div>
                   {i.sourceBroken && (
@@ -144,11 +174,21 @@ function ImportDuplicatesDialogBody({
                       破損の疑い
                     </span>
                   )}
-                  <DuplicateBadge hits={i.hits} />
+                  {sameFile ? (
+                    <span
+                      className="dup-badge"
+                      title="このファイル自体がすでにライブラリに登録されています (取り込むと二重登録になるためスキップします)"
+                    >
+                      登録済み（同じファイル）
+                    </span>
+                  ) : (
+                    <DuplicateBadge hits={i.hits} />
+                  )}
                   <DuplicateActionSelect
                     hits={i.hits}
                     value={d}
-                    allowReplace={i.hits.length > 0}
+                    disabled={sameFile}
+                    allowReplace={!sameFile && i.hits.length > 0}
                     onChange={(nd) => setDecisions((prev) => new Map(prev).set(i.path, nd))}
                   />
                 </div>
@@ -159,14 +199,26 @@ function ImportDuplicatesDialogBody({
             取り込む {counts.import} / スキップ {counts.skip} / 置き換え {counts.replace}
             （ほかの曲はそのまま取り込みます）
           </div>
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button className="toolbar-btn" onClick={cancel}>
-              取り込みをキャンセル
-            </button>
-            <button className="toolbar-btn primary" onClick={proceed}>
-              続ける
-            </button>
-          </div>
+          {confirmCancel ? (
+            <div className="dup-cancel-confirm" role="alertdialog" aria-label="取り込みのキャンセル確認">
+              <span>取り込みをキャンセルしますか？（どのファイルも取り込みません）</span>
+              <button className="toolbar-btn" autoFocus onClick={() => setConfirmCancel(false)}>
+                選択に戻る
+              </button>
+              <button className="toolbar-btn danger" onClick={cancel}>
+                キャンセルする
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="toolbar-btn" onClick={cancel}>
+                取り込みをキャンセル
+              </button>
+              <button className="toolbar-btn primary" onClick={proceed}>
+                続ける
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

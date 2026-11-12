@@ -410,7 +410,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
   const chooseArtwork = useCallback(async () => {
     const path = await open({
       multiple: false,
-      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }],
+      filters: [{ name: "画像", extensions: ["png", "jpg", "jpeg", "webp"] }],
     });
     if (typeof path !== "string") return;
     setBusy(true);
@@ -467,7 +467,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
         <div className="modal-header">
           <h2>
             <Icon name="info" size={16} />{" "}
-            {single ? "Track Info" : `${tracks.length} 曲を一括編集`}
+            {single ? "曲の情報" : `${tracks.length} 曲を一括編集`}
           </h2>
           <button className="modal-close" onClick={requestClose} disabled={busy}>
             <Icon name="x" size={16} />
@@ -531,7 +531,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
             </div>
           </div>
 
-          <Field label="Name">
+          <Field label="曲名">
             {/* 初期フォーカスは最初の入力欄へ */}
             <input
               ref={firstInputRef}
@@ -541,7 +541,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(e) => update("name", e.target.value)}
             />
           </Field>
-          <Field label="Artist">
+          <Field label="アーティスト">
             <input
               className="rip-input"
               value={form.artist}
@@ -549,7 +549,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(e) => update("artist", e.target.value)}
             />
           </Field>
-          <Field label="Album Artist">
+          <Field label="アルバムアーティスト">
             <input
               className="rip-input"
               value={form.albumArtist}
@@ -557,7 +557,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(e) => update("albumArtist", e.target.value)}
             />
           </Field>
-          <Field label="Album">
+          <Field label="アルバム">
             <input
               className="rip-input"
               value={form.album}
@@ -565,7 +565,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(e) => update("album", e.target.value)}
             />
           </Field>
-          <Field label="Composer">
+          <Field label="作曲者">
             <input
               className="rip-input"
               value={form.composer}
@@ -573,7 +573,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(e) => update("composer", e.target.value)}
             />
           </Field>
-          <Field label="Genre tags">
+          <Field label="ジャンル">
             <GenreTagInput
               value={splitGenre(form.genre)}
               allowSpaces
@@ -586,7 +586,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               onChange={(tags) => update("genre", joinGenre(tags))}
             />
           </Field>
-          <Field label="Tags">
+          <Field label="タグ">
             <GenreTagInput
               value={tagList}
               suggestions={tagSuggestions}
@@ -607,7 +607,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           </Field>
 
           <div className="track-editor-row">
-            <Field label="Year">
+            <Field label="年">
               <input
                 className="rip-input"
                 type="number"
@@ -663,7 +663,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           </Field>
 
           <div className="track-editor-row">
-            <Field label="Track #">
+            <Field label="曲番号">
               <input
                 className="rip-input"
                 type="number"
@@ -672,7 +672,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
                 onChange={(e) => update("trackNumber", e.target.value)}
               />
             </Field>
-            <Field label="Of">
+            <Field label="全曲数">
               <input
                 className="rip-input"
                 type="number"
@@ -681,7 +681,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
                 onChange={(e) => update("trackCount", e.target.value)}
               />
             </Field>
-            <Field label="Disc #">
+            <Field label="ディスク番号">
               <input
                 className="rip-input"
                 type="number"
@@ -690,7 +690,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
                 onChange={(e) => update("discNumber", e.target.value)}
               />
             </Field>
-            <Field label="Of">
+            <Field label="全ディスク数">
               <input
                 className="rip-input"
                 type="number"
@@ -701,7 +701,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
             </Field>
           </div>
 
-          <Field label="Rating">
+          <Field label="評価">
             <div className="track-editor-rating">
               <Stars
                 value={ratingToStars(form.rating)}
@@ -721,7 +721,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
             </div>
           </Field>
 
-          <Field label="Compilation">
+          <Field label="コンピレーション">
             <label className="te-check">
               <input
                 type="checkbox"
@@ -736,7 +736,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
             </label>
           </Field>
 
-          <Field label="Comments">
+          <Field label="コメント">
             <textarea
               className="rip-input"
               rows={4}
@@ -748,7 +748,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           </Field>
 
           {single && tracks[0].locationPath && (
-            <Field label="Location">
+            <Field label="ファイルの場所">
               <div className="track-editor-readonly">{tracks[0].locationPath}</div>
             </Field>
           )}

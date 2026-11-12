@@ -1408,6 +1408,7 @@ export default function App() {
         onPlaylistsChanged={triggerReload}
         onEditSmart={(id, name) => setSmartEditor({ playlistId: id, name })}
         onUsbExport={(ids) => setUsbExportIds(ids)}
+        reloadKey={reloadCount}
       />
       <div className="cb-main">
         <UpdateBanner />

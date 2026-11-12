@@ -50,8 +50,8 @@ goes through the same path, so you can drop a mix of files and folders.
 - The **`_replaced` folder** (where replaced files are moved) **is skipped too**, so backed-up files never show up as candidates.
 - If a track is already in the library under another path, or **the file being imported looks corrupted (e.g. its tail is zero-filled)**,
   a confirmation dialog opens before importing. You can choose import / skip / replace per track, or use bulk actions such as "すべて取り込む" (import all).
-  Suspected-corrupt files are skipped by default. The dialog does not close on a background click (use "取り込みをキャンセル" (cancel import) to abort).
-- **Files already in the library (same path) are skipped**, so dropping the same folder again never creates duplicates.
+  Suspected-corrupt files are skipped by default. The dialog does not close on a background click (use "取り込みをキャンセル" (cancel import) to abort). Pressing Esc asks "取り込みをキャンセルしますか？" (cancel the import?) first.
+- **Files already in the library (same path) are skipped**, so dropping the same folder again never creates duplicates. The same file reached through a different spelling of the path (e.g. via a symlink) counts as the same file, even with "すべて取り込む" (import all).
 - Symlink loops are detected and cut off, and unreadable folders are skipped so the rest still imports.
 - The result is shown as a toast: how many were imported, how many were skipped as already imported, and how many failed.
 - Imported tracks land in the **Inbox** in the sidebar, where you can [rate them and add them to the Crate](../playback/).

@@ -17,8 +17,10 @@ Enable the API server under **"Mobile / API"** in settings.
 - Enabling **"Expose on LAN"** lets you access it from a phone / TV / PC browser on the same Wi-Fi.
   The connection URL and a **QR code** are shown in settings.
 
-It has been hardened to restart only after the server has reliably stopped (`SO_REUSEADDR` / `SO_REUSEPORT`),
+It has been hardened to restart only after the server has reliably stopped (`SO_REUSEADDR`),
 resolving the "can't start because the previous server hasn't fully shut down (address in use)" problem.
+If another Crateforge is already listening on the same port, it does not double-bind that port and switches to a free one instead
+(the actual port is shown in the connection URL in Settings).
 
 ## Authentication, tokens, and pairing
 
@@ -46,6 +48,10 @@ It exposes a REST API for reading and writing the library, analysis data, and pl
 - `GET /api/stats` / `GET /api/genres` / `GET /api/albums`
 - `GET /api/playlists` / `GET /api/playlists/{id}` (includes the smart criteria `smartCriteria`) / `GET /api/playlists/{id}/tracks`
   (for smart playlists, `trackCount` is the live-evaluated count)
+
+The `bpm` of APIs that return tracks (`/api/tracks*`, `/similar`, `/api/playlists/{id}/tracks`) is the **effective BPM** (the tag BPM, or the analyzed BPM when the tag has none).
+`/api/playlists/{id}/tracks`, however, returns the raw tag value for requests with `?effectiveBpm=false`, for sync-role tokens, and for requests without a User-Agent (older sync clients),
+so that sync (provisioning) never stores an analyzed value as a tag.
 
 Boolean query parameters accept `1` / `0` as well as `true` / `false`.
 When the client sends `Accept-Encoding: gzip`, large JSON responses (such as the full track list) are gzip-compressed.

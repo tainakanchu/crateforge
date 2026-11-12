@@ -189,22 +189,22 @@ fn album_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String 
     };
     let head = match sort_field {
         Some("albumArtist") => {
-            format!("album_artist COLLATE NOCASE {dir}, album COLLATE NOCASE ASC")
+            format!("album_artist COLLATE NATSORT {dir}, album COLLATE NATSORT ASC")
         }
-        Some("album") => format!("album COLLATE NOCASE {dir}, album_artist COLLATE NOCASE ASC"),
+        Some("album") => format!("album COLLATE NATSORT {dir}, album_artist COLLATE NATSORT ASC"),
         Some("year") => format!(
-            "(year IS NULL), year {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
+            "(year IS NULL), year {dir}, album_artist COLLATE NATSORT ASC, album COLLATE NATSORT ASC"
         ),
         Some("dateAdded") => format!(
-            "(date_added IS NULL), date_added {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
+            "(date_added IS NULL), date_added {dir}, album_artist COLLATE NATSORT ASC, album COLLATE NATSORT ASC"
         ),
         Some("rating") => format!(
-            "(rating IS NULL), rating {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC"
+            "(rating IS NULL), rating {dir}, album_artist COLLATE NATSORT ASC, album COLLATE NATSORT ASC"
         ),
         Some("playCount") => {
-            format!("play_count {dir}, album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC")
+            format!("play_count {dir}, album_artist COLLATE NATSORT ASC, album COLLATE NATSORT ASC")
         }
-        _ => "album_artist COLLATE NOCASE ASC, album COLLATE NOCASE ASC".to_string(),
+        _ => "album_artist COLLATE NATSORT ASC, album COLLATE NATSORT ASC".to_string(),
     };
     format!("{head}, album_key ASC")
 }
@@ -220,9 +220,9 @@ fn artist_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String
         "ASC"
     };
     let head = match sort_field {
-        Some("trackCount") => format!("track_count {dir}, name COLLATE NOCASE ASC"),
-        Some("albumCount") => format!("album_count {dir}, name COLLATE NOCASE ASC"),
-        _ => format!("name COLLATE NOCASE {dir}"),
+        Some("trackCount") => format!("track_count {dir}, name COLLATE NATSORT ASC"),
+        Some("albumCount") => format!("album_count {dir}, name COLLATE NATSORT ASC"),
+        _ => format!("name COLLATE NATSORT {dir}"),
     };
     format!("{head}, artist_key ASC")
 }
@@ -727,7 +727,8 @@ pub(super) fn build_order_by(
     } else {
         "ASC"
     };
-    let collate = if is_text { " COLLATE NOCASE" } else { "" };
+    // 文字列は自然順 ("Song 2" < "Song 10"、大文字小文字は区別しない。D10)。
+    let collate = if is_text { " COLLATE NATSORT" } else { "" };
 
     // 主キー (NULL は最後)。bpm は実効 BPM (タグ ?? 解析値) で並べる。
     let key = if col == "bpm" {
@@ -747,7 +748,7 @@ pub(super) fn build_order_by(
                 continue;
             }
             let tb_collate = if tb == "album" || tb == "name" {
-                " COLLATE NOCASE"
+                " COLLATE NATSORT"
             } else {
                 ""
             };
@@ -1219,7 +1220,7 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
-        let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NOCASE ASC");
+        let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NATSORT ASC");
         let sql = format!(
             "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
                     album, genre, year, rating, play_count, skip_count, total_time_ms,
@@ -1251,7 +1252,7 @@ impl Database {
     ) -> Result<Vec<Track>> {
         use rusqlite::types::Value;
 
-        let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NOCASE ASC");
+        let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NATSORT ASC");
 
         // 検索の字体ゆれ吸収レベル。Off のときは従来と完全に同じ SQL/バインドになる。
         let level = crate::text_fold::FoldLevel::from_state(
@@ -1859,7 +1860,8 @@ impl Database {
     /// API 応答用: タグの BPM が無い (NULL / 0) 曲の `bpm` を解析 BPM (四捨五入) で埋め、
     /// 実効 BPM (タグ ?? 解析値) にそろえる。DB の値は変えない。
     /// 同期 (federation) の取り寄せでタグ値として保存されないよう、呼び出しは表示用の
-    /// エンドポイント (/api/tracks 系) に限る。
+    /// エンドポイントに限る (/api/tracks 系・similar。プレイリスト曲は
+    /// `api::handlers::effective_bpm_allowed` で同期の要求を除いて適用する)。
     pub fn fill_effective_bpm(&self, tracks: &mut [Track]) -> Result<()> {
         if !tracks.iter().any(|t| t.bpm.is_none_or(|b| b <= 0)) {
             return Ok(());
@@ -1899,6 +1901,40 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<ArtistRow>> {
+        self.get_artists_matching(sort_field, sort_order, limit, offset, None)
+    }
+
+    /// `get_artists` の検索つき版 (D4)。`query` (search_tracks と同じ DSL) が空でなければ、
+    /// 一致する曲を持つアーティストだけを返し、曲数・アルバム数・代表曲も一致した曲で数える。
+    pub fn get_artists_matching(
+        &self,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+        limit: i64,
+        offset: i64,
+        query: Option<&str>,
+    ) -> Result<Vec<ArtistRow>> {
+        use rusqlite::types::Value;
+
+        let (clauses, mut bind): (Vec<String>, Vec<Value>) = match query.map(str::trim) {
+            Some(q) if !q.is_empty() => {
+                let level = crate::text_fold::FoldLevel::from_state(
+                    self.get_state("search_fold_level")
+                        .ok()
+                        .flatten()
+                        .as_deref(),
+                );
+                build_search_clauses(q, level, "tracks.")
+            }
+            _ => (Vec::new(), Vec::new()),
+        };
+        let where_sql = if clauses.is_empty() {
+            "1=1".to_string()
+        } else {
+            clauses.join(" AND ")
+        };
+        bind.push(Value::Integer(limit));
+        bind.push(Value::Integer(offset));
         let sql = format!(
             "WITH base AS (
               SELECT
@@ -1915,6 +1951,7 @@ impl Database {
                            (track_number IS NULL), track_number, track_id
                 ) AS rn
               FROM tracks
+              WHERE {where_sql}
             )
             SELECT
               artist_key,
@@ -1926,14 +1963,14 @@ impl Database {
             FROM base
             GROUP BY artist_key
             ORDER BY {order}
-            LIMIT ?1 OFFSET ?2",
+            LIMIT ? OFFSET ?",
             name = ARTIST_NAME_EXPR,
             artist = artist_key_expr(),
             key = ALBUM_KEY_EXPR,
             order = artist_order_by(sort_field, sort_order),
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![limit, offset], |r| {
+        let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), |r| {
             Ok(ArtistRow {
                 // rn=1 の行は必ず 1 つあるので NULL にはならないが、念のため空文字に倒す。
                 name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -2253,8 +2290,8 @@ mod tests {
         }
         assert_eq!(
             album_order_by(Some("year"), Some("desc")),
-            "(year IS NULL), year DESC, album_artist COLLATE NOCASE ASC, \
-             album COLLATE NOCASE ASC, album_key ASC"
+            "(year IS NULL), year DESC, album_artist COLLATE NATSORT ASC, \
+             album COLLATE NATSORT ASC, album_key ASC"
         );
     }
 
@@ -2785,6 +2822,34 @@ mod tests {
         );
     }
 
+    /// D10: 曲名・アーティスト・アルバムのソートは自然順 ("Bulk Song 2" < "Bulk Song 10")。
+    /// 一覧 (get_tracks)・検索 (search_tracks)・アルバム順の 3 経路で同じ照合順序を使う。
+    #[test]
+    fn text_sort_is_natural_order() {
+        let db = Database::open_memory().unwrap();
+        for (id, name, album) in [
+            (1, "Bulk Song 10", "Vol 10"),
+            (2, "bulk song 2", "Vol 2"),
+            (3, "Bulk Song 1", "Vol 1"),
+            (4, "Bulk Song 100", "Vol 100"),
+        ] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, artist, album, file_exists)
+                     VALUES (?1, ?2, 'A', ?3, 1)",
+                    params![id, name, album],
+                )
+                .unwrap();
+        }
+        let names = |v: Vec<crate::models::Track>| v.into_iter().map(|t| t.track_id).collect::<Vec<_>>();
+        assert_eq!(names(db.get_tracks(100, 0, Some("name"), Some("asc")).unwrap()), vec![3, 2, 1, 4]);
+        assert_eq!(names(db.get_tracks(100, 0, Some("name"), Some("desc")).unwrap()), vec![4, 1, 2, 3]);
+        assert_eq!(
+            names(db.search_tracks("bulk", 100, 0, Some("album"), Some("asc")).unwrap()),
+            vec![3, 2, 1, 4]
+        );
+    }
+
     /// 実効 BPM (タグ ?? 解析値) で検索・ソートする。タグがあれば解析値より優先。
     #[test]
     fn effective_bpm_search_and_sort() {
@@ -3174,12 +3239,12 @@ mod tests {
         }
         assert_eq!(
             artist_order_by(Some("trackCount"), Some("desc")),
-            "track_count DESC, name COLLATE NOCASE ASC, artist_key ASC"
+            "track_count DESC, name COLLATE NATSORT ASC, artist_key ASC"
         );
         // 未知フィールドは name 昇順へ。
         assert_eq!(
             artist_order_by(Some("bogus"), None),
-            "name COLLATE NOCASE ASC, artist_key ASC"
+            "name COLLATE NATSORT ASC, artist_key ASC"
         );
     }
 
@@ -3253,6 +3318,35 @@ mod tests {
         let unknown = &artists[1];
         assert_eq!(unknown.track_count, 2);
         assert_eq!(unknown.album_count, 2);
+    }
+
+    /// D4: 検索クエリでアーティストを絞り、件数も一致した曲で数える。0 件なら空。
+    #[test]
+    fn get_artists_matching_filters_by_search_query() {
+        let db = Database::open_memory().unwrap();
+        insert_artist_fixture(&db, 10, Some("Big"), None, Some("Blue Album"), 0);
+        insert_artist_fixture(&db, 11, Some("Big"), None, Some("Red Album"), 0);
+        insert_artist_fixture(&db, 12, Some("Mid"), None, Some("Blue Notes"), 0);
+        insert_artist_fixture(&db, 13, Some("Ace"), None, Some("Green"), 0);
+
+        let hit = db
+            .get_artists_matching(None, None, 100, 0, Some("blue"))
+            .unwrap();
+        let names: Vec<(&str, i64)> = hit.iter().map(|a| (a.name.as_str(), a.track_count)).collect();
+        assert_eq!(names, vec![("Big", 1), ("Mid", 1)]);
+
+        let by_field = db
+            .get_artists_matching(None, None, 100, 0, Some("artist:ace"))
+            .unwrap();
+        assert_eq!(by_field.len(), 1);
+        assert_eq!(by_field[0].name, "Ace");
+
+        assert!(db
+            .get_artists_matching(None, None, 100, 0, Some("zzzz-no-match"))
+            .unwrap()
+            .is_empty());
+        // 空クエリは全件 (get_artists と同じ)。
+        assert_eq!(db.get_artists_matching(None, None, 100, 0, Some("  ")).unwrap().len(), 3);
     }
 
     /// ソート: trackCount / albumCount の降順と、同値時の name→artist_key タイブレーク。

@@ -337,7 +337,7 @@ export function SetHistoryView() {
         <div className="set-history-toolbar">
           <div className="set-history-toolbar-title">
             <Icon name="history" size={16} />
-            <span>Set History</span>
+            <span>セット履歴</span>
             <span className="set-history-count">{entries.length}</span>
           </div>
           <div className="set-history-toolbar-actions">

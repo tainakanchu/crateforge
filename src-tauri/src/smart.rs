@@ -378,10 +378,11 @@ fn location_key(t: &Track) -> String {
 fn compare_field(a: &Track, b: &Track, field: &str, an: Option<&AnalysisMap>) -> Ordering {
     match field {
         "trackId" => a.track_id.cmp(&b.track_id),
-        "name" => lower(&a.name).cmp(&lower(&b.name)),
-        "artist" => lower(&a.artist).cmp(&lower(&b.artist)),
-        "album" => lower(&a.album).cmp(&lower(&b.album)),
-        "albumArtist" => lower(&a.album_artist).cmp(&lower(&b.album_artist)),
+        // 曲名・アーティスト・アルバムは一覧の ORDER BY (COLLATE NATSORT) と同じ自然順 (D10)。
+        "name" => natural(&a.name, &b.name),
+        "artist" => natural(&a.artist, &b.artist),
+        "album" => natural(&a.album, &b.album),
+        "albumArtist" => natural(&a.album_artist, &b.album_artist),
         "genre" => lower(&a.genre).cmp(&lower(&b.genre)),
         "grouping" => lower(&a.grouping).cmp(&lower(&b.grouping)),
         "composer" => lower(&a.composer).cmp(&lower(&b.composer)),
@@ -416,8 +417,12 @@ fn compare_field(a: &Track, b: &Track, field: &str, an: Option<&AnalysisMap>) ->
         "channels" => a.channels.cmp(&b.channels),
         "fileSize" => a.file_size_bytes.cmp(&b.file_size_bytes),
         "codec" => lower(&a.codec).cmp(&lower(&b.codec)),
-        _ => lower(&a.name).cmp(&lower(&b.name)),
+        _ => natural(&a.name, &b.name),
     }
+}
+
+fn natural(a: &Option<String>, b: &Option<String>) -> Ordering {
+    crate::natural_sort::natural_cmp(a.as_deref().unwrap_or(""), b.as_deref().unwrap_or(""))
 }
 
 /// 2 曲を指定フィールドで比較する (昇順。同値は track_id で安定化)。

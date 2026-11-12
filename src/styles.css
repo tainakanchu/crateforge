@@ -421,6 +421,14 @@ select optgroup {
   border: none;
   background: transparent;
 }
+/* 畳んだツールバー (アイコンのみ) では横の余白を詰める (D1)。 */
+.cb-segb.iconly {
+  padding: 7px 9px;
+}
+.cb-btn.cb-btn-tight {
+  padding: 0 9px;
+  gap: 5px;
+}
 .cb-segb.on {
   background: var(--ac);
   color: var(--on-ac);
@@ -506,23 +514,37 @@ select optgroup {
   border-bottom: 1px solid var(--bd);
   min-height: 0;
 }
+/* 狭い幅でも見出し・件数を縦に折り返さない (日本語の見出しは 1 文字ずつ折れるため)。
+   足りない分はライブラリ統計 (.cb-stats) 側を省略する。 */
 .cb-title {
   font-weight: 680;
   font-size: 14px;
   color: var(--tx-strong);
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .cb-titlesub {
   color: var(--mut);
   font-size: 11.5px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .cb-titlesel {
   color: var(--ac);
   font-size: 11.5px;
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .cb-stats {
   margin-left: auto;
   display: flex;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
   gap: 7px;
   font-size: 11.5px;
   color: var(--tx2);
@@ -1457,6 +1479,10 @@ select optgroup {
   width: 60px;
   color: var(--mut);
   flex-shrink: 0;
+}
+.settings-kv .k.k-wide {
+  width: auto;
+  white-space: nowrap;
 }
 .settings-kv .v {
   color: var(--tx2);
@@ -2639,8 +2665,8 @@ select optgroup {
   display: flex;
   align-items: center;
   gap: 11px;
-  /* 460px を上限に、狭い幅では 220px まで縮む（#147）。 */
-  width: clamp(220px, 40vw, 460px);
+  /* 幅は PlayerBar.tsx がプレイヤーバーの実幅から --seek-w で与える (D1)。 */
+  width: var(--seek-w, clamp(220px, 40vw, 460px));
   min-width: 0;
   font: 11px var(--mono);
   color: var(--mut);
@@ -2760,7 +2786,7 @@ select optgroup {
   cursor: default;
 }
 .cb-player.audition .cb-seek {
-  width: clamp(220px, 44vw, 520px);
+  width: var(--seek-w, clamp(220px, 44vw, 520px));
 }
 .cb-player.preview .cb-pinfo .cj {
   color: var(--ac);
@@ -2802,11 +2828,21 @@ select optgroup {
   border-radius: 3px;
 }
 
-/* 狭いウィンドウでは音量スライダーを畳んでミュートボタンだけ残す (#147) */
-@media (max-width: 1100px) {
-  .cb-vbar {
-    display: none;
-  }
+/* 狭いプレイヤーバー (右ペイン表示中の 1024 幅など) では音量スライダーを短くし、
+   ボタン間隔を詰める。スライダー自体は消さない (D1)。幅は PlayerBar.tsx が実測する。 */
+.cb-player.narrow .cb-vbar {
+  width: 56px;
+}
+.cb-player.narrow .cb-pr {
+  gap: 9px;
+}
+.cb-player.narrow {
+  gap: 16px;
+}
+.cb-vbar {
+  flex-shrink: 0;
+  /* 音量 100% のときつまみ (幅 10px) の右半分が .cb-pr の overflow で切れないように。 */
+  margin-right: 5px;
 }
 
 /* ============================================================
@@ -3001,6 +3037,9 @@ select optgroup {
   z-index: 50;
   overflow: hidden;
   padding: 6px;
+  /* 低いウィンドウ (1024x600 など) でも下端の項目まで届くように。 */
+  max-height: calc(100vh - 70px);
+  overflow-y: auto;
 }
 .cb-sortitem {
   display: flex;
@@ -3046,6 +3085,18 @@ select optgroup {
 .cb-morepop .cb-sortitem:focus-visible {
   outline: 2px solid var(--ac);
   outline-offset: -2px;
+}
+/* 狭い幅では表示切替・並び順・列も ⋯ に入るので、低いウィンドウでも全項目へ届くようにする。 */
+.cb-morepop {
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+}
+.cb-morepop-section {
+  padding: 6px 10px 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--mut);
 }
 
 /* ============================================================
@@ -4541,11 +4592,37 @@ select optgroup {
   border-radius: 3px;
   color: var(--tx2);
 }
+/* パスはフォルダ部分を先頭側から省略し (rtl + 前後の LRM で "…/A/" の形に)、
+   ファイル名は省略しない (長すぎるときだけ末尾を省略)。 */
 .dup-row-path {
+  display: flex;
+  min-width: 0;
+  white-space: nowrap;
+}
+.dup-row-dir {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.dup-row-file {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--tx2);
+}
+.dup-cancel-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--tx);
+}
+.dup-cancel-confirm > span {
+  margin-right: auto;
 }
 .dup-list {
   max-height: 320px;

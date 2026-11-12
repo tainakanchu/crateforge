@@ -65,6 +65,11 @@ export async function getPlaylistTrackCount(playlistId: number): Promise<number>
   return invoke("get_playlist_track_count", { playlistId });
 }
 
+/** 全スマートプレイリストのライブ評価件数 (playlistId → 件数)。 */
+export async function getSmartPlaylistCounts(): Promise<Record<number, number>> {
+  return invoke("get_smart_playlist_counts");
+}
+
 export async function addTracksToPlaylist(
   playlistId: number,
   trackIds: number[],

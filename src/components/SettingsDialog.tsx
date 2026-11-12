@@ -1329,8 +1329,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 {/* LAN 公開セクション */}
                 <div className="settings-sectitle">LAN 公開（モバイルアプリ・ウェブプレイヤー）</div>
 
+                {/* 見出しと同じ文言を繰り返さない (D9)。行は操作 (オン/オフ) の名前にする。 */}
                 <Row
-                  title="LAN 公開（モバイルアプリ・ウェブプレイヤー）"
+                  title="LAN に公開する"
                   desc="同じ Wi-Fi のスマホの Crateforge モバイルアプリや、スマホ / TV のブラウザ（ウェブプレイヤー）からライブラリを再生・操作できます。アクセスにはトークンが必要です。"
                 >
                   <Toggle
@@ -1354,7 +1355,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                         {/* おすすめ接続先 */}
                         <div className="settings-kv">
                           <div>
-                            <span className="k">接続 URL（おすすめ）</span>
+                            {/* 見出しは 1 行で (幅 60px の .k だと 3 行に折り返していた。D9) */}
+                            <span className="k k-wide">おすすめの接続 URL</span>
                           </div>
                           <div style={{ alignItems: "flex-start", flexDirection: "column", gap: 8 }}>
                             <div style={{ display: "flex", alignItems: "center", width: "100%", gap: 6 }}>

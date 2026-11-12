@@ -133,32 +133,37 @@ export interface FieldDef {
   sortField: SortField | null;
 }
 
+// 列名は日本語 (BPM / Key / Energy などの固有語は英語のまま)。ツールバーの並び順・
+// Track Info・スマートプレイリストの項目名もこの呼び方にそろえる (D8)。
+// 既定列 (DEFAULT_FIELDS) の幅は、1280x800 で右ペインを出した既定状態
+// (一覧の表示幅 ≈ 730px、縦スクロールバー 10px 込み) に曲名列の最小 180px と合わせて
+// 収まるよう詰めてある (D2)。
 export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
   // 現在の表示順での連番 (1,2,3…)。アルバムのトラック番号(trackNumber)とは別物。
   // 表示インデックスを描画するだけなのでソート対象外 (sortField: null)。
   rowIndex: { key: "rowIndex", label: "No.", width: 48, sortField: null },
-  artist: { key: "artist", label: "Artist", width: 120, sortField: "artist" },
-  bpm: { key: "bpm", label: "BPM", width: 64, sortField: "bpm" },
+  artist: { key: "artist", label: "アーティスト", width: 110, sortField: "artist" },
+  bpm: { key: "bpm", label: "BPM", width: 56, sortField: "bpm" },
   // key / energy は track_analysis 由来。tracks テーブルに無いのでソート対象外 (sortField: null)。
   key: { key: "key", label: "Key", width: 56, sortField: null },
   energy: { key: "energy", label: "Energy", width: 72, sortField: null },
-  album: { key: "album", label: "Album", width: 168, sortField: "album" },
-  genre: { key: "genre", label: "Genre", width: 110, sortField: "genre" },
-  rating: { key: "rating", label: "Rating", width: 90, sortField: "rating" },
-  year: { key: "year", label: "Year", width: 56, sortField: "year" },
-  plays: { key: "plays", label: "Plays", width: 56, sortField: "playCount" },
-  time: { key: "time", label: "Time", width: 60, sortField: "totalTimeMs" },
-  albumArtist: { key: "albumArtist", label: "Album Artist", width: 150, sortField: "albumArtist" },
-  trackNumber: { key: "trackNumber", label: "Track #", width: 64, sortField: "trackNumber" },
-  dateAdded: { key: "dateAdded", label: "Date Added", width: 104, sortField: "dateAdded" },
-  lastPlayed: { key: "lastPlayed", label: "Last Played", width: 104, sortField: "lastPlayed" },
+  album: { key: "album", label: "アルバム", width: 120, sortField: "album" },
+  genre: { key: "genre", label: "ジャンル", width: 92, sortField: "genre" },
+  rating: { key: "rating", label: "評価", width: 84, sortField: "rating" },
+  year: { key: "year", label: "年", width: 56, sortField: "year" },
+  plays: { key: "plays", label: "再生回数", width: 56, sortField: "playCount" },
+  time: { key: "time", label: "時間", width: 60, sortField: "totalTimeMs" },
+  albumArtist: { key: "albumArtist", label: "アルバムアーティスト", width: 150, sortField: "albumArtist" },
+  trackNumber: { key: "trackNumber", label: "曲番号", width: 64, sortField: "trackNumber" },
+  dateAdded: { key: "dateAdded", label: "追加日", width: 104, sortField: "dateAdded" },
+  lastPlayed: { key: "lastPlayed", label: "最終再生", width: 104, sortField: "lastPlayed" },
   // 技術メタデータ (#171)。未取得の曲は空欄 (設定 → 技術情報を再読み取り で埋まる)。
-  codec: { key: "codec", label: "Codec", width: 64, sortField: "codec" },
-  bitrate: { key: "bitrate", label: "Bitrate", width: 76, sortField: "bitrate" },
-  sampleRate: { key: "sampleRate", label: "Sample Rate", width: 88, sortField: "sampleRate" },
-  bitDepth: { key: "bitDepth", label: "Bit Depth", width: 72, sortField: "bitDepth" },
-  channels: { key: "channels", label: "Channels", width: 72, sortField: "channels" },
-  fileSize: { key: "fileSize", label: "Size", width: 80, sortField: "fileSize" },
+  codec: { key: "codec", label: "コーデック", width: 64, sortField: "codec" },
+  bitrate: { key: "bitrate", label: "ビットレート", width: 76, sortField: "bitrate" },
+  sampleRate: { key: "sampleRate", label: "サンプルレート", width: 88, sortField: "sampleRate" },
+  bitDepth: { key: "bitDepth", label: "ビット深度", width: 72, sortField: "bitDepth" },
+  channels: { key: "channels", label: "チャンネル", width: 72, sortField: "channels" },
+  fileSize: { key: "fileSize", label: "サイズ", width: 80, sortField: "fileSize" },
 };
 
 /// ColumnPicker の "Available" 列挙順。

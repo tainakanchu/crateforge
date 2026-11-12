@@ -270,7 +270,7 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
 
           {applyResult && (
             <div className="rules-msg ok" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <Icon name="checkCircle" size={14} style={{ flexShrink: 0 }} /> 適用しました: スマートプレイリスト {applyResult.generatedPlaylistCount} 件・フォルダ {applyResult.generatedFolderCount} 件
+              <Icon name="checkCircle" size={14} style={{ flexShrink: 0 }} /> 適用しました: スマートプレイリスト {applyResult.generatedPlaylistCount} 件・フォルダ {applyResult.generatedFolderCount} 件（名前空間を除く）
               {" "}（{formatChanges(applyResult)}）
             </div>
           )}
@@ -309,13 +309,19 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
                   <div className="rules-stats" style={{ flexWrap: "wrap" }}>
                     <span>スマートプレイリスト <strong>{preview.playlistCount}</strong></span>
                     <span>·</span>
-                    <span>フォルダ <strong>{preview.folderCount}</strong></span>
+                    {/* 件数の数え方を確認ダイアログと揃えて明示する (D9): フォルダ数は名前空間フォルダを除く。
+                        作成・更新・削除は名前空間フォルダも含めたプレイリスト / フォルダの合計。 */}
+                    <span title="名前空間フォルダ (namespace) 自体は含みません">
+                      フォルダ <strong>{preview.folderCount}</strong>（名前空間を除く）
+                    </span>
                     <span>·</span>
                     <span>曲 <strong>{preview.referencedTrackCount}</strong></span>
                     {!applyResult && (
                       <>
                         <span>·</span>
-                        <span>適用すると {formatChanges(preview)}</span>
+                        <span title="名前空間フォルダ・フォルダ・スマートプレイリストの合計">
+                          適用すると {formatChanges(preview)}
+                        </span>
                       </>
                     )}
                   </div>
@@ -353,6 +359,9 @@ export function RulesPanel({ open: isOpen, onClose, onLibraryChanged }: RulesPan
               <ul className="rules-confirm-counts">
                 <li>
                   新規作成 <strong>{preview.createdCount}</strong> 件
+                  <span style={{ color: "var(--tx2)", fontSize: 12 }}>
+                    （名前空間フォルダ・フォルダ・スマートプレイリストの合計）
+                  </span>
                 </li>
                 <li>
                   更新 <strong>{preview.updatedCount}</strong> 件（ID・参照はそのまま）

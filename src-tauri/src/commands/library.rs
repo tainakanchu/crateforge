@@ -499,13 +499,16 @@ pub fn get_artists(
     sort_order: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
+    query: Option<String>,
 ) -> Result<Vec<ArtistRow>, String> {
     let db = get_db(&app)?;
-    db.get_artists(
+    // query (検索ボックス + フィルタタグ) があれば一致する曲を持つアーティストだけ (D4)。
+    db.get_artists_matching(
         sort_field.as_deref(),
         sort_order.as_deref(),
         limit.unwrap_or(500),
         offset.unwrap_or(0),
+        query.as_deref(),
     )
     .map_err(|e| e.to_string())
 }

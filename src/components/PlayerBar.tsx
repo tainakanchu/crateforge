@@ -35,6 +35,27 @@ const WAVE_N = 64;
 
 const JUMP_MARKERS = [0.25, 0.5, 0.75] as const;
 
+const REPEAT_LABEL: Record<string, string> = { off: "オフ", all: "全曲", one: "1 曲" };
+
+// プレイヤーバーの幅 (右ペインを除いた実幅) に合わせて波形の幅を決める (D1)。
+// 以前は 40vw (ウィンドウ幅基準) だったので、右ペイン表示中の狭い幅では左右の列が
+// 潰れ、右端の音量スライダーが消えていた。左右の列にそれぞれ右端の操作群が収まる幅を残す。
+const PLAYER_PAD_X = 22;
+/** これ未満は .narrow (音量スライダー短縮・間隔を詰める)。 */
+const PLAYER_NARROW_W = 900;
+const SEEK_MIN = 180;
+function seekWidthFor(playerW: number, audition: boolean): number {
+  const narrow = playerW < PLAYER_NARROW_W;
+  // 右端の操作群 (RG・キュー・キャスト・ミュート・音量) の幅 + 余裕。styles.css の
+  // .cb-pr の gap / .cb-vbar の幅 (通常 92px・narrow 56px) と対応する。
+  const sideMin = narrow ? 172 : 216;
+  const gap = narrow ? 16 : 24;
+  const max = audition ? 520 : 460;
+  const pref = playerW * (audition ? 0.44 : 0.4) + 120;
+  const room = playerW - PLAYER_PAD_X * 2 - gap * 2 - sideMin * 2;
+  return Math.max(SEEK_MIN, Math.min(max, pref, room));
+}
+
 export function PlayerBar() {
   const {
     playback,
@@ -57,6 +78,20 @@ export function PlayerBar() {
 
   // ミュート前の音量を保持（復帰用）。
   const lastVolumeRef = useRef(volume > 0 ? volume : 1);
+
+  // プレイヤーバーの実幅 (右ペインの表示・リサイズに追従)。
+  const playerRef = useRef<HTMLDivElement>(null);
+  const [playerW, setPlayerW] = useState(0);
+  useEffect(() => {
+    const el = playerRef.current;
+    if (!el) return;
+    setPlayerW(el.clientWidth);
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) setPlayerW(e.contentRect.width + PLAYER_PAD_X * 2);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // 再生中の曲 (表示中の一覧 (tracks) に無いときは ID で取り直す #159)。
   const currentTrack = useCurrentTrack();
@@ -233,7 +268,20 @@ export function PlayerBar() {
   );
 
   return (
-    <div className={"cb-player" + (auditionMode ? " audition" : "") + (previewActive ? " preview" : "")}>
+    <div
+      ref={playerRef}
+      className={
+        "cb-player" +
+        (auditionMode ? " audition" : "") +
+        (previewActive ? " preview" : "") +
+        (playerW > 0 && playerW < PLAYER_NARROW_W ? " narrow" : "")
+      }
+      style={
+        playerW > 0
+          ? ({ "--seek-w": `${seekWidthFor(playerW, auditionMode)}px` } as React.CSSProperties)
+          : undefined
+      }
+    >
       {/* left: track info */}
       <div className="cb-pinfo">
         {currentTrack ? (
@@ -280,7 +328,7 @@ export function PlayerBar() {
           </>
         ) : (
           <div className="cb-pa-meta">
-            <div className="cj dim">No track playing</div>
+            <div className="cj dim">再生していません</div>
           </div>
         )}
       </div>
@@ -291,14 +339,14 @@ export function PlayerBar() {
           <button
             className={"cb-ctrl-btn cb-tg" + (shuffle ? " on" : "")}
             onClick={handleShuffleToggle}
-            title="Shuffle (S)"
+            title={shuffle ? "シャッフル: オン (S)" : "シャッフル: オフ (S)"}
           >
             <Icon name="shuffle" size={16} />
           </button>
-          <button className="cb-ctrl-btn" onClick={handlePrev} title="Previous (J)">
+          <button className="cb-ctrl-btn" onClick={handlePrev} title="前の曲 (J)">
             <Icon name="prev" size={18} fill="currentColor" stroke={0} />
           </button>
-          <button className="cb-pp" onClick={handlePlayPause} title="Play / Pause (Space)">
+          <button className="cb-pp" onClick={handlePlayPause} title="再生 / 一時停止 (Space)">
             <Icon
               name={playback.isPlaying ? "pause" : "play"}
               size={16}
@@ -306,13 +354,13 @@ export function PlayerBar() {
               stroke={0}
             />
           </button>
-          <button className="cb-ctrl-btn" onClick={handleNext} title="Next (K)">
+          <button className="cb-ctrl-btn" onClick={handleNext} title="次の曲 (K)">
             <Icon name="next" size={18} fill="currentColor" stroke={0} />
           </button>
           <button
             className={"cb-ctrl-btn cb-tg" + (repeat !== "off" ? " on" : "")}
             onClick={handleRepeatToggle}
-            title={`Repeat: ${repeat} (R)`}
+            title={`リピート: ${REPEAT_LABEL[repeat] ?? repeat} (R)`}
             style={{ position: "relative" }}
           >
             <Icon name="repeat" size={16} />
@@ -323,7 +371,7 @@ export function PlayerBar() {
               type="button"
               className="cb-audition-badge"
               onClick={() => audition.toggleAuditionMode()}
-              title="Audition mode — クリックで解除 (A) · 1/2/3 jump"
+              title="試聴モード — クリックで解除 (A) · 1/2/3 で 25/50/75% へ"
             >
               AUDITION
             </button>
@@ -335,7 +383,7 @@ export function PlayerBar() {
               onClick={() => {
                 audition.exitPreview({ restore: true }).catch(() => {});
               }}
-              title="Preview 中 — クリックで元に戻す (Esc)"
+              title="試聴中 — クリックで元に戻す (Esc)"
             >
               PREVIEW
             </button>
@@ -404,19 +452,19 @@ export function PlayerBar() {
       <div className="cb-pr">
         <button
           className={"cb-pr-btn cb-tg" + (replayGain ? " on" : "")}
-          title={replayGain ? "ReplayGain on（音量を揃える）" : "ReplayGain off"}
+          title={replayGain ? "ReplayGain: オン（曲ごとの音量を揃える）" : "ReplayGain: オフ"}
           onClick={handleReplayGainToggle}
           style={{ fontSize: 11, fontWeight: 700 }}
         >
           RG
         </button>
-        <button className="cb-pr-btn" title="Up Next" onClick={handleOpenQueue}>
+        <button className="cb-pr-btn" title="次に再生 (キュー)" onClick={handleOpenQueue}>
           <Icon name="queue" size={16} />
         </button>
         <CastDevicePicker />
         <button
           className="cb-pr-btn"
-          title={volume === 0 ? "Unmute" : "Mute"}
+          title={volume === 0 ? "ミュート解除" : "ミュート"}
           onClick={handleMuteToggle}
         >
           <Icon name={volume === 0 ? "volumeX" : "volume"} size={16} />
@@ -425,7 +473,7 @@ export function PlayerBar() {
         <div
           className="cb-vbar"
           onClick={handleVolumeClick}
-          title={`Volume: ${Math.round(volume * 100)}% (Ctrl+↑/↓)`}
+          title={`音量: ${Math.round(volume * 100)}% (Ctrl+↑/↓)`}
           style={{ position: "relative" }}
         >
           {/* 塗り済みバー */}

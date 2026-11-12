@@ -8,7 +8,7 @@ import { Icon } from "./Icon";
  * - ライブラリが空: 取り込みボタン (フォルダ / ファイル / iTunes XML)
  * - プレイリスト等が空: その旨だけ
  *
- * `ignoresSearch` は検索を反映しないビュー (Artists) 用。
+ * `ignoresSearch` は検索を反映しないビュー用 (Artists も検索で絞るようになったので現在は未使用)。
  */
 export function EmptyState({ ignoresSearch = false }: { ignoresSearch?: boolean }) {
   const viewMode = useStore((s) => s.viewMode);
@@ -19,7 +19,9 @@ export function EmptyState({ ignoresSearch = false }: { ignoresSearch?: boolean 
   if (searching) {
     return (
       <div className="cb-empty">
-        <div className="cb-empty-title">一致する曲がありません</div>
+        <div className="cb-empty-title">
+          {viewMode === "artists" ? "一致するアーティストがありません" : "一致する曲がありません"}
+        </div>
         <div className="cb-empty-actions">
           <button
             type="button"

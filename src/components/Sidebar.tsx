@@ -13,6 +13,8 @@ interface SidebarProps {
   onEditSmart: (playlistId: number | null, name?: string) => void;
   /** USB 書き出しダイアログを、このプレイリスト / フォルダを選んだ状態で開く。 */
   onUsbExport: (playlistIds: number[]) => void;
+  /** ライブラリ変更のたびに増える値。スマートプレイリストの件数を数え直す (D9)。 */
+  reloadKey?: number;
 }
 
 /** サイドバー右クリック用メニューの状態（位置＋対象プレイリスト） */
@@ -139,14 +141,15 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { mode: "library", icon: "music", label: "All Tracks" },
+  // 表記は Toolbar の VIEW_TITLE と揃える (D8)。Inbox は機能名なので英語のまま。
+  { mode: "library", icon: "music", label: "すべての曲" },
   { mode: "inbox", icon: "inbox", label: "Inbox" },
-  { mode: "history", icon: "history", label: "History" },
-  { mode: "artists", icon: "mic", label: "Artists" },
-  { mode: "recent", icon: "clock", label: "Recently Played" },
+  { mode: "history", icon: "history", label: "セット履歴" },
+  { mode: "artists", icon: "mic", label: "アーティスト" },
+  { mode: "recent", icon: "clock", label: "最近再生した曲" },
 ];
 
-export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: SidebarProps) {
+export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKey }: SidebarProps) {
   const {
     viewMode,
     playlists,
@@ -164,6 +167,27 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
 
   // 一覧からドラッグしてきたトラックのドロップ先ハイライト (playlistId)。
   const [dropTargetId, setDropTargetId] = useState<number | null>(null);
+
+  // スマートプレイリストのライブ評価件数 (D9)。一覧の trackCount は静的な行数なので
+  // スマートは 0 になる → 一覧とは別に非同期で数え、通常プレイリストと同じ位置に出す。
+  const [smartCounts, setSmartCounts] = useState<Record<number, number>>({});
+  const hasSmart = playlists.some((p) => p.isSmart);
+  useEffect(() => {
+    if (!hasSmart) {
+      setSmartCounts({});
+      return;
+    }
+    let cancelled = false;
+    playlistsApi
+      .getSmartPlaylistCounts()
+      .then((c) => {
+        if (!cancelled) setSmartCounts(c);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [hasSmart, playlists, reloadKey]);
 
   // Set History badge (#123) — cheap localStorage read; updates when re-entering History.
   const historyCount = listSetHistories().length;
@@ -435,9 +459,9 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
           }}
           title={
             pl.isFolder
-              ? "Click to collapse/expand, double-click to rename"
+              ? "クリックで開閉 / ダブルクリックで名前変更"
               : pl.isSmart
-                ? "Smart playlist — right-click for actions (Edit rules)"
+                ? "スマートプレイリスト — 右クリックでメニュー（条件を編集）"
                 : "曲をドロップで追加 / ダブルクリックで名前変更、右クリックでメニュー"
           }
         >
@@ -476,6 +500,11 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
               {!pl.isFolder && !pl.isSmart && (
                 <span className="ct">{pl.trackCount.toLocaleString()}</span>
               )}
+              {pl.isSmart && smartCounts[pl.playlistId] != null && (
+                <span className="ct" title="条件に一致する曲数（ライブ）">
+                  {smartCounts[pl.playlistId].toLocaleString()}
+                </span>
+              )}
             </>
           )}
         </div>
@@ -492,7 +521,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
         <b>Crateforge</b>
       </div>
 
-      <div className="cb-lbl">Library</div>
+      <div className="cb-lbl">ライブラリ</div>
       {NAV.map((n) => (
         <div
           key={n.mode}
@@ -518,25 +547,25 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
       ))}
 
       <div className="cb-lbl">
-        <span>Playlists</span>
+        <span>プレイリスト</span>
         <span className="cb-lbl-actions">
           <button
             className="cb-iconbtn"
-            title="New playlist"
+            title="新規プレイリスト"
             onClick={() => startCreate(false)}
           >
             <Icon name="plus" size={14} />
           </button>
           <button
             className="cb-iconbtn"
-            title="New folder"
+            title="新規フォルダ"
             onClick={() => startCreate(true)}
           >
             <Icon name="folderPlus" size={14} />
           </button>
           <button
             className="cb-iconbtn"
-            title="New smart playlist"
+            title="新規スマートプレイリスト"
             onClick={() => onEditSmart(null)}
           >
             <Icon name="sliders" size={14} />
@@ -560,7 +589,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport }: Sideba
             <input
               autoFocus
               className="cb-rename"
-              placeholder={creating.isFolder ? "New folder…" : "New playlist…"}
+              placeholder={creating.isFolder ? "新規フォルダ…" : "新規プレイリスト…"}
               value={creatingName}
               onChange={(e) => setCreatingName(e.target.value)}
               onBlur={commitCreate}

@@ -6,6 +6,7 @@ import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import { ColumnPicker } from "./ColumnPicker";
 import { SmartRestoreDialog } from "./SmartRestoreDialog";
+import { useArtistsResult } from "./ArtistsView";
 import type { LibraryStats, SortField, ViewMode } from "../types";
 import { ALBUM_SORT_FIELDS, ARTIST_SORT_FIELDS } from "../types";
 import { AUDIO_EXTENSIONS } from "../lib/audioExtensions";
@@ -35,35 +36,36 @@ function formatDuration(ms: number): string {
 /// プレイリストの手動順 (DB の sort_index 順)。プレイリスト表示のときだけ選べる。
 const PLAYLIST_ORDER_OPTION: { field: SortField; label: string } = {
   field: "playlistOrder",
-  label: "Playlist Order",
+  label: "プレイリスト順",
 };
 
+// 項目名は一覧の列名 (FIELD_DEFS) と同じ呼び方にそろえる (D8)。
 const SORT_OPTIONS: { field: SortField; label: string }[] = [
-  { field: "name", label: "Track" },
-  { field: "artist", label: "Artist" },
-  { field: "album", label: "Album" },
-  { field: "albumArtist", label: "Album Artist" },
-  { field: "genre", label: "Genre" },
+  { field: "name", label: "曲名" },
+  { field: "artist", label: "アーティスト" },
+  { field: "album", label: "アルバム" },
+  { field: "albumArtist", label: "アルバムアーティスト" },
+  { field: "genre", label: "ジャンル" },
   { field: "bpm", label: "BPM" },
-  { field: "rating", label: "Rating" },
-  { field: "year", label: "Year" },
-  { field: "playCount", label: "Plays" },
-  { field: "totalTimeMs", label: "Time" },
-  { field: "trackNumber", label: "Track #" },
-  { field: "dateAdded", label: "Date Added" },
-  { field: "lastPlayed", label: "Last Played" },
-  { field: "codec", label: "Codec" },
-  { field: "bitrate", label: "Bitrate" },
-  { field: "sampleRate", label: "Sample Rate" },
-  { field: "fileSize", label: "Size" },
+  { field: "rating", label: "評価" },
+  { field: "year", label: "年" },
+  { field: "playCount", label: "再生回数" },
+  { field: "totalTimeMs", label: "時間" },
+  { field: "trackNumber", label: "曲番号" },
+  { field: "dateAdded", label: "追加日" },
+  { field: "lastPlayed", label: "最終再生" },
+  { field: "codec", label: "コーデック" },
+  { field: "bitrate", label: "ビットレート" },
+  { field: "sampleRate", label: "サンプルレート" },
+  { field: "fileSize", label: "サイズ" },
 ];
 
 /// Artists ビュー専用のソート候補。アーティスト粒度で意味を持つのは
 /// ARTIST_SORT_FIELDS の 3 つだけなので、集合はそちらを単一の真実の源にする。
 const ARTIST_SORT_LABELS: Partial<Record<SortField, string>> = {
-  name: "Artist",
-  trackCount: "Tracks",
-  albumCount: "Albums",
+  name: "アーティスト名",
+  trackCount: "曲数",
+  albumCount: "アルバム数",
 };
 const ARTIST_SORT_OPTIONS: { field: SortField; label: string }[] =
   ARTIST_SORT_FIELDS.map((f) => ({ field: f, label: ARTIST_SORT_LABELS[f] ?? f }));
@@ -74,16 +76,20 @@ const CJK_CHAR = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\u
 // 完了 status をサブバーから自動で消すまでの時間 (#152)。
 const STATUS_CLEAR_MS = 8000;
 
-// ツールバー(行)の実効幅 (= 右ペイン・サイドバーを除いた実際に使える幅) に応じて段階的に畳む。
-// - COMPACT_WIDTH 未満: 右側のアクション群を ⋯ メニューに畳む。
-// - NARROW_WIDTH 未満: 表示切替・列ボタンをアイコンのみ、ソートは項目名だけにする。
-// - TINY_WIDTH 未満: ソートも方向矢印だけにする (項目名はツールチップ)。
+// ツールバーは「実際にはみ出したか」を測って段階的に畳む (D1)。幅のしきい値で決めると、
+// 日本語ラベル・ソート項目名・検索範囲の切替の有無などで実際の必要幅がずれ、
+// 1024 幅 + 右ペインで表示切替/並び順/列ボタンに到達できなくなっていた。
+// 畳み段階 (fitLevel):
+//   0: すべて表示
+//   1: 右側のアクション群を ⋯ メニューへ
+//   2: 表示切替・列ボタンをアイコンのみ、並び順は項目名だけ、検索範囲は短い表記
+//   3: 並び順を方向矢印だけに
+//   4: 表示切替・並び順・列も ⋯ メニューへ (⋯ から開く)
+//   5: 検索範囲の切替も ⋯ メニューへ
 // 横スクロールはしない (WebKitGTK ではスクロールバー領域がクリックを奪うため)。
-// プレイリスト表示中は検索範囲の切替 (このプレイリスト / ライブラリ全体) が増える分だけ早めに畳む。
-const COMPACT_WIDTH = 1200;
-const NARROW_WIDTH = 900;
-const TINY_WIDTH = 640;
-const SCOPE_SEG_EXTRA = 150;
+const MAX_FIT_LEVEL = 5;
+/** 段階 0 (アクション群を横並び) で検索欄に残したい最小幅。 */
+const SEARCH_MIN_WITH_ACTIONS = 260;
 const MORE_MENU_WIDTH = 248;
 
 // ⋯ メニューにも通常のボタンにも同じ定義から描画するためのアクション記述。
@@ -108,13 +114,14 @@ function anchoredPopStyle(el: HTMLElement | null, width: number): React.CSSPrope
   return { position: "fixed", top: r.bottom + 6, left, width };
 }
 
+// サイドバーの表記と揃える (D8)。
 const VIEW_TITLE: Record<ViewMode, string> = {
-  library: "All Tracks",
+  library: "すべての曲",
   inbox: "Inbox",
-  history: "Set History",
-  artists: "Artists",
-  recent: "Recently Played",
-  playlist: "Playlist",
+  history: "セット履歴",
+  artists: "アーティスト",
+  recent: "最近再生した曲",
+  playlist: "プレイリスト",
 };
 
 export function Toolbar({
@@ -201,18 +208,23 @@ export function Toolbar({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
-  // ツールバー行の実効幅。幅に応じてアクション群を ⋯ に畳み、ラベルを段階的に省く。
+  // ツールバー行の実効幅 (右ペインの表示・リサイズに追従) と畳み段階 (上の fitLevel 参照)。
   const [rowWidth, setRowWidth] = useState(Number.POSITIVE_INFINITY);
-  const scopeExtra = viewMode === "playlist" ? SCOPE_SEG_EXTRA : 0;
-  const compact = rowWidth < COMPACT_WIDTH;
-  const narrow = rowWidth < NARROW_WIDTH + scopeExtra;
-  const tiny = rowWidth < TINY_WIDTH + scopeExtra;
+  const [fitLevel, setFitLevel] = useState(0);
+  // Web フォントの読み込み完了で文字幅が変わるので測り直す。
+  const [fontsTick, setFontsTick] = useState(0);
+  const compact = fitLevel >= 1;
+  const narrow = fitLevel >= 2;
+  const tiny = fitLevel >= 3;
+  const controlsInMenu = fitLevel >= 4;
+  const scopeInMenu = fitLevel >= 5;
   // 検索ボックス: 表示用ローカル state（即時反映）。store への反映はデバウンス。
   const [localSearch, setLocalSearch] = useState(searchQuery);
 
   const searchTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
   const sortBtnRef = useRef<HTMLButtonElement>(null);
   const moreBtnRef = useRef<HTMLButtonElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
@@ -231,6 +243,16 @@ export function Toolbar({
     return () => ro.disconnect();
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+    document.fonts?.ready.then(() => {
+      if (alive) setFontsTick((t) => t + 1);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // 広くなって ⋯ ボタン自体が消える場合はメニューも閉じる。
   useEffect(() => {
     if (!compact) setMoreOpen(false);
@@ -240,7 +262,7 @@ export function Toolbar({
   useEffect(() => {
     if (!moreOpen) return;
     const first = moreMenuRef.current?.querySelector<HTMLButtonElement>(
-      '[role="menuitem"]:not(:disabled)',
+      '[role^="menuitem"]:not(:disabled)',
     );
     first?.focus();
   }, [moreOpen]);
@@ -255,7 +277,7 @@ export function Toolbar({
     }
     const items = Array.from(
       moreMenuRef.current?.querySelectorAll<HTMLButtonElement>(
-        '[role="menuitem"]:not(:disabled)',
+        '[role^="menuitem"]:not(:disabled)',
       ) ?? [],
     );
     if (items.length === 0) return;
@@ -571,8 +593,13 @@ export function Toolbar({
         ? liveCount.count
         : null
       : (activePlaylist?.trackCount ?? null);
+  const artistsResult = useArtistsResult();
   const subCount = isSearching
-    ? `${tracks.length.toLocaleString()} 曲`
+    ? viewMode === "artists"
+      ? artistsResult.count != null
+        ? `${artistsResult.count.toLocaleString()}${artistsResult.hasMore ? "+" : ""} アーティスト`
+        : "…"
+      : `${tracks.length.toLocaleString()} 曲`
     : activePlaylist
       ? playlistCount != null
         ? `${playlistCount.toLocaleString()} 曲`
@@ -607,6 +634,38 @@ export function Toolbar({
   const curSort = sortOptions.find((s) => s.field === sortField);
   // 手動順に昇順/降順は無い（常に保存された並び）。
   const manualSortActive = sortField === "playlistOrder";
+
+  // 畳み段階を実測で決める。幅や中身 (ビュー・ソート項目名・列数…) が変わったら
+  // 段階 0 からやり直し、左側 (.cb-tb-main) がはみ出している間は 1 段ずつ畳む。
+  // layout effect 内の setState は描画前に同期で再描画されるので、途中段階は表示されない。
+  const fitKey = [
+    Math.round(rowWidth),
+    viewMode,
+    displayMode,
+    curSort?.label ?? "",
+    sortOrder,
+    fields.length,
+    fontsTick,
+  ].join("|");
+  const lastFitKey = useRef("");
+  useLayoutEffect(() => {
+    const el = mainRef.current;
+    if (!el) return;
+    if (lastFitKey.current !== fitKey) {
+      lastFitKey.current = fitKey;
+      if (fitLevel !== 0) {
+        setFitLevel(0);
+        return;
+      }
+    }
+    // アクション群を横に並べる (段階 0) のは、検索欄に十分な幅が残るときだけ。
+    const sbox = el.querySelector<HTMLElement>(".cb-sbox");
+    const searchCramped =
+      fitLevel === 0 && !!sbox && sbox.getBoundingClientRect().width < SEARCH_MIN_WITH_ACTIONS;
+    if ((searchCramped || el.scrollWidth > el.clientWidth + 1) && fitLevel < MAX_FIT_LEVEL) {
+      setFitLevel(fitLevel + 1);
+    }
+  });
 
   // 幅が足りないときに ⋯ メニューへ畳むアクション群（挙動は畳んでも同じ）。
   const overflowActions: ToolAction[] = [
@@ -720,7 +779,7 @@ export function Toolbar({
         {/* 横スクロールはさせず、幅に応じて段階的に畳む。アクション群は右端に固定し、
             はみ出す場合は左側 (検索・表示切替) の側を詰める。 */}
         <div className="cb-tb-row" ref={rowRef}>
-          <div className="cb-tb-main">
+          <div className="cb-tb-main" ref={mainRef}>
           <div className="cb-sbox" style={{ position: "relative" }}>
             <Icon name="search" size={15} />
             <input
@@ -763,7 +822,7 @@ export function Toolbar({
           </div>
 
           {/* プレイリスト表示中だけ出す検索スコープ切り替え。既定はこのプレイリスト内。 */}
-          {viewMode === "playlist" && (
+          {viewMode === "playlist" && !scopeInMenu && (
             <div className="cb-seg2" role="group" aria-label="検索範囲">
               <button
                 className={"cb-segb2" + (searchScope === "playlist" ? " on" : "")}
@@ -784,40 +843,43 @@ export function Toolbar({
             </div>
           )}
 
+          {!controlsInMenu && (
           <div className="cb-seg">
             <button
-              className={"cb-segb" + (displayMode === "list" ? " on" : "")}
+              className={"cb-segb" + (narrow ? " iconly" : "") + (displayMode === "list" ? " on" : "")}
               onClick={() => setDisplayMode("list")}
               title="リスト表示"
               aria-label="リスト表示"
             >
               <Icon name="list" size={14} />
-              {!narrow && " List"}
+              {!narrow && "リスト"}
             </button>
             <button
-              className={"cb-segb" + (displayMode === "albums" ? " on" : "")}
+              className={"cb-segb" + (narrow ? " iconly" : "") + (displayMode === "albums" ? " on" : "")}
               onClick={() => setDisplayMode("albums")}
               title="アルバム表示"
               aria-label="アルバム表示"
             >
               <Icon name="grid" size={14} />
-              {!narrow && " Albums"}
+              {!narrow && "アルバム"}
             </button>
             <button
-              className={"cb-segb" + (displayMode === "tracks" ? " on" : "")}
+              className={"cb-segb" + (narrow ? " iconly" : "") + (displayMode === "tracks" ? " on" : "")}
               onClick={() => setDisplayMode("tracks")}
               title="トラックウォール表示"
               aria-label="トラックウォール表示"
             >
               <Icon name="disc" size={14} />
-              {!narrow && " Tracks"}
+              {!narrow && "ウォール"}
             </button>
           </div>
+          )}
 
           <div style={{ position: "relative" }}>
+            {!controlsInMenu && (
             <button
               ref={sortBtnRef}
-              className={"cb-btn" + (sortOpen ? " on" : "")}
+              className={"cb-btn" + (narrow ? " cb-btn-tight" : "") + (sortOpen ? " on" : "")}
               onClick={() => {
                 setSortOpen((v) => !v);
                 setPickerOpen(false);
@@ -826,14 +888,21 @@ export function Toolbar({
               title={`並び順: ${curSort?.label ?? "—"}`}
             >
               {/* ソートフィールド名＋現在の昇順/降順を常時表示 (狭いときは項目名を省く) */}
-              {tiny ? "" : narrow ? `${curSort?.label ?? "—"} ` : `Sort: ${curSort?.label ?? "—"} `}
+              {tiny ? "" : narrow ? `${curSort?.label ?? "—"} ` : `並び順: ${curSort?.label ?? "—"} `}
               {manualSortActive ? (tiny ? "≡" : "") : sortOrder === "asc" ? "↑" : "↓"}
               <Icon name="chevronD" size={12} />
             </button>
+            )}
             {sortOpen && (
               <>
                 <div className="cb-scrim" onClick={() => setSortOpen(false)} />
-                <div className="cb-sortpop" style={anchoredPopStyle(sortBtnRef.current, 200)}>
+                <div
+                  className="cb-sortpop"
+                  style={anchoredPopStyle(
+                    controlsInMenu ? moreBtnRef.current : sortBtnRef.current,
+                    200,
+                  )}
+                >
                   {sortOptions.map((s) => {
                     const on = s.field === sortField;
                     return (
@@ -864,10 +933,10 @@ export function Toolbar({
             )}
           </div>
 
-          {isListLike && displayMode === "list" && (
+          {isListLike && displayMode === "list" && !controlsInMenu && (
             <>
               <button
-                className={"cb-btn" + (pickerOpen ? " on" : "")}
+                className={"cb-btn" + (narrow ? " cb-btn-tight" : "") + (pickerOpen ? " on" : "")}
                 data-colpicker-toggle
                 onClick={() => {
                   setPickerOpen((v) => !v);
@@ -878,7 +947,7 @@ export function Toolbar({
                 aria-label="表示する列を選ぶ"
               >
                 <Icon name="sliders" size={15} />
-                {!narrow && " Columns"}
+                {!narrow && "列"}
                 <span className="cb-btn-badge">{fields.length}</span>
               </button>
             </>
@@ -933,6 +1002,90 @@ export function Toolbar({
                       style={anchoredPopStyle(moreBtnRef.current, MORE_MENU_WIDTH)}
                       onKeyDown={handleMoreKeyDown}
                     >
+                      {scopeInMenu && viewMode === "playlist" && (
+                        <>
+                          <div className="cb-morepop-section">検索範囲</div>
+                          {(
+                            [
+                              ["playlist", "このプレイリスト"],
+                              ["library", "ライブラリ全体"],
+                            ] as const
+                          ).map(([scope, label]) => (
+                            <button
+                              key={scope}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={searchScope === scope}
+                              className={"cb-sortitem" + (searchScope === scope ? " on" : "")}
+                              onClick={() => {
+                                setMoreOpen(false);
+                                setSearchScope(scope);
+                              }}
+                            >
+                              <Icon name="search" size={15} />
+                              {label}
+                            </button>
+                          ))}
+                        </>
+                      )}
+                      {controlsInMenu && (
+                        <>
+                          <div className="cb-morepop-section">表示</div>
+                          {(
+                            [
+                              ["list", "リスト表示", "list"],
+                              ["albums", "アルバム表示", "grid"],
+                              ["tracks", "トラックウォール表示", "disc"],
+                            ] as const
+                          ).map(([mode, label, icon]) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={displayMode === mode}
+                              className={"cb-sortitem" + (displayMode === mode ? " on" : "")}
+                              onClick={() => {
+                                setMoreOpen(false);
+                                setDisplayMode(mode);
+                              }}
+                            >
+                              <Icon name={icon} size={15} />
+                              {label}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="cb-sortitem"
+                            onClick={() => {
+                              setMoreOpen(false);
+                              setPickerOpen(false);
+                              setSortOpen(true);
+                            }}
+                          >
+                            <Icon name="chevronD" size={15} />
+                            並び順: {curSort?.label ?? "—"}
+                            {manualSortActive ? "" : sortOrder === "asc" ? " ↑" : " ↓"}…
+                          </button>
+                          {isListLike && displayMode === "list" && (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="cb-sortitem"
+                              data-colpicker-toggle
+                              onClick={() => {
+                                setMoreOpen(false);
+                                setSortOpen(false);
+                                setPickerOpen(true);
+                              }}
+                            >
+                              <Icon name="sliders" size={15} />
+                              表示する列… ({fields.length})
+                            </button>
+                          )}
+                          <div className="cb-morepop-section">操作</div>
+                        </>
+                      )}
                       {overflowActions.map((a) => (
                         <button
                           key={a.id}
@@ -960,8 +1113,8 @@ export function Toolbar({
               onClick={toggleRightRail}
               title={
                 rightRailVisible
-                  ? "右ペイン (Now Playing / Crate) を隠す"
-                  : "右ペイン (Now Playing / Crate) を表示"
+                  ? "右ペイン (再生中 / Crate) を隠す"
+                  : "右ペイン (再生中 / Crate) を表示"
               }
             >
               <Icon name="eye" size={16} />

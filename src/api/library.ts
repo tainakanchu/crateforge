@@ -263,8 +263,10 @@ export async function getArtists(
   sortOrder?: SortOrder,
   limit?: number,
   offset?: number,
+  /** 検索クエリ (検索ボックス + フィルタタグ)。指定時は一致する曲を持つアーティストだけ。 */
+  query?: string,
 ): Promise<ArtistRow[]> {
-  return invoke("get_artists", { sortField, sortOrder, limit, offset });
+  return invoke("get_artists", { sortField, sortOrder, limit, offset, query: query || null });
 }
 
 /// 指定アーティストのアルバム一覧 (年→アルバム名順)。name は getArtists が返した表示名。

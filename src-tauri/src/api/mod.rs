@@ -879,9 +879,15 @@ async fn bind_with_fallback(
     }))
 }
 
-/// SO_REUSEADDR (unix では SO_REUSEPORT も) を設定して bind し、tokio リスナーへ変換する。
+/// SO_REUSEADDR を設定して bind し、tokio リスナーへ変換する。
 /// `AddrInUse` のときだけ最大 10 回 (各 100ms) リトライする (直前ソケットの teardown 待ち)。
 /// それ以外のエラーは即座に返す。
+///
+/// SO_REUSEPORT は立てない (D7): 立てると別プロセス (2 つ目の Crateforge) が同じポートに
+/// 同時 bind でき、カーネルがリクエストを両者に振り分けてしまう。SO_REUSEADDR だけなら
+/// 待ち受け中のポートとは衝突 (AddrInUse) し、TIME_WAIT の残る再起動時の再 bind は通る。
+/// Windows の SO_REUSEADDR は「使用中ポートの横取り」を許す意味になるため立てない
+/// (Windows は TIME_WAIT が待ち受けポートの再 bind を妨げない)。
 async fn bind_reuse(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
 
@@ -894,9 +900,8 @@ async fn bind_reuse(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener
     let mut last_err: Option<std::io::Error> = None;
     for attempt in 0..10 {
         let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+        #[cfg(not(windows))]
         socket.set_reuse_address(true)?;
-        #[cfg(unix)]
-        socket.set_reuse_port(true)?;
         // 非ブロッキングにしてから tokio へ渡す (from_std の前提)。
         socket.set_nonblocking(true)?;
 
@@ -1352,6 +1357,82 @@ mod tests {
         let (status, body) = req(app, "GET", "/api/tracks/3/similar", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    // ===== D3: プレイリスト曲 / similar も実効 BPM。ただし同期の取り寄せにはタグ値のまま =====
+    #[tokio::test]
+    async fn case_playlist_tracks_effective_bpm_is_sync_safe() {
+        use axum::extract::ConnectInfo;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        // track 1 (プレイリスト 100 所属) はタグ BPM 無し・解析 BPM 128。
+        let tokens = crate::devices::ValidTokens::default();
+        tokens.insert("remote-token".into());
+        tokens.insert_with_role("sync-token".into(), crate::devices::DeviceRole::Sync);
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens,
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
+        });
+
+        // (uri, user-agent, LAN トークン) → 1 曲目の bpm
+        async fn first_bpm(
+            app: &Router,
+            uri: &str,
+            ua: Option<&str>,
+            lan_token: Option<&str>,
+        ) -> Value {
+            let mut b = Request::builder().method("GET").uri(uri);
+            if let Some(ua) = ua {
+                b = b.header("user-agent", ua);
+            }
+            if let Some(t) = lan_token {
+                b = b.header("X-API-Token", t);
+            }
+            let mut request = b.body(Body::empty()).unwrap();
+            if lan_token.is_some() {
+                request
+                    .extensions_mut()
+                    .insert(ConnectInfo(SocketAddr::from(([192, 168, 1, 50], 54321))));
+            }
+            let resp = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let v: Value = serde_json::from_slice(&bytes).unwrap();
+            v[0]["bpm"].clone()
+        }
+        let uri = "/api/playlists/100/tracks";
+        let ua = Some("Crateforge-Mobile okhttp/4.12");
+
+        // 表示クライアント (UA あり) は実効 BPM。
+        assert_eq!(first_bpm(&app, uri, ua, None).await, json!(128));
+        assert_eq!(first_bpm(&app, uri, ua, Some("remote-token")).await, json!(128));
+        // 現行の同期クライアントは effectiveBpm=false を付ける → タグ値 (null)。
+        assert_eq!(
+            first_bpm(&app, &format!("{uri}?limit=500&offset=0&effectiveBpm=false"), ua, None).await,
+            Value::Null
+        );
+        // sync ロールのトークン → タグ値。
+        assert_eq!(first_bpm(&app, uri, ua, Some("sync-token")).await, Value::Null);
+        // UA 無し (旧版の同期クライアント = reqwest 既定) → タグ値。
+        assert_eq!(first_bpm(&app, uri, None, Some("remote-token")).await, Value::Null);
+        assert_eq!(first_bpm(&app, uri, None, None).await, Value::Null);
+
+        // DB のタグ値は変わらない。
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        assert_eq!(db.get_track_by_track_id(1).unwrap().unwrap().bpm, None);
+
+        // similar の曲も実効 BPM (track 2 もタグ無し・解析 128)。
+        let (status, body) = req(app.clone(), "GET", "/api/tracks/1/similar", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body[0]["track"]["trackId"], 2);
+        assert_eq!(body[0]["track"]["bpm"], 128);
     }
 
     // ===== 追加: analyzed フィルタ =====
@@ -2278,9 +2359,8 @@ mod tests {
     }
 
     // ===== bind_with_fallback: 希望ポートが埋まっていれば別ポートへフォールバック =====
-    // 注: SO_REUSEADDR/SO_REUSEPORT を立てているため、同一ポートへの再 bind が
-    // OS によっては成功しうる (AddrInUse にならない)。その場合フォールバックは
-    // 起きないため、別ポート (>0) になったときだけ厳密に検証する。
+    // D7: 以前は SO_REUSEPORT を立てていたため、別インスタンスが同じポートに同時 bind でき、
+    // リクエストが 2 プロセスに振り分けられていた。使用中なら必ず別ポートへ逃げること。
     #[tokio::test]
     async fn test_bind_with_fallback_falls_back_when_busy() {
         let probe = bind_with_fallback([127, 0, 0, 1], 0).await.unwrap();
@@ -2291,14 +2371,25 @@ mod tests {
             .expect("fallback (incl. port 0) must always yield a listener");
         let bound = second.local_addr().unwrap().port();
         assert_ne!(bound, 0, "bound port must be a real port");
-        if bound == busy_port {
-            // REUSEADDR で同ポート再 bind が成立したケース (環境依存)。許容する。
-        } else {
-            // フォールバックが起きた: 別ポートかつ候補列のいずれか (固定候補 or OS 割当)。
-            assert_ne!(bound, busy_port);
-        }
+        assert_ne!(bound, busy_port, "使用中のポートへ二重 bind してはいけない");
         drop(probe);
         drop(second);
+    }
+
+    // ===== D7: 待ち受けを閉じた直後 (サーバー再起動) は同じポートで再 bind できる =====
+    // 接続が残って TIME_WAIT になっても、SO_REUSEADDR により希望ポートを取り直せる。
+    #[tokio::test]
+    async fn test_bind_reuse_rebinds_after_close_with_lingering_connection() {
+        let first = bind_with_fallback([127, 0, 0, 1], 0).await.unwrap();
+        let port = first.local_addr().unwrap().port();
+        // 接続を 1 本張ってサーバー側から閉じ、TIME_WAIT を残す。
+        let client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (server_side, _) = first.accept().await.unwrap();
+        drop(server_side);
+        drop(first);
+        drop(client);
+        let again = bind_with_fallback([127, 0, 0, 1], port).await.unwrap();
+        assert_eq!(again.local_addr().unwrap().port(), port);
     }
 
     // ===== トークン照合ロジックのユニットテスト =====

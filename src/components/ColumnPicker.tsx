@@ -163,11 +163,11 @@ export function ColumnPicker({ onClose }: ColumnPickerProps) {
                   key={s}
                   className={"cb-segb2" + (coverSize === s ? " on" : "")}
                   // アートワーク列幅: Off=非表示 / S=小(20px) / M=中(28px)
-                  title={s === 0 ? "Artwork: Off" : s === 20 ? "Artwork: Small" : "Artwork: Medium"}
-                  aria-label={s === 0 ? "Artwork: Off" : s === 20 ? "Artwork: Small" : "Artwork: Medium"}
+                  title={s === 0 ? "アートワーク: なし" : s === 20 ? "アートワーク: 小" : "アートワーク: 中"}
+                  aria-label={s === 0 ? "アートワーク: なし" : s === 20 ? "アートワーク: 小" : "アートワーク: 中"}
                   onClick={() => setCoverSize(s)}
                 >
-                  {s === 0 ? "Off" : s === 20 ? "S" : "M"}
+                  {s === 0 ? "なし" : s === 20 ? "小" : "中"}
                 </button>
               ))}
             </div>

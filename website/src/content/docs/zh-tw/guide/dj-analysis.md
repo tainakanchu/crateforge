@@ -45,7 +45,7 @@ Crateforge 以 **純 Rust 的 DSP** 進行 DJ 取向的音訊解析。
 
 ## 相似度選曲（Similar Digging）
 
-在右側欄的 **Similar** 分頁，會根據解析值提議「下一手」。
+在右側欄的 **「似た曲」(Similar)** 分頁，會根據解析值提議「下一手」。
 
 - 右鍵點選曲目 →「似た曲を探す」（Find similar）（或按 `Ctrl/Cmd + Shift + S`）即可顯示
   **Camelot 鍵相容 + 節奏相近** 的候選。
@@ -70,9 +70,9 @@ Crateforge 以 **純 Rust 的 DSP** 進行 DJ 取向的音訊解析。
 
 ### 篩選
 
-- **Harmonic** — 僅限 Camelot 相容的鍵（與 BPM 篩選各自獨立作用）
+- **「キー互換」(Harmonic)** — 僅限 Camelot 相容的鍵（與 BPM 篩選各自獨立作用）
 - **BPM 容許差** — 相對於基準的容許範圍
-- **Energy close** — 僅限 Energy 差距 0.15 以下
+- **「Energy 近い」(Energy close)** — 僅限 Energy 差距 0.15 以下
 - **排除 Crate 內的曲目** / **排除相同演出者** / **僅限 ★★★ 以上**
 
 這些篩選條件會被保存，並延續到下次啟動。

@@ -1056,7 +1056,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
             toggleSort("name");
           }}
         >
-          Track
+          曲名
           {sortField === "name" && (
             <Icon
               name="chevronD"
@@ -1210,7 +1210,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                       </span>
                     )}
                     {!t.fileExists && (
-                      <span className="cb-warn" title="File not found">
+                      <span className="cb-warn" title="ファイルが見つかりません">
                         <Icon name="warning" size={12} />
                       </span>
                     )}
@@ -1239,13 +1239,13 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
               ))}
               <span className="cb-add-cell">
                 {isIn ? (
-                  <span className="cb-incheck" title="In crate">
+                  <span className="cb-incheck" title="Crate に追加済み">
                     <Icon name="check" size={18} />
                   </span>
                 ) : (
                   <button
                     className="cb-add"
-                    title="Add to crate"
+                    title="Crate に追加"
                     onClick={(e) => {
                       e.stopPropagation();
                       addToCrate(t);
@@ -1278,7 +1278,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
               animation: "cb-spin 0.7s linear infinite",
             }}
           />
-          <span>Loading… ({tracks.length}曲)</span>
+          <span>読み込み中… ({tracks.length}曲)</span>
         </div>
       )}
       {tracks.length === 0 && !isLoading && (

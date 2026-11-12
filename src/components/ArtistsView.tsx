@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { create } from "zustand";
 import { useStore } from "../store/useStore";
 import * as libraryApi from "../api/library";
 import * as playbackApi from "../api/playback";
@@ -12,6 +13,15 @@ import type { AlbumRow, ArtistRow, SortField, Track } from "../types";
 import { EmptyState } from "./EmptyState";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
+
+/**
+ * 表示中のアーティスト数 (検索中の見出しの件数用。Toolbar が読む)。
+ * 追加ページがあるときは取得済みの数 + "以上" を示すため hasMore も持つ。
+ */
+export const useArtistsResult = create<{ count: number | null; hasMore: boolean }>(() => ({
+  count: null,
+  hasMore: false,
+}));
 
 const GAP = 18;
 const PAD_X = 20;
@@ -47,6 +57,13 @@ type Row = { type: "grid"; artists: ArtistRow[] } | { type: "expand"; artist: Ar
 export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   const { playback, crate, addToCrate, sortField, sortOrder } = useStore();
   const pushToast = useStore((s) => s.pushToast);
+  // 検索ボックス + フィルタタグ (D4)。トラック一覧と同じ組み立て (App.tsx の combinedQuery)。
+  const searchQuery = useStore((s) => s.searchQuery);
+  const filterTags = useStore((s) => s.filterTags);
+  const combinedQuery = useMemo(
+    () => [searchQuery.trim(), ...filterTags].filter(Boolean).join(" "),
+    [searchQuery, filterTags],
+  );
 
   const parentRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -69,6 +86,11 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   useEffect(() => {
     artistsRef.current = artists;
   }, [artists]);
+  // 見出しの件数 (検索結果のアーティスト数) を Toolbar へ渡す。
+  useEffect(() => {
+    useArtistsResult.setState({ count: isLoading ? null : artists.length, hasMore });
+  }, [artists.length, hasMore, isLoading]);
+  useEffect(() => () => useArtistsResult.setState({ count: null, hasMore: false }), []);
   const loadingRef = useRef(false);
   // 取得のたびに増やす連番。応答が返ったとき最新でなければ (ソート変更などで
   // 後発のリクエストが走っていれば) その結果は捨てる。
@@ -103,7 +125,13 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
       setIsLoading(true);
       try {
         const offset = reset ? 0 : artistsRef.current.length;
-        const rows = await libraryApi.getArtists(artistSort, sortOrder, PAGE_SIZE, offset);
+        const rows = await libraryApi.getArtists(
+          artistSort,
+          sortOrder,
+          PAGE_SIZE,
+          offset,
+          combinedQuery || undefined,
+        );
         if (seq !== reqSeq.current) return; // 古い応答は捨てる
         setArtists((prev) => (reset ? rows : [...prev, ...rows]));
         setHasMore(rows.length === PAGE_SIZE);
@@ -119,10 +147,10 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
         }
       }
     },
-    [artistSort, sortOrder, pushToast],
+    [artistSort, sortOrder, combinedQuery, pushToast],
   );
 
-  // ソート変更・ライブラリ変更で先頭から取り直す (キャッシュも捨てる)。
+  // ソート変更・検索変更・ライブラリ変更で先頭から取り直す (キャッシュも捨てる)。
   useEffect(() => {
     setExpanded(null);
     setOpenAlbumKey(null);
@@ -132,7 +160,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
     bumpCache();
     void load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [artistSort, sortOrder, reloadKey]);
+  }, [artistSort, sortOrder, combinedQuery, reloadKey]);
 
   const ensureAlbums = useCallback(
     async (name: string): Promise<AlbumRow[]> => {
@@ -294,7 +322,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   if (artists.length === 0 && !isLoading) {
     return (
       <div className="cb-grid-wrap">
-        <EmptyState ignoresSearch />
+        <EmptyState />
       </div>
     );
   }

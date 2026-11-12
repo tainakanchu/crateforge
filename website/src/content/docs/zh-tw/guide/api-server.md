@@ -17,8 +17,9 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 - 啟用 **「LAN 公開」** 後，可從同一 Wi-Fi 的手機 / TV / PC 瀏覽器存取。
   連線 URL 與 **QR 碼** 會顯示在設定中。
 
-伺服器已強化為在確實完成停止後才重新啟動（`SO_REUSEADDR` / `SO_REUSEPORT`），
+伺服器已強化為在確實完成停止後才重新啟動（`SO_REUSEADDR`），
 解決了「前一個伺服器尚未完全關閉而無法啟動（address in use）」的問題。
+若已有其他 Crateforge 在同一連接埠等待連線，不會重複佔用該連接埠，而是改用其他空閒的連接埠（實際連接埠會顯示在設定的連線 URL）。
 
 ## 認證、權杖、配對
 
@@ -46,6 +47,10 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 - `GET /api/stats` / `GET /api/genres` / `GET /api/albums`
 - `GET /api/playlists` / `GET /api/playlists/{id}`（含智慧型條件 `smartCriteria`） / `GET /api/playlists/{id}/tracks`
   （智慧型播放清單的 `trackCount` 為條件即時評估後的曲數）
+
+回傳曲目的 API（`/api/tracks` 系列・`/similar`・`/api/playlists/{id}/tracks`）的 `bpm` 為**實效 BPM**（標籤的 BPM，沒有時為解析 BPM）。
+但為了避免同步（取回）把解析值存成標籤，`/api/playlists/{id}/tracks` 對帶有 `?effectiveBpm=false` 的請求、sync 角色的權杖、
+以及沒有 User-Agent 的請求（舊版同步用戶端）會直接回傳標籤值。
 
 查詢參數的布林值除了 `true` / `false` 之外，也接受 `1` / `0`。
 用戶端送出 `Accept-Encoding: gzip` 時，較大的 JSON 回應（例如全部曲目清單）會以 gzip 壓縮回傳。

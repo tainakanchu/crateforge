@@ -17,8 +17,10 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 - **「LAN 公開」** を有効にすると、同じ Wi-Fi のスマホ / TV / PC のブラウザからアクセスできます。
   接続 URL と **QR コード** が設定に表示されます。
 
-サーバーの停止が確実に完了してから再起動するよう堅牢化されており（`SO_REUSEADDR` / `SO_REUSEPORT`）、
+サーバーの停止が確実に完了してから再起動するよう堅牢化されており（`SO_REUSEADDR`）、
 「前のサーバーが落ち切らずに起動できない（address in use）」を解消しています。
+別の Crateforge が同じポートで待ち受け中のときは同じポートに二重に待ち受けず、空いている別のポートへ切り替えます
+（実際のポートは設定の接続 URL に表示されます）。
 
 ## 認証・トークン・ペアリング
 
@@ -46,6 +48,10 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 - `GET /api/stats` / `GET /api/genres` / `GET /api/albums`
 - `GET /api/playlists` / `GET /api/playlists/{id}`（スマート条件 `smartCriteria` を含む） / `GET /api/playlists/{id}/tracks`
   （スマートプレイリストの `trackCount` は条件のライブ評価の件数です）
+
+曲を返す API（`/api/tracks` 系・`/similar`・`/api/playlists/{id}/tracks`）の `bpm` は **実効 BPM**（タグの BPM、無ければ解析 BPM）です。
+ただし `/api/playlists/{id}/tracks` は、同期（取り寄せ）が解析値をタグとして保存しないよう、`?effectiveBpm=false` を付けた要求・
+sync ロールのトークン・User-Agent の無い要求（旧版の同期クライアント）にはタグの値のまま返します。
 
 クエリの真偽値は `true` / `false` のほか `1` / `0` も受け付けます。
 クライアントが `Accept-Encoding: gzip` を送ると、大きな JSON 応答（全曲一覧など）は gzip 圧縮して返します。

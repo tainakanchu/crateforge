@@ -46,7 +46,7 @@ it focuses on the tracks you actually use, so it works without waste.
 
 ## Similarity-based curation (Similar Digging)
 
-The **Similar** tab in the right rail suggests "next moves" based on analysis values.
+The **"似た曲" (Similar)** tab in the right rail suggests "next moves" based on analysis values.
 
 - Right-click a track and choose **"似た曲を探す" (Find similar)** (or press `Ctrl/Cmd + Shift + S`) to show candidates that are
   **Camelot-key compatible + close in tempo**.
@@ -71,9 +71,9 @@ Each candidate carries chips describing its relation to the base track.
 
 ### Filters
 
-- **Harmonic** — Camelot-compatible keys only (independent of the BPM filter)
+- **"キー互換" (Harmonic)** — Camelot-compatible keys only (independent of the BPM filter)
 - **BPM tolerance** — the allowed difference relative to the base
-- **Energy close** — only an Energy difference of 0.15 or less
+- **"Energy 近い" (Energy close)** — only an Energy difference of 0.15 or less
 - **Exclude tracks in the Crate** / **exclude the same artist** / **★★★ and above only**
 
 These filters are saved and carried over to the next launch.

@@ -4,7 +4,7 @@ description: 本機播放、Up Next 佇列、DJ 選曲用的 Crate、Audition / 
 ---
 
 Crateforge 支援本機播放（rodio + symphonia），可直接解碼各種格式。
-在右側欄（選曲工作台）的 **Now Playing / Up Next / Crate / Similar** 組建播放與選曲。
+在右側欄（選曲工作台）的 **「再生中」(Now Playing) /「次に再生」(Up Next) / Crate /「似た曲」(Similar)** 組建播放與選曲。
 
 > 截圖稍後補上
 
@@ -164,10 +164,10 @@ Audition 模式僅限本次工作階段，不會延續到下次啟動。
 
 ## 右側欄（選曲工作台）
 
-右側欄由 **Now / Up Next** 與 **Crate / Similar** 兩組分頁構成。
+右側欄由 **「再生中」/「次に再生」** 與 **Crate /「似た曲」** 兩組分頁構成。
 
 - 拖曳左緣可 **調整寬度**（280〜560px），雙擊可還原為預設（348px）。寬度會被保存。
-- **Split** 按鈕可將 Crate 與 Similar 上下同時顯示。Split **只在 Crate / Similar 分頁有效**，
+- **「分割」(Split)** 按鈕可將 Crate 與 Similar 上下同時顯示。Split **只在 Crate / Similar 分頁有效**，
   在 Now / Up Next 分頁會顯示為停用。
 - **分頁不會擅自切換**。把曲目加入 Crate 或執行「似た曲を探す」時，你正在看的分頁會保持不變。
   取而代之的是 **Crate 分頁會顯示件數徽章**，**Similar 分頁會以圓點** 表示已釘選基準曲。
@@ -180,7 +180,7 @@ Audition 模式僅限本次工作階段，不會延續到下次啟動。
 
 - 把曲目逐一加入 Crate，湊齊後可 **「儲存為播放清單」**。
   `Ctrl + Shift + C` 可整批加入選取曲目，也可以把清單的列拖曳到 Crate。
-- 以 **smooth（平滑排序）** 按鈕，可根據解析值以貪婪最近鄰自動排序成順暢的流動。
+- 以 **「整列」(smooth，平滑排序)** 按鈕，可根據解析值以貪婪最近鄰自動排序成順暢的流動。
 - 每一列都可執行 Preview / Find Similar / Play next / 從這裡播放 / 從 Crate 移除。
 
 ### Set Workspace（Anchor / Section / Arc / Lint）
@@ -199,7 +199,7 @@ Crate 同時也是 **一整套演出的設計台**（不會變更資料庫，內
 
 ### Gig Readiness（演出前檢查）與 Snapshot
 
-從 Crate 標頭的 **「Ready?」**，可在一個畫面確認 Crate 或目前顯示之播放清單的準備狀況。
+從 Crate 標頭的 **「本番前」(Gig Readiness)**，可在一個畫面確認 Crate 或目前顯示之播放清單的準備狀況。
 
 - **阻斷項目**：沒有曲目 / 找不到檔案的曲目
 - **警告**：未解析的曲目 / 重複 / 低位元率（低於 256 kbps 的有損音源，無損格式不在此列）/ 目標長度過長或不足 / Set Lint 的提醒 / 自動匯出的狀態
@@ -238,7 +238,7 @@ Triage 的試聽屬於 Preview，因此不會弄髒播放次數。
 
 ## Now Playing（BPM / Key / Energy）
 
-右側欄的 **Now Playing** 會與正在播放曲目的封面圖一起顯示 **Album / Artist / Genre / BPM / Key / Energy**。
+右側欄的 **「再生中」(Now Playing)** 分頁會與正在播放曲目的封面圖一起顯示 **Album / Artist / Genre / BPM / Key / Energy**。
 BPM、Key (Camelot)、Energy 會在已[解析](../dj-analysis/)的曲目上顯示，可用於判斷銜接。
 
 在 **Similar** 分頁中，會針對正在播放（或右鍵 →「似た曲を探す」）的曲目，

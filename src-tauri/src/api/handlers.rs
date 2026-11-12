@@ -1242,12 +1242,21 @@ pub async fn get_similar_tracks(
     };
     let ranked = rank_similar(&base, &all, &opts, q.limit.unwrap_or(25));
 
-    let mut hits = Vec::with_capacity(ranked.len());
+    let mut tracks = Vec::with_capacity(ranked.len());
+    let mut distances = Vec::with_capacity(ranked.len());
     for (tid, distance) in ranked {
         if let Ok(Some(track)) = db.get_track_by_track_id(tid) {
-            hits.push(SimilarHit { track, distance });
+            tracks.push(track);
+            distances.push(distance);
         }
     }
+    // 実効 BPM (タグ ?? 解析値) にそろえる (D3)。同期はこの API を使わない。
+    db.fill_effective_bpm(&mut tracks)?;
+    let hits = tracks
+        .into_iter()
+        .zip(distances)
+        .map(|(track, distance)| SimilarHit { track, distance })
+        .collect();
     Ok(Json(hits))
 }
 
@@ -1502,6 +1511,43 @@ pub struct PlaylistTracksQuery {
     pub offset: Option<i64>,
     pub sort: Option<String>,
     pub order: Option<String>,
+    /// `false` なら `bpm` をタグ値のまま返す (同期の取り寄せ用)。省略時は実効 BPM。
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub effective_bpm: Option<bool>,
+    /// `?token=` 認証のトークン (sync ロールの判定に使う)。
+    pub token: Option<String>,
+}
+
+/// プレイリスト曲の応答の `bpm` を実効 BPM (タグ ?? 解析値) で埋めてよいか (D3)。
+///
+/// 同期 (federation) の取り寄せはこの API の `bpm` をタグ値として子の DB に保存し、
+/// 書き戻し (writeback) で親へ送り返しうる。解析値が混ざるとタグとして定着してしまう
+/// ので、同期と思われる要求には埋めない。次のいずれかならタグ値のまま返す:
+/// - `effectiveBpm=false` (現行の同期クライアントは必ず付ける)
+/// - sync ロールのトークン (旧版の同期クライアントで sync として承認した端末)
+/// - User-Agent ヘッダが無い (旧版の同期クライアント = reqwest 既定は UA を送らない。
+///   remote ロールで承認された旧版の同期にも効く。モバイル・ブラウザは必ず UA を送る)
+pub(crate) fn effective_bpm_allowed(
+    state: &ApiState,
+    headers: &axum::http::HeaderMap,
+    query_token: Option<&str>,
+    requested: Option<bool>,
+) -> bool {
+    if requested == Some(false) {
+        return false;
+    }
+    let token = query_token.or_else(|| {
+        headers
+            .get("X-API-Token")
+            .and_then(|v| v.to_str().ok())
+    });
+    if token.and_then(|t| state.tokens.role_for(t)) == Some(crate::devices::DeviceRole::Sync) {
+        return false;
+    }
+    headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ua| !ua.trim().is_empty())
 }
 
 /// `GET /api/playlists/:playlistId/tracks` — プレイリスト内の曲。スマートプレイリストは
@@ -1509,17 +1555,22 @@ pub struct PlaylistTracksQuery {
 pub async fn playlist_tracks(
     State(state): State<ApiState>,
     Path(playlist_id): Path<i64>,
+    headers: axum::http::HeaderMap,
     Query(q): Query<PlaylistTracksQuery>,
 ) -> Result<Json<Vec<Track>>, ApiError> {
     let db = state.db()?;
     // get_playlist_tracks の limit/offset は i64 直値。未指定はコマンド層の既定 (500/0) に合わせる。
-    let tracks = db.get_playlist_tracks(
+    let mut tracks = db.get_playlist_tracks(
         playlist_id,
         q.limit.unwrap_or(500),
         q.offset.unwrap_or(0),
         q.sort.as_deref(),
         q.order.as_deref(),
     )?;
+    // 表示用 (モバイル・Web プレイヤー) は実効 BPM にそろえる (D3)。同期の取り寄せには埋めない。
+    if effective_bpm_allowed(&state, &headers, q.token.as_deref(), q.effective_bpm) {
+        db.fill_effective_bpm(&mut tracks)?;
+    }
     Ok(Json(tracks))
 }
 
