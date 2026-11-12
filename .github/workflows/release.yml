@@ -187,16 +187,30 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
 
       # アプリ内ライセンス表記 (AppImage に libdiscid 同梱) と実態の一致を検証する。
+      # --appimage-extract <pattern> は fnmatch(FNM_PATHNAME) で照合され '*' が '/' を跨がない
+      # ため、'*libdiscid*' では usr/lib/libdiscid.so.0 が展開されない (v0.18.0 はこれで誤検知)。
+      # パターンは使わず全展開し、同梱位置・固定版・同梱版への解決 (RUNPATH) を確認する。
       - name: Verify bundled libdiscid (AppImage)
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
-          ldd src-tauri/target/release/crateforge | grep libdiscid
-          appimage="$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -n 1)"
-          work="$(mktemp -d)"
-          (cd "$work" && "$OLDPWD/$appimage" --appimage-extract '*libdiscid*' > /dev/null)
-          find "$work/squashfs-root" -name 'libdiscid*' | grep . || {
-            echo "::error::AppImage does not bundle libdiscid"; exit 1; }
+          set -euo pipefail
+          source third_party/libdiscid/libdiscid.env
+          ldd src-tauri/target/release/crateforge | grep -F libdiscid.so.0
+          appimage="$(realpath "$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -n 1)")"
+          work="$(mktemp -d -p "${RUNNER_TEMP:-/tmp}")"
+          # 展開するだけなので FUSE も APPIMAGE_EXTRACT_AND_RUN も不要 (runtime 差で挙動が変わらないよう外す)。
+          (cd "$work" && env -u APPIMAGE_EXTRACT_AND_RUN "$appimage" --appimage-extract > /dev/null)
+          root="$work/squashfs-root"
+          lib="$root/usr/lib/libdiscid.so.0"
+          test -f "$lib" || {
+            echo "::error::AppImage does not bundle usr/lib/libdiscid.so.0"; exit 1; }
+          grep -aqF "libdiscid $LIBDISCID_VERSION" "$lib" || {
+            echo "::error::bundled libdiscid is not the pinned $LIBDISCID_VERSION"; exit 1; }
+          # LD_LIBRARY_PATH (ビルド用) 無しで、同梱バイナリが同梱版を解決すること。
+          resolved="$(env -u LD_LIBRARY_PATH ldd "$root/usr/bin/crateforge" | awk '$1 == "libdiscid.so.0" { print $3 }')"
+          echo "AppImage: libdiscid.so.0 => $resolved"
+          [ "$(realpath -m "$resolved")" = "$(realpath "$lib")" ] || {
+            echo "::error::AppImage binary does not resolve the bundled libdiscid"; exit 1; }
+          rm -rf "$work"
 
       - name: Show built artifacts
         run: |
