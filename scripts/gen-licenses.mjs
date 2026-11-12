@@ -5,6 +5,8 @@
 // - JS:    `pnpm licenses list --json --prod` で配布物に含まれる prod 依存を列挙し、
 //          node_modules の LICENSE 全文を収集する。
 // - FFmpeg / rbx-cli は実行時 DL の外部コンポーネントなので、手動エントリで GPL を明記する。
+// - libdiscid (C ライブラリ) は macOS / AppImage に同梱するが cargo/npm には現れないので、
+//   third_party/libdiscid の固定版・COPYING・AUTHORS から手動エントリを作る (LGPL-2.1)。
 //
 // 配布前に必ず再生成すること:  nix develop -c node scripts/gen-licenses.mjs
 //
@@ -140,8 +142,57 @@ function npmDeps() {
   return deps;
 }
 
+/// third_party/libdiscid/libdiscid.env (scripts/build-libdiscid.sh と共有) から固定版を読む。
+function libdiscidEntry() {
+  const dir = join(ROOT, "third_party", "libdiscid");
+  const env = readFileSync(join(dir, "libdiscid.env"), "utf8");
+  const pick = (k) => {
+    const m = env.match(new RegExp(`^${k}=(\\S+)$`, "m"));
+    if (!m) throw new Error(`${k} not found in libdiscid.env`);
+    return m[1];
+  };
+  const version = pick("LIBDISCID_VERSION");
+  const sha256 = pick("LIBDISCID_SHA256");
+  const tarball = `libdiscid-${version}.tar.gz`;
+  const notice =
+    `libdiscid ${version} は GNU Lesser General Public License 2.1 or later (LGPL-2.1-or-later)\n` +
+    "の下で配布されているライブラリです。Copyright (C) 1999-2019 Marc E E van Woerkom,\n" +
+    "Robert Kaye, Matthias Friedrich, Lukas Lalinsky, Johannes Dewender, Philipp Wolfer ほか\n" +
+    "(各ソースファイルのヘッダおよび下記 AUTHORS 参照)。\n" +
+    "\n" +
+    "■ 同梱と利用形態\n" +
+    "macOS 版 (Crateforge.app/Contents/Frameworks/libdiscid.0.dylib) と Linux AppImage 版には、\n" +
+    `上流のソース ${tarball} (SHA-256: ${sha256})\n` +
+    "を無改変でビルドした共有ライブラリを同梱し、CD の TOC 読み取り / MusicBrainz disc id\n" +
+    "計算のために動的リンクしています。.deb / .rpm 版はシステムの libdiscid パッケージを\n" +
+    "使用し、Windows 版は libdiscid を使用しません。\n" +
+    "\n" +
+    "■ ライブラリの差し替え\n" +
+    "同梱の共有ライブラリは、互換な libdiscid (soname 0) に置き換えて使用できます。\n" +
+    "macOS では置き換え後に `codesign --force --sign - <置き換えたファイル>` で再署名してください。\n" +
+    "\n" +
+    "■ ソースコードの入手\n" +
+    `対応するソースコード (${tarball}) は、本アプリの各バージョンの GitHub Release\n` +
+    "(https://github.com/tainakanchu/crateforge/releases) にバイナリと並べて添付しています。\n" +
+    "上流: https://github.com/metabrainz/libdiscid\n" +
+    "Rust バインディング (discid / discid-sys crate, LGPL-3.0-or-later) は本アプリに静的に\n" +
+    "組み込まれており、本アプリ全体のソースは上記リポジトリで公開しています。";
+  const authors = readFileSync(join(dir, "AUTHORS"), "utf8").trim();
+  const copying = readFileSync(join(dir, "COPYING"), "utf8").trim();
+  return {
+    name: "libdiscid",
+    version,
+    kind: "runtime",
+    license: "LGPL-2.1-or-later",
+    repository: "https://github.com/metabrainz/libdiscid",
+    text:
+      `${notice}\n\n===== AUTHORS =====\n${authors}\n\n===== COPYING =====\n${copying}`,
+  };
+}
+
 // 実行時に外部取得する GPL コンポーネント（cargo/npm のグラフには現れない）。
 const RUNTIME_EXTRAS = [
+  libdiscidEntry(),
   {
     name: "FFmpeg (BtbN win64 GPL build)",
     version: "runtime",

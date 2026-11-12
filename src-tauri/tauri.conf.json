@@ -109,10 +109,12 @@
     ],
     "linux": {
       "deb": {
-        "desktopTemplate": "linux/crateforge.desktop"
+        "desktopTemplate": "linux/crateforge.desktop",
+        "depends": ["libdiscid0"]
       },
       "rpm": {
-        "desktopTemplate": "linux/crateforge.desktop"
+        "desktopTemplate": "linux/crateforge.desktop",
+        "depends": ["libdiscid"]
       }
     }
   }

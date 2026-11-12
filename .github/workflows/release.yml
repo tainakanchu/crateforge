@@ -122,7 +122,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Tauri 2 (webkit2gtk-4.1) + rodio(ALSA) + discid(libdiscid) のビルド/リンク依存。
+      # Tauri 2 (webkit2gtk-4.1) + rodio(ALSA) のビルド/リンク依存。
+      # libdiscid は apt ではなく固定版をソースからビルドする (下の Build libdiscid 参照)。
       - name: Install Linux build deps
         run: |
           sudo apt-get update
@@ -133,11 +134,21 @@ jobs:
             librsvg2-dev \
             patchelf \
             libasound2-dev \
-            libdiscid-dev \
+            cmake \
             libxdo-dev \
             libssl-dev \
             pkg-config \
             libdbus-1-dev
+
+      # AppImage は libdiscid.so.0 を同梱する (LGPL-2.1)。Release に添付するソースと
+      # 一致させるため、版と SHA-256 を固定したソースからビルドしてそれにリンクする。
+      # LD_LIBRARY_PATH は AppImage 化 (linuxdeploy) が依存 .so を解決するために必要。
+      - name: Build libdiscid (pinned source)
+        run: |
+          prefix="$RUNNER_TEMP/libdiscid"
+          bash scripts/build-libdiscid.sh build "$prefix"
+          echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$prefix/lib" >> "$GITHUB_ENV"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -168,6 +179,18 @@ jobs:
           # GitHub ランナーは FUSE 無しのことがあるため、appimagetool を展開実行させる。
           APPIMAGE_EXTRACT_AND_RUN: "1"
 
+      # アプリ内ライセンス表記 (AppImage に libdiscid 同梱) と実態の一致を検証する。
+      - name: Verify bundled libdiscid (AppImage)
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          ldd src-tauri/target/release/crateforge | grep libdiscid
+          appimage="$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -n 1)"
+          work="$(mktemp -d)"
+          (cd "$work" && "$OLDPWD/$appimage" --appimage-extract '*libdiscid*' > /dev/null)
+          find "$work/squashfs-root" -name 'libdiscid*' | grep . || {
+            echo "::error::AppImage does not bundle libdiscid"; exit 1; }
+
       - name: Show built artifacts
         run: |
           echo "=== AppImage ==="; ls -la src-tauri/target/release/bundle/appimage/ || true
@@ -186,8 +209,8 @@ jobs:
   # === macOS: Apple Silicon (arm64) をネイティブビルド（未署名・手動 DL 用）===
   # Intel (macos-13) は GitHub ホストランナーの枯渇でキュー待ちのまま 24h ハングして
   # cancelled になる事象が頻発するため配布対象から外した（Intel Mac 自体も EOL 進行中）。
-  # ユニバーサルにしないのは、libdiscid が brew で片アーキしか入らずクロスリンクが
-  # 失敗するため。ネイティブビルドなら一致する libdiscid をリンクできる。
+  # ユニバーサルにしないのは、同梱する libdiscid (scripts/build-libdiscid.sh でソースから
+  # ビルド) が片アーキのみのため。ネイティブビルドなら一致する libdiscid をリンクできる。
   # macos-14 ランナーは 2026-11-02 に廃止されたため、このジョブは macos-15 (arm64) を使う。
   build-macos:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
@@ -203,11 +226,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install libdiscid (CD disc id)
-        run: brew install libdiscid
-
-      - name: Configure pkg-config for libdiscid
-        run: echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
+      # brew の libdiscid は install name が /opt/homebrew/... の絶対パスで、そのまま
+      # リンクすると brew で libdiscid を入れていない Mac で起動直後に dyld が落ちる
+      # (v0.17.0 で発生)。固定版をソースから @rpath 付きでビルドし、.app に同梱する。
+      - name: Build libdiscid (pinned source)
+        run: |
+          prefix="$RUNNER_TEMP/libdiscid"
+          bash scripts/build-libdiscid.sh build "$prefix"
+          echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LIBDISCID_DYLIB=$prefix/lib/libdiscid.0.dylib" >> "$GITHUB_ENV"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -231,17 +258,6 @@ jobs:
 
       - name: Frontend typecheck
         run: pnpm typecheck
-
-      # brew の libdiscid は install name が /opt/homebrew/... の絶対パスで、そのまま
-      # リンクすると brew で libdiscid を入れていない Mac で起動直後に dyld が落ちる
-      # (v0.17.0 で発生)。@rpath 化したコピーにリンクし、.app に同梱する。
-      - name: Stage libdiscid for bundling
-        run: |
-          dir="$RUNNER_TEMP/libdiscid"
-          bash scripts/macos-stage-libdiscid.sh "$dir"
-          # discid-sys (system-deps) のリンク検索パスをステージング先に差し替える。
-          echo "SYSTEM_DEPS_LIBDISCID_SEARCH_NATIVE=$dir" >> "$GITHUB_ENV"
-          echo "LIBDISCID_DYLIB=$dir/libdiscid.0.dylib" >> "$GITHUB_ENV"
 
       # 未署名ビルド（Gatekeeper 警告は出るが配布可能）。
       # frameworks に dylib を渡すと tauri-build が rpath @executable_path/../Frameworks を
@@ -298,6 +314,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-assets
+
+      # macOS .app / Linux AppImage に同梱している libdiscid (LGPL-2.1-or-later) の
+      # 「対応するソース」を、バイナリと同じ場所 (この Release) から入手できるようにする
+      # (LGPL-2.1 §6)。ビルドに使ったものと同じ版・SHA-256 を検証して添付する。
+      - name: Attach libdiscid source (LGPL compliance)
+        run: bash scripts/build-libdiscid.sh fetch release-assets/libdiscid-source
 
       - name: Extract changelog section for this tag
         shell: bash
