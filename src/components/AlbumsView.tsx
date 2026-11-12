@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
@@ -6,7 +6,7 @@ import * as audition from "../lib/audition";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
-import { Icon } from "./Icon";
+import { Icon, Stars } from "./Icon";
 import { ratingToStars, starsText, starsToRating } from "../lib/rating";
 import { ArtworkImg } from "./Cover";
 import { TrackContextMenu } from "./TrackContextMenu";
@@ -302,7 +302,14 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   } = useStore();
   // グローバルトースト通知
   const pushToast = useStore((s) => s.pushToast);
-  const parentRef = useRef<HTMLDivElement>(null);
+  const parentRef = useRef<HTMLDivElement | null>(null);
+  // グリッドのスクロール要素。初回描画が空状態 (データ到着前) だと要素が無いので、
+  // 付いた時点で幅計測を始められるよう state でも持つ (callback ref)。
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const setParentRef = useCallback((el: HTMLDivElement | null) => {
+    parentRef.current = el;
+    setScrollEl(el);
+  }, []);
   const [width, setWidth] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<CoversCtxMenu | null>(null);
@@ -317,8 +324,10 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const combinedQuery = [searchQuery.trim(), ...filterTags].filter(Boolean).join(" ");
   const isLibraryScope = viewMode === "library" && !combinedQuery;
 
+  // 依存を [] にすると、空状態でマウント → 後からグリッドが出たケースで計測が始まらず、
+  // width=0 → cols=2 (下限) でタイルが倍幅になっていた。要素の付け替えに追従する。
   useLayoutEffect(() => {
-    const el = parentRef.current;
+    const el = scrollEl;
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
       for (const e of entries) setWidth(e.contentRect.width);
@@ -326,7 +335,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     ro.observe(el);
     setWidth(el.clientWidth);
     return () => ro.disconnect();
-  }, []);
+  }, [scrollEl]);
 
   // ライブラリスコープはサーバ ORDER BY 済み。スコープ外は同じ規則でクライアントソートする。
   const albums = useMemo<AlbumVM[]>(
@@ -392,15 +401,28 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     getScrollElement: () => parentRef.current,
     estimateSize: (i) =>
       rows[i].type === "grid" ? cardW + META_H + (showSortLine ? SORT_LINE_H : 0) + GAP : 260,
+    // 行番号ではなくアルバム単位の安定キーにする。index キーだと展開行の挿入/除去で
+    // 後続行の番号がずれ、実測サイズのキャッシュが別の行 (グリッド⇔展開) に付け替わる。
+    getItemKey: (i) => {
+      const r = rows[i];
+      return r.type === "grid" ? `g:${cols}:${r.albums[0]?.key ?? i}` : `x:${r.album.key}`;
+    },
     overscan: 6,
     paddingStart: 18,
     paddingEnd: 18,
   });
 
-  useEffect(() => {
+  // カード幅/列数が変わるとグリッド行の高さが変わるので実測キャッシュを捨てる。
+  // measure() はキャッシュを消すだけで再計測しないため、表示中の行はその場で測り直す
+  // (しないと展開行が estimateSize=260 のまま残り、次の行が重なって描画される)。
+  // 展開の開閉では呼ばない: 安定キーなので不要で、呼ぶと上記の重なりが起きる。
+  useLayoutEffect(() => {
     rowVirtualizer.measure();
+    parentRef.current
+      ?.querySelectorAll<HTMLElement>(":scope > div > [data-index]")
+      .forEach((el) => rowVirtualizer.measureElement(el));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardW, cols, expanded, rows.length]);
+  }, [cardW, cols, showSortLine]);
 
   const handleScroll = useCallback(() => {
     const el = parentRef.current;
@@ -491,18 +513,38 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     [],
   );
 
+  // ライブラリスコープの展開用キャッシュ (trackCache) は onTracksChanged で再取得されないため、
+  // レーティング変更はキャッシュ側にも反映する (しないと展開中の一覧が古い星のまま残る)。
+  const applyRating = useCallback(
+    async (trackIds: number[], stars: number) => {
+      const rating = starsToRating(stars);
+      try {
+        for (const id of trackIds) await libraryApi.setTrackRating(id, rating);
+      } catch (err) {
+        console.error("Failed to set rating:", err);
+        return;
+      }
+      const ids = new Set(trackIds);
+      setTrackCache((prev) => {
+        let next: Map<string, Track[]> | null = null;
+        for (const [key, ts] of prev) {
+          if (!ts.some((t) => ids.has(t.trackId))) continue;
+          next ??= new Map(prev);
+          next.set(key, ts.map((t) => (ids.has(t.trackId) ? { ...t, rating } : t)));
+        }
+        return next ?? prev;
+      });
+      onTracksChanged();
+    },
+    [onTracksChanged],
+  );
+
   const handleSetRating = useCallback(
     async (stars: number) => {
       if (!contextMenu) return;
-      const rating = starsToRating(stars);
-      try {
-        for (const id of contextMenu.trackIds) await libraryApi.setTrackRating(id, rating);
-        onTracksChanged();
-      } catch (err) {
-        console.error("Failed to set rating:", err);
-      }
+      await applyRating(contextMenu.trackIds, stars);
     },
-    [contextMenu, onTracksChanged],
+    [contextMenu, applyRating],
   );
 
   // メニューの操作対象 (trackIds) だけを入れる。contextMenu.tracks はアルバム全曲なので、
@@ -675,7 +717,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const items = rowVirtualizer.getVirtualItems();
 
   return (
-    <div className="cb-grid-wrap" ref={parentRef} onScroll={handleScroll} onClick={closeMenu}>
+    <div className="cb-grid-wrap" ref={setParentRef} onScroll={handleScroll} onClick={closeMenu}>
       <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
         {items.map((vRow) => {
           const row = rows[vRow.index];
@@ -791,6 +833,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                   currentTrackId={playback.currentTrackId}
                   onPlayTrack={(id) => playAlbum(row.album, id)}
                   onAddTrack={addToCrate}
+                  onSetRating={(t, stars) => void applyRating([t.trackId], stars)}
                   onTrackContextMenu={(e, t) =>
                     openTrackMenu(e, knownTracks(row.album) ?? [], row.album.key, t)
                   }
@@ -911,6 +954,7 @@ interface AlbumExpansionProps {
   currentTrackId: number | null;
   onPlayTrack: (trackId: number) => void;
   onAddTrack: (track: Track) => void;
+  onSetRating: (track: Track, stars: number) => void;
   onTrackContextMenu: (e: React.MouseEvent, track: Track) => void;
   onClose: () => void;
 }
@@ -922,6 +966,7 @@ function AlbumExpansion({
   currentTrackId,
   onPlayTrack,
   onAddTrack,
+  onSetRating,
   onTrackContextMenu,
   onClose,
 }: AlbumExpansionProps) {
@@ -994,6 +1039,20 @@ function AlbumExpansion({
                     {b.value}
                   </span>
                 ) : null;
+              })()}
+              {(() => {
+                const stars = ratingToStars(t.rating);
+                return (
+                  // 未評価は行ホバー時だけ出す (全行に空の星が並ぶとうるさいため)。
+                  // ダブルクリックが行の再生に化けないよう止める。
+                  <span
+                    className={"rt" + (stars > 0 ? "" : " empty")}
+                    title="レーティング (左半分クリックで半星 / 同じ値で解除)"
+                    onDoubleClick={(e) => e.stopPropagation()}
+                  >
+                    <Stars value={stars} size={12} onSet={(n) => onSetRating(t, n)} />
+                  </span>
+                );
               })()}
               <span className="tm cb-fmono">{formatTime(t.totalTimeMs)}</span>
               {isIn ? (
