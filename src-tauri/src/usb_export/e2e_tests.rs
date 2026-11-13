@@ -5,9 +5,10 @@
 //! ```
 //!
 //! インメモリ DB + 生成した WAV + 生成した collection.nml から `build_request` でリクエストを
-//! 作り、rbx-cli の dry-run → 書き出し → `usb inspect --cues` → 2 回目の書き出し (再利用) →
-//! 中止 (`cancel` 行 / stdin を閉じる) → 元ファイル不在の競合 → CDJ でのグリッド変更の競合と
-//! `onDeviceChanges: keepDevice` までを、crateforge と同じ NDJSON パーサ・引数で確認する。
+//! 作り、rbx-cli (プロトコル 2) の dry-run → 書き出し → `usb inspect --cues` → 2 回目の書き出し
+//! (再利用) → 中止 (`cancel` 行 / stdin を閉じる) → 元ファイル不在 (USB 上の既存のコピーを残す
+//! `kept`) → CDJ でのグリッド変更 (既定の `overwrite` で Traktor のグリッドに戻る /
+//! `onDeviceChanges: keepDevice` で残す) までを、crateforge と同じ NDJSON パーサ・引数で確認する。
 //!
 //! CDJ での変更は、USB 上の `.DAT` の `PQTZ` (ビートグリッド) の拍の位置をずらして再現する
 //! (プレーヤーがグリッドを編集したときと同じく解析ファイルが書き換わる)。ANLZ の形式は公開の
@@ -409,8 +410,9 @@ fn e2e_dry_run_export_inspect_resync_and_cancel() {
     );
     assert_eq!(out.expect("verify after stdin EOF")["ok"], true);
 
-    // 6. 元ファイルが見つからない (外付けドライブ未接続など): 曲は落とさずに送り、rbx-cli が
-    //    USB を変更せずに conflict で止める (prune がオンでも USB の曲は消えない)。
+    // 6. 元ファイルが見つからない (外付けドライブ未接続など): 曲は落とさずに送り、rbx-cli は
+    //    以前書き出した曲なら USB 上の既存のコピーをそのまま残す (`kept` + 警告、書き出しは成功。
+    //    prune がオンでも USB の曲は消えない)。
     let moved = tmp.path().join("bravo.moved");
     std::fs::rename(&b, &moved).unwrap();
     let built = build_request(
@@ -431,39 +433,47 @@ fn e2e_dry_run_export_inspect_resync_and_cancel() {
     assert_eq!(built.report.missing, 1);
     assert!(opts.prune);
     std::fs::write(&req_path, serde_json::to_vec(&built.request).unwrap()).unwrap();
-    let (_, out) = run(&exe, &args(&base(&[])), Interrupt::None);
-    let err = out.expect_err("a missing, previously exported source must stop the export");
-    assert_eq!(err.code, "conflict", "{err:?}");
-    let mapped = super::errors::from_error_line_for(&err, &built.request.tracks);
-    assert!(!mapped.cue_conflict);
-    assert_eq!(
-        mapped.conflict.reason.as_deref(),
-        Some("source_unavailable")
-    );
-    assert_eq!(
-        mapped
-            .conflict
-            .conflict_tracks
+    let status_of = |r: &ExportResult, title: &str| -> String {
+        r.items
             .iter()
-            .map(|t| t.title.as_str())
-            .collect::<Vec<_>>(),
-        vec!["Bravo"],
-        "{mapped:?}"
+            .find(|i| i.title == title)
+            .unwrap_or_else(|| panic!("{title} not in {:?}", r.items))
+            .status
+            .clone()
+    };
+    // 6a. 計画 (dry-run) でも kept と分かる (計画画面の「既存を残す」)。
+    let (_, out) = run(&exe, &args(&base(&["--dry-run"])), Interrupt::None);
+    let plan: ExportResult =
+        serde_json::from_value(out.expect("dry-run with a missing source")).unwrap();
+    eprintln!(
+        "missing source dry-run: tracks={:?} items={:?}",
+        plan.tracks, plan.items
     );
-    assert!(
-        mapped
-            .message
-            .contains("ソースファイルが見つからない曲「Bravo」が以前 USB に書き出されています"),
-        "{}",
-        mapped.message
+    assert_eq!(status_of(&plan, "Bravo"), "kept", "{:?}", plan.items);
+    assert_eq!(status_of(&plan, "Alpha"), "planned");
+    // 6b. 書き出し: 成功し、Bravo は kept (警告付き)、USB には 2 曲とも残る。
+    let (_, out) = run(&exe, &args(&base(&[])), Interrupt::None);
+    let kept_run: ExportResult =
+        serde_json::from_value(out.expect("a missing, previously exported source no longer fails"))
+            .unwrap();
+    eprintln!(
+        "missing source export: tracks={:?} items={:?}",
+        kept_run.tracks, kept_run.items
     );
+    assert_eq!(status_of(&kept_run, "Bravo"), "kept");
+    assert_eq!(status_of(&kept_run, "Alpha"), "exported");
+    let bravo = kept_run.items.iter().find(|i| i.title == "Bravo").unwrap();
+    assert!(!bravo.warnings.is_empty(), "a kept item carries a warning");
+    assert_eq!(kept_run.tracks.kept_existing, 1, "{:?}", kept_run.tracks);
+    assert_eq!(kept_run.tracks.failed, 0, "{:?}", kept_run.tracks);
+    assert_eq!(kept_run.verified, Some(true));
     let (_, out) = run(
         &exe,
         &["usb", "inspect", &stick.to_string_lossy()],
         Interrupt::None,
     );
     assert_eq!(
-        out.expect("inspect after conflict")["tracks"]
+        out.expect("inspect after kept")["tracks"]
             .as_array()
             .unwrap()
             .len(),
@@ -484,39 +494,42 @@ fn e2e_dry_run_export_inspect_resync_and_cancel() {
     )
     .unwrap();
     std::fs::write(&req_path, serde_json::to_vec(&built.request).unwrap()).unwrap();
-    let alpha_dat = dat_path(&stick, &again, "Alpha");
+    // 既定 (「CDJ で変更したキュー/グリッドを優先する」がオフ) は overwrite を明示して送る。
+    assert_eq!(
+        serde_json::to_value(&built.request).unwrap()["options"]["onDeviceChanges"],
+        "overwrite"
+    );
+    let (_, out) = run(&exe, &args(&base(&[])), Interrupt::None);
+    let resynced: ExportResult =
+        serde_json::from_value(out.expect("re-sync with Bravo back")).unwrap();
+    assert_eq!(
+        status_of(&resynced, "Bravo"),
+        "exported",
+        "{:?}",
+        resynced.items
+    );
+    let alpha_dat = dat_path(&stick, &resynced, "Alpha");
     let traktor_first_beat = first_beat_ms(&alpha_dat);
     let player_first_beat = shift_grid_like_a_player(&alpha_dat, 7);
     assert_ne!(traktor_first_beat, player_first_beat);
 
-    // 7a. 既定 (fail): cues_or_grid_changed_on_device で止まり、Alpha が対象として挙がる。
+    // 7a. 既定 (overwrite): 中止せずに書き出し、Traktor のグリッドで上書きする (CDJ の変更は失われる)。
     let (_, out) = run(&exe, &args(&base(&[])), Interrupt::None);
-    let err = out.expect_err("a grid changed on the stick must stop the export");
-    assert_eq!(err.code, "conflict", "{err:?}");
-    let mapped = super::errors::from_error_line_for(&err, &built.request.tracks);
-    assert_eq!(
-        mapped.conflict.reason.as_deref(),
-        Some("cues_or_grid_changed_on_device"),
-        "{err:?}"
-    );
-    assert!(mapped.cue_conflict);
-    assert_eq!(
-        mapped
-            .conflict
-            .conflict_tracks
-            .iter()
-            .map(|t| t.title.as_str())
-            .collect::<Vec<_>>(),
-        vec!["Alpha"],
-        "{mapped:?}"
-    );
+    let over: ExportResult =
+        serde_json::from_value(out.expect("overwrite must not stop the export")).unwrap();
+    assert_eq!(over.tracks.device_changes_kept, 0, "{:?}", over.tracks);
+    assert_eq!(over.verified, Some(true));
+    let alpha_dat = dat_path(&stick, &over, "Alpha");
     assert_eq!(
         first_beat_ms(&alpha_dat),
-        player_first_beat,
-        "USB unchanged"
+        traktor_first_beat,
+        "Traktor's grid replaces the player's"
     );
+    // 7b のために、もう一度 CDJ でグリッドを動かす。
+    let player_first_beat = shift_grid_like_a_player(&alpha_dat, 7);
+    assert_ne!(traktor_first_beat, player_first_beat);
 
-    // 7b. 「CDJ の変更を優先」で再試行: 同じリクエスト (Traktor のキュー + グリッド込み) に
+    // 7b. 「CDJ の変更を優先する」: 同じリクエスト (Traktor のキュー + グリッド込み) に
     //     onDeviceChanges: keepDevice を付ける。
     let keep_opts = UsbExportOptions {
         keep_device_changes: true,

@@ -19,7 +19,7 @@ This feature has **not yet been tested on real CDJ / XDJ hardware by the develop
 2. Choose the **playlists to export**. Selecting a folder exports its playlists **with the hierarchy**. Smart playlists are exported with their contents at the time of the export.
 3. Choose the **destination**: pick a USB stick from the list of mounted volumes, or any folder with "フォルダ…" (Folder…). The last destination is remembered.
 4. Set the **options** (below).
-5. **"計画を確認"** (Review plan) builds a plan without writing anything to the stick: tracks to copy / reuse, where analysis comes from (new / cache / reused from the stick), bytes to copy and free space (checked against the drive holding the destination, whether it is a USB stick or any folder), Traktor matching, tracks whose cues/grids changed on a CDJ and will be kept, missing files and warnings.
+5. **"計画を確認"** (Review plan) builds a plan without writing anything to the stick: tracks to copy / reuse, where analysis comes from (new / cache / reused from the stick), bytes to copy and free space (checked against the drive holding the destination, whether it is a USB stick or any folder), Traktor matching, tracks whose cues/grids changed on a CDJ and will be kept, missing files (tracks whose existing copy on the stick will be kept) and warnings.
 6. **"書き出す"** (Export) starts it. Progress is shown per stage (prepare → analysis & tags → change check → copy to USB → databases → verify → publish).
 7. When it finishes, **"取り出し"** (Eject) safely ejects the stick (listed volumes only; never forced).
 
@@ -34,7 +34,7 @@ If Crateforge is force-quit or crashes during an export, rbx-cli notices and can
 | **Traktor のキュー/グリッドを使う** (Use Traktor cues/grids) | See "Traktor cues and grids" below. Off by default |
 | **アートワークを書き出す** (Export artwork) | Exports the image embedded in each audio file, resized for the players |
 | **USB から消す** (Remove from USB) | Removes tracks an earlier export wrote that this export no longer contains (playlists always match this export) |
-| **CDJ で変更したキュー/グリッドを優先する** (Prefer cues/grids changed on a CDJ) | Tracks whose cues or grid were changed on a CDJ since the last export keep the stick's cues/grid (see "Conflicts with cues/grids changed on a CDJ" below). Off by default (the export stops and tells you) |
+| **CDJ で変更したキュー/グリッドを優先する** (Prefer cues/grids changed on a CDJ) | Tracks whose cues or grid were changed on a CDJ since the last export keep the stick's cues/grid (see "Cues/grids changed on a CDJ" below). Off by default (cues/grids changed on a CDJ are overwritten with Traktor's) |
 | **デバイス名** (Device name) | The name players show. Leave empty to keep the current one |
 | **詳細設定** (Advanced) | Location of Traktor's `collection.nml`, MP3 offset (ms) |
 
@@ -45,7 +45,8 @@ If Crateforge is force-quit or crashes during an export, rbx-cli notices and can
 - **BPM, beat grid and waveforms** are analysed during the export (or taken from Traktor's grid when that option is on). The displayed BPM matches the grid's tempo.
 - **Tracks whose file is missing** (an external drive or NAS not connected, for example) are listed in the plan with a count and examples. They are still handed to rbx-cli and stay in their playlists:
   - a track never exported to this stick before is skipped;
-  - if the stick **already holds** such a track from an earlier export, the export **stops without changing the stick**, so its copy is not deleted. Connect the drive (or fix the track's location) and export again. Even with "USB から消す" (Remove from USB) on, a track whose file is merely missing is never deleted from the stick.
+  - if the stick **already holds** such a track from an earlier export, **its existing copy on the stick (audio, analysis, cues and playlist entries) is kept as it is** and the rest of the export carries on. The plan and the result list these tracks as "USB 上の既存のファイルを残す（残した）曲" (existing files on the stick kept). Connect the drive (or fix the track's location) and export again to update them. Even with "USB から消す" (Remove from USB) on, a track whose file is merely missing is never deleted from the stick.
+- **Tracks whose audio cannot be read, converted or copied** are left out, and the rest of the export carries on. The result lists them as "書き出せなかった曲" (tracks that could not be exported) with the reason; check the source files and export again.
 
 ## Traktor cues and grids
 
@@ -68,18 +69,15 @@ Traktor and rekordbox / CDJ treat the start of MP3 decoding differently, so **MP
 **"MP3 オフセット (ms)"** (MP3 offset) under Advanced shifts the cues/grids imported from Traktor for MP3 files (positive = later, negative = earlier). The default is **0 ms**.
 Because the shift can depend on the file and encoder, **calibrate the value on real hardware**; Crateforge does not ship a guessed value.
 
-### Conflicts with cues/grids changed on a CDJ
+### Cues/grids changed on a CDJ
 
-When you save cues to the stick or change a beat grid on a CDJ, the analysis files on the stick change. Sending Traktor's cues/grids afterwards would lose those changes, so by default the export is **stopped without changing the stick**, with an explanation and **the tracks concerned**. Then:
+When you save cues to the stick or change a beat grid on a CDJ, the analysis files on the stick change. What the next export does with them depends on the option **"CDJ で変更したキュー/グリッドを優先する"** (Prefer cues/grids changed on a CDJ):
 
-- **"CDJ の変更を優先して再試行"** (Retry, preferring the CDJ changes) exports the same thing again (same playlists, destination and options; Traktor's cues and grids are still sent), but **the tracks changed on the CDJ keep the stick's cues and grid**. The other tracks get Traktor's cues/grids. The result shows "CDJ で変更されたキュー/グリッドを保持した曲: N" (tracks whose CDJ cues/grid were kept) and lists them.
-- To export like this every time, turn on the option **"CDJ で変更したキュー/グリッドを優先する"** (the plan also shows how many tracks will be kept).
-- If you do not need the CDJ changes, export to another (empty) stick.
+- **Off (default)**: tracks that get Traktor's cues/grids are **overwritten with Traktor's cues/grids**, including tracks changed on the CDJ (the export does not stop). The changes made on the CDJ are lost from the stick.
+- **On**: **only the tracks changed on the CDJ keep the stick's cues and grid**; the other tracks get Traktor's cues/grids. The plan shows how many tracks will be kept, and the result shows "CDJ で変更されたキュー/グリッドを保持した曲: N" (tracks whose CDJ cues/grid were kept) and lists them.
 
 :::caution[CDJ changes are kept for that one export only]
 Preferring the CDJ changes keeps them **for that export only**. On the next export, unless the tracks are changed on the CDJ again, **Traktor's cues/grids are written again**. To keep the CDJ changes for good, make the same edits in Traktor (or import them from the stick with rekordbox or similar).
-
-**Cue changes that newer players recorded only in OneLibrary (`exportLibrary.db`)** cannot be kept this way: the export still stops even when preferring the CDJ changes. Import them from the stick with rekordbox, or export to another stick.
 :::
 
 With "Traktor のキュー/グリッドを使う" off, cues saved on a CDJ are always kept.
@@ -91,7 +89,7 @@ So that nothing on the stick is lost, an export also **stops without changing th
 - track information, playlists or My Tags on the stick were changed or deleted in rekordbox or on a CDJ since the last export;
 - the stick holds tracks or playlists exported by something other than Crateforge (rekordbox, for example), or belongs to another library;
 - a track that "USB から消す" (Remove from USB) would delete is still in the stick's play history (turn "USB から消す" off and export again);
-- the file of a track exported earlier is missing (see "What is written" above);
+- a track whose cues were added or changed on a CDJ would be removed from the stick by this export (also select a playlist that contains it, or delete the track from the stick in rekordbox);
 - another app changed the stick during the export (export again).
 
 ## Speed and caching
@@ -107,7 +105,7 @@ The export itself is done by the external tool **[rbx-cli](https://github.com/ta
 
 - Crateforge only **starts rbx-cli as a separate process and talks to it in JSON**. It is not built into Crateforge and not bundled with it.
 - If rbx-cli is not installed yet, **download** it from the export dialog (or **Settings → USB 書き出し (rbx-cli)**). It is fetched from the upstream GitHub release, its SHA-256 checksum is verified, and it is saved in the app's data folder.
-- **rbx-cli 0.1.1 or newer** is required (if you downloaded 0.1.0 before, download it again when the dialog asks).
+- **rbx-cli 0.2.0 or newer** is required (if you downloaded 0.1.x before, download it again when the dialog asks).
 - rbx-cli is looked up as "path set in Settings → downloaded copy", and only a version speaking a supported protocol with the required features is used (for safety, an `rbx-cli` on PATH is never picked up on its own). To use your own build, set it via **"パスを指定…"** (Set path…) in Settings.
 - Release binaries exist for Windows (x86-64), macOS (Apple silicon / Intel) and Linux (x86-64, glibc 2.39 or newer).
 

@@ -1,6 +1,6 @@
 //! 選択プレイリスト → rbx-cli `usb export` リクエスト (純粋関数、DB は読み取りのみ)。
 //!
-//! マッピングの決定事項 (rbx-cli protocol 1):
+//! マッピングの決定事項 (rbx-cli protocol 2):
 //! - **曲の同一性**: `id` は曲の `persistent_id` (16 桁 hex) から導く 53 bit 値、`ref` は
 //!   `persistent_id` そのもの。ファイルを移動しても USB 上の同じ曲として扱われる。
 //!   プレイリスト / フォルダの `id` も `persistent_id` から同様に導く (改名しても同一)。
@@ -15,16 +15,18 @@
 //! - **cues / beatGrid**: Traktor を使わない / 曲が NML に無い → **両方省略** (USB 上の既存
 //!   キューを保持し、グリッドは rbx-cli が解析)。Traktor を使い一致した → 送る (キューが無ければ
 //!   空配列 = USB のキューを消す)。
-//! - **CDJ での変更**: 「CDJ で変更したキュー/グリッドを優先する」(`keep_device_changes`) なら
-//!   `options.onDeviceChanges: "keepDevice"` を付ける (キュー / グリッドは同じように送る)。
-//!   前回の同期の後に USB 上の解析ファイル (キュー / グリッド) が変わった曲だけ、rbx-cli が
-//!   USB 上のキュー / グリッドを残してリクエストの cues / beatGrid を無視する。その 1 回の
-//!   同期だけで、次の同期では (CDJ で再び変えない限り) Traktor の内容が書かれる。
-//!   OneLibrary (exportLibrary.db) だけのキュー変更など、ほかの競合は残せない。
+//! - **CDJ での変更**: `options.onDeviceChanges` は常に明示する。既定 (チェック オフ) は
+//!   `"overwrite"`: 前回の同期の後に CDJ などで USB 上のキュー / グリッドが変わった曲も、送った
+//!   cues / beatGrid (Traktor の内容) で上書きする (中止も警告もしない。rbx-cli 0.2.0 の既定と同じ)。
+//!   cues を送らない曲は USB 上のキューが残る。「CDJ で変更したキュー/グリッドを優先する」
+//!   (`keep_device_changes`) なら `"keepDevice"` (キュー / グリッドは同じように送る): USB 上の
+//!   解析ファイルが変わった曲だけ、rbx-cli が USB 上のキュー / グリッドを残してリクエストの
+//!   cues / beatGrid を無視する。その 1 回の同期だけで、次の同期では (CDJ で再び変えない限り)
+//!   Traktor の内容が書かれる。
 //! - **見つからないファイル** も (パスがあれば) そのまま送り、件数と例をレポートする。
-//!   以前書き出した曲の元ファイルが無いときに USB を守るのは rbx-cli / rbl-export の役目
-//!   (`conflict` / `source_unavailable` で USB を変更せずに止まる)。ここで落とすと
-//!   「今回の内容に無い曲」扱いになり、プレイリストから消え、prune で USB からも消える。
+//!   以前この USB に書き出した曲なら、rbx-cli が USB 上の既存のコピーをそのまま残す
+//!   (`items[].status: "kept"` + 警告。書き出しは続く)。ここで落とすと「今回の内容に無い曲」
+//!   扱いになり、プレイリストから消え、prune で USB からも消える。
 //! - メタデータは常に crateforge の DB の値 (NML の値は使わない)。
 
 use std::collections::{HashMap, HashSet};
@@ -68,6 +70,7 @@ pub struct UsbExportOptions {
     /// プレーヤーに表示するデバイス名 (空なら変更しない)。
     pub device_name: Option<String>,
     /// CDJ で変更したキュー / グリッドを優先する (`onDeviceChanges: "keepDevice"`)。
+    /// false なら `"overwrite"` (Traktor のキュー / グリッドで上書き)。
     pub keep_device_changes: bool,
 }
 
@@ -480,9 +483,9 @@ pub fn build_request(
         let path = t.location_path.as_deref().map(str::trim).unwrap_or("");
         // パスの無い曲は rbx-cli に渡せない (`path` は必須) ので送らない。
         // ファイルが見つからない曲は **そのまま送る**: rbx-cli は、以前書き出していない曲は
-        // スキップし、以前この USB に書き出した曲なら USB を変更せずに `conflict`
-        // (`source_unavailable`) で止める。ここで落とすと、外付けドライブ未接続などで
-        // プレイリストから曲が消え、「USB から消す」がオンだと USB からも削除されてしまう。
+        // スキップし、以前この USB に書き出した曲なら USB 上の既存のコピーを残す (`kept`)。
+        // ここで落とすと、外付けドライブ未接続などでプレイリストから曲が消え、
+        // 「USB から消す」がオンだと USB からも削除されてしまう。
         let size = if path.is_empty() {
             None
         } else {
@@ -635,9 +638,11 @@ pub fn build_request(
             embedded_artwork: opts.artwork,
             prune: opts.prune,
             device_name,
-            on_device_changes: opts
-                .keep_device_changes
-                .then_some(OnDeviceChanges::KeepDevice),
+            on_device_changes: if opts.keep_device_changes {
+                OnDeviceChanges::KeepDevice
+            } else {
+                OnDeviceChanges::Overwrite
+            },
         },
         tracks: inputs,
         playlists: nodes.into_iter().map(|n| to_input(n, &refs)).collect(),
@@ -848,7 +853,7 @@ mod tests {
         )
         .unwrap();
         let req = &built.request;
-        assert_eq!(req.protocol, 1);
+        assert_eq!(req.protocol, 2);
         assert_eq!(req.options.analyze, "missing");
         assert!(req.options.prune && req.options.embedded_artwork);
         assert_eq!(req.options.device_name.as_deref(), Some("STICK"));
@@ -1027,7 +1032,11 @@ mod tests {
         assert!(rep.unmatched_examples.iter().any(|x| x.contains("Delta")));
         assert_eq!(rep.with_cues, 1);
         assert_eq!(rep.with_grid, 1);
-        assert_eq!(built.request.options.on_device_changes, None);
+        // 既定 (チェック オフ) は overwrite を明示する (rbx-cli の既定に頼らない)。
+        assert_eq!(
+            built.request.options.on_device_changes,
+            OnDeviceChanges::Overwrite
+        );
         assert!(built
             .report
             .warnings
@@ -1052,17 +1061,17 @@ mod tests {
         .unwrap();
         assert_eq!(
             kept.request.options.on_device_changes,
-            Some(OnDeviceChanges::KeepDevice)
+            OnDeviceChanges::KeepDevice
         );
         assert_eq!(kept.request.tracks, built.request.tracks);
         assert_eq!(
             serde_json::to_value(&kept.request.options).unwrap()["onDeviceChanges"],
             "keepDevice"
         );
-        assert!(serde_json::to_value(&built.request.options)
-            .unwrap()
-            .get("onDeviceChanges")
-            .is_none());
+        assert_eq!(
+            serde_json::to_value(&built.request.options).unwrap()["onDeviceChanges"],
+            "overwrite"
+        );
     }
 
     #[test]

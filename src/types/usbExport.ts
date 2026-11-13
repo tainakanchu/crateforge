@@ -22,6 +22,7 @@ export interface UsbExportOptions {
   /**
    * CDJ で変更したキュー / グリッドを優先する (rbx-cli `onDeviceChanges: "keepDevice"`)。
    * 前回の同期の後に USB 上で変わった曲だけ、その同期では USB 上のキュー / グリッドを残す。
+   * false なら `"overwrite"` (Traktor のキュー / グリッドで上書きする)。
    */
   keepDeviceChanges: boolean;
 }
@@ -49,7 +50,10 @@ export interface UsbBuildReport {
   folders: number;
   /** ファイルが見つかった曲。 */
   found: number;
-  /** ファイルが見つからない曲 (パスがあれば rbx-cli に渡し、判断を任せる)。 */
+  /**
+   * ファイルが見つからない曲 (パスがあれば rbx-cli に渡し、判断を任せる: 以前書き出していない
+   * 曲はスキップ、以前書き出した曲は USB 上の既存のコピーを残す)。
+   */
   missing: number;
   missingExamples: string[];
   traktor: TraktorReport | null;
@@ -63,7 +67,12 @@ export interface UsbTrackCounts {
   reused: number;
   skipped: number;
   removed: number;
+  /** リクエストに無いが USB に残した曲 (「USB から消す」オフ)。status が kept の曲数は keptExisting。 */
   kept: number;
+  /** ソースが無い・更新に失敗したので USB 上の既存のコピーを残した曲 (status: kept)。 */
+  keptExisting: number;
+  /** 音声を読めない・変換 / コピーできずに書き出せなかった曲 (status: failed)。 */
+  failed: number;
   /** keepDevice で USB 上のキュー / グリッドを残した曲 (dry-run では残す見込みの曲)。 */
   deviceChangesKept: number;
 }
@@ -84,7 +93,10 @@ export interface UsbTrackResult {
   index: number;
   ref: string | null;
   title: string;
-  /** exported | skipped | planned */
+  /**
+   * exported | skipped (ソースが無く USB にも無い) | kept (USB 上の既存のコピーを残した) |
+   * failed (書き出せなかった) | planned (dry-run)。未知の値もあり得る。
+   */
   status: string;
   /** cache | generated | device | supplied | none | failed | generate */
   analysis: string;
@@ -122,11 +134,6 @@ export interface UsbExportError {
   message: string;
   /** rbx-cli の原文 (調査用)。 */
   detail: string;
-  /**
-   * CDJ 等で USB 上のキュー / グリッドが変わったための競合 (`cues_or_grid_changed_on_device`)。
-   * 「CDJ の変更を優先」(keepDevice) での再試行で解決できる。
-   */
-  cueConflict: boolean;
   /** conflict の理由 (rbx-cli の details.reason)。conflict 以外は null。 */
   reason: string | null;
   /** 競合に関係する曲 (crateforge の曲名に対応付け済み)。 */
