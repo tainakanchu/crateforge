@@ -88,6 +88,20 @@ and `locationPath` in the response points to the new path (a failed move does no
 
 This is distinct from `POST /api/analysis`, the sync endpoint that imports analysis results computed on another device. Progress still shows up in the desktop GUI as usual.
 
+### Convert and replace
+
+Convert tracks to another format and repoint **the same track** (ID, rating, play count, playlists and edited tags stay) to the new file. Because it moves and deletes files it is **loopback only** (`403` from the LAN, whatever the token or role).
+
+- `POST /api/convert-replace` (`{trackIds, format?, bitrateKbps?, original?}`) — start a background job; responds `202` with `{jobId, total}`. `format` is `mp3` (default) / `aac` / `opus` / `flac` / `alac` / `wav`; `bitrateKbps` applies to lossy formats only (MP3 defaults to 320). `original` decides what happens to the original file: `trash` (default, the OS trash) or `replaced` (kept in `_replaced/<date>/`). Up to 5000 IDs per request. Jobs run one at a time.
+- `GET /api/convert-replace/{jobId}` — `state` (`queued` / `running` / `done` / `failed`), `done` / `total`, `counts` (`ok` / `skipped` / `failed`) and per-track `results`.
+
+Each entry of `results` has `trackId`, `status` (`ok` / `skipped` / `failed`), `reason` (`already_target_format` / `no_file` / `encode_failed` / `decode_failed` / `duration_mismatch` …), `warnings` (`lossy_to_lossy` = lossy to lossy, `trash_failed` = could not move to the trash, kept in `_replaced` instead), `sourceCodec` / `sourceLossless` (detected from the file), `newLocationPath` and `original` (`{kind: "trashed" | "moved" | "keptShared" | ...}`).
+
+- Tracks already in the target codec at the same or a lower bitrate (e.g. MP3 320 → MP3 320) are left alone and reported as `skipped`. Lossy to lossy is allowed, with a warning.
+- Before repointing, the new file is decoded to the end and its length is checked against the original. A failed track keeps its original file and track info untouched.
+- An original file that another track also references is never moved.
+- To pick candidates, use the track's `codec` (`ALAC` / `AAC` / `FLAC` / `MP3` …), `bitrateKbps` and `bitDepth` (the job detects the codec from the file itself too, so passing candidates as-is is fine).
+
 ### Playlists
 
 - `POST /api/playlists` — create a new one

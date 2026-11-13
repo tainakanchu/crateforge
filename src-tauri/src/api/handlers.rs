@@ -3258,3 +3258,101 @@ mod tests {
         assert_eq!(matched, vec!["Night Drive"]);
     }
 }
+
+// ────────────────────── 変換して置き換え ──────────────────────────
+
+/// 1 回のジョブで受け付ける最大曲数。
+pub(crate) const CONVERT_REPLACE_MAX_IDS: usize = 5000;
+
+fn default_convert_format() -> crate::models::ConvertFormat {
+    crate::models::ConvertFormat::Mp3
+}
+
+/// `POST /api/convert-replace` のボディ。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertReplaceBody {
+    pub track_ids: Vec<i64>,
+    /// 変換先 (`mp3` / `aac` / `opus` / `flac` / `alac` / `wav`)。既定は `mp3`。
+    #[serde(default = "default_convert_format")]
+    pub format: crate::models::ConvertFormat,
+    /// 非可逆フォーマットのビットレート (kbps)。省略時は既定値 (MP3 は 320)。
+    #[serde(default)]
+    pub bitrate_kbps: Option<u32>,
+    /// 元ファイルの扱い: `trash` (既定、OS のゴミ箱) / `replaced` (`_replaced/<日付>/`)。
+    #[serde(default)]
+    pub original: crate::converter::in_place::OriginalAction,
+}
+
+/// `POST /api/convert-replace` — 曲を変換し、同じ曲のまま新しいファイルへ置き換えるジョブを
+/// 開始する。ファイルを移動・削除するのでループバック専用 (auth_guard で LAN は常に 403)。
+/// 202 `{ jobId, total }`。進捗と結果は `GET /api/convert-replace/{jobId}`。
+pub async fn start_convert_replace(
+    State(state): State<ApiState>,
+    ExtractJson(body): ExtractJson<ConvertReplaceBody>,
+) -> Result<Response, ApiError> {
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<i64> = body
+        .track_ids
+        .into_iter()
+        .filter(|id| seen.insert(*id))
+        .collect();
+    if ids.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "trackIds is empty"));
+    }
+    if ids.len() > CONVERT_REPLACE_MAX_IDS {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("too many trackIds (max {CONVERT_REPLACE_MAX_IDS} per request)"),
+        ));
+    }
+    if body.bitrate_kbps.is_some_and(|b| !(32..=512).contains(&b)) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bitrateKbps must be between 32 and 512",
+        ));
+    }
+    let ffmpeg = match &state.app {
+        Some(app) => crate::ffmpeg::ensure(app)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?,
+        None => crate::ffmpeg::resolve_on_path().ok_or_else(|| {
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "ffmpeg is not available")
+        })?,
+    };
+    let total = ids.len();
+    let opts = crate::converter::in_place::InPlaceOptions {
+        format: body.format,
+        bitrate_kbps: body.bitrate_kbps,
+        original: body.original,
+    };
+    let db_state = state.clone();
+    let notify_state = state.clone();
+    let job_id = crate::converter::jobs::spawn(
+        ids,
+        opts,
+        ffmpeg,
+        move || db_state.db().map_err(|e| e.1),
+        move |ev| {
+            if let crate::converter::jobs::JobEvent::Done { job } = &ev {
+                if job.counts.ok > 0 {
+                    notify_state.notify_library_changed(None);
+                }
+            }
+        },
+    );
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({ "jobId": job_id, "total": total })),
+    )
+        .into_response())
+}
+
+/// `GET /api/convert-replace/{jobId}` — ジョブの状態・進捗・曲ごとの結果。
+pub async fn get_convert_replace_job(
+    Path(job_id): Path<String>,
+) -> Result<Json<crate::converter::jobs::JobSnapshot>, ApiError> {
+    crate::converter::jobs::get(&job_id)
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found("job not found"))
+}

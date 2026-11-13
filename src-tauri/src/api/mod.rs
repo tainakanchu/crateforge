@@ -154,6 +154,11 @@ pub(crate) fn is_public_path(path: &str) -> bool {
     )
 }
 
+/// LAN からは一切受け付けない (ループバック専用の) パスか。
+fn is_loopback_only_path(path: &str) -> bool {
+    path == "/api/convert-replace" || path.starts_with("/api/convert-replace/")
+}
+
 /// `/api/cast/media/{ticket}` 形式 (区切りを含まない 1 セグメント) か判定する。
 fn is_cast_media_path(path: &str) -> bool {
     path.strip_prefix("/api/cast/media/")
@@ -354,6 +359,11 @@ async fn auth_guard(
     // LAN リクエスト: public パスはトークン不要で通す。
     let uri = req.uri().clone();
     let path = uri.path().to_string();
+    // 変換して置き換えはライブラリのファイルを移動・削除するので、LAN からは
+    // どのトークン・ロールでも (状態の取得も含めて) 受け付けない。
+    if is_loopback_only_path(&path) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     if is_public_path(&path) {
         return next.run(req).await;
     }
@@ -677,6 +687,16 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/remote/volume", post(handlers::remote_volume))
         .route("/api/remote/shuffle", post(handlers::remote_shuffle))
         .route("/api/remote/repeat", post(handlers::remote_repeat))
+        // 変換して置き換え (バックグラウンドジョブ)。ファイルを移動・削除するので
+        // auth_guard でループバック専用にしている (LAN はロール・トークンに関係なく 403)。
+        .route(
+            "/api/convert-replace",
+            post(handlers::start_convert_replace),
+        )
+        .route(
+            "/api/convert-replace/{jobId}",
+            get(handlers::get_convert_replace_job),
+        )
         // Cast Receiver 向け音源配信 (Media Ticket で認可。GET は HEAD も受ける)
         .route("/api/cast/media/{ticket}", get(handlers::cast_media))
         // 認証ミドルウェアを全ルートに適用 (with_state の前に route_layer)。
@@ -4003,5 +4023,176 @@ mod tests {
         assert!(!accepts_gzip("br, deflate"));
         assert!(!accepts_gzip(""));
         assert!(!accepts_gzip("identity"));
+    }
+
+    // ===== 変換して置き換え =====
+
+    fn ffmpeg_on_path() -> bool {
+        std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// ジョブが終わるまで GET でポーリングして最終状態を返す。
+    async fn wait_convert_job(app: &Router, job_id: &str) -> Value {
+        for _ in 0..600 {
+            let (status, body) = req(
+                app.clone(),
+                "GET",
+                &format!("/api/convert-replace/{job_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            if matches!(body["state"].as_str(), Some("done" | "failed")) {
+                return body;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("convert-replace job did not finish");
+    }
+
+    #[tokio::test]
+    async fn case_convert_replace_is_loopback_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        let tokens = crate::devices::ValidTokens::default();
+        tokens.insert("remote-token".into());
+        tokens.insert_with_role("sync-token".into(), crate::devices::DeviceRole::Sync);
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens,
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
+        });
+        let body = json!({ "trackIds": [1], "format": "mp3", "bitrateKbps": 320, "original": "trash" });
+        for token in [None, Some("remote-token"), Some("sync-token"), Some("bogus")] {
+            let (status, _) = lan_req(
+                app.clone(),
+                token,
+                "POST",
+                "/api/convert-replace",
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "POST from LAN with {token:?}");
+            let (status, _) =
+                lan_req(app.clone(), token, "GET", "/api/convert-replace/abc", None).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "GET from LAN with {token:?}");
+        }
+        assert!(!is_loopback_only_path("/api/convert"));
+        assert!(is_loopback_only_path("/api/convert-replace/x"));
+    }
+
+    #[tokio::test]
+    async fn case_convert_replace_validates_input() {
+        let (_dir, app) = setup();
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/convert-replace",
+            Some(json!({ "trackIds": [] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/convert-replace",
+            Some(json!({ "trackIds": [1], "original": "delete" })),
+        )
+        .await;
+        assert!(status.is_client_error(), "unknown original is rejected: {status}");
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/convert-replace",
+            Some(json!({ "trackIds": [1], "bitrateKbps": 9999 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = req(app, "GET", "/api/convert-replace/nope", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn case_convert_replace_job_end_to_end() {
+        if !ffmpeg_on_path() {
+            eprintln!("skip: ffmpeg not found");
+            return;
+        }
+        let (dir, app) = setup();
+        // track 6: 実ファイル (FLAC) のある曲。track 1 はファイルの場所が無い。
+        let flac = dir.path().join("Music/Artist/Album/01 Song.flac");
+        std::fs::create_dir_all(flac.parent().unwrap()).unwrap();
+        let st = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i"])
+            .args(["sine=frequency=440:duration=2:sample_rate=44100", "-c:a", "flac"])
+            .arg(&flac)
+            .status()
+            .unwrap();
+        assert!(st.success());
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        let p = flac.to_string_lossy().to_string();
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, persistent_id, name, rating, total_time_ms,
+                                     location_path, file_exists, codec)
+                 VALUES (6, 'FFFF000000000006', 'Song', 80, 2000, ?1, 1, 'FLAC')",
+                [&p],
+            )
+            .unwrap();
+        drop(db);
+
+        let (status, body) = req(
+            app.clone(),
+            "POST",
+            "/api/convert-replace",
+            Some(json!({ "trackIds": [6, 1, 6], "original": "replaced" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["total"], 2, "duplicate ids are collapsed");
+        let job = wait_convert_job(&app, body["jobId"].as_str().unwrap()).await;
+        assert_eq!(job["state"], "done");
+        assert_eq!(job["counts"], json!({ "ok": 1, "skipped": 0, "failed": 1 }));
+        assert_eq!(job["options"]["format"], "mp3");
+        let ok = &job["results"][0];
+        assert_eq!(ok["trackId"], 6);
+        assert_eq!(ok["status"], "ok");
+        assert_eq!(ok["sourceCodec"], "FLAC");
+        assert_eq!(ok["sourceLossless"], true);
+        assert_eq!(ok["warnings"], json!([]));
+        assert_eq!(ok["original"]["kind"], "moved");
+        let new_path = ok["newLocationPath"].as_str().unwrap().to_string();
+        assert!(new_path.ends_with("01 Song.mp3"));
+        assert!(!flac.exists());
+        let failed = &job["results"][1];
+        assert_eq!(failed["status"], "failed");
+        assert_eq!(failed["reason"], "no_file");
+
+        // 同じ曲 (id / rating) のまま、場所とコーデックだけが変わる。
+        let (status, t) = req(app.clone(), "GET", "/api/tracks/6", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(t["locationPath"], json!(new_path));
+        assert_eq!(t["codec"], "MP3");
+        assert_eq!(t["rating"], 80);
+
+        // もう一度 MP3 320 へ → 何もしない (skipped)。
+        let (_, body) = req(
+            app.clone(),
+            "POST",
+            "/api/convert-replace",
+            Some(json!({ "trackIds": [6], "format": "mp3", "bitrateKbps": 320 })),
+        )
+        .await;
+        let job = wait_convert_job(&app, body["jobId"].as_str().unwrap()).await;
+        assert_eq!(job["results"][0]["status"], "skipped");
+        assert_eq!(job["results"][0]["reason"], "already_target_format");
+        assert!(std::path::Path::new(&new_path).is_file());
     }
 }

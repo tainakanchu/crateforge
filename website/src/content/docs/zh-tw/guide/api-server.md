@@ -87,6 +87,20 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 
 這與同步用、匯入其他裝置已計算之解析結果的 `POST /api/analysis` 不同。進度仍會照常顯示在桌面 GUI。
 
+### 轉換並取代
+
+將曲目轉換為其他格式，並讓**同一首曲目**（ID、評分、播放次數、播放清單、編輯過的標籤都不變）改指向新檔案。由於會移動、刪除檔案，**僅限 loopback**（從 LAN 不論權杖或角色一律回 `403`）。
+
+- `POST /api/convert-replace`（`{trackIds, format?, bitrateKbps?, original?}`） — 開始背景工作，以 `202` 回傳 `{jobId, total}`。`format` 為 `mp3`（預設）/ `aac` / `opus` / `flac` / `alac` / `wav`，`bitrateKbps` 僅適用於有損格式（MP3 預設 320）。`original` 決定原始檔案的處理：`trash`（預設，作業系統的資源回收筒）或 `replaced`（保留在 `_replaced/<日期>/`）。每次請求最多 5000 筆。工作一次執行一個。
+- `GET /api/convert-replace/{jobId}` — `state`（`queued` / `running` / `done` / `failed`）、`done` / `total`、`counts`（`ok` / `skipped` / `failed`）與每首曲目的 `results`。
+
+`results` 的每個項目包含 `trackId`、`status`（`ok` / `skipped` / `failed`）、`reason`（`already_target_format` / `no_file` / `encode_failed` / `decode_failed` / `duration_mismatch` 等）、`warnings`（`lossy_to_lossy` = 有損轉有損，`trash_failed` = 無法移到資源回收筒，改保留在 `_replaced`）、`sourceCodec` / `sourceLossless`（由實際檔案判定）、`newLocationPath` 與 `original`（`{kind: "trashed" | "moved" | "keptShared" | ...}`）。
+
+- 已是目標編碼且位元率相同或更低的曲目（例如 MP3 320 → MP3 320）不做任何事，回報為 `skipped`。有損轉有損不會拒絕，只會加上警告。
+- 改指向之前會將新檔案完整解碼，並確認長度與原始檔案幾乎相同。失敗的曲目不會動到原始檔案與曲目資訊。
+- 其他曲目也參照的原始檔案不會被移動。
+- 篩選對象時可使用曲目的 `codec`（`ALAC` / `AAC` / `FLAC` / `MP3` …）、`bitrateKbps`、`bitDepth`（工作本身也會由實際檔案判定編碼，直接傳入候選也沒問題）。
+
 ### 播放清單
 
 - `POST /api/playlists` — 新增建立
