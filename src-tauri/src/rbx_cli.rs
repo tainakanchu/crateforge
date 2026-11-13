@@ -36,7 +36,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::usb_export::wire::{self, Envelope, ErrorLine, VersionInfo};
 
 /// crateforge が取得・想定する rbx-cli のバージョン。
-pub const RBX_CLI_VERSION: &str = "0.1.1";
+pub const RBX_CLI_VERSION: &str = "0.2.0";
 
 /// rbx-cli の GitHub Release のダウンロード元。
 const RELEASE_BASE: &str = "https://github.com/tainakanchu/rbx-cli/releases/download";
@@ -52,20 +52,20 @@ pub const OVERRIDE_STATE_KEY: &str = "rbx_cli_path";
 /// 該当アセットが無い場合に限り `SHA256SUMS` にフォールバックする (転送破損の検知が主)。
 pub const PINNED_SHA256: &[(&str, &str)] = &[
     (
-        "rbx-cli-0.1.1-aarch64-apple-darwin.tar.gz",
-        "3ef7044388e889a59c1f928405deba8ed6887a3604b8d2b26d3fee84512bfc94",
+        "rbx-cli-0.2.0-aarch64-apple-darwin.tar.gz",
+        "043366c1e64bdd9ebb6ba3a56463be02dab0e87b7eb98ab1ae81ffa94658da65",
     ),
     (
-        "rbx-cli-0.1.1-x86_64-apple-darwin.tar.gz",
-        "fb9642d726e6983130f92eef276a474ddc1d35a994bf640ac082d4058686ffee",
+        "rbx-cli-0.2.0-x86_64-apple-darwin.tar.gz",
+        "9209fbf13ab3d055ae28fded6a5ee7538c0012e192061ed0e3942a19748da97a",
     ),
     (
-        "rbx-cli-0.1.1-x86_64-pc-windows-msvc.zip",
-        "e8cdb2d24b1a9b384985de82d82b0eb6716d5edc6364e2a1479d4b1d85ec6c94",
+        "rbx-cli-0.2.0-x86_64-pc-windows-msvc.zip",
+        "79398fedc409f79345a12ed18c9e98243a56db46bcbe44bed85f359284107df9",
     ),
     (
-        "rbx-cli-0.1.1-x86_64-unknown-linux-gnu.tar.gz",
-        "e07f1bce889325fc3b226eec26cab8abfb5e7f7ae43a4f2459c1523490c1d415",
+        "rbx-cli-0.2.0-x86_64-unknown-linux-gnu.tar.gz",
+        "990721bde4524df2d2486e805037416c8e210b4cd8ace934b9a82e974597fb5c",
     ),
 ];
 
@@ -79,8 +79,9 @@ const RELEASE_TARGETS: &[&str] = &[
 ];
 
 /// crateforge が必要とする capability (rbx-cli `version` が返す安定文字列)。
-/// 0.1.1 で追加されたもの (競合の理由・CDJ の変更の保持・stdin の終端での中止) も必須にする
-/// ので、指定パスの古い rbx-cli (0.1.0) は「更新してください」で弾かれる。
+/// 0.1.1 で追加されたもの (競合の理由・CDJ の変更の保持・stdin の終端での中止) と、
+/// 0.2.0 (プロトコル 2) で追加された `kept` / `failed` の曲の報告も必須にする。プロトコルの
+/// 一致も確認するので、指定パスの古い rbx-cli (0.1.x) は「更新してください」で弾かれる。
 const REQUIRED_CAPABILITIES: &[&str] = &[
     "usb.export",
     "usb.export.dryRun",
@@ -90,6 +91,7 @@ const REQUIRED_CAPABILITIES: &[&str] = &[
     "usb.export.stdinEofCancel",
     "usb.export.conflictReasons",
     "usb.export.keepDeviceChanges",
+    "usb.export.keptAndFailedItems",
     "devices.list",
     "devices.eject",
 ];
@@ -840,7 +842,7 @@ mod tests {
     fn info(protocol: u32, caps: &[&str]) -> VersionInfo {
         VersionInfo {
             name: "rbx-cli".into(),
-            version: "0.1.1".into(),
+            version: "0.2.0".into(),
             protocol,
             capabilities: caps.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
@@ -849,34 +851,38 @@ mod tests {
 
     #[test]
     fn compatibility_requires_protocol_and_capabilities() {
-        assert!(check_compatible(&info(1, REQUIRED_CAPABILITIES)).is_ok());
-        let newer = check_compatible(&info(2, REQUIRED_CAPABILITIES)).unwrap_err();
+        assert!(check_compatible(&info(2, REQUIRED_CAPABILITIES)).is_ok());
+        let newer = check_compatible(&info(3, REQUIRED_CAPABILITIES)).unwrap_err();
         assert!(newer.contains("Crateforge を更新"), "{newer}");
-        let older = check_compatible(&info(0, REQUIRED_CAPABILITIES)).unwrap_err();
+        // プロトコル 1 (rbx-cli 0.1.x) は capability が揃っていても使わない。
+        let older = check_compatible(&info(1, REQUIRED_CAPABILITIES)).unwrap_err();
         assert!(older.contains("rbx-cli を更新"), "{older}");
-        let missing = check_compatible(&info(1, &["usb.export"])).unwrap_err();
+        let missing = check_compatible(&info(2, &["usb.export"])).unwrap_err();
         assert!(missing.contains("usb.export.cues"), "{missing}");
-        // 0.1.0 の capability だけでは足りない (0.1.1 の 3 つが必要)。
-        let v010: Vec<&str> = REQUIRED_CAPABILITIES
-            .iter()
-            .copied()
-            .filter(|c| {
-                !matches!(
-                    *c,
-                    "usb.export.stdinEofCancel"
-                        | "usb.export.conflictReasons"
-                        | "usb.export.keepDeviceChanges"
-                )
-            })
-            .collect();
-        let old = check_compatible(&info(1, &v010)).unwrap_err();
-        for c in [
+        // 0.1.0 の capability だけでは足りない (0.1.1 の 3 つと 0.2.0 の 1 つが必要)。
+        let added_later = [
             "usb.export.stdinEofCancel",
             "usb.export.conflictReasons",
             "usb.export.keepDeviceChanges",
-        ] {
+            "usb.export.keptAndFailedItems",
+        ];
+        let v010: Vec<&str> = REQUIRED_CAPABILITIES
+            .iter()
+            .copied()
+            .filter(|c| !added_later.contains(c))
+            .collect();
+        let old = check_compatible(&info(2, &v010)).unwrap_err();
+        for c in added_later {
             assert!(old.contains(c), "{old}");
         }
+        // 0.1.1 の capability (keptAndFailedItems 無し) でも足りない。
+        let v011: Vec<&str> = REQUIRED_CAPABILITIES
+            .iter()
+            .copied()
+            .filter(|c| *c != "usb.export.keptAndFailedItems")
+            .collect();
+        let old = check_compatible(&info(2, &v011)).unwrap_err();
+        assert!(old.contains("usb.export.keptAndFailedItems"), "{old}");
     }
 
     #[cfg(not(target_os = "windows"))]

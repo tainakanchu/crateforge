@@ -30,7 +30,9 @@ export function UsbExportStatusBar({ hidden, onOpen }: UsbExportStatusBarProps) 
   } else if (status.phase === "done") {
     title = "USB 書き出し完了";
     const r = status.result;
-    detail = r ? `${r.tracks.exported} 曲（コピー ${r.tracks.copied}）` : "";
+    detail = r
+      ? `${r.tracks.exported} 曲（コピー ${r.tracks.copied}${r.tracks.failed > 0 ? ` / 書き出せなかった曲 ${r.tracks.failed}` : ""}）`
+      : "";
   } else {
     title =
       status.error?.code === "cancelled" ? "USB 書き出しを中止しました" : "USB 書き出し失敗";

@@ -1,6 +1,6 @@
 //! rbx-cli のエラーコード → 利用者向けの日本語メッセージ。
 //!
-//! `conflict` の理由は `details.reason` (rbx-cli 0.1.1 以降、capability
+//! `conflict` の理由は `details.reason` (capability
 //! `usb.export.conflictReasons`。安定した snake_case の列挙で、未知の値は `other` 扱い) で
 //! 判定する。メッセージ本文 (rbxport の英文) は表示・調査用にだけ使い、判定には使わない。
 //! crateforge は互換性確認でこの capability を必須にしているので (`crate::rbx_cli`)、
@@ -17,10 +17,6 @@ pub struct UsbExportError {
     pub code: String,
     pub message: String,
     pub detail: String,
-    /// CDJ 等で USB 上のキュー / グリッドが変わったための競合
-    /// (`cues_or_grid_changed_on_device`)。「CDJ の変更を優先」(`onDeviceChanges: keepDevice`)
-    /// での再試行で解決できる。
-    pub cue_conflict: bool,
     /// `conflict` の理由と対象の曲 (UI には平たく `reason` / `conflictTracks` として渡る。
     /// エラー型を小さく保つため箱に入れる)。
     #[serde(flatten)]
@@ -60,12 +56,6 @@ pub fn conflict_reason(e: &ErrorLine) -> Option<String> {
             .filter(|r| !r.is_empty())
             .unwrap_or_else(|| "other".to_string()),
     )
-}
-
-/// rbx-cli の `conflict` が「USB 上のキュー / グリッドが CDJ 等で変更された」ことによるもので、
-/// `onDeviceChanges: keepDevice` で解決できるか。
-pub fn is_cue_conflict(e: &ErrorLine) -> bool {
-    conflict_reason(e).as_deref() == Some("cues_or_grid_changed_on_device")
 }
 
 fn gb(bytes: u64) -> String {
@@ -140,11 +130,8 @@ fn conflict_message(e: &ErrorLine) -> String {
         .filter(|n| !n.is_empty());
     let quoted = name.map(|n| format!("「{n}」")).unwrap_or_default();
     match reason {
-        "cues_or_grid_changed_on_device" => format!(
-            "前回の書き出しの後に、CDJ などで USB 上のキューやビートグリッドが変更されています。今回の内容（Traktor のキュー/グリッド）で上書きするとそれが失われるため、書き出しを中止しました{UNCHANGED}。「CDJ の変更を優先」で再試行すると、変更された曲だけ USB 上のキュー/グリッドを残して書き出します。"
-        ),
-        "onelibrary_cues_changed_on_device" => format!(
-            "前回の書き出しの後に、USB の OneLibrary（exportLibrary.db。新しい CDJ / rekordbox が使うデータベース）のキューが変更されています。上書きするとそれが失われるため、書き出しを中止しました{UNCHANGED}。この変更は「CDJ の変更を優先」でも残せません。rekordbox で USB からキューを取り込むか、別の（空の）USB に書き出してください。"
+        "device_cues_on_removed_track" => format!(
+            "CDJ などで USB 上の曲{quoted}にキューが追加・変更されていますが、今回の書き出しではその曲を USB から消すことになるため、書き出しを中止しました{UNCHANGED}。その曲を含むプレイリストも書き出す対象に選ぶか、rekordbox で USB からその曲を削除してから書き出してください。"
         ),
         "track_changed_on_device"
         | "playlist_changed_on_device"
@@ -166,9 +153,6 @@ fn conflict_message(e: &ErrorLine) -> String {
         ),
         "history_references_track" => format!(
             "USB から消そうとしている曲が、USB の再生履歴（CDJ のヒストリー）に残っているため、書き出しを中止しました{UNCHANGED}。「USB から消す」をオフにして書き出してください。"
-        ),
-        "source_unavailable" => format!(
-            "ソースファイルが見つからない曲{quoted}が以前 USB に書き出されています（外付けドライブ未接続など）。USB 上の曲を消さないよう、書き出しを中止しました{UNCHANGED}。ドライブを接続するか、曲の場所を直してから書き出してください。"
         ),
         "ownership"
         | "identities_changed"
@@ -254,7 +238,6 @@ pub fn from_error_line_for(e: &ErrorLine, tracks: &[TrackInput]) -> UsbExportErr
         code: e.code.clone(),
         message: user_message(e),
         detail: e.message.clone(),
-        cue_conflict: is_cue_conflict(e),
         conflict: Box::new(ConflictInfo {
             reason: conflict_reason(e),
             conflict_tracks,
@@ -269,7 +252,6 @@ pub fn local(code: &str, message: impl Into<String>) -> UsbExportError {
         code: code.to_string(),
         detail: message.clone(),
         message,
-        cue_conflict: false,
         conflict: Box::default(),
     }
 }
@@ -293,10 +275,9 @@ mod tests {
         e
     }
 
-    /// rbx-cli 0.1.1 の docs/protocol.md「Conflict reasons」の表。
+    /// rbx-cli 0.2.0 (プロトコル 2) の docs/protocol.md「Conflict reasons」の表 (`other` 以外)。
     const DOCUMENTED_REASONS: &[&str] = &[
-        "cues_or_grid_changed_on_device",
-        "onelibrary_cues_changed_on_device",
+        "device_cues_on_removed_track",
         "track_changed_on_device",
         "playlist_changed_on_device",
         "my_tags_changed_on_device",
@@ -304,7 +285,6 @@ mod tests {
         "device_only_track",
         "device_only_playlist",
         "history_references_track",
-        "source_unavailable",
         "ownership",
         "identities_changed",
         "libraries_disagree",
@@ -321,56 +301,55 @@ mod tests {
     #[test]
     fn conflicts_are_classified_by_details_reason_only() {
         let e = with_reason(
-            "USB sync conflict: USB cues or beat grids changed since the last sync. Import the USB cues/grids before exporting.",
-            "cues_or_grid_changed_on_device",
+            "USB sync conflict: 'x' has cue points added or changed on a player, and this sync would take it off the USB.",
+            "device_cues_on_removed_track",
         );
-        assert!(is_cue_conflict(&e));
         assert_eq!(
             conflict_reason(&e).as_deref(),
-            Some("cues_or_grid_changed_on_device")
+            Some("device_cues_on_removed_track")
         );
         let mapped = from_error_line(&e);
-        assert!(mapped.cue_conflict);
+        assert!(mapped.message.contains("曲「x」"), "{}", mapped.message);
         assert!(
-            mapped.message.contains("CDJ の変更を優先"),
+            mapped.message.contains("USB から消すことになる"),
             "{}",
             mapped.message
         );
         assert_eq!(mapped.detail, e.message);
         assert_eq!(
             mapped.conflict.reason.as_deref(),
-            Some("cues_or_grid_changed_on_device")
+            Some("device_cues_on_removed_track")
         );
 
-        // OneLibrary だけのキュー変更は keepDevice でも残せない → 再試行の対象外。
-        let onelib = with_reason("x", "onelibrary_cues_changed_on_device");
-        assert!(!is_cue_conflict(&onelib));
-        assert!(user_message(&onelib).contains("でも残せません"));
-
-        // 決まり文句そのままでも reason が無ければ判定しない (0.1.0 の文言照合は廃止)。
+        // 決まり文句そのままでも reason が無ければ判定しない (文言照合はしない)。
         let legacy = err(
             "conflict",
-            "USB sync conflict: USB cues or beat grids changed since the last sync. Import the USB cues/grids before exporting.",
+            "USB sync conflict: 'x' has cue points added or changed on a player, and this sync would take it off the USB.",
         );
-        assert!(!is_cue_conflict(&legacy));
         assert_eq!(conflict_reason(&legacy).as_deref(), Some("other"));
         assert!(user_message(&legacy).contains("食い違って"));
 
         // reason が別なら文言に関係なく reason に従う。
         let e = with_reason(
-            "USB sync conflict: USB cues or beat grids changed since the last sync. Import the USB cues/grids before exporting.",
+            "USB sync conflict: 'x' has cue points added or changed on a player, and this sync would take it off the USB.",
             "playlist_changed_on_device",
         );
-        assert!(!is_cue_conflict(&e));
         assert!(user_message(&e).contains("プレイリスト「x」が変更"));
 
-        // 未知の reason は汎用。conflict 以外は対象外。
-        let e = with_reason("raw text", "some_future_reason");
-        assert_eq!(conflict_reason(&e).as_deref(), Some("some_future_reason"));
-        assert!(user_message(&e).contains("食い違って"));
-        assert!(user_message(&e).contains("raw text"));
+        // プロトコル 2 で廃止された理由・未知の reason は汎用 (原文を添える)。
+        for gone in [
+            "cues_or_grid_changed_on_device",
+            "onelibrary_cues_changed_on_device",
+            "source_unavailable",
+            "some_future_reason",
+        ] {
+            let e = with_reason("raw text", gone);
+            assert_eq!(conflict_reason(&e).as_deref(), Some(gone));
+            assert!(user_message(&e).contains("食い違って"), "{gone}");
+            assert!(user_message(&e).contains("raw text"), "{gone}");
+        }
+        // conflict 以外は対象外。
         assert_eq!(conflict_reason(&err("io", "cue file")), None);
-        assert!(!is_cue_conflict(&err("io", "cue file")));
     }
 
     #[test]
@@ -379,13 +358,21 @@ mod tests {
             let m = user_message(&with_reason("raw", reason));
             assert!(!m.contains("食い違って"), "{reason} fell through: {m}");
             assert!(m.contains("USB は変更されていません"), "{reason}: {m}");
-            assert_eq!(
-                is_cue_conflict(&with_reason("raw", reason)),
-                *reason == "cues_or_grid_changed_on_device"
-            );
         }
-        let source = with_reason("raw", "source_unavailable");
-        assert!(user_message(&source).contains("ソースファイルが見つからない曲「x」"));
+        let removed = user_message(&with_reason("raw", "device_cues_on_removed_track"));
+        assert!(removed.contains("曲「x」にキューが追加・変更"), "{removed}");
+        assert!(
+            removed.contains("プレイリストも書き出す対象に選ぶ"),
+            "{removed}"
+        );
+        assert!(
+            removed.contains("rekordbox で USB からその曲を削除"),
+            "{removed}"
+        );
+        // 曲名が無ければ「曲」だけ。
+        let mut unnamed = err("conflict", "raw");
+        unnamed.details = Some(serde_json::json!({ "reason": "device_cues_on_removed_track" }));
+        assert!(user_message(&unnamed).contains("USB 上の曲にキュー"));
         assert!(
             user_message(&with_reason("raw", "history_references_track"))
                 .contains("「USB から消す」をオフ")
@@ -410,7 +397,8 @@ mod tests {
         ];
         let mut e = err("conflict", "USB sync conflict: ...");
         e.details = Some(serde_json::json!({
-            "reason": "cues_or_grid_changed_on_device",
+            "reason": "track_changed_on_device",
+            "name": "Alpha",
             "tracks": [
                 { "index": 0, "ref": "A1", "deviceId": 3 },
                 { "index": 5, "ref": "B2", "deviceId": null },
@@ -419,7 +407,6 @@ mod tests {
             ]
         }));
         let mapped = from_error_line_for(&e, &tracks);
-        assert!(mapped.cue_conflict);
         assert_eq!(
             mapped.conflict.conflict_tracks,
             vec![
@@ -446,8 +433,8 @@ mod tests {
             .is_empty());
         // UI へは平たく渡る。
         let v = serde_json::to_value(&mapped).unwrap();
-        assert_eq!(v["reason"], "cues_or_grid_changed_on_device");
-        assert_eq!(v["cueConflict"], true);
+        assert_eq!(v["reason"], "track_changed_on_device");
+        assert!(v.get("cueConflict").is_none());
         assert_eq!(v["conflictTracks"][0]["title"], "Alpha");
         assert_eq!(v["conflictTracks"][1]["artist"], serde_json::Value::Null);
     }

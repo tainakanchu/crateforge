@@ -616,7 +616,6 @@ mod tests {
         .unwrap();
         assert_eq!(v["kind"], "failed");
         assert_eq!(v["job"], "plan");
-        assert_eq!(v["error"]["cueConflict"], false);
         assert_eq!(v["error"]["reason"], serde_json::Value::Null);
         assert_eq!(v["error"]["conflictTracks"], serde_json::json!([]));
         let v = serde_json::to_value(UsbExportProgress::Finished {
@@ -632,14 +631,14 @@ mod tests {
     #[test]
     fn ndjson_lines_become_progress_events() {
         let lines = [
-            r#"{"type":"progress","protocol":1,"command":"usb.export","phase":"plan","current":0,"total":2}"#,
-            r#"{"type":"progress","protocol":1,"command":"usb.export","phase":"analyze","current":1,"total":2,"item":{"index":0,"ref":"a","title":"Alpha"}}"#,
-            r#"{"type":"event","protocol":1,"command":"usb.export","event":"track.skipped","data":{"index":1,"ref":"b","path":"/m/b.mp3","reason":"missing"}}"#,
-            r#"{"type":"event","protocol":1,"command":"usb.export","event":"track.warning","data":{"index":0,"ref":"a","message":"grid ignored"}}"#,
-            r#"{"type":"event","protocol":1,"command":"usb.export","event":"track.future","data":{}}"#,
-            r#"{"type":"log","protocol":1,"level":"debug","message":"noise"}"#,
-            r#"{"type":"log","protocol":1,"level":"warn","message":"could not store analysis in the cache"}"#,
-            r#"{"type":"result","protocol":1,"command":"usb.export","data":{}}"#,
+            r#"{"type":"progress","protocol":2,"command":"usb.export","phase":"plan","current":0,"total":2}"#,
+            r#"{"type":"progress","protocol":2,"command":"usb.export","phase":"analyze","current":1,"total":2,"item":{"index":0,"ref":"a","title":"Alpha"}}"#,
+            r#"{"type":"event","protocol":2,"command":"usb.export","event":"track.skipped","data":{"index":1,"ref":"b","path":"/m/b.mp3","reason":"missing"}}"#,
+            r#"{"type":"event","protocol":2,"command":"usb.export","event":"track.warning","data":{"index":0,"ref":"a","message":"grid ignored"}}"#,
+            r#"{"type":"event","protocol":2,"command":"usb.export","event":"track.future","data":{}}"#,
+            r#"{"type":"log","protocol":2,"level":"debug","message":"noise"}"#,
+            r#"{"type":"log","protocol":2,"level":"warn","message":"could not store analysis in the cache"}"#,
+            r#"{"type":"result","protocol":2,"command":"usb.export","data":{}}"#,
         ];
         let events: Vec<UsbExportProgress> = lines
             .iter()
@@ -739,7 +738,7 @@ mod tests {
                 embedded_artwork: true,
                 prune: false,
                 device_name: None,
-                on_device_changes: None,
+                on_device_changes: wire::OnDeviceChanges::Overwrite,
             },
             tracks: vec![],
             playlists: vec![],
@@ -748,7 +747,7 @@ mod tests {
         let path = file.path().to_path_buf();
         let back: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(back["protocol"], 1);
+        assert_eq!(back["protocol"], 2);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

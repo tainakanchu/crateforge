@@ -1,6 +1,6 @@
 //! rbx-cli とやり取りする JSON の型 (crateforge 側の独自定義)。
 //!
-//! rbx-cli の公開プロトコル (`docs/protocol.md` / `schema/*.json`, protocol 1) の
+//! rbx-cli の公開プロトコル (`docs/protocol.md` / `schema/*.json`, protocol 2) の
 //! **ドキュメントから** 書き起こした型で、rbx-cli のソースや型は一切取り込んでいない
 //! (rbx-cli は GPL の別プロセスとして起動するだけ。`crate::rbx_cli` の冒頭を参照)。
 //!
@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 /// crateforge が話せる rbx-cli のプロトコル番号。`version --json` の `protocol` と一致を要求する。
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 // ============================================================ request
 
@@ -36,19 +36,18 @@ pub struct ExportOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
     /// CDJ 等で USB 上のキュー / グリッドが前回の同期後に変わった曲の扱い
-    /// (rbx-cli 0.1.1 / capability `usb.export.keepDeviceChanges`)。None なら省略 (= `fail`)。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub on_device_changes: Option<OnDeviceChanges>,
+    /// (capability `usb.export.keepDeviceChanges`)。省略時の既定 (`overwrite`) に頼らず常に送る。
+    pub on_device_changes: OnDeviceChanges,
 }
 
 /// `options.onDeviceChanges`。
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum OnDeviceChanges {
-    /// 競合 (`cues_or_grid_changed_on_device`) で書き出しを中止する (rbx-cli の既定。
-    /// crateforge は送らずに省略する)。
-    #[cfg_attr(not(test), allow(dead_code))]
-    Fail,
+    /// リクエストの `cues` / `beatGrid` で USB 上のものを置き換える (ライブラリ優先。
+    /// プロトコル 2 の既定)。`cues` を送らない曲は USB 上のキューが残る。
+    /// プロトコル 1 の `fail` (競合で中止) は廃止され、送ると `invalid_request` になる。
+    Overwrite,
     /// その曲は USB 上のキュー / グリッドを残し、リクエストの `cues` / `beatGrid` を無視する
     /// (その 1 回の同期だけ。次の同期ではリクエストの内容が再び書かれる)。
     KeepDevice,
@@ -287,7 +286,15 @@ pub struct TrackCounts {
     pub reused: u64,
     pub skipped: u64,
     pub removed: u64,
+    /// リクエストに無いが USB に残した曲 (`prune: false`)。`kept` の曲 ([`TrackResult::status`])
+    /// の数は `kept_existing`。
     pub kept: u64,
+    /// ソースが無い・更新に失敗したので USB 上の既存のコピーを残した曲 (`status: "kept"`)。
+    /// プロトコル 2 / capability `usb.export.keptAndFailedItems`。
+    pub kept_existing: u64,
+    /// 音声を読めない・変換 / コピーできずに書き出せなかった曲 (`status: "failed"`)。
+    /// 残りの曲の書き出しは続き、終了コードは 0。
+    pub failed: u64,
     /// `keepDevice` で USB 上のキュー / グリッドを残した曲 (dry-run では残す見込みの曲)。
     pub device_changes_kept: u64,
 }
@@ -340,6 +347,8 @@ pub struct TrackResult {
     #[serde(rename = "ref")]
     pub reference: Option<String>,
     pub title: String,
+    /// `exported` / `skipped` (ソースが無く USB にも無い) / `kept` (USB 上の既存のコピーを
+    /// 残した) / `failed` (書き出せなかった) / `planned` (dry-run)。未知の値もそのまま渡す。
     pub status: String,
     pub analysis: String,
     /// dry-run のみ: `copy` / `reuse`。
@@ -353,7 +362,7 @@ pub struct TrackResult {
 
 // ============================================================ conflict details
 
-/// `conflict` エラーの `details` (rbx-cli 0.1.1 / capability `usb.export.conflictReasons`)。
+/// `conflict` エラーの `details` (capability `usb.export.conflictReasons`)。
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ConflictDetails {
@@ -470,7 +479,7 @@ mod tests {
 
     #[test]
     fn parses_each_envelope_type() {
-        let p = parse_line(r#"{"type":"progress","protocol":1,"command":"usb.export","phase":"analyze","current":3,"total":12,"item":{"index":2,"ref":"t3","title":"Track Three"}}"#).unwrap();
+        let p = parse_line(r#"{"type":"progress","protocol":2,"command":"usb.export","phase":"analyze","current":3,"total":12,"item":{"index":2,"ref":"t3","title":"Track Three"}}"#).unwrap();
         assert_eq!(
             p,
             Envelope::Progress(Progress {
@@ -484,7 +493,7 @@ mod tests {
                 })
             })
         );
-        let e = parse_line(r#"{"type":"event","protocol":1,"command":"usb.export","event":"track.skipped","data":{"index":5,"ref":null,"path":"/music/gone.mp3","reason":"missing"}}"#).unwrap();
+        let e = parse_line(r#"{"type":"event","protocol":2,"command":"usb.export","event":"track.skipped","data":{"index":5,"ref":null,"path":"/music/gone.mp3","reason":"missing"}}"#).unwrap();
         match e {
             Envelope::Event(ev) => {
                 assert_eq!(ev.event, "track.skipped");
@@ -493,7 +502,7 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         let l =
-            parse_line(r#"{"type":"log","protocol":1,"level":"warn","message":"m","target":"x"}"#)
+            parse_line(r#"{"type":"log","protocol":2,"level":"warn","message":"m","target":"x"}"#)
                 .unwrap();
         assert_eq!(
             l,
@@ -502,16 +511,16 @@ mod tests {
                 message: "m".into()
             })
         );
-        let r = parse_line(r#"{"type":"result","protocol":1,"command":"version","data":{"protocol":1,"version":"0.1.0"}}"#).unwrap();
+        let r = parse_line(r#"{"type":"result","protocol":2,"command":"version","data":{"protocol":2,"version":"0.2.0"}}"#).unwrap();
         match r {
             Envelope::Result(data) => {
                 let v: VersionInfo = serde_json::from_value(data).unwrap();
-                assert_eq!(v.protocol, 1);
-                assert_eq!(v.version, "0.1.0");
+                assert_eq!(v.protocol, 2);
+                assert_eq!(v.version, "0.2.0");
             }
             other => panic!("unexpected {other:?}"),
         }
-        let err = parse_line(r#"{"type":"error","protocol":1,"command":"usb.export","code":"insufficient_space","message":"no room","exitCode":1,"details":{"freeBytes":10,"bytesToCopy":20}}"#).unwrap();
+        let err = parse_line(r#"{"type":"error","protocol":2,"command":"usb.export","code":"insufficient_space","message":"no room","exitCode":1,"details":{"freeBytes":10,"bytesToCopy":20}}"#).unwrap();
         match err {
             Envelope::Error(e) => {
                 assert_eq!(e.code, "insufficient_space");
@@ -528,7 +537,7 @@ mod tests {
         assert_eq!(parse_line("not json"), None);
         assert_eq!(parse_line(r#"{"no":"type"}"#), None);
         assert_eq!(
-            parse_line(r#"{"type":"heartbeat","protocol":1}"#),
+            parse_line(r#"{"type":"heartbeat","protocol":2}"#),
             Some(Envelope::Unknown)
         );
     }
@@ -554,9 +563,45 @@ mod tests {
         assert_eq!(r.bytes.to_copy, 1000);
         assert_eq!(r.bytes.free, None);
         assert_eq!(r.items[0].audio.as_deref(), Some("copy"));
-        // 0.1.1 より前の結果 (deviceChangesKept 無し) も読める。
+        // 0.1.1 より前の結果 (deviceChangesKept 無し)・プロトコル 1 の結果
+        // (keptExisting / failed 無し) も読める。
         assert_eq!(r.tracks.device_changes_kept, 0);
         assert!(!r.items[0].device_changes_kept);
+        assert_eq!(r.tracks.kept_existing, 0);
+        assert_eq!(r.tracks.failed, 0);
+    }
+
+    #[test]
+    fn kept_and_failed_items_are_read_and_passed_to_the_ui() {
+        let data = serde_json::json!({
+            "tracks": { "requested": 4, "exported": 2, "copied": 0, "reused": 1, "skipped": 0,
+                        "removed": 0, "kept": 3, "keptExisting": 1, "failed": 1, "deviceChangesKept": 0 },
+            "items": [
+                { "index": 0, "ref": "a", "title": "A", "status": "exported", "analysis": "cache", "warnings": [] },
+                { "index": 1, "ref": "b", "title": "B", "status": "kept", "analysis": "none",
+                  "warnings": ["source missing: kept the device copy"] },
+                { "index": 2, "ref": "c", "title": "C", "status": "failed", "analysis": "none",
+                  "warnings": ["could not read the audio"] },
+                { "index": 3, "ref": "d", "title": "D", "status": "someFutureStatus", "analysis": "cache", "warnings": [] }
+            ]
+        });
+        let r: ExportResult = serde_json::from_value(data).unwrap();
+        // tracks.kept (prune: false で残した曲) と keptExisting は別の数。
+        assert_eq!(r.tracks.kept, 3);
+        assert_eq!(r.tracks.kept_existing, 1);
+        assert_eq!(r.tracks.failed, 1);
+        let statuses: Vec<&str> = r.items.iter().map(|i| i.status.as_str()).collect();
+        assert_eq!(statuses, ["exported", "kept", "failed", "someFutureStatus"]);
+        assert_eq!(
+            r.items[1].warnings,
+            ["source missing: kept the device copy"]
+        );
+        // kept の曲は deviceId / analysisDir が無いことがある。
+        assert_eq!(r.items[1].analysis_dir, None);
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["tracks"]["keptExisting"], 1);
+        assert_eq!(v["tracks"]["failed"], 1);
+        assert_eq!(v["items"][2]["status"], "failed");
     }
 
     #[test]
@@ -590,23 +635,27 @@ mod tests {
             embedded_artwork: true,
             prune: true,
             device_name: None,
-            on_device_changes: Some(OnDeviceChanges::KeepDevice),
+            on_device_changes: OnDeviceChanges::KeepDevice,
         };
         assert_eq!(
             serde_json::to_value(&opts).unwrap()["onDeviceChanges"],
             "keepDevice"
         );
-        assert_eq!(serde_json::to_value(OnDeviceChanges::Fail).unwrap(), "fail");
+        assert_eq!(
+            serde_json::to_value(OnDeviceChanges::Overwrite).unwrap(),
+            "overwrite"
+        );
     }
 
     #[test]
     fn conflict_details_are_read_from_error_lines() {
-        let line = r#"{"type":"error","protocol":1,"command":"usb.export","code":"conflict","message":"USB sync conflict: x","exitCode":1,"details":{"reason":"cues_or_grid_changed_on_device","tracks":[{"index":0,"ref":"a","deviceId":7},{"index":2,"ref":null,"deviceId":null}],"futureField":1}}"#;
+        let line = r#"{"type":"error","protocol":2,"command":"usb.export","code":"conflict","message":"USB sync conflict: x","exitCode":1,"details":{"reason":"device_cues_on_removed_track","name":"Old Song","tracks":[{"index":0,"ref":"a","deviceId":7},{"index":2,"ref":null,"deviceId":null}],"futureField":1}}"#;
         let Some(Envelope::Error(e)) = parse_line(line) else {
             panic!("not an error line");
         };
         let d = ConflictDetails::from_error(&e).unwrap();
-        assert_eq!(d.reason, "cues_or_grid_changed_on_device");
+        assert_eq!(d.reason, "device_cues_on_removed_track");
+        assert_eq!(d.name.as_deref(), Some("Old Song"));
         assert_eq!(d.tracks.len(), 2);
         assert_eq!(d.tracks[0].reference.as_deref(), Some("a"));
         assert_eq!(d.tracks[0].device_id, Some(7));

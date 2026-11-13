@@ -408,7 +408,7 @@ interface AppState extends PersistedSettings {
     s: UsbExportStatus | null | ((prev: UsbExportStatus | null) => UsbExportStatus | null),
   ) => void;
   /** 最後に開始した書き出しの設定 (セッション専用)。ステータスカードから開き直したときの
-   *  選択の表示と、「CDJ の変更を優先」での再試行に使う。 */
+   *  選択の表示と、その書き出しで「CDJ の変更を優先」が有効だったかの表示に使う。 */
   usbExportLastOptions: UsbExportOptions | null;
   setUsbExportLastOptions: (o: UsbExportOptions | null) => void;
   // Rip progress
