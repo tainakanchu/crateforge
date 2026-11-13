@@ -296,11 +296,12 @@ pub fn finalize_replacement(
         duration_ms,
         &tech_meta,
     ) {
-        // 旧ファイルを戻し、新ファイルを片付ける。
+        // 新ファイルを片付けてから旧ファイルを戻す (新ファイルが旧ファイルの名前へ改名済みの
+        // ことがあるので、逆順だと戻した旧ファイルを消してしまう)。
+        cleanup(&new_path);
         if let (Some(dest), Some(old)) = (&moved_to, &old_path) {
             let _ = move_file(dest, old);
         }
-        cleanup(&new_path);
         return Err(format!("ライブラリを更新できませんでした: {e}"));
     }
 
