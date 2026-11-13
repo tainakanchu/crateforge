@@ -10,23 +10,33 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.19.0] - 2026-11-13
+
 ### 日本語
 
 #### デスクトップ
-- **変換して置き換え**: 曲の右クリック「変換して置き換え…」（変換ダイアログの方式「置き換え」）で、元ファイルの隣に別フォーマットで書き出し、同じ曲のまま（レート・再生回数・プレイリスト・編集したタグはそのまま）新しいファイルへ差し替えられるようにした。タグと埋め込みカバーアートを引き継ぎ、差し替える前に新しいファイルを最後までデコードして長さを確かめる（失敗した曲は元ファイルに手を付けない）。元ファイルはゴミ箱へ（既定）か `_replaced` フォルダに残すかを選べ、最後の選択を覚える。他の曲も参照している元ファイルは移動しない。同じ形式で同じか低いビットレートへの変換はスキップし、非可逆 → 非可逆になる曲は件数を ⚠ で示す。
-- **CD 検出から取り込むときにドライブを選び直さなくてよいように**: 「CD を検出しました」で「取り込む」を押すと、検出したドライブで読み取り済みのディスク情報からそのまま候補の照会を始める（「ディスクを検出」を押し直す必要がなくなった）。ドライブの切り替えは引き続きできる。
+- **変換して置き換え**: 曲の右クリック「変換して置き換え…」（変換ダイアログの方式「置き換え」）で、元ファイルの隣に別フォーマットで書き出し、同じ曲のまま（レート・再生回数・プレイリスト・編集したタグはそのまま）新しいファイルへ差し替えられるようにした。タグと埋め込みカバーアートを引き継ぎ、差し替える前に新しいファイルを最後までデコードして長さを確かめる（失敗した曲は元ファイルに手を付けない）。元ファイルはゴミ箱へ（既定）か `_replaced` フォルダに残すかを選べ、最後の選択を覚える。他の曲も参照している元ファイルは移動しない。同じ形式で同じか低いビットレートへの変換はスキップし、非可逆 → 非可逆になる曲は件数を ⚠ で示す。 (#248)
+- **CD 検出から取り込むときにドライブを選び直さなくてよいように**: 「CD を検出しました」で「取り込む」を押すと、検出したドライブで読み取り済みのディスク情報からそのまま候補の照会を始める（「ディスクを検出」を押し直す必要がなくなった）。ドライブの切り替えは引き続きできる。 (#248)
+
+#### モバイル（Android・フルビルド）
+- **Android Auto に対応**: 車の Android Auto のランチャーに Crateforge が表示され、車載画面からダウンロード済みの曲・プレイリスト・アーティスト・アルバムを閲覧・検索・再生できるようにした。スマホでアプリを開いていなくても再生でき、スマホの再生画面と車載画面は同じキューを操作する（音が二重に出ない）。LAN に届くときはデスクトップのライブラリもストリーミング再生できる。Google アプリ経由の Assistant / Gemini での音声操作に対応（実機では未検証）。起動時・接続時に勝手に再生しない。 (#231)
+- **Android 版を GitHub Releases の APK で配布**: Android 版は Google Play ではなく、この Release に添付する署名済み APK（`crateforge-android-<version>.apk` と SHA-256）で配布する。Android Auto で使うには、Android Auto の開発者向け設定で「提供元不明のアプリ（Unknown sources）」を有効にする必要がある。導入手順は `clients/apps/mobile/README.md` を参照。アップデート後は、車から LAN のライブラリを再生する前にアプリを一度開く必要がある（ダウンロード済みの曲はそのまま再生できる）。 (#231)
 
 #### API
-- **変換して置き換えのジョブ API**: `POST /api/convert-replace`（`{trackIds, format?, bitrateKbps?, original?}`）でバックグラウンドのジョブを開始し、`GET /api/convert-replace/{jobId}` で進捗と曲ごとの結果（成功 / スキップ / 失敗と理由、警告、元のコーデック、新しい場所）を取得できる。ファイルを移動・削除するためループバック専用（LAN からは常に `403`）。
+- **変換して置き換えのジョブ API**: `POST /api/convert-replace`（`{trackIds, format?, bitrateKbps?, original?}`）でバックグラウンドのジョブを開始し、`GET /api/convert-replace/{jobId}` で進捗と曲ごとの結果（成功 / スキップ / 失敗と理由、警告、元のコーデック、新しい場所）を取得できる。ファイルを移動・削除するためループバック専用（LAN からは常に `403`）。 (#248)
 
 ### English
 
 #### Desktop
-- **Convert and replace**: right-click a track → "変換して置き換え…" (or pick "置き換え" as the method in the convert dialog) to write the track in another format next to the original and swap the same track (rating, play count, playlists and edited tags stay) to the new file. Tags and embedded cover art are carried over, and the new file is decoded to the end and its length checked before swapping (a failed track keeps its original file). The original goes to the trash (default) or stays in the `_replaced` folder, and the last choice is remembered. An original file that another track references is never moved. Converting to the same format at the same or a lower bitrate is skipped, and tracks that would go lossy to lossy are flagged with ⚠ and a count.
-- **No need to pick the drive again when ripping from CD detection**: pressing "取り込む" (Import) on the "CD detected" dialog now starts the release lookup right away from the disc that was already read on the detected drive (no more pressing "Detect disc" again). Switching drives is still possible.
+- **Convert and replace**: right-click a track → "変換して置き換え…" (or pick "置き換え" as the method in the convert dialog) to write the track in another format next to the original and swap the same track (rating, play count, playlists and edited tags stay) to the new file. Tags and embedded cover art are carried over, and the new file is decoded to the end and its length checked before swapping (a failed track keeps its original file). The original goes to the trash (default) or stays in the `_replaced` folder, and the last choice is remembered. An original file that another track references is never moved. Converting to the same format at the same or a lower bitrate is skipped, and tracks that would go lossy to lossy are flagged with ⚠ and a count. (#248)
+- **No need to pick the drive again when ripping from CD detection**: pressing "取り込む" (Import) on the "CD detected" dialog now starts the release lookup right away from the disc that was already read on the detected drive (no more pressing "Detect disc" again). Switching drives is still possible. (#248)
+
+#### Mobile (Android, full build)
+- **Android Auto support**: Crateforge now appears in the Android Auto launcher in the car, and you can browse, search and play downloaded tracks, playlists, artists and albums from the car display. Playback works even when the app is not open on the phone, and the phone player and the car display control the same queue (no doubled audio). When the desktop library is reachable over the LAN, it can be streamed too. Voice control through Assistant / Gemini via the Google app is supported (not yet verified on a real device). Nothing starts playing by itself on launch or on connection. (#231)
+- **Android build distributed as an APK on GitHub Releases**: the Android build is distributed not through Google Play but as a signed APK attached to this Release (`crateforge-android-<version>.apk` and its SHA-256). To use it with Android Auto, you need to enable "Unknown sources" in Android Auto's developer settings. See `clients/apps/mobile/README.md` for setup. After updating, open the app once before playing the LAN library from the car (downloaded tracks play as they are). (#231)
 
 #### API
-- **Convert-and-replace job API**: `POST /api/convert-replace` (`{trackIds, format?, bitrateKbps?, original?}`) starts a background job, and `GET /api/convert-replace/{jobId}` returns progress and per-track results (done / skipped / failed with reasons, warnings, source codec, new location). Because it moves and deletes files it is loopback only (always `403` from the LAN).
+- **Convert-and-replace job API**: `POST /api/convert-replace` (`{trackIds, format?, bitrateKbps?, original?}`) starts a background job, and `GET /api/convert-replace/{jobId}` returns progress and per-track results (done / skipped / failed with reasons, warnings, source codec, new location). Because it moves and deletes files it is loopback only (always `403` from the LAN). (#248)
 
 ## [v0.18.1] - 2026-11-13
 
