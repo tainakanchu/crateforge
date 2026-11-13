@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android Auto の attribution（androidx.car.app.TintableAttributionIcon）兼 メディア通知の small icon。
+  白単色・透明背景の 24dp vector。既存マーク（android-icon-monochrome.png の二重角丸ダイヤ + 中央塗りダイヤ）を
+  45° 回転 group の stroke 2 本 + fill 1 つで再現する。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <group
+      android:pivotX="12"
+      android:pivotY="12"
+      android:rotation="45">
+    <path
+        android:pathData="M7.8,5.2H16.2A2.6,2.6 0,0 1,18.8,7.8V16.2A2.6,2.6 0,0 1,16.2,18.8H7.8A2.6,2.6 0,0 1,5.2,16.2V7.8A2.6,2.6 0,0 1,7.8,5.2Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.6"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M9.4,7.6H14.6A1.8,1.8 0,0 1,16.4,9.4V14.6A1.8,1.8 0,0 1,14.6,16.4H9.4A1.8,1.8 0,0 1,7.6,14.6V9.4A1.8,1.8 0,0 1,9.4,7.6Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M10.9,9.9H13.1A1,1 0,0 1,14.1,10.9V13.1A1,1 0,0 1,13.1,14.1H10.9A1,1 0,0 1,9.9,13.1V10.9A1,1 0,0 1,10.9,9.9Z"
+        android:fillColor="#FFFFFFFF" />
+  </group>
+</vector>

@@ -25,6 +25,12 @@ export type RepeatMode = "off" | "all" | "one";
 const KEY_SHUFFLE = "crateforge.player.shuffle";
 const KEY_REPEAT = "crateforge.player.repeat";
 
+/**
+ * 上記キーの公開版。Android ネイティブ再生（playback/nativeBackend）が
+ * 初回の設定移行（migrateLegacySettings）で同じ値を読むために使う。
+ */
+export const PLAYER_SETTINGS_KEYS = { shuffle: KEY_SHUFFLE, repeat: KEY_REPEAT } as const;
+
 /** ネイティブ音声バックエンドの抽象。実装は expo-audio（ExpoAudioEngine）。 */
 export interface AudioEngine {
   /** 指定トラックを読み込み、ロック画面メタも更新する（再生開始は play() で）。 */
@@ -86,8 +92,16 @@ export interface PlayerState {
    * 通知の購読側が消費したら null に戻してよい。
    * title は失敗した曲の表示名（UI が「『曲名』を再生できませんでした」と出す用。不明なら null）。
    * stopped は連続失敗で再生を止めた通知か（UI がまとめ表示を締める用）。
+   * code は Android ネイティブ再生（nativeBackend）が付ける分類（例: "UNSUPPORTED_FORMAT"）。
+   * JS エンジン経路では付かない。
    */
-  lastError: { message: string; at: number; title?: string | null; stopped?: boolean } | null;
+  lastError: {
+    message: string;
+    at: number;
+    title?: string | null;
+    stopped?: boolean;
+    code?: string;
+  } | null;
 
   /** 現在トラック（無ければ null）。 */
   current: () => Track | null;

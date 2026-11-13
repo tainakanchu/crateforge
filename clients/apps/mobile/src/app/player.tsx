@@ -18,7 +18,7 @@ import type { LayoutChangeEvent, GestureResponderEvent } from "react-native";
 import { useRouter } from "expo-router";
 
 import { BRAND, PALETTE } from "@/constants/brand";
-import { ApiError, type SimilarHit, type Track, formatDuration, ratingToHalfStars, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
+import { ApiError, type SimilarHit, type Track, formatDuration, isNativePlaybackActive, ratingToHalfStars, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
 import ModeToggleButton from "@/components/ModeToggleButton";
@@ -60,22 +60,26 @@ export default function PlayerScreen() {
   const sleepTimerMs = usePlayer((s) => s.sleepTimerMs);
   const stopAtTrackEnd = usePlayer((s) => s.stopAtTrackEnd);
 
+  // Android ネイティブ再生ではスリープタイマー / 曲終わり停止をネイティブが実行する
+  // （画面のマウント有無に依存しない）。以下の 2 つの effect は JS エンジン経路のときだけ動かす。
+  const nativePlayback = isNativePlaybackActive();
+
   // スリープタイマー実装：ms モードは setTimeout で自動停止
   useEffect(() => {
-    if (sleepTimerMs == null) return;
+    if (nativePlayback || sleepTimerMs == null) return;
     const id = setTimeout(() => {
       usePlayer.getState().pause();
       usePlayer.getState().setSleepTimer(null);
     }, sleepTimerMs);
     return () => clearTimeout(id);
-  }, [sleepTimerMs]);
+  }, [nativePlayback, sleepTimerMs]);
 
   // 「曲の終わりで停止」モード：
   // _onFinished → next(true) が呼ばれると index が変わり isPlaying が一瞬 true になる。
   // index の変化を検知してその直後に pause/フラグクリアする。
   const prevIndexRef = useRef(index);
   useEffect(() => {
-    if (!stopAtTrackEnd) {
+    if (nativePlayback || !stopAtTrackEnd) {
       prevIndexRef.current = index;
       return;
     }
@@ -85,7 +89,7 @@ export default function PlayerScreen() {
       usePlayer.getState().setStopAtTrackEnd(false);
     }
     prevIndexRef.current = index;
-  }, [index, stopAtTrackEnd]);
+  }, [nativePlayback, index, stopAtTrackEnd]);
 
   // Up Next = 再生順で現在位置より後ろ。毎レンダーで新配列を作らないよう useMemo。
   const upNext = useMemo(

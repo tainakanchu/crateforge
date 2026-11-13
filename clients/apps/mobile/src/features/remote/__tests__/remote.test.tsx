@@ -5,7 +5,6 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react-nativ
 import {
   createQueryWrapper,
   setTestConnection,
-  mockFetch,
   resetTestState,
 } from "@/test-utils";
 import {
@@ -80,6 +79,29 @@ const TRACKS: Track[] = [
   makeTrack({ id: 2, trackId: 43, name: "Next Up", artist: "Other" }),
 ];
 
+/**
+ * URL で応答を振り分ける fetch モック。RemoteScreen は state を 1 秒間隔でポーリングするため、
+ * 呼び出し順で応答を返す mockFetch だと遅い CI で再取得が別の応答を受け取りテストが揺れる。
+ */
+function mockRemote(state: unknown): jest.Mock {
+  const fn = jest.fn(async (input: unknown) => {
+    const url = typeof input === "string" ? input : String((input as { url?: string })?.url ?? input);
+    const body = url.includes("/api/remote/state")
+      ? state
+      : url.includes("/api/remote/queue")
+        ? QUEUE
+        : TRACKS;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    } as Response;
+  });
+  global.fetch = fn as unknown as typeof fetch;
+  return fn;
+}
+
 beforeEach(() => {
   resetTestState();
   jest.restoreAllMocks();
@@ -94,7 +116,7 @@ describe("RemoteScreen", () => {
 
   test("再生中の曲・キュー・トランスポートを描画する", async () => {
     setTestConnection();
-    mockFetch({ body: STATE_PLAYING }, { body: QUEUE }, { body: TRACKS });
+    mockRemote(STATE_PLAYING);
     const wrapper = createQueryWrapper();
 
     await render(<RemoteScreen />, { wrapper });
@@ -109,7 +131,7 @@ describe("RemoteScreen", () => {
 
   test("再生中に再生/一時停止を押すと remotePause を呼ぶ", async () => {
     setTestConnection();
-    mockFetch({ body: STATE_PLAYING }, { body: QUEUE }, { body: TRACKS });
+    mockRemote(STATE_PLAYING);
     const spy = jest.spyOn(ApiClient.prototype, "remotePause").mockResolvedValue({});
     const wrapper = createQueryWrapper();
 
@@ -123,7 +145,7 @@ describe("RemoteScreen", () => {
 
   test("停止中に再生/一時停止を押すと remoteResume を呼ぶ", async () => {
     setTestConnection();
-    mockFetch({ body: STATE_PAUSED }, { body: QUEUE }, { body: TRACKS });
+    mockRemote(STATE_PAUSED);
     const spy = jest.spyOn(ApiClient.prototype, "remoteResume").mockResolvedValue({});
     const wrapper = createQueryWrapper();
 
@@ -137,7 +159,7 @@ describe("RemoteScreen", () => {
 
   test("次の曲ボタンで remoteNext を呼ぶ", async () => {
     setTestConnection();
-    mockFetch({ body: STATE_PLAYING }, { body: QUEUE }, { body: TRACKS });
+    mockRemote(STATE_PLAYING);
     const spy = jest.spyOn(ApiClient.prototype, "remoteNext").mockResolvedValue({});
     const wrapper = createQueryWrapper();
 
@@ -149,7 +171,7 @@ describe("RemoteScreen", () => {
 
   test("キューの行をタップすると remotePlayAt でその位置から再生する", async () => {
     setTestConnection();
-    mockFetch({ body: STATE_PLAYING }, { body: QUEUE }, { body: TRACKS });
+    mockRemote(STATE_PLAYING);
     const spy = jest.spyOn(ApiClient.prototype, "remotePlayAt").mockResolvedValue({ trackId: 43 });
     const wrapper = createQueryWrapper();
 
@@ -161,7 +183,7 @@ describe("RemoteScreen", () => {
 
   test("play-at 未対応の古いホスト（404）では set-queue + play にフォールバックする", async () => {
     setTestConnection();
-    mockFetch({ body: STATE_PLAYING }, { body: QUEUE }, { body: TRACKS });
+    mockRemote(STATE_PLAYING);
     jest
       .spyOn(ApiClient.prototype, "remotePlayAt")
       .mockRejectedValue(new ApiError(404, "HTTP 404"));
@@ -176,7 +198,7 @@ describe("RemoteScreen", () => {
 
   test("操作が失敗したらトーストで通知する", async () => {
     setTestConnection();
-    mockFetch({ body: STATE_PLAYING }, { body: QUEUE }, { body: TRACKS });
+    mockRemote(STATE_PLAYING);
     jest
       .spyOn(ApiClient.prototype, "remoteNext")
       .mockRejectedValue(new NetworkError("Network request failed"));
@@ -196,7 +218,7 @@ describe("RemoteScreen", () => {
 
     test("ホストが報告する項目だけ描画する（旧ホストでは出さない）", async () => {
       setTestConnection();
-      mockFetch({ body: STATE_PLAYING }, { body: QUEUE }, { body: TRACKS });
+      mockRemote(STATE_PLAYING);
       await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
       await screen.findByLabelText("一時停止");
       expect(screen.queryByLabelText("音量")).toBeNull();
@@ -206,7 +228,7 @@ describe("RemoteScreen", () => {
 
     test("報告された項目ごとに表示する（volume だけ）", async () => {
       setTestConnection();
-      mockFetch({ body: { ...STATE_PLAYING, volume: 0.3 } }, { body: QUEUE }, { body: TRACKS });
+      mockRemote({ ...STATE_PLAYING, volume: 0.3 });
       await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
       expect(await screen.findByLabelText("音量")).toBeTruthy();
       expect(screen.queryByLabelText(/^シャッフル/)).toBeNull();
@@ -214,7 +236,7 @@ describe("RemoteScreen", () => {
 
     test("シャッフルをタップすると setShuffle(true)", async () => {
       setTestConnection();
-      mockFetch({ body: FULL }, { body: QUEUE }, { body: TRACKS });
+      mockRemote(FULL);
       const spy = jest.spyOn(ApiClient.prototype, "remoteShuffle").mockResolvedValue({});
       await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
       fireEvent.press(await screen.findByLabelText("シャッフル（オフ）"));
@@ -223,7 +245,7 @@ describe("RemoteScreen", () => {
 
     test("リピートは off → all → one → off と循環する", async () => {
       setTestConnection();
-      mockFetch({ body: { ...FULL, repeat: "one" } }, { body: QUEUE }, { body: TRACKS });
+      mockRemote({ ...FULL, repeat: "one" });
       const spy = jest.spyOn(ApiClient.prototype, "remoteRepeat").mockResolvedValue({});
       await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
       fireEvent.press(await screen.findByLabelText("リピート（1曲リピート）"));
@@ -232,7 +254,7 @@ describe("RemoteScreen", () => {
 
     test("音量バーのドラッグを離すと setVolume(比率)", async () => {
       setTestConnection();
-      mockFetch({ body: FULL }, { body: QUEUE }, { body: TRACKS });
+      mockRemote(FULL);
       const spy = jest.spyOn(ApiClient.prototype, "remoteVolume").mockResolvedValue({});
       await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
       const bar = await screen.findByLabelText("音量");
@@ -246,7 +268,7 @@ describe("RemoteScreen", () => {
 
     test("シークバーのドラッグを離すと remoteSeek(ms)。ドラッグ中は呼ばない", async () => {
       setTestConnection();
-      mockFetch({ body: FULL }, { body: QUEUE }, { body: TRACKS });
+      mockRemote(FULL);
       const spy = jest.spyOn(ApiClient.prototype, "remoteSeek").mockResolvedValue({});
       await render(<RemoteScreen />, { wrapper: createQueryWrapper() });
       const bar = await screen.findByLabelText("シークバー");

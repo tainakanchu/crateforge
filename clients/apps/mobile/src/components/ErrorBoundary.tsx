@@ -1,6 +1,6 @@
 // ルート用の軽量エラーバウンダリ。
 // 描画中に例外が投げられた（= JS クラッシュ相当）ときに捕捉し、
-// 再生エンジンを停止/解放して「音だけ鳴り続けるゾンビ再生」を防ぐ。
+// 再生を停止して「音だけ鳴り続けるゾンビ再生」を防ぐ。
 // その上で最小限のフォールバック UI を出す。
 // 主因となる遷移時クラッシュ（#1）は別途修正済みで、これはあくまで保険。
 
@@ -28,12 +28,11 @@ export default class ErrorBoundary extends Component<Props, State> {
   componentDidCatch(error: Error, info: ErrorInfo): void {
     // 調査用ログ。
     console.error("[error-boundary]", error, info.componentStack);
-    // 再生を止めて解放する。音だけ鳴り続ける事故を防ぐ（best-effort）。
+    // 再生を止める。音だけ鳴り続ける事故を防ぐ（best-effort）。
+    // エンジンを直接触らずストアの pause を使う（Android ネイティブ再生でも JS エンジンでも安全）。
+    // エンジンは解放しない：再試行後もそのまま再生を続けられるようにする。
     try {
-      const engine = usePlayer.getState().engine;
-      engine.pause();
-      engine.release();
-      usePlayer.setState({ isPlaying: false });
+      usePlayer.getState().pause();
     } catch {
       // エンジン未差し込み等は無視（ここで二次例外を出さない）。
     }

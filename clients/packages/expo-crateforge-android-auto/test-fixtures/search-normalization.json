@@ -1,0 +1,90 @@
+[
+ {
+  "input": "ＡＢＣ１２３",
+  "expected": "abc123"
+ },
+ {
+  "input": "ｶﾀｶﾅ",
+  "expected": "かたかな"
+ },
+ {
+  "input": "ｶﾞｷﾞ",
+  "expected": "がぎ"
+ },
+ {
+  "input": "が",
+  "expected": "が"
+ },
+ {
+  "input": "Hello,  World!",
+  "expected": "hello world"
+ },
+ {
+  "input": "Beyoncé",
+  "expected": "beyoncé"
+ },
+ {
+  "input": "周杰倫",
+  "expected": "周杰倫"
+ },
+ {
+  "input": "🎵 Song 🎶",
+  "expected": "🎵 song 🎶"
+ },
+ {
+  "input": "AC/DC",
+  "expected": "ac dc"
+ },
+ {
+  "input": "Mr. Children",
+  "expected": "mr children"
+ },
+ {
+  "input": "ﾐｽﾀｰﾁﾙﾄﾞﾚﾝ",
+  "expected": "みすたーちるどれん"
+ },
+ {
+  "input": "Ⅳ",
+  "expected": "iv"
+ },
+ {
+  "input": "ＤＪ　Ｋｏｏ",
+  "expected": "dj koo"
+ },
+ {
+  "input": "Ｒ＆Ｂ",
+  "expected": "r b"
+ },
+ {
+  "input": "",
+  "expected": ""
+ },
+ {
+  "input": "ヴ",
+  "expected": "ゔ"
+ },
+ {
+  "input": "ヵ",
+  "expected": "ゕ"
+ },
+ {
+  "input": "ヷ",
+  "expected": "ヷ"
+ },
+ {
+  "input": "  \t Trim\nMe  ",
+  "expected": "trim me"
+ },
+ {
+  "input": "(Live) [2020] 「東京」",
+  "expected": "live 2020 東京"
+ },
+ {
+  "input": "ÄÖÜ",
+  "expected": "äöü"
+ },
+ {
+  "input": "ﬁ",
+  "expected": "fi"
+ }
+]

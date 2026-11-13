@@ -6,6 +6,8 @@
 //   （トーストは 1 枠なので、まとめた文言で上書きする）。
 // player.ts（@crateforge/core）はプラットフォーム非依存に保ちたいので、
 // 実際の通知表示はこのモバイル側コンポーネントが担当する。
+// Android ネイティブ再生のエラーは code 付きで届く。端末非対応形式（UNSUPPORTED_FORMAT）のときは
+// ダウンロード画面の「AAC で再ダウンロード」へ案内する（救済導線）。
 
 import { useEffect, useRef } from "react";
 
@@ -16,10 +18,25 @@ import { showToast } from "@/components/Toast";
 /** 直前の失敗からこの時間内に起きた失敗は「連続失敗」として 1 件にまとめる（ms）。 */
 export const PLAYBACK_ERROR_BURST_MS = 8000;
 
-type PlaybackError = { message: string; at: number; title?: string | null; stopped?: boolean };
+/** 端末非対応形式のときに添える案内文。 */
+export const UNSUPPORTED_FORMAT_HINT =
+  "ダウンロード画面の「AAC で再ダウンロード」で再生できる形式に保存し直せます";
+
+type PlaybackError = {
+  message: string;
+  at: number;
+  title?: string | null;
+  stopped?: boolean;
+  code?: string;
+};
 
 /** トースト文言。count は連続失敗の通算（1 なら単発）。 */
 export function playbackErrorToastMessage(err: PlaybackError, count: number): string {
+  const text = baseToastMessage(err, count);
+  return err.code === "UNSUPPORTED_FORMAT" ? `${text}\n${UNSUPPORTED_FORMAT_HINT}` : text;
+}
+
+function baseToastMessage(err: PlaybackError, count: number): string {
   const title = err.title?.trim() ? err.title.trim() : null;
   if (err.stopped) {
     return count > 1 ? `${err.message}（${count} 曲）` : err.message;

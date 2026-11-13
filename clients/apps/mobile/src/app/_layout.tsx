@@ -14,7 +14,7 @@ import * as Updates from "expo-updates";
 
 import { PALETTE } from "@/constants/brand";
 import { createFilePersister } from "@/lib/queryPersister";
-import { useConnection, useConnectionMonitor, usePlayer, useDownloads, useSettings, createAudioEngine, initPlayback } from "@crateforge/core";
+import { useConnection, useConnectionMonitor, usePlayer, useDownloads, useSettings } from "@crateforge/core";
 import MiniPlayer from "@/components/MiniPlayer";
 import { ActionSheetHost } from "@/components/ActionSheet";
 import { ToastHost } from "@/components/Toast";
@@ -23,6 +23,7 @@ import PlaybackErrorToast from "@/components/PlaybackErrorToast";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { usePendingEdits } from "@/store/pendingEdits";
 import { flushPending } from "@/features/triage/syncPending";
+import { onDownloadsHydrated, setupPlayback } from "@/playback/setupPlayback";
 
 // stale でもキャッシュを即表示し、必要時のみ裏で更新する（stale-while-revalidate）。
 // staleTime は 1 分: タブに戻る/アプリを前面に戻すと、1 分以上経った表示中の一覧だけ裏で取り直す
@@ -74,14 +75,15 @@ export default function RootLayout() {
   useConnectionMonitor();
   useAppStateFocus();
   useEffect(() => {
-    usePlayer.getState().setEngine(createAudioEngine());
-    void initPlayback();
+    // 再生バックエンドの差し込み（Android はネイティブ Media3、iOS 等は expo-audio）。hydrate より前に行う。
+    setupPlayback();
     // 接続判定（Gate）の前にダウンロード/設定を読み込む。オフライン許可判定が DL の有無に依存するため。
     void (async () => {
       await Promise.all([
-        useDownloads.getState().hydrate(),
+        // 読み込み後、ネイティブモードなら Android Auto のカタログへ取り込みを促す。
+        useDownloads.getState().hydrate().then(onDownloadsHydrated),
         useSettings.getState().hydrate(),
-        // shuffle / repeat の復元（再生ストア）。
+        // shuffle / repeat の復元（再生ストア。ネイティブモードでは初回移行のみでキューは上書きしない）。
         usePlayer.getState().hydrate(),
         usePendingEdits.getState().hydrate(),
       ]);

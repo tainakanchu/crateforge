@@ -1,0 +1,27 @@
+{
+  "name": "expo-crateforge-android-auto",
+  "version": "0.1.0",
+  "description": "Expo native module that exposes Crateforge playback and library browsing to Android Auto (Media3 MediaLibraryService).",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "expo",
+    "android-auto",
+    "media3",
+    "crateforge"
+  ],
+  "peerDependencies": {
+    "expo": "*",
+    "react": "*",
+    "react-native": "*"
+  },
+  "devDependencies": {
+    "expo": "~56.0.12",
+    "typescript": "~6.0.3",
+    "@types/react": "~19.2.2"
+  }
+}

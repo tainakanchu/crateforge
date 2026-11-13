@@ -1,6 +1,7 @@
 // サーバー接続情報（baseUrl + token）のストア。
 // SecureStore に永続化し、起動時に hydrate して自動再接続する。
 // 全データ取得は useConnection().client（接続中のみ非 null）経由で行う。
+// serverId は疎通確認時の /api/health から得る（Android Auto のライブラリ識別に使う）。
 
 import * as SecureStore from "expo-secure-store";
 import { create } from "zustand";
@@ -12,6 +13,7 @@ import {
   describeApiError,
   isConnectivityError,
 } from "../lib/api/errors";
+import type { Health } from "../lib/types";
 
 const KEY_URL = "crateforge.baseUrl";
 const KEY_TOKEN = "crateforge.token";
@@ -44,6 +46,11 @@ export interface ConnectionState {
   errorKind: ApiErrorKind | null;
   /** 接続確立後のみ非 null。 */
   client: ApiClient | null;
+  /**
+   * 疎通確認できたサーバーの serverId（/api/health）。旧サーバー・未確認・切断時は null。
+   * 永続化はしない（毎回 probe で取り直す）。
+   */
+  serverId: string | null;
   /** hydrate() が一度完了したか。ルーティング判定はこれが true になってから行う。 */
   hydrated: boolean;
   /** recheck() 実行中か（UI の「再接続中…」表示用。status は変えない）。 */
@@ -92,14 +99,24 @@ export function selectIsOffline(s: Pick<ConnectionState, "status" | "errorKind" 
 /** 疎通確認のタイムアウト（ms）。 */
 const PROBE_TIMEOUT_MS = 6000;
 
-/** baseUrl + token で疎通確認する。失敗は例外。 */
-async function probe(baseUrl: string, token: string | null): Promise<void> {
+/** serverId として受け入れる形式（ネイティブ側の libraryScope 検証と同じ）。 */
+const SERVER_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** health の serverId を検証して返す。欠落・不正値は null（旧サーバー扱い）。 */
+export function serverIdOf(health: Pick<Health, "serverId"> | null | undefined): string | null {
+  const id = health?.serverId;
+  return typeof id === "string" && SERVER_ID_RE.test(id) ? id : null;
+}
+
+/** baseUrl + token で疎通確認し、serverId を返す。失敗は例外。 */
+async function probe(baseUrl: string, token: string | null): Promise<{ serverId: string | null }> {
   const client = new ApiClient({ baseUrl, token });
   // タイムアウト付きで health を叩く（LAN 不通時に固まらないように）。
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
-    await client.health(controller.signal);
+    const health = await client.health(controller.signal);
+    return { serverId: serverIdOf(health) };
   } finally {
     clearTimeout(timer);
   }
@@ -159,6 +176,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
     error: null,
     errorKind: null,
     client: null,
+    serverId: null,
     hydrated: false,
     checking: false,
     lastOkAt: null,
@@ -187,9 +205,10 @@ export const useConnection = create<ConnectionState>((set, get) => {
         set({ baseUrl, token: token ?? null, status: "connecting", error: null, errorKind: null });
         persistedKey = connKey(baseUrl, token ?? null);
         try {
-          await probe(baseUrl, token ?? null);
+          const { serverId } = await probe(baseUrl, token ?? null);
           set({
             client: makeClient(baseUrl, token ?? null),
+            serverId,
             status: "connected",
             error: null,
             errorKind: null,
@@ -215,14 +234,16 @@ export const useConnection = create<ConnectionState>((set, get) => {
         set({ status: "error", error: "URL を入力してください", errorKind: null });
         return false;
       }
-      set({ status: "connecting", error: null, errorKind: null, baseUrl, token });
+      // 接続先が変わり得るので serverId は確認し直すまで不明に戻す。
+      set({ status: "connecting", error: null, errorKind: null, baseUrl, token, serverId: null });
       try {
-        await probe(baseUrl, token);
+        const { serverId } = await probe(baseUrl, token);
         await persistConnection(baseUrl, token);
         set({
           lastBaseUrl: null,
           lastToken: null,
           client: makeClient(baseUrl, token),
+          serverId,
           status: "connected",
           error: null,
           errorKind: null,
@@ -268,6 +289,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
         lastBaseUrl: keepUrl ? baseUrl : null,
         lastToken: keepToken ? token : null,
         client: null,
+        serverId: null,
         status: "idle",
         error: null,
         errorKind: null,
@@ -284,7 +306,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
       const run = async (): Promise<boolean> => {
         if (!silent) set({ checking: true });
         try {
-          await probe(baseUrl, token);
+          const { serverId } = await probe(baseUrl, token);
           // 確認中に切断/別ホストへ接続し直された場合は結果を捨てる。
           const cur = get();
           if (cur.baseUrl !== baseUrl || cur.token !== token) return false;
@@ -301,6 +323,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
           // 既に接続済みなら client を作り直さない（全画面の再取得を避ける）。
           set({
             client: get().client ?? makeClient(baseUrl, token),
+            serverId,
             lastBaseUrl: null,
             lastToken: null,
             status: "connected",

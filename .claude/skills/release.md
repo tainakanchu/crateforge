@@ -12,6 +12,11 @@ The GitHub Actions workflow (`release.yml`) picks the tag up, builds every platf
 build jobs — publishes a **single** GitHub Release with all assets attached at once
 (Windows `.exe` / portable zip / `.msi` / NSIS, macOS `.dmg`, Linux `.AppImage` / `.deb`).
 
+The same tag also builds the **Android (Android Auto) APK** in GitHub Actions (`build-android`: `expo prebuild` + Gradle
+`assembleRelease`, signed with the repo Secrets — EAS Build is **not** used for Android). A separate `release-android` job attaches
+`crateforge-android-<version>.apk` + `.apk.sha256` to the same Release **only after both the desktop `release` job and the APK build succeed**,
+and removes the APK assets again if that step fails. An APK failure never blocks or alters the desktop Release.
+
 The release is created **only after the Windows build succeeds and all builds have finished**,
 so the GitHub Release never appears before the Windows artifacts exist — the in-app updater
 (Windows-only) will never see a version it cannot download.
@@ -29,6 +34,18 @@ git tag --sort=-version:refname | head -5   # Latest tags
 
 - If the working tree is dirty with stuff that's NOT part of this release: stop and ask the user to commit / stash first.
 - If we're not on `main`: stop and confirm with the user.
+
+## Android APK prerequisites (check before pushing the tag)
+
+```
+gh secret list | grep CRATEFORGE_ANDROID                  # KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD
+gh variable list | grep CRATEFORGE_ANDROID_CERT_SHA256    # expected signing-cert SHA-256 (warn-only in CI when unset)
+```
+
+If missing, point the user at the "メンテナ向け" section of `clients/apps/mobile/README.md` (it covers the one-time EAS keystore export).
+Never read, print, or commit key material. The APK `versionName` is the root `package.json` version; `versionCode` is derived from it
+(`100000000 + major*1000000 + minor*10000 + patch*100 + (pre-release N | 99)`; minor/patch must be <= 99, pre-release number <= 98,
+and a pre-release tag must end in a number, e.g. `v0.16.0-alpha.1`).
 
 ## Version bump
 
@@ -131,10 +148,18 @@ gh run watch --repo tainakanchu/crateforge
 gh release view vX.Y.Z --repo tainakanchu/crateforge
 ```
 
-Report the release URL back to the user.
+The Android jobs run in parallel (`build-android`, then `release-android` once the desktop `release` job has also succeeded). The final asset list
+should include `crateforge-android-<version>.apk` and `crateforge-android-<version>.apk.sha256`, and the release body gains an "Android" section
+with the SHA-256 and signing-certificate SHA-256.
+
+Report the release URL back to the user, then remind them to download the **real release asset**, verify its SHA-256 / signing certificate, and record
+device / DHU results in `docs/android-auto/verification-checklist.md` (note unverified items in the release notes).
 
 ## Failure recovery
 
+- **Only the APK failed** (desktop Release is already published): do not retag. Fix the cause (usually missing/incorrect Secrets), then use
+  "Re-run failed jobs" on the workflow run (`gh run rerun <run-id> --failed`). `gh workflow run` only produces an artifact and does not attach to the Release.
+  A failed `release-android` deletes the APK and `.sha256` assets it uploaded, so no half-published state remains.
 - **Tag pushed but build failed**: do NOT delete the tag silently. Tell the user, share the failure log, and let them decide whether to delete the tag (`git push origin :vX.Y.Z`) or fix-forward with a patch release.
 - **Forgot to bump one file**: bump it, commit a fix-up, retag (`git tag -d vX.Y.Z && git push origin :vX.Y.Z && git tag -a vX.Y.Z ...`). Only do this if no release was published yet.
 
@@ -143,4 +168,6 @@ Report the release URL back to the user.
 - Tag format: `vX.Y.Z` (lowercase `v`).
 - Date format in CHANGELOG: `YYYY-MM-DD` in UTC.
 - Commit message subject: `chore(release): vX.Y.Z`.
+- Android: do not use `eas build` for the mobile Android app (EAS versionCodes are lower than the GitHub APK's, so such a build could not update it).
+  EAS stays in use for iOS builds, JS-only OTA (`ota:prod`, production channel, applied only when the fingerprint matches) and the TV app.
 - Never skip the changelog; if there's truly nothing user-visible, the version probably shouldn't be bumped.

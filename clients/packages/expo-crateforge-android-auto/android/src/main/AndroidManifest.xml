@@ -1,0 +1,44 @@
+<!--
+  Android Auto 対応のライブラリ manifest（design.md §6.1）。AGP の manifest merge で app に必ず入るため
+  expo prebuild（clean）に依存せず、二重宣言も起きない。AAOS 用宣言（android.hardware.type.automotive 等）や
+  Car App Library は入れない。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+  <application>
+    <meta-data
+      android:name="com.google.android.gms.car.application"
+      android:resource="@xml/automotive_app_desc" />
+    <meta-data
+      android:name="androidx.car.app.TintableAttributionIcon"
+      android:resource="@drawable/ic_crateforge_car_attribution" />
+
+    <service
+      android:name="com.tainakanchu.crateforge.auto.service.CrateforgeMediaLibraryService"
+      android:exported="true"
+      android:foregroundServiceType="mediaPlayback"
+      android:label="@string/cf_auto_service_label">
+      <intent-filter>
+        <action android:name="androidx.media3.session.MediaLibraryService" />
+        <action android:name="android.media.browse.MediaBrowserService" />
+      </intent-filter>
+    </service>
+
+    <receiver
+      android:name="androidx.media3.session.MediaButtonReceiver"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MEDIA_BUTTON" />
+      </intent-filter>
+    </receiver>
+
+    <provider
+      android:name="com.tainakanchu.crateforge.auto.artwork.ArtworkProvider"
+      android:authorities="${applicationId}.crateforge.artwork"
+      android:exported="true" />
+  </application>
+</manifest>
