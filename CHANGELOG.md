@@ -10,6 +10,24 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.19.1] - 2026-11-13
+
+### 日本語
+
+#### デスクトップ
+- **ジャンルを空白区切りのタグに戻した**: v0.18.0 からジャンルを `;` `,` `/` でしか分けなくなっていたため、空白区切りでジャンルを付けている曲（例: 「Anime Remix Eurobeat」）が 1 つのタグとして表示・編集されていた。仕様どおり空白で区切るように戻した（「DeepHouse」のように複数語のジャンルは空白なしで書く）。v0.18〜v0.19 で `; ` 区切りで保存されたジャンルもそのまま分けて表示し、タグを追加・削除すると空白区切りに直して保存する。`/` は区切らない（「R&B/Soul」は 1 タグ）。タグ入力欄は空白・`,`・`;` でタグを確定する。 (#249)
+
+#### モバイル（Android）
+- **Android 版 APK を添付**: v0.19.0 ではリリースビルドのテストが失敗して Android 版 APK が Release に添付されなかったため、この版で添付する（Android Auto 対応の内容は v0.19.0 と同じ）。 (#249)
+
+### English
+
+#### Desktop
+- **Genres are space-separated tags again**: since v0.18.0 genres were split only on `;` `,` `/`, so tracks whose genres are separated by spaces (e.g. "Anime Remix Eurobeat") were shown and edited as a single tag. Genres are now split on spaces again, as intended (write multi-word genres without spaces, like "DeepHouse"). Genres saved with `; ` separators in v0.18–v0.19 are still shown split, and adding or removing a tag rewrites them space-separated. `/` does not split (e.g. "R&B/Soul" is one tag). The tag input commits a tag on space, `,` or `;`. (#249)
+
+#### Mobile (Android)
+- **Android APK attached**: in v0.19.0 the release-build tests failed, so the Android APK was not attached to the Release; it is attached in this version (the Android Auto support is the same as in v0.19.0). (#249)
+
 ## [v0.19.0] - 2026-11-13
 
 ### 日本語
