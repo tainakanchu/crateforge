@@ -65,6 +65,7 @@ const GROUPS: Group[] = [
       { keys: ["↑", "↓"], label: "選択を上下に移動" },
       { keys: ["Ctrl", "A"], label: "すべて選択" },
       { keys: ["Ctrl", "I"], label: "選択した曲を編集" },
+      { keys: ["Delete"], label: "選択した曲をライブラリから削除（確認あり）" },
       {
         keys: ["Alt", "↑"],
         label: "選択曲を 1 つ上へ (プレイリストを Playlist Order で表示中)",
@@ -89,15 +90,15 @@ const GROUPS: Group[] = [
     title: "選曲ワークベンチ",
     items: [
       { keys: ["Ctrl", "]"], label: "右ペインを表示" },
-      { keys: ["Ctrl", "1"], label: "Now Playing タブ" },
-      { keys: ["Ctrl", "2"], label: "Up Next タブ" },
+      { keys: ["Ctrl", "1"], label: "再生中タブ" },
+      { keys: ["Ctrl", "2"], label: "次に再生タブ" },
       { keys: ["Ctrl", "3"], label: "Crate タブ" },
-      { keys: ["Ctrl", "4"], label: "Similar タブ" },
-      { keys: ["Ctrl", "Shift", "S"], label: "選択曲を Similar の基準に" },
+      { keys: ["Ctrl", "4"], label: "似た曲タブ" },
+      { keys: ["Ctrl", "Shift", "S"], label: "選択曲を似た曲の基準に" },
       { keys: ["Ctrl", "Shift", "C"], label: "選択曲を Crate に追加" },
       {
         keys: ["UI"],
-        label: "Crate: Anchor / § Section / set (Arc·Lint) / smooth",
+        label: "Crate: Anchor / § Section / セット (Arc·Lint) / 整列",
       },
     ],
   },

@@ -198,7 +198,7 @@ fn resolve_template_ref(
 ) -> Result<InlineGenerator, String> {
     let tmpl = templates.get(&entry.template).ok_or_else(|| {
         format!(
-            "Generator references unknown template \"{}\"",
+            "generator が未定義のテンプレート「{}」を参照しています",
             entry.template
         )
     })?;

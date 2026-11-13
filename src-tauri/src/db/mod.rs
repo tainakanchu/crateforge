@@ -1,8 +1,10 @@
 pub mod analysis;
 pub mod backup;
+pub mod duplicates;
 pub mod playback;
 pub mod playlists;
 pub mod schema;
+pub mod smart_eval;
 pub mod stats;
 pub mod sync;
 pub mod tags;
@@ -94,9 +96,14 @@ impl Database {
     pub fn read_txn(&self) -> rusqlite::Result<rusqlite::Transaction<'_>> {
         self.conn.unchecked_transaction()
     }
+
+    /// 複数の書き込みをまとめるトランザクションを開始する (commit で確定、drop で rollback)。
+    pub fn write_txn(&self) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+        self.conn.unchecked_transaction()
+    }
 }
 
-/// SQL から呼べるアプリ定義スカラー関数を登録する。`open` / `open_memory` の両方で使う。
+/// SQL から呼べるアプリ定義スカラー関数・照合順序を登録する。`open` / `open_memory` の両方で使う。
 /// `fold(text, level)`: CJK 字体ゆれを `level` (0=Off/1=Light/2=Standard) まで畳む。
 /// NULL 列は NULL のまま返す。決定的なので SQLITE_DETERMINISTIC を付ける。
 fn register_functions(conn: &Connection) -> Result<()> {
@@ -111,6 +118,9 @@ fn register_functions(conn: &Connection) -> Result<()> {
                 .map(|t| crate::text_fold::fold(&t, crate::text_fold::FoldLevel::from_i64(level))))
         },
     )?;
+    // 自然順の照合順序 (D10): "Song 2" < "Song 10"、大文字小文字は区別しない。
+    // 一覧の ORDER BY 専用 (インデックス・ビューには使わない = 外部ツールで DB を開いても壊れない)。
+    conn.create_collation("NATSORT", crate::natural_sort::natural_cmp)?;
     Ok(())
 }
 
@@ -157,6 +167,10 @@ fn migrate(conn: &Connection) -> Result<()> {
     // tracks 側へ持つことで、再解析・解析行の作り直しで消えないようにする (#172)。
     if !column_exists(conn, "tracks", "key_camelot_user")? {
         conn.execute_batch("ALTER TABLE tracks ADD COLUMN key_camelot_user TEXT;")?;
+    }
+    // グルーピング (iTunes "Grouping" / タグの TIT1・GRP1・©grp)。スマートプレイリストの条件に使う。
+    if !column_exists(conn, "tracks", "grouping")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN grouping TEXT;")?;
     }
     migrate_persistent_ids(conn)?;
     migrate_track_analysis(conn)?;

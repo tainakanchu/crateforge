@@ -18,6 +18,7 @@ export default function GenreChips({ genres, selected, onSelect }: GenreChipsPro
   if (genres.length === 0) return null;
   return (
     <ScrollView
+      testID="genre-chips"
       horizontal
       showsHorizontalScrollIndicator={false}
       contentContainerStyle={styles.content}
@@ -48,8 +49,11 @@ export default function GenreChips({ genres, selected, onSelect }: GenreChipsPro
 }
 
 const styles = StyleSheet.create({
+  // 縦方向の親（Screen の column）で潰されないよう、ScrollView 自体を縮ませない。
+  // react-native-web の ScrollView は既定で flexShrink:1 のため、長い一覧と並ぶと高さ 0 近くまで潰れる（round-2 M3）。
   scroll: {
     flexGrow: 0,
+    flexShrink: 0,
   },
   content: {
     paddingHorizontal: 16,
@@ -57,6 +61,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   chip: {
+    flexShrink: 0,
+    minHeight: 36,
+    justifyContent: "center",
     paddingHorizontal: 14,
     paddingVertical: 7,
     borderRadius: 16,

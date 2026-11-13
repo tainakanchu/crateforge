@@ -1,14 +1,18 @@
 // アーティスト詳細。アーティスト名 + アルバム一覧（主役）+ 全曲リスト（下に併置）。
 // アルバムは albumArtist 順にソート。タップでアルバム詳細へ。曲はその位置からアーティスト全体をキューにして再生する。
 
+import { albumHref, nameFromParams } from "@/lib/albumHref";
+import { usePullToRefresh } from "@/hooks/use-refresh";
 import { useMemo } from "react";
-import { FlatList, Pressable, Text, View, StyleSheet } from "react-native";
+import { FlatList, Pressable, RefreshControl, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
-import { type Album, type Track, useConnection, usePlayer, useDownloads, useSettings, trackArtist, trackAlbumArtist } from "@crateforge/core";
+import { type Album, type Track, artistLabel, useConnection, usePlayer, useDownloads, useSettings, trackArtistKey, trackAlbumArtistKey, describeApiError } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
+import BackButton from "@/components/BackButton";
+import DesktopPlayButton from "@/components/DesktopPlayButton";
 import TrackRow from "@/components/TrackRow";
 import AlbumRow from "@/features/browse/AlbumRow";
 import DownloadButton from "@/components/DownloadButton";
@@ -25,20 +29,24 @@ type Row =
 
 export default function ArtistScreen() {
   const router = useRouter();
-  const { name } = useLocalSearchParams<{ name: string }>();
-  const artist = name ? decodeURIComponent(name) : "";
+  const params = useLocalSearchParams<{ name?: string; unknown?: string }>();
+  // unknown=1 は不明なアーティスト（API の artist: ""）。名前が無ければ null（取得しない）。
+  const artistParam = nameFromParams(params);
+  const artist = artistParam ?? "";
   const client = useConnection((s) => s.client);
   const artistGrouping = useSettings((s) => s.artistGrouping);
 
   // アルバム一覧（オンライン=全曲キャッシュ／オフライン=DL 済みから導出）。
-  const albums = useArtistAlbums(artist || null, artistGrouping);
+  const albums = useArtistAlbums(artistParam, artistGrouping);
 
   // 全曲（オンライン）。オフライン時は DL 済み entries からアーティストで絞る。
-  const query = useArtistTracks(artist || null, artistGrouping);
+  const query = useArtistTracks(artistParam, artistGrouping);
+  const { refreshing, onRefresh } = usePullToRefresh(query.refetch);
   const entries = useDownloads((s) => s.entries);
   const offlineTracks = useMemo(() => {
-    if (client || !artist) return [] as Track[];
-    const nameOf = artistGrouping === "albumArtist" ? trackAlbumArtist : trackArtist;
+    if (client || artistParam == null) return [] as Track[];
+    // 束ねキー（不明なアーティストは ""）で突き合わせる。
+    const nameOf = artistGrouping === "albumArtist" ? trackAlbumArtistKey : trackArtistKey;
     return Object.values(entries)
       .map((e) => e.track)
       .filter((t) => nameOf(t) === artist)
@@ -48,7 +56,7 @@ export default function ArtistScreen() {
           (a.discNumber ?? 0) - (b.discNumber ?? 0) ||
           (a.trackNumber ?? 0) - (b.trackNumber ?? 0),
       );
-  }, [client, artist, entries, artistGrouping]);
+  }, [client, artist, artistParam, entries, artistGrouping]);
   const tracks = client ? (query.data ?? []) : offlineTracks;
 
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
@@ -89,10 +97,11 @@ export default function ArtistScreen() {
 
   return (
     <Screen edges={["top"]}>
+      <BackButton />
       <View style={styles.header}>
         <View style={styles.headerText}>
           <Text style={styles.title} numberOfLines={2}>
-            {artist || "アーティスト"}
+            {artistParam != null ? artistLabel(artist) : "アーティスト"}
           </Text>
           {headerLabel ? <Text style={styles.count}>{headerLabel}</Text> : null}
         </View>
@@ -117,6 +126,7 @@ export default function ArtistScreen() {
             <Ionicons name="play" size={18} color={BRAND.accentText} />
             <Text style={styles.playLabel}>再生</Text>
           </Pressable>
+          <DesktopPlayButton tracks={tracks} />
         </View>
       ) : null}
 
@@ -142,10 +152,10 @@ export default function ArtistScreen() {
                 <AlbumRow
                   album={item.album}
                   onPress={() => {
-                    // 「アルバムなし」(空アルバム) はこのアーティストの無アルバム曲を専用表示へ。
+                    // 「不明なアルバム」(空アルバム) はこのアーティストの無アルバム曲を専用表示へ。
                     // 通常アルバムは従来どおり album 名で遷移（空セグメントのクラッシュは回避）。
                     if (item.album.album) {
-                      router.push(`/album/${encodeURIComponent(item.album.album)}`);
+                      router.push(albumHref(item.album.album));
                     } else {
                       router.push(
                         `/album/none?noAlbum=1&artist=${encodeURIComponent(artist)}&grouping=${artistGrouping}`,
@@ -167,6 +177,7 @@ export default function ArtistScreen() {
             );
           }}
           contentContainerStyle={styles.listContent}
+          refreshControl={client ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PALETTE.accent} colors={[PALETTE.accent]} /> : undefined}
         />
       )}
     </Screen>
@@ -174,7 +185,7 @@ export default function ArtistScreen() {
 }
 
 function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : "読み込みに失敗しました";
+  return describeApiError(e, { action: "読み込み" });
 }
 
 const styles = StyleSheet.create({
@@ -203,6 +214,7 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     gap: 12,
     paddingHorizontal: 16,

@@ -62,6 +62,10 @@ pub struct Track {
     /// 実効キーは「上書き ?? 解析値」。同期ワイヤ互換のため欠落時は None。
     #[serde(default)]
     pub key_camelot_user: Option<String>,
+    /// グルーピング (iTunes の "Grouping" / タグの TIT1・GRP1・©grp)。未設定なら None。
+    /// 同期ワイヤ互換のため欠落時は None。
+    #[serde(default)]
+    pub grouping: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +119,9 @@ pub struct LibraryStats {
     pub track_count: i64,
     pub playlist_count: i64,
     pub total_time_ms: i64,
+    /// Artists ビューのアーティスト数 (表示名で束ねた数。旧 JSON に無くても読めるよう default)。
+    #[serde(default)]
+    pub artist_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -413,6 +420,10 @@ pub struct RipRequest {
     pub release: Option<ReleaseCandidate>,
     /// 取り込み完了後にライブラリに追加するか。
     pub add_to_library: bool,
+    /// トラックごとの扱い (取り込み済み検出の結果)。指定の無いトラックは取り込む。
+    /// skip はリップ自体をしない。replace は既存曲を新しいファイルへ置き換える。
+    #[serde(default)]
+    pub track_actions: Vec<RipTrackAction>,
 }
 
 /// リッピング中のトラックの工程 (UI の「読み取り中 / エンコード中」表示用)。
@@ -452,6 +463,12 @@ pub enum RipProgress {
     Done {
         written_files: Vec<String>,
         added_tracks: usize,
+        /// 既存曲を置き換えた数。
+        replaced_tracks: usize,
+        /// 置き換え時に退避した旧ファイルの場所。
+        moved_old_files: Vec<String>,
+        /// 置き換えに失敗したトラックの説明 (既存曲・旧ファイルはそのまま)。
+        replace_errors: Vec<String>,
     },
     Error {
         message: String,
@@ -473,6 +490,116 @@ pub struct ImportSummary {
     pub imported: usize,
     pub skipped: usize,
     pub failed: usize,
+}
+
+/// 取り込み済み検出で一致した既存曲 (リップ / ファイル取り込み共通)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateHit {
+    pub track_id: i64,
+    pub name: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub total_time_ms: Option<i64>,
+    pub location_path: Option<String>,
+    pub health: crate::library_match::health::FileHealth,
+    pub kind: crate::library_match::MatchKind,
+}
+
+/// CD の 1 トラック分の照合結果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipTrackDuplicates {
+    pub position: usize,
+    pub hits: Vec<DuplicateHit>,
+}
+
+/// `find_rip_duplicates` の入力 (選んだリリースのアルバム情報 + トラック)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipDuplicateQuery {
+    pub album: Option<String>,
+    pub album_artist: Option<String>,
+    pub tracks: Vec<ReleaseTrack>,
+}
+
+/// 取り込み / リップ時の 1 曲ごとの扱い。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ItemAction {
+    #[default]
+    Import,
+    Skip,
+    Replace,
+}
+
+/// `plan_import` の 1 ファイル分 (タグと照合結果)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPlanItem {
+    pub path: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub duration_ms: Option<i64>,
+    /// 同じパスの曲を除いた一致 (別ファイルとして取り込み済みの曲)。
+    pub hits: Vec<DuplicateHit>,
+    /// このパスそのものが既にライブラリにある (従来どおり黙ってスキップする対象)。
+    pub already_imported_same_path: bool,
+    /// `already_imported_same_path` のうち、表記の違うパス (リンク / ハードリンク経由など) で
+    /// 同じ実体が登録済みのとき、その登録済みのパス。文字列として同じパスなら None。
+    /// 確認ダイアログで「登録済み（同じファイル）」の行として見せるのに使う (E1)。
+    #[serde(default)]
+    pub registered_path: Option<String>,
+    /// 取り込む側のファイル自体にゼロ埋め破損の疑いがある (既定でスキップする)。
+    #[serde(default)]
+    pub source_broken: bool,
+}
+
+/// `import_with_actions` の 1 ファイル分の指示。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportActionItem {
+    pub path: String,
+    pub action: ItemAction,
+    #[serde(default)]
+    pub replace_track_id: Option<i64>,
+}
+
+/// `import_with_actions` の 1 ファイル分の結果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportActionResult {
+    pub path: String,
+    pub action: ItemAction,
+    pub ok: bool,
+    pub error: Option<String>,
+    pub track_id: Option<i64>,
+    /// 置き換えで新しく参照するようになったファイル。
+    pub new_path: Option<String>,
+    /// 置き換えで旧ファイルを退避した先 (退避した場合のみ)。
+    pub old_file_moved_to: Option<String>,
+}
+
+/// `import_with_actions` の結果。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportActionsSummary {
+    pub imported: usize,
+    pub skipped: usize,
+    pub replaced: usize,
+    pub failed: usize,
+    pub results: Vec<ImportActionResult>,
+}
+
+/// リップ時のトラックごとの扱い ([`RipRequest::track_actions`])。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipTrackAction {
+    pub position: usize,
+    pub action: ItemAction,
+    #[serde(default)]
+    pub replace_track_id: Option<i64>,
 }
 
 /// 技術メタデータ一括再読み取り (#171) の結果。
@@ -505,24 +632,54 @@ pub struct FileCheckSummary {
 
 // === Smart playlists ===
 
-/// スマートプレイリストの条件 (フラットなルール列 + 全/いずれか一致)。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// スマートプレイリストの条件。トップレベルのルール列 + 入れ子の条件グループを
+/// 全/いずれか一致で組み合わせる (iTunes のサブ条件と同じ考え方)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SmartCriteria {
     /// true = すべての条件に一致 (AND)、false = いずれか (OR)。
     pub match_all: bool,
     pub rules: Vec<SmartRule>,
+    /// 入れ子の条件グループ。旧データ (フラットなルール列のみ) にも無いので `default`。
+    #[serde(default)]
+    pub groups: Vec<SmartGroup>,
     /// 上限曲数 (None で無制限)。
     pub limit: Option<usize>,
     /// 並び替えフィールド (UI 側 SortField 名)。
     pub sort_by: Option<String>,
     #[serde(default)]
     pub sort_desc: bool,
+    /// 第 2 キー以降の並び替え (`sort_by` で同順位のときに順に使う)。Rules (YAML) の
+    /// 複数キーソート用。旧データ・UI 作成分には無いので `default`、空なら出力しない。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub then_by: Vec<SmartSortKey>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 並び替えの 1 キー (第 2 キー以降)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartSortKey {
+    pub field: String,
+    #[serde(default)]
+    pub desc: bool,
+}
+
+/// 入れ子の条件グループ。自身のルール列と子グループを `match_all` で組み合わせる。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartGroup {
+    pub match_all: bool,
+    #[serde(default)]
+    pub rules: Vec<SmartRule>,
+    #[serde(default)]
+    pub groups: Vec<SmartGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SmartRule {
+    /// フィールド名。`"playlist"` は「プレイリストに含まれる」条件で、
+    /// `value` に参照先プレイリストの persistent_id を入れる。
     pub field: String,
     pub op: SmartOp,
     pub value: String,
@@ -535,6 +692,10 @@ pub enum SmartOp {
     IsNot,
     Contains,
     NotContains,
+    /// 前方一致 (文字列)。
+    StartsWith,
+    /// 後方一致 (文字列)。
+    EndsWith,
     Gt,
     Lt,
     Gte,

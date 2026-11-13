@@ -1,32 +1,37 @@
 // Playlists タブ。フォルダ階層のルート項目だけを縦に一覧する。
 // 各行: 名前（太字）+ 種別/曲数 + アイコン。フォルダはフォルダ画面へ、プレイリストは詳細へ遷移。
-// フォルダは子を含むので trackCount で落とさない。空のプレイリスト（非フォルダ）だけ間引く。
+// trackCount での絞り込みはしない（空 / スマートも表示）。
 // オフライン時はダウンロード済みプレイリストを一覧し、タップで詳細へ遷移できる。
 
 import { useMemo } from "react";
-import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
-import { type DownloadedPlaylist, type Playlist, useConnection, useDownloads } from "@crateforge/core";
-import { BRAND, PALETTE } from "@/constants/brand";
+import { type DownloadedPlaylist, type Playlist, useConnection, useDownloads, describeApiError } from "@crateforge/core";
+import { PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
+import ConnectionNotice from "@/components/ConnectionNotice";
 import { usePlaylists } from "@/features/browse/hooks";
 import { rootItems } from "@/features/browse/playlistTree";
 import PlaylistRow from "@/features/browse/PlaylistRow";
+import { LIGHT_LIST_FRESH_MS, usePullToRefresh, useRefetchStaleOnFocus } from "@/hooks/use-refresh";
+
+// タブに戻ったら（このタブの）プレイリスト一覧だけ、10 秒以上経っていれば取り直す（round-3 N5）。
+const PLAYLISTS_FOCUS_TARGETS = [{ queryKey: ["playlists"], freshMs: LIGHT_LIST_FRESH_MS }] as const;
 
 export default function PlaylistsScreen() {
   const router = useRouter();
   const client = useConnection((s) => s.client);
   const query = usePlaylists();
+  // プル更新 + タブに戻ったときの再取得（stale のみ）。
+  const { refreshing, onRefresh } = usePullToRefresh(query.refetch);
+  useRefetchStaleOnFocus(PLAYLISTS_FOCUS_TARGETS);
 
-  // 階層のルート項目だけを表示する。フォルダは中身を持つので残し、
-  // 空の通常プレイリスト（trackCount 0）だけノイズとして間引く。
-  const rows = useMemo(() => {
-    const all = query.data ?? [];
-    return rootItems(all).filter((p) => (p.isFolder ? true : p.trackCount > 0));
-  }, [query.data]);
+  // 階層のルート項目だけを表示する。空のプレイリスト・スマートプレイリストも隠さない
+  // （スマートの件数は評価結果に依存するため 0 でも表示する）。
+  const rows = useMemo(() => rootItems(query.data ?? []), [query.data]);
 
   const onPress = (p: Playlist) => {
     if (p.isFolder) {
@@ -60,6 +65,9 @@ export default function PlaylistsScreen() {
           )
         }
         contentContainerStyle={rows.length === 0 ? styles.emptyContent : styles.listContent}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PALETTE.accent} colors={[PALETTE.accent]} />
+        }
       />
     </Screen>
   );
@@ -83,34 +91,14 @@ function OfflinePlaylists() {
 
   return (
     <Screen>
-      {/* オフライン中を示すバナー */}
-      <View style={styles.offlineBanner}>
-        <Ionicons name="cloud-offline-outline" size={15} color={PALETTE.textDim} />
-        <Text style={styles.offlineBannerText}>
-          {rows.length > 0
-            ? `サーバー未接続 ・ 保存済み ${rows.length}件`
-            : "サーバー未接続"}
-        </Text>
-      </View>
+      {/* 未接続の理由 1 行 + 復帰導線（トークン再入力 / 再試行 / 接続画面へ）。 */}
+      <ConnectionNotice suffix={rows.length > 0 ? `保存済み ${rows.length}件` : null} />
 
       {rows.length === 0 ? (
-        <>
-          <EmptyView
-            message="オフライン保存されたプレイリストはありません"
-            icon="cloud-offline-outline"
-          />
-          <View style={styles.connectActions}>
-            <Pressable
-              onPress={() => router.push("/connect")}
-              accessibilityRole="button"
-              accessibilityLabel="サーバーに接続"
-              style={({ pressed }) => [styles.connectBtn, pressed && styles.pressed]}
-            >
-              <Ionicons name="wifi" size={18} color={BRAND.accentText} />
-              <Text style={styles.connectBtnText}>サーバーに接続</Text>
-            </Pressable>
-          </View>
-        </>
+        <EmptyView
+          message="オフライン保存されたプレイリストはありません"
+          icon="cloud-offline-outline"
+        />
       ) : (
         <FlatList
           data={rows}
@@ -156,49 +144,12 @@ function OfflinePlaylistRow({
 }
 
 function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : "読み込みに失敗しました";
+  return describeApiError(e, { action: "読み込み" });
 }
 
 const styles = StyleSheet.create({
   listContent: { paddingTop: 8, paddingBottom: 96 },
   emptyContent: { flexGrow: 1 },
-  offlineBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 4,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-  },
-  offlineBannerText: {
-    color: PALETTE.textDim,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  connectActions: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-  },
-  connectBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: PALETTE.accent,
-  },
-  connectBtnText: {
-    color: BRAND.accentText,
-    fontSize: 15,
-    fontWeight: "700",
-  },
   pressed: {
     opacity: 0.7,
   },

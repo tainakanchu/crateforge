@@ -25,7 +25,17 @@ function isInsideRoot(path: string, root: string): boolean {
   return (norm(path) + "/").startsWith(norm(root) + "/");
 }
 
-export function DeleteTracksDialog({ tracks, onClose, onDeleted }: DeleteTracksDialogProps) {
+export function DeleteTracksDialog({ tracks: rawTracks, onClose, onDeleted }: DeleteTracksDialogProps) {
+  // 同じ曲を 2 回含むプレイリストから選ぶと同じ trackId が重複して渡る。
+  // 件数表示・プレビューの React key・削除 API 引数がずれないよう trackId で一意化する。
+  const tracks = useMemo(() => {
+    const seen = new Set<number>();
+    return rawTracks.filter((t) => {
+      if (seen.has(t.trackId)) return false;
+      seen.add(t.trackId);
+      return true;
+    });
+  }, [rawTracks]);
   const pushToast = useStore((s) => s.pushToast);
   const removeFromCrate = useStore((s) => s.removeFromCrate);
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);

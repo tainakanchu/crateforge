@@ -12,10 +12,13 @@ mod ffmpeg;
 mod fonts;
 mod importer;
 mod itunes_xml;
+mod library_match;
 mod logging;
 mod mdns;
 mod metadata;
 mod models;
+mod natural_sort;
+mod open_with;
 mod organizer;
 mod pairing;
 mod playback_target;
@@ -27,6 +30,7 @@ mod smtc;
 mod sync;
 mod text_fold;
 mod traktor_nml;
+mod transient;
 mod updater;
 mod usb_export;
 
@@ -57,6 +61,15 @@ pub fn run() {
     let valid_tokens = devices::ValidTokens::default();
 
     tauri::Builder::default()
+        // 単一インスタンス化: 起動中にもう一度起動された (「このアプリで開く」で音声ファイルを
+        // 開いた) ときは、既存プロセスへ argv を転送して新しいプロセスは終了する。
+        // プラグインの規約どおり最初に登録する。
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            open_with::focus_main_window(app);
+            let cwd = (!cwd.is_empty()).then(|| std::path::PathBuf::from(&cwd));
+            let paths = open_with::paths_from_args(&argv, cwd.as_deref());
+            open_with::receive(app, paths);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -65,16 +78,30 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         // 埋め込みジャケットを `artwork://localhost/<percent-encoded path>` で配信。
         // <img> から遅延ロードされ、WebView がレスポンスをキャッシュする。
-        .register_asynchronous_uri_scheme_protocol("artwork", |_ctx, request, responder| {
+        // `?s=<px>` を付けると段階 (64/128/256/512/1024) に丸めた縮小版を返し、
+        // `<app_cache_dir>/artwork-thumbs` にディスクキャッシュする (artwork::thumb)。
+        // s 無しは従来どおり原本。Windows では `http://artwork.localhost/...` になるが
+        // path / query の形は同じ。
+        .register_asynchronous_uri_scheme_protocol("artwork", |ctx, request, responder| {
             // convertFileSrc は `/<encodeURIComponent(path)>` を作る。先頭スラッシュは
             // 1 個だけ剥がす (絶対パスの先頭 `/` を誤って消さないため)。
             let raw = request.uri().path();
             let path_enc = raw.strip_prefix('/').unwrap_or(raw).to_string();
-            std::thread::spawn(move || {
+            let bucket = artwork::thumb::parse_size_query(request.uri().query());
+            let cache_dir = bucket.and_then(|_| {
+                ctx.app_handle()
+                    .path()
+                    .app_cache_dir()
+                    .ok()
+                    .map(|d| d.join(artwork::thumb::CACHE_DIR_NAME))
+            });
+            // スレッドを 1 リクエストごとに立てず、tokio の blocking プールに載せる。
+            // 重い処理 (抽出・縮小) の同時実行数は artwork::thumb 側のセマフォで絞る。
+            tauri::async_runtime::spawn(async move {
                 let path = percent_encoding::percent_decode_str(&path_enc)
                     .decode_utf8_lossy()
                     .into_owned();
-                let resp = match artwork::extract_picture(&path) {
+                let resp = match artwork::thumb::load(path, bucket, cache_dir).await {
                     Some((data, mime)) => tauri::http::Response::builder()
                         .status(200)
                         .header(tauri::http::header::CONTENT_TYPE, mime)
@@ -133,11 +160,20 @@ pub fn run() {
         .manage(commands::output_device::OutputDeviceNotices::default())
         // USB 書き出し (rbx-cli) の単一実行ガード。
         .manage(usb_export::UsbExportRuntime::default())
+        // 「このアプリで開く」: フロント準備前に届いたファイルの溜め置きと、一時再生曲のレジストリ。
+        .manage(open_with::PendingOpen::default())
+        .manage(transient::TransientTracks::default())
         .setup(|app| {
             // クラッシュ痕跡を残すためのファイルロガー + panic フックを最初に仕込む
             // (GUI 起動で stderr が残らない。panic=abort でも abort 前にフックが走る)。
             if let Ok(dir) = app.path().app_data_dir() {
                 logging::install(&dir);
+            }
+
+            // artwork:// サムネイルのディスクキャッシュを容量上限まで掃除する。
+            // バックグラウンドスレッドで少し待ってから走るので起動はブロックしない。
+            if let Ok(dir) = app.path().app_cache_dir() {
+                artwork::thumb::spawn_startup_trim(dir.join(artwork::thumb::CACHE_DIR_NAME));
             }
 
             // バックグラウンド音声解析ワーカを起動して managed state に載せる。
@@ -200,6 +236,17 @@ pub fn run() {
                 }
             }
 
+            // 「このアプリで開く」で起動された場合 (Windows / Linux) は argv にファイルが載る。
+            // フロントの準備前なので溜めておき、マウント時に取り出してもらう。
+            {
+                let args: Vec<String> = std::env::args_os()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect();
+                let cwd = std::env::current_dir().ok();
+                let paths = open_with::paths_from_args(&args, cwd.as_deref());
+                open_with::receive(app.handle(), paths);
+            }
+
             // 前回 enabled だった場合のみ内蔵 API サーバーを自動起動する。
             // bind 失敗 (ポート使用中など) は非致命: 警告だけ出して起動はブロックしない。
             {
@@ -227,6 +274,9 @@ pub fn run() {
             commands::library::export_library,
             commands::library::import_files,
             commands::library::import_folders,
+            commands::duplicates::find_rip_duplicates,
+            commands::duplicates::plan_import,
+            commands::duplicates::import_with_actions,
             commands::library::refresh_tech_metadata,
             commands::library::rescan_file_existence,
             commands::library::relocate_track_file,
@@ -269,6 +319,8 @@ pub fn run() {
             commands::playlists::create_playlist,
             commands::playlists::rename_playlist,
             commands::playlists::delete_playlist,
+            commands::playlists::get_playlist_track_count,
+            commands::playlists::get_smart_playlist_counts,
             commands::playlists::add_tracks_to_playlist,
             commands::playlists::remove_track_from_playlist,
             commands::playlists::remove_tracks_from_playlist,
@@ -277,6 +329,7 @@ pub fn run() {
             commands::playlists::update_smart_criteria,
             commands::playlists::get_smart_criteria,
             commands::playlists::get_smart_playlist_tracks,
+            commands::playlists::restore_itunes_smart_playlists,
             // playback
             commands::playback::play_track,
             commands::playback::pause,
@@ -302,6 +355,10 @@ pub fn run() {
             commands::playback::set_preview_mode,
             commands::playback::get_preview_mode,
             commands::playback_persist::get_playback_restored,
+            // 「このアプリで開く」(ファイル関連付け) / 一時再生曲
+            commands::open_with::take_pending_open_files,
+            commands::open_with::play_opened_files,
+            commands::open_with::import_transient_track,
             commands::output_device::list_output_devices,
             commands::output_device::set_output_device,
             commands::output_device::take_output_device_notices,
@@ -396,6 +453,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            // macOS: Finder の「このアプリで開く」/ 既定のプレーヤーで開いたファイルは
+            // argv ではなくこのイベントで届く (起動直後はフロントより先に来うる)。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                open_with::receive(app, open_with::paths_from_urls(urls));
+            }
             // 終了時に再生キュー / 再生位置を即時保存する (#159)。
             if let tauri::RunEvent::Exit = event {
                 commands::playback_persist::flush(app);

@@ -5,7 +5,8 @@
 import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { QueryClient } from "@tanstack/react-query";
+import { AppState, type AppStateStatus, Platform } from "react-native";
+import { QueryClient, focusManager } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -13,21 +14,26 @@ import * as Updates from "expo-updates";
 
 import { PALETTE } from "@/constants/brand";
 import { createFilePersister } from "@/lib/queryPersister";
-import { useConnection, usePlayer, useDownloads, useSettings } from "@crateforge/core";
+import { useConnection, useConnectionMonitor, usePlayer, useDownloads, useSettings } from "@crateforge/core";
 import MiniPlayer from "@/components/MiniPlayer";
+import { ActionSheetHost } from "@/components/ActionSheet";
+import { ToastHost } from "@/components/Toast";
+import DownloadFailureToast from "@/components/DownloadFailureToast";
 import PlaybackErrorToast from "@/components/PlaybackErrorToast";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { usePendingEdits } from "@/store/pendingEdits";
 import { flushPending } from "@/features/triage/syncPending";
 import { onDownloadsHydrated, setupPlayback } from "@/playback/setupPlayback";
 
-// ライブラリは頻繁に変わらないので staleTime を長めに取り、タブ/モード切替のたびの
-// 再取得を抑える。全曲取得（曲/アーティストモード）は重いので特に効く。
 // stale でもキャッシュを即表示し、必要時のみ裏で更新する（stale-while-revalidate）。
+// staleTime は 1 分: タブに戻る/アプリを前面に戻すと、1 分以上経った表示中の一覧だけ裏で取り直す
+// （デスクトップ側の追加・編集が反映されないまま残らないように。round-2 M7）。
+// 全曲取得（曲モード）は重いので useTracks 側で個別に長めの staleTime を指定している。
+// すぐ反映したいときは各一覧のプル更新（RefreshControl）を使う。
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 5 * 60 * 1000, // 5分は再取得しない
+      staleTime: 60 * 1000,
       gcTime: 30 * 60 * 1000, // 30分メモリ保持
       retry: 1,
     },
@@ -52,7 +58,22 @@ async function checkForOtaUpdate(): Promise<void> {
   }
 }
 
+// React Query の「フォーカス」を AppState に繋ぐ（前面復帰で stale な表示中クエリを再取得）。
+// web は既定の visibilitychange で動くので触らない。
+function useAppStateFocus(): void {
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    const sub = AppState.addEventListener("change", (s: AppStateStatus) => {
+      focusManager.setFocused(s === "active");
+    });
+    return () => sub.remove();
+  }, []);
+}
+
 export default function RootLayout() {
+  // 前面復帰・オフライン中の接続再確認・接続中の死活監視（core フック）。
+  useConnectionMonitor();
+  useAppStateFocus();
   useEffect(() => {
     // 再生バックエンドの差し込み（Android はネイティブ Media3、iOS 等は expo-audio）。hydrate より前に行う。
     setupPlayback();
@@ -112,8 +133,11 @@ export default function RootLayout() {
             {/* ミニプレイヤーは全画面で常時表示（出し分けは MiniPlayer 内でルート判定）。
                 Stack の兄弟に置くことでスタック/タブどちらの画面にも重ねられる。 */}
             <MiniPlayer />
-            {/* 再生エラーの通知（描画なし。Toast/Alert を出す） */}
+            {/* 再生エラーの通知（描画なし。アプリ内トーストを出す） */}
             <PlaybackErrorToast />
+            <DownloadFailureToast />
+            <ToastHost />
+            <ActionSheetHost />
           </ErrorBoundary>
         </PersistQueryClientProvider>
       </SafeAreaProvider>

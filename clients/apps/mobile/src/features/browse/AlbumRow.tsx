@@ -4,11 +4,11 @@
 // CRITICAL: artwork は album.sampleTrackId（= trackId）で取得する。
 
 import { Pressable, Text, View, StyleSheet } from "react-native";
-import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 
-import { type Album, useConnection, useDownloads } from "@crateforge/core";
+import { type Album, albumLabel, useConnection, useDownloads } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
+import LayeredArtwork from "@/components/LayeredArtwork";
 
 export interface AlbumRowProps {
   album: Album;
@@ -23,7 +23,6 @@ export default function AlbumRow({ album, onPress }: AlbumRowProps) {
   // ローカル保存済みアートを最優先。DL完了で再描画されるようリアクティブに取得する。
   const localArtworkUri = useDownloads((s) => s.getLocalArtworkUri(album.sampleTrackId));
   const source = localArtworkUri ?? client?.artworkSource(album.sampleTrackId);
-  const dimensions = { width: THUMB, height: THUMB, borderRadius: RADIUS };
 
   return (
     <Pressable
@@ -31,22 +30,18 @@ export default function AlbumRow({ album, onPress }: AlbumRowProps) {
       accessibilityRole="button"
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
-      {source ? (
-        <Image
-          source={source}
-          style={[styles.image, dimensions]}
-          contentFit="cover"
-          transition={120}
-          recyclingKey={String(album.sampleTrackId)}
-        />
-      ) : (
-        <View style={[styles.placeholder, dimensions]}>
-          <Ionicons name="albums-outline" size={Math.round(THUMB * 0.5)} color={PALETTE.textFaint} />
-        </View>
-      )}
+      {/* 頭文字プレースホルダを下に敷き画像を重ねる（404 でも空箱にしない）。 */}
+      <LayeredArtwork
+        source={source}
+        name={albumLabel(album.album)}
+        size={THUMB}
+        radius={RADIUS}
+        recyclingKey={String(album.sampleTrackId)}
+      />
       <View style={styles.texts}>
         <Text style={styles.name} numberOfLines={1}>
-          {album.album || "アルバムなし"}
+          {/* 空名（タグにアルバムが無い曲のグループ）は「不明なアルバム」。 */}
+          {albumLabel(album.album)}
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
           {album.albumArtist ? `${album.albumArtist} ・ ` : ""}
@@ -68,14 +63,6 @@ const styles = StyleSheet.create({
   },
   pressed: {
     backgroundColor: PALETTE.surface,
-  },
-  image: {
-    backgroundColor: PALETTE.surfaceAlt,
-  },
-  placeholder: {
-    backgroundColor: PALETTE.surfaceAlt,
-    alignItems: "center",
-    justifyContent: "center",
   },
   texts: {
     flex: 1,

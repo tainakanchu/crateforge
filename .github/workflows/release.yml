@@ -17,26 +17,29 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         # `version` is intentionally omitted so pnpm/action-setup reads it from
         # the `packageManager` field in package.json (single source of truth).
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        # master ブランチの SHA に固定し、toolchain は入力で指定する (README 推奨形)。
+        # @stable ブランチの commit は master の履歴外で GC され得るため SHA 固定に使わない。
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
 
@@ -88,7 +91,7 @@ jobs:
           Get-ChildItem -Recurse src-tauri\target\release\bundle\nsis\*.exe -ErrorAction SilentlyContinue | Format-Table Name, Length
 
       - name: Upload standalone exe
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crateforge-windows-exe
           path: src-tauri/target/release/crateforge.exe
@@ -96,7 +99,7 @@ jobs:
           retention-days: 30
 
       - name: Upload portable zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crateforge-windows-portable
           path: Crateforge_*_x64_portable.zip
@@ -104,7 +107,7 @@ jobs:
           retention-days: 30
 
       - name: Upload installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crateforge-windows-installers
           path: |
@@ -120,9 +123,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Tauri 2 (webkit2gtk-4.1) + rodio(ALSA) + discid(libdiscid) のビルド/リンク依存。
+      # Tauri 2 (webkit2gtk-4.1) + rodio(ALSA) のビルド/リンク依存。
+      # libdiscid は apt ではなく固定版をソースからビルドする (下の Build libdiscid 参照)。
       - name: Install Linux build deps
         run: |
           sudo apt-get update
@@ -133,26 +137,40 @@ jobs:
             librsvg2-dev \
             patchelf \
             libasound2-dev \
-            libdiscid-dev \
+            cmake \
             libxdo-dev \
             libssl-dev \
             pkg-config \
             libdbus-1-dev
 
+      # AppImage は libdiscid.so.0 を同梱する (LGPL-2.1)。Release に添付するソースと
+      # 一致させるため、版と SHA-256 を固定したソースからビルドしてそれにリンクする。
+      # LD_LIBRARY_PATH は AppImage 化 (linuxdeploy) が依存 .so を解決するために必要。
+      - name: Build libdiscid (pinned source)
+        run: |
+          prefix="$RUNNER_TEMP/libdiscid"
+          bash scripts/build-libdiscid.sh build "$prefix"
+          echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$prefix/lib" >> "$GITHUB_ENV"
+
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        # master ブランチの SHA に固定し、toolchain は入力で指定する (README 推奨形)。
+        # @stable ブランチの commit は master の履歴外で GC され得るため SHA 固定に使わない。
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
 
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
 
@@ -168,13 +186,39 @@ jobs:
           # GitHub ランナーは FUSE 無しのことがあるため、appimagetool を展開実行させる。
           APPIMAGE_EXTRACT_AND_RUN: "1"
 
+      # アプリ内ライセンス表記 (AppImage に libdiscid 同梱) と実態の一致を検証する。
+      # --appimage-extract <pattern> は fnmatch(FNM_PATHNAME) で照合され '*' が '/' を跨がない
+      # ため、'*libdiscid*' では usr/lib/libdiscid.so.0 が展開されない (v0.18.0 はこれで誤検知)。
+      # パターンは使わず全展開し、同梱位置・固定版・同梱版への解決 (RUNPATH) を確認する。
+      - name: Verify bundled libdiscid (AppImage)
+        run: |
+          set -euo pipefail
+          source third_party/libdiscid/libdiscid.env
+          ldd src-tauri/target/release/crateforge | grep -F libdiscid.so.0
+          appimage="$(realpath "$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -n 1)")"
+          work="$(mktemp -d -p "${RUNNER_TEMP:-/tmp}")"
+          # 展開するだけなので FUSE も APPIMAGE_EXTRACT_AND_RUN も不要 (runtime 差で挙動が変わらないよう外す)。
+          (cd "$work" && env -u APPIMAGE_EXTRACT_AND_RUN "$appimage" --appimage-extract > /dev/null)
+          root="$work/squashfs-root"
+          lib="$root/usr/lib/libdiscid.so.0"
+          test -f "$lib" || {
+            echo "::error::AppImage does not bundle usr/lib/libdiscid.so.0"; exit 1; }
+          grep -aqF "libdiscid $LIBDISCID_VERSION" "$lib" || {
+            echo "::error::bundled libdiscid is not the pinned $LIBDISCID_VERSION"; exit 1; }
+          # LD_LIBRARY_PATH (ビルド用) 無しで、同梱バイナリが同梱版を解決すること。
+          resolved="$(env -u LD_LIBRARY_PATH ldd "$root/usr/bin/crateforge" | awk '$1 == "libdiscid.so.0" { print $3 }')"
+          echo "AppImage: libdiscid.so.0 => $resolved"
+          [ "$(realpath -m "$resolved")" = "$(realpath "$lib")" ] || {
+            echo "::error::AppImage binary does not resolve the bundled libdiscid"; exit 1; }
+          rm -rf "$work"
+
       - name: Show built artifacts
         run: |
           echo "=== AppImage ==="; ls -la src-tauri/target/release/bundle/appimage/ || true
           echo "=== deb ==="; ls -la src-tauri/target/release/bundle/deb/ || true
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crateforge-linux
           path: |
@@ -186,8 +230,9 @@ jobs:
   # === macOS: Apple Silicon (arm64) をネイティブビルド（未署名・手動 DL 用）===
   # Intel (macos-13) は GitHub ホストランナーの枯渇でキュー待ちのまま 24h ハングして
   # cancelled になる事象が頻発するため配布対象から外した（Intel Mac 自体も EOL 進行中）。
-  # ユニバーサルにしないのは、libdiscid が brew で片アーキしか入らずクロスリンクが
-  # 失敗するため。ネイティブビルドなら一致する libdiscid をリンクできる。
+  # ユニバーサルにしないのは、同梱する libdiscid (scripts/build-libdiscid.sh でソースから
+  # ビルド) が片アーキのみのため。ネイティブビルドなら一致する libdiscid をリンクできる。
+  # macos-14 ランナーは 2026-11-02 に廃止されたため、このジョブは macos-15 (arm64) を使う。
   build-macos:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     timeout-minutes: 60
@@ -195,33 +240,41 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14   # Apple Silicon (arm64)
+          - runner: macos-15   # Apple Silicon (arm64)
     runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install libdiscid (CD disc id)
-        run: brew install libdiscid
-
-      - name: Configure pkg-config for libdiscid
-        run: echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
+      # brew の libdiscid は install name が /opt/homebrew/... の絶対パスで、そのまま
+      # リンクすると brew で libdiscid を入れていない Mac で起動直後に dyld が落ちる
+      # (v0.17.0 で発生)。固定版をソースから @rpath 付きでビルドし、.app に同梱する。
+      - name: Build libdiscid (pinned source)
+        run: |
+          prefix="$RUNNER_TEMP/libdiscid"
+          bash scripts/build-libdiscid.sh build "$prefix"
+          echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LIBDISCID_DYLIB=$prefix/lib/libdiscid.0.dylib" >> "$GITHUB_ENV"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        # master ブランチの SHA に固定し、toolchain は入力で指定する (README 推奨形)。
+        # @stable ブランチの commit は master の履歴外で GC され得るため SHA 固定に使わない。
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
 
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
 
@@ -232,15 +285,34 @@ jobs:
         run: pnpm typecheck
 
       # 未署名ビルド（Gatekeeper 警告は出るが配布可能）。
+      # frameworks に dylib を渡すと tauri-build が rpath @executable_path/../Frameworks を
+      # 付与し、bundler が Contents/Frameworks にコピーする。
       - name: Tauri build (native, unsigned)
-        run: pnpm tauri build
+        run: pnpm tauri build --config "{\"bundle\":{\"macOS\":{\"frameworks\":[\"$LIBDISCID_DYLIB\"]}}}"
+
+      # 起動時クラッシュの再発防止: バイナリが Homebrew 配下の dylib を参照していないこと、
+      # libdiscid が同梱されていることを検証し、満たさなければリリースさせない。
+      - name: Verify bundled dylibs
+        run: |
+          app="$(ls -d src-tauri/target/release/bundle/macos/*.app | head -n 1)"
+          bin="$app/Contents/MacOS/crateforge"
+          echo "=== otool -L ==="; otool -L "$bin"
+          echo "=== LC_RPATH ==="; otool -l "$bin" | grep -A2 LC_RPATH || true
+          echo "=== Frameworks ==="; ls -la "$app/Contents/Frameworks"
+          if otool -L "$bin" | tail -n +2 | grep -E "/opt/homebrew|/usr/local"; then
+            echo "::error::binary links against Homebrew dylibs (will crash on Macs without them)"
+            exit 1
+          fi
+          otool -L "$bin" | grep -q "@rpath/libdiscid.0.dylib"
+          test -f "$app/Contents/Frameworks/libdiscid.0.dylib"
+          codesign --verify --verbose "$app/Contents/Frameworks/libdiscid.0.dylib"
 
       - name: Show built artifacts
         run: |
           echo "=== dmg ==="; ls -la src-tauri/target/release/bundle/dmg/ || true
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crateforge-macos-${{ matrix.runner }}
           path: src-tauri/target/release/bundle/dmg/*.dmg
@@ -261,16 +333,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # desktop の成果物 (名前が `crateforge-` で始まるもの) だけを取得する。Android APK は別ジョブ
       # (build-android → release-android) が `android-apk` という名前で作るため、このジョブの実行中に
       # 生成途中でも混ざらない（desktop Release の内容は APK の有無・成否に依存しない）。
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: crateforge-*
           path: release-assets
+
+      # macOS .app / Linux AppImage に同梱している libdiscid (LGPL-2.1-or-later) の
+      # 「対応するソース」を、バイナリと同じ場所 (この Release) から入手できるようにする
+      # (LGPL-2.1 §6)。ビルドに使ったものと同じ版・SHA-256 を検証して添付する。
+      - name: Attach libdiscid source (LGPL compliance)
+        run: bash scripts/build-libdiscid.sh fetch release-assets/libdiscid-source
 
       - name: Extract changelog section for this tag
         shell: bash
@@ -291,7 +369,7 @@ jobs:
           cat release_body.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           # CHANGELOG の該当節を本文に、その下に自動生成の "What's Changed" を付与。
           body_path: release_body.md

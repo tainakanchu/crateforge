@@ -18,6 +18,7 @@ import { View, Text, StyleSheet } from "react-native";
 import {
   type Artist,
   type Track,
+  artistLabel,
   useConnection,
   usePlayer,
   useSettings,
@@ -85,7 +86,8 @@ export default function ArtistsScreen() {
     activeArtist == null ? null : (
       <View style={styles.detailHeader}>
         <Text style={styles.detailTitle} numberOfLines={1}>
-          {activeArtist}
+          {/* 不明なアーティスト（artist: ""）もラベルで出す。曲は ?artist=（空）で引ける。 */}
+          {artistLabel(activeArtist)}
         </Text>
         <Text style={styles.detailCount}>{tracks.length}曲</Text>
         {tracks.length > 0 ? (

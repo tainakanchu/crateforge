@@ -57,15 +57,16 @@ async fn track_upload_lock(persistent_id: &str) -> TrackUploadLock {
 const ALL_ROWS: i64 = i64::MAX;
 
 /// 表示アーティスト名を契約のフォールバック規則で決める。
-/// `first || second || "Unknown Artist"` 相当: 各値は Some かつ非空文字なら採用、
+/// `first || second || ""` 相当: 各値は Some かつ非空文字なら採用、
 /// None / 空文字 "" は次へ、空白のみ " " は truthy として採用する
 /// (db 側 `get_artists_legacy` の SQL 表示名式と完全一致させる)。
+/// どちらも無ければ空文字 (= 不明なアーティスト。`/api/artists` の `artist: ""` と同じ)。
 fn display_artist(first: Option<&str>, second: Option<&str>) -> String {
     match first {
         Some(s) if !s.is_empty() => s.to_string(),
         _ => match second {
             Some(s) if !s.is_empty() => s.to_string(),
-            _ => "Unknown Artist".to_string(),
+            _ => String::new(),
         },
     }
 }
@@ -94,6 +95,58 @@ pub async fn health(State(state): State<ApiState>) -> Result<Json<Value>, ApiErr
     })))
 }
 
+/// クエリ文字列の真偽値を寛容に受ける (`1`/`0`/`true`/`false`/`yes`/`no`/`on`/`off`、大文字小文字無視)。
+/// serde の素の `Option<bool>` は `true`/`false` しか受けず、旧モバイルクライアントが送る
+/// `?native=1` / `?original=1` が 400 になっていた (#B1)。空文字は「未指定」扱い (None)。
+/// `#[serde(default, deserialize_with = "lenient_opt_bool")]` で使う (キー自体が無ければ default=None)。
+pub(crate) fn lenient_opt_bool<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct V;
+    impl<'de> serde::de::Visitor<'de> for V {
+        type Value = Option<bool>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a boolean (true/false/1/0)")
+        }
+        fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            match v {
+                0 => Ok(Some(false)),
+                1 => Ok(Some(true)),
+                _ => Err(E::invalid_value(serde::de::Unexpected::Unsigned(v), &self)),
+            }
+        }
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            match v {
+                0 => Ok(Some(false)),
+                1 => Ok(Some(true)),
+                _ => Err(E::invalid_value(serde::de::Unexpected::Signed(v), &self)),
+            }
+        }
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            match v.trim().to_ascii_lowercase().as_str() {
+                "" => Ok(None),
+                "1" | "true" | "yes" | "on" => Ok(Some(true)),
+                "0" | "false" | "no" | "off" => Ok(Some(false)),
+                _ => Err(E::invalid_value(serde::de::Unexpected::Str(v), &self)),
+            }
+        }
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Self::Value, D2::Error> {
+            d.deserialize_any(V)
+        }
+    }
+    d.deserialize_any(V)
+}
+
 /// `GET /api/tracks` のクエリパラメータ (すべて任意, camelCase)。
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,8 +159,12 @@ pub struct TracksQuery {
     pub rating_max: Option<i64>,
     /// genre 部分一致 (小文字化して比較)。
     pub genre: Option<String>,
-    /// album 部分一致 (小文字化して比較)。
+    /// album 部分一致 (小文字化して比較)。`albumExact=true` なら完全一致。
     pub album: Option<String>,
+    /// true なら `album` を完全一致 (大文字小文字・前後空白以外を区別) で絞る。
+    /// アルバム詳細/アルバム保存で "Dawn" が "Dawn (Remixes)" を含まないようにする (#B5)。
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub album_exact: Option<bool>,
     /// 表示アーティスト名 (grouping=artist 表示名式) と完全一致で絞り込む。
     pub artist: Option<String>,
     /// 表示アルバムアーティスト名 (grouping=albumArtist 表示名式) と完全一致で絞り込む。
@@ -117,6 +174,7 @@ pub struct TracksQuery {
     /// year 上限。
     pub year_to: Option<i64>,
     /// true なら解析済みのみ、false なら未解析のみ。
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub analyzed: Option<bool>,
     /// offset/limit は Rust 側でスライスする。
     pub limit: Option<i64>,
@@ -126,10 +184,66 @@ pub struct TracksQuery {
     pub order: Option<String>,
 }
 
+/// 曲を返す API 共通のクエリ (`effectiveBpm` / `token`)。各ハンドラの本来のクエリとは
+/// 別の `Query` 抽出として受ける (未知フィールドは無視されるので併用できる)。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveBpmQuery {
+    /// `false` なら `bpm` をタグ値のまま返す (同期の取り寄せ・書き戻し用)。省略時は実効 BPM。
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub effective_bpm: Option<bool>,
+    /// `?token=` 認証のトークン (sync ロールの判定に使う)。
+    pub token: Option<String>,
+}
+
+/// 曲の応答の `bpm` を実効 BPM (タグ ?? 解析値) で埋めてよいか (A4 / D3)。
+///
+/// 曲を返す API (`/api/tracks`・`/api/tracks/{id}`・by-ids・lookup・similar・
+/// プレイリスト曲・PATCH の応答) の `bpm` は既定で実効 BPM。呼び出し側が明示的に
+/// タグ値を求めたときだけタグ値のまま返す:
+/// - `effectiveBpm=false` (同期クライアントは取り寄せ・書き戻しで必ず付ける)
+/// - sync ロールのトークン (同期として承認した端末。旧版の同期クライアントの保護)
+///
+/// 同期 (federation) はこの `bpm` をタグ値として子の DB に保存し、書き戻しで親へ
+/// 送り返しうるため、解析値が混ざるとタグとして定着してしまう。User-Agent などの
+/// 推測では判定しない (明示した要求だけを信じる)。
+pub(crate) fn effective_bpm_allowed(
+    state: &ApiState,
+    headers: &axum::http::HeaderMap,
+    query_token: Option<&str>,
+    requested: Option<bool>,
+) -> bool {
+    if requested == Some(false) {
+        return false;
+    }
+    let token = query_token.or_else(|| {
+        headers
+            .get("X-API-Token")
+            .and_then(|v| v.to_str().ok())
+    });
+    token.and_then(|t| state.tokens.role_for(t)) != Some(crate::devices::DeviceRole::Sync)
+}
+
+/// `effective_bpm_allowed` が真なら `tracks` の `bpm` を実効 BPM で埋める。
+fn apply_effective_bpm(
+    db: &crate::db::Database,
+    state: &ApiState,
+    headers: &axum::http::HeaderMap,
+    q: &EffectiveBpmQuery,
+    tracks: &mut [Track],
+) -> Result<(), ApiError> {
+    if effective_bpm_allowed(state, headers, q.token.as_deref(), q.effective_bpm) {
+        db.fill_effective_bpm(tracks)?;
+    }
+    Ok(())
+}
+
 /// `GET /api/tracks` — DB から取得 (q 有無で search/get を切替) → 構造化フィルタ → offset/limit。
 pub async fn list_tracks(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
     Query(q): Query<TracksQuery>,
+    Query(bq): Query<EffectiveBpmQuery>,
 ) -> Result<Json<Vec<Track>>, ApiError> {
     let db = state.db()?;
 
@@ -191,24 +305,33 @@ pub async fn list_tracks(
                 .unwrap_or(false)
         });
     }
-    // album: genre と同様に小文字化して部分一致。
+    // album: genre と同様に小文字化して部分一致。albumExact=true なら完全一致
+    // (/api/albums の GROUP BY album と同じ粒度。前後空白だけは無視する)。
+    // `album=&albumExact=true` (空) は album が NULL / 空白のみの曲 (= /api/albums の
+    // `album: ""`「不明なアルバム」) に一致する。
     if let Some(album) = q.album.as_deref() {
-        let needle = album.to_lowercase();
-        tracks.retain(|t| {
-            t.album
-                .as_deref()
-                .map(|a| a.to_lowercase().contains(&needle))
-                .unwrap_or(false)
-        });
+        if q.album_exact.unwrap_or(false) {
+            let want = album.trim();
+            tracks.retain(|t| t.album.as_deref().unwrap_or("").trim() == want);
+        } else {
+            let needle = album.to_lowercase();
+            tracks.retain(|t| {
+                t.album
+                    .as_deref()
+                    .map(|a| a.to_lowercase().contains(&needle))
+                    .unwrap_or(false)
+            });
+        }
     }
     // artist: 表示アーティスト名 (grouping=artist 表示名式) と完全一致。
-    // 契約: trackArtist = artist || albumArtist || "Unknown Artist"
+    // 契約: trackArtist = artist || albumArtist || "" (空 = 不明なアーティスト)
     //   (空文字 "" は falsy=次へ、NULL も次へ、空白のみ " " は truthy=採用)。
+    //   `artist=` (空) は artist / albumArtist とも無い曲に一致する。
     if let Some(want) = q.artist.as_deref() {
         tracks.retain(|t| display_artist(t.artist.as_deref(), t.album_artist.as_deref()) == want);
     }
     // albumArtist: 表示アルバムアーティスト名 (grouping=albumArtist 表示名式) と完全一致。
-    // 契約: trackAlbumArtist = albumArtist || artist || "Unknown Artist" (artist と優先順を入替)。
+    // 契約: trackAlbumArtist = albumArtist || artist || "" (artist と優先順を入替)。
     if let Some(want) = q.album_artist.as_deref() {
         tracks.retain(|t| display_artist(t.album_artist.as_deref(), t.artist.as_deref()) == want);
     }
@@ -233,10 +356,12 @@ pub async fn list_tracks(
     //    db_pushdown 経路では DB が既に offset/limit を適用済みなのでそのまま返す
     //    (二重スライスを避ける)。それ以外 (q 無し or 追加フィルタ有り) は従来どおり。
     if db_pushdown {
+        // 実効 BPM (タグ ?? 解析値) にそろえる (A4)。
+        apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
         return Ok(Json(tracks));
     }
     let offset = q.offset.unwrap_or(0).max(0) as usize;
-    let sliced: Vec<Track> = if offset >= tracks.len() {
+    let mut sliced: Vec<Track> = if offset >= tracks.len() {
         Vec::new()
     } else {
         let rest = &tracks[offset..];
@@ -245,6 +370,8 @@ pub async fn list_tracks(
             _ => rest.to_vec(),
         }
     };
+    // 実効 BPM (タグ ?? 解析値) にそろえる (A4)。
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut sliced)?;
     Ok(Json(sliced))
 }
 
@@ -252,9 +379,13 @@ pub async fn list_tracks(
 pub async fn get_track(
     State(state): State<ApiState>,
     Path(track_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+    Query(bq): Query<EffectiveBpmQuery>,
 ) -> Result<Json<Track>, ApiError> {
     let db = state.db()?;
-    let found = db.get_tracks_by_ids(&[track_id])?;
+    let mut found = db.get_tracks_by_ids(&[track_id])?;
+    // 実効 BPM (タグ ?? 解析値) にそろえる (A4)。
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut found)?;
     match found.into_iter().next() {
         Some(track) => Ok(Json(track)),
         None => Err(ApiError::not_found("track not found")),
@@ -271,10 +402,14 @@ pub struct ByIdsBody {
 /// `POST /api/tracks/by-ids` — ID 列を入力順のまま Track へ解決する。
 pub async fn tracks_by_ids(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
+    Query(bq): Query<EffectiveBpmQuery>,
     ExtractJson(body): ExtractJson<ByIdsBody>,
 ) -> Result<Json<Vec<Track>>, ApiError> {
     let db = state.db()?;
-    let tracks = db.get_tracks_by_ids(&body.track_ids)?;
+    let mut tracks = db.get_tracks_by_ids(&body.track_ids)?;
+    // 実効 BPM (タグ ?? 解析値) にそろえる (A4)。
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
     Ok(Json(tracks))
 }
 
@@ -286,13 +421,18 @@ pub struct PersistentIdsBody {
 }
 
 /// `POST /api/tracks/lookup` — persistent ID 列を入力順のまま Track へ解決する。
+///
+/// 他の曲 API と同じく `bpm` は既定で実効 BPM。同期の書き戻しは `effectiveBpm=false`
+/// を付けてタグ値で比較する (sync ロールのトークンも常にタグ値)。
 pub async fn tracks_lookup(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
+    Query(bq): Query<EffectiveBpmQuery>,
     ExtractJson(body): ExtractJson<PersistentIdsBody>,
 ) -> Result<Json<Vec<Track>>, ApiError> {
-    let tracks = state
-        .db()?
-        .get_tracks_by_persistent_ids(&body.persistent_ids)?;
+    let db = state.db()?;
+    let mut tracks = db.get_tracks_by_persistent_ids(&body.persistent_ids)?;
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
     Ok(Json(tracks))
 }
 
@@ -939,7 +1079,9 @@ pub async fn upload_track_body(
                 ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "repaired track missing")
             })?;
         let _ = std::fs::remove_file(&metadata_path);
-        state.notify_library_changed(None);
+        // 既存曲の実体差し替え (repair)。同一パスに着地しうるため、ジャケットも
+        // 変わった扱いで WebView のアートワークキャッシュを捨てさせる。
+        state.notify_artwork_changed();
         return Ok((StatusCode::OK, Json(track)).into_response());
     }
     let track_id = match db.add_imported_track_with_persistent_id(
@@ -1142,6 +1284,7 @@ pub struct SimilarQuery {
     /// BPM 許容差 (base BPM に対する割合)。
     pub bpm_tol: Option<f64>,
     /// Camelot 互換キーのみに絞るか。
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub key_compatible: Option<bool>,
     /// エネルギー許容差 (0..1 の絶対差)。
     pub energy_tol: Option<f64>,
@@ -1152,7 +1295,9 @@ pub struct SimilarQuery {
 pub async fn get_similar_tracks(
     State(state): State<ApiState>,
     Path(track_id): Path<i64>,
+    headers: axum::http::HeaderMap,
     Query(q): Query<SimilarQuery>,
+    Query(bq): Query<EffectiveBpmQuery>,
 ) -> Result<Json<Vec<SimilarHit>>, ApiError> {
     let db = state.db()?;
     // 基準曲が未解析 / ベクトル空なら類似なし。
@@ -1168,12 +1313,21 @@ pub async fn get_similar_tracks(
     };
     let ranked = rank_similar(&base, &all, &opts, q.limit.unwrap_or(25));
 
-    let mut hits = Vec::with_capacity(ranked.len());
+    let mut tracks = Vec::with_capacity(ranked.len());
+    let mut distances = Vec::with_capacity(ranked.len());
     for (tid, distance) in ranked {
         if let Ok(Some(track)) = db.get_track_by_track_id(tid) {
-            hits.push(SimilarHit { track, distance });
+            tracks.push(track);
+            distances.push(distance);
         }
     }
+    // 実効 BPM (タグ ?? 解析値) にそろえる (D3)。
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
+    let hits = tracks
+        .into_iter()
+        .zip(distances)
+        .map(|(track, distance)| SimilarHit { track, distance })
+        .collect();
     Ok(Json(hits))
 }
 
@@ -1376,20 +1530,42 @@ pub async fn list_playlists(
     State(state): State<ApiState>,
 ) -> Result<Json<Vec<Playlist>>, ApiError> {
     let db = state.db()?;
-    Ok(Json(db.get_playlists()?))
+    let mut playlists = db.get_playlists()?;
+    apply_smart_track_counts(&db, &mut playlists)?;
+    Ok(Json(playlists))
+}
+
+/// スマートプレイリストの `trackCount` をライブ評価の件数で上書きする (#B4)。
+/// `get_playlists` の件数は `playlist_tracks` の静的行数なので、スマートは常に 0 になり、
+/// モバイルの一覧で「0 曲」表示・非表示になっていた。評価は 1 パス (全曲・解析は一度だけ読む)
+/// で行い、スマートが 1 件も無ければ全曲は読まない (resolver は全曲読み込みを遅延する)。
+fn apply_smart_track_counts(
+    db: &crate::db::Database,
+    playlists: &mut [Playlist],
+) -> Result<(), ApiError> {
+    let mut resolver = db.playlist_resolver()?;
+    for p in playlists.iter_mut() {
+        if resolver.is_smart(p.playlist_id) {
+            p.track_count = resolver.track_ids(p.playlist_id)?.len() as i64;
+        }
+    }
+    Ok(())
 }
 
 /// `GET /api/playlists/{playlistId}` — プレイリスト単体のメタ + スマート条件。
-/// `smartCriteria` はアプリのルール機能で設定された場合のみ非 null (iTunes インポートでは null)。
+/// `smartCriteria` はスマートプレイリストのときだけ非 null (アプリで作成したもの、または
+/// iTunes XML の Smart Criteria を変換できたもの)。
 pub async fn get_playlist(
     State(state): State<ApiState>,
     Path(playlist_id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
-    let pl = match db.get_playlist(playlist_id)? {
+    let mut pl = match db.get_playlist(playlist_id)? {
         Some(p) => p,
         None => return Err(ApiError::not_found("playlist not found")),
     };
+    // 一覧と同じくスマートはライブ評価の件数にする。
+    apply_smart_track_counts(&db, std::slice::from_mut(&mut pl))?;
     let criteria = db.get_smart_criteria(playlist_id)?;
     let mut val = serde_json::to_value(&pl)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -1408,21 +1584,26 @@ pub struct PlaylistTracksQuery {
     pub order: Option<String>,
 }
 
-/// `GET /api/playlists/:playlistId/tracks` — プレイリスト内の曲。
+/// `GET /api/playlists/:playlistId/tracks` — プレイリスト内の曲。スマートプレイリストは
+/// ライブ評価の結果 (federation の取り寄せ・モバイルもこの曲目を受け取る)。
 pub async fn playlist_tracks(
     State(state): State<ApiState>,
     Path(playlist_id): Path<i64>,
+    headers: axum::http::HeaderMap,
     Query(q): Query<PlaylistTracksQuery>,
+    Query(bq): Query<EffectiveBpmQuery>,
 ) -> Result<Json<Vec<Track>>, ApiError> {
     let db = state.db()?;
     // get_playlist_tracks の limit/offset は i64 直値。未指定はコマンド層の既定 (500/0) に合わせる。
-    let tracks = db.get_playlist_tracks(
+    let mut tracks = db.get_playlist_tracks(
         playlist_id,
         q.limit.unwrap_or(500),
         q.offset.unwrap_or(0),
         q.sort.as_deref(),
         q.order.as_deref(),
     )?;
+    // 実効 BPM にそろえる (D3)。同期の取り寄せは effectiveBpm=false でタグ値を受け取る。
+    apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
     Ok(Json(tracks))
 }
 
@@ -1565,6 +1746,18 @@ pub async fn delete_playlist(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// スマートプレイリストの曲目は直接編集させない → 409。曲目は条件のライブ評価で決まり、
+/// `playlist_tracks` に書いても無視されるため (黙って成功させない)。
+fn ensure_tracks_editable(db: &crate::db::Database, playlist_id: i64) -> Result<(), ApiError> {
+    if db.has_smart_criteria(playlist_id)? {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            crate::db::playlists::SMART_PLAYLIST_EDIT_ERROR,
+        ));
+    }
+    Ok(())
+}
+
 /// `POST /api/playlists/:playlistId/tracks` — 曲を追加 → { added: n }。
 pub async fn add_tracks(
     State(state): State<ApiState>,
@@ -1572,6 +1765,7 @@ pub async fn add_tracks(
     ExtractJson(body): ExtractJson<ByIdsBody>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
+    ensure_tracks_editable(&db, playlist_id)?;
     let added = db.add_tracks_to_playlist(playlist_id, &body.track_ids)?;
     // 追加成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
     state.notify_library_changed(Some(playlist_id));
@@ -1584,6 +1778,7 @@ pub async fn remove_track(
     Path((playlist_id, track_id)): Path<(i64, i64)>,
 ) -> Result<StatusCode, ApiError> {
     let db = state.db()?;
+    ensure_tracks_editable(&db, playlist_id)?;
     db.remove_track_from_playlist(playlist_id, track_id)?;
     // 削除成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
     state.notify_library_changed(Some(playlist_id));
@@ -1600,6 +1795,7 @@ pub async fn replace_playlist_tracks(
     use crate::db::playlists::ReplacePlaylistTracksResult;
 
     let db = state.db()?;
+    ensure_tracks_editable(&db, playlist_id)?;
     match db.replace_playlist_tracks(playlist_id, &body.track_ids)? {
         ReplacePlaylistTracksResult::Replaced => {
             state.notify_library_changed(Some(playlist_id));
@@ -1839,7 +2035,7 @@ pub async fn set_track_artwork(
     }
     crate::artwork::set_picture(path_str, body.to_vec())
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    state.notify_library_changed(None);
+    state.notify_artwork_changed();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1861,47 +2057,33 @@ pub async fn delete_track_artwork(
     }
     crate::artwork::remove_cover(path_str)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    state.notify_library_changed(None);
+    state.notify_artwork_changed();
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// 原本バイトをデコードし、アスペクト比維持で最大辺 ≤ size に縮小して再エンコードする。
 /// format 既定は webp (ロスレス, pure Rust)、"jpeg" 指定で JPEG (品質 82)。
 /// size 既定は 512。デコード/エンコードに失敗したら `None` (呼び出し側で原本へフォールバック)。
+/// 縮小 + エンコードの実処理はデスクトップの `artwork://` と共有 (`crate::artwork::resize_encode`)。
 fn resize_artwork(
     bytes: &[u8],
     size: Option<u32>,
     format: Option<&str>,
 ) -> Option<(Vec<u8>, &'static str)> {
-    use image::codecs::jpeg::JpegEncoder;
-    use image::ImageFormat;
+    use crate::artwork::ThumbFormat;
 
-    let img = image::load_from_memory(bytes).ok()?;
     // 要求サイズは安全上限 (2048) でクランプ。loopback は無認証で叩けるため、
     // ?size=50000 のような巨大値で thumbnail が width*height*4 バイトを確保して
-    // OOM/abort するのを防ぐ。
+    // OOM/abort するのを防ぐ。元画像より大きい指定では拡大しない (resize_encode 側)。
     let edge = size.unwrap_or(512).clamp(1, 2048);
-    // 元画像より大きい指定では拡大しない (最大辺が edge を超える時だけ縮小。アスペクト比は維持)。
-    let thumb = if img.width().max(img.height()) > edge {
-        img.thumbnail(edge, edge)
+    let fmt = if matches!(format, Some("jpeg") | Some("jpg")) {
+        // JPEG は品質 82 で固定。
+        ThumbFormat::Jpeg(82)
     } else {
-        img
+        // 既定: webp (VP8L ロスレス)。
+        ThumbFormat::WebpLossless
     };
-
-    let want_jpeg = matches!(format, Some("jpeg") | Some("jpg"));
-    let mut out = std::io::Cursor::new(Vec::new());
-    if want_jpeg {
-        // JPEG は品質 82 で固定 (アルファは write_with_encoder が RGB へ畳む)。
-        let encoder = JpegEncoder::new_with_quality(&mut out, 82);
-        thumb.write_with_encoder(encoder).ok()?;
-        Some((out.into_inner(), "image/jpeg"))
-    } else {
-        // 既定: webp (image-webp による VP8L ロスレス, C ライブラリ不要)。
-        // write_to が ImageFormat::WebP に対し WebPEncoder::new_lossless を選び、
-        // 必要な色変換 (Rgb8/Rgba8 へ) も自動で行う。
-        thumb.write_to(&mut out, ImageFormat::WebP).ok()?;
-        Some((out.into_inner(), "image/webp"))
-    }
+    crate::artwork::resize_encode(bytes, edge, fmt)
 }
 
 /// ブラウザがネイティブ再生できる拡張子かどうかを判定する。
@@ -1999,8 +2181,11 @@ pub struct StreamQuery {
     /// AAC ビットレート (kbps)。64..320 にクランプ。既定 192。
     pub br: Option<u32>,
     /// 端末ネイティブ判定で配信する (オフライン保存等。RN/モバイル向け)。
+    /// `1`/`0` も受ける (旧モバイルは `native=1` を送っていた)。
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub native: Option<bool>,
-    /// 強制的に原本バイトを配信する (トランスコードしない)。
+    /// 強制的に原本バイトを配信する (トランスコードしない)。`1`/`0` も受ける。
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub original: Option<bool>,
 }
 
@@ -2329,13 +2514,25 @@ async fn play_by_id_for_remote(
     app: &tauri::AppHandle,
     track_id: i64,
 ) -> Result<(), ApiError> {
+    // ライブラリ外の一時再生曲 (デスクトップで「このアプリで開く」した曲) は DB に無い。
+    // キュー上の前後移動で当たることがあるので、DB 照合を飛ばして Coordinator に任せる。
+    if crate::transient::is_transient_id(track_id) {
+        return remote_coordinator(app)
+            .play_track(track_id, false)
+            .await
+            .map_err(play_error);
+    }
     let track = state
         .db()?
         .get_track_by_track_id(track_id)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| ApiError::not_found("track not found"))?;
+        // リモート操作の失敗はモバイルにそのまま表示されうるので日本語にする (E9)。
+        .ok_or_else(|| ApiError::not_found("曲が見つかりません"))?;
     if track.location_path.as_deref().unwrap_or("").is_empty() {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "no file path"));
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "この曲にはファイルの場所がありません",
+        ));
     }
     // リモート API 経由は常に通常再生 (preview ではない)。
     remote_coordinator(app)
@@ -2426,11 +2623,109 @@ pub async fn remote_pause(State(state): State<ApiState>) -> Result<StatusCode, A
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `remote_resume` の振る舞い。停止 (曲が読み込まれていない) 状態からの resume は、
+/// AudioPlayer に sink が無く何も鳴らないため、キューの現在位置から再生し直す (#B3)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResumePlan {
+    /// 一時停止中 (曲が読み込まれている): そのまま再開する。
+    Resume,
+    /// 停止中: キュー上の位置 (order index) の曲を頭から再生する。
+    PlayQueueAt(usize),
+    /// 停止中でキューも空: 何もしない (204)。
+    Nothing,
+}
+
+/// 現在曲 (`current_track_id`)・キュー位置 (`order_pos`)・キュー長から resume の振る舞いを決める。
+/// - 曲が読み込まれていれば (一時停止中/再生中) 通常の resume。
+/// - 停止中ならキューの現在位置、位置が無ければ先頭から再生する。
+/// - 位置がキュー長を超えている (キュー縮小後) 場合も先頭へ戻す。
+pub(crate) fn plan_resume(
+    current_track_id: Option<i64>,
+    order_pos: Option<usize>,
+    queue_len: usize,
+) -> ResumePlan {
+    if current_track_id.is_some() {
+        return ResumePlan::Resume;
+    }
+    if queue_len == 0 {
+        return ResumePlan::Nothing;
+    }
+    match order_pos {
+        Some(pos) if pos < queue_len => ResumePlan::PlayQueueAt(pos),
+        _ => ResumePlan::PlayQueueAt(0),
+    }
+}
+
+/// キュー (再生順) の `order_index` にジャンプして再生する。Up Next の行タップと同じ
+/// `commands::playback::play_queue_at` を使うので、キュー順・シャッフル順は保たれる。
+/// 範囲外は 400 (ルート未実装の古いホストの 404 とクライアントが区別できるように)。
+async fn play_queue_index_for_remote(
+    app: &tauri::AppHandle,
+    order_index: usize,
+) -> Result<Option<i64>, ApiError> {
+    let len = app
+        .state::<std::sync::Mutex<crate::audio::AudioPlayer>>()
+        .lock()
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ordered_track_ids()
+        .len();
+    if order_index >= len {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("キューの範囲外です（位置 {order_index} / {len} 曲）"),
+        ));
+    }
+    let tid = crate::commands::playback::play_queue_at(app.clone(), order_index)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if let Some(tid) = tid {
+        app.state::<crate::analyzer::Analyzer>()
+            .submit(vec![tid], false);
+    }
+    Ok(tid)
+}
+
 /// `POST /api/remote/resume` — 再生を再開する。
+/// 停止後 (曲が読み込まれていない) は、キューの現在位置の曲から再生し直す。
 pub async fn remote_resume(State(state): State<ApiState>) -> Result<StatusCode, ApiError> {
     let app = remote_app(&state)?;
-    remote_coordinator(app).resume().await.map_err(play_error)?;
+    let coord = remote_coordinator(app);
+    let current = coord.get_state().current_track_id;
+    let (order_pos, queue_len) = {
+        let player = app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>();
+        let guard = player
+            .lock()
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        (guard.order_pos(), guard.ordered_track_ids().len())
+    };
+    match plan_resume(current, order_pos, queue_len) {
+        ResumePlan::Resume => coord.resume().await.map_err(play_error)?,
+        ResumePlan::PlayQueueAt(idx) => {
+            play_queue_index_for_remote(app, idx).await?;
+        }
+        ResumePlan::Nothing => {}
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/remote/play-at` のボディ。`index` は `GET /api/remote/queue` の
+/// `trackIds` (再生順) に対する位置。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemotePlayAtBody {
+    pub index: usize,
+}
+
+/// `POST /api/remote/play-at` — キュー (再生順) の指定位置にジャンプして再生する。
+/// キューの中身・順序は変えない (デスクトップの Up Next 行クリックと同じ)。
+/// 応答は `{ "trackId": <再生した曲> }`。範囲外は 400。
+pub async fn remote_play_at(
+    State(state): State<ApiState>,
+    ExtractJson(body): ExtractJson<RemotePlayAtBody>,
+) -> Result<Json<Value>, ApiError> {
+    let app = remote_app(&state)?;
+    let tid = play_queue_index_for_remote(app, body.index).await?;
+    Ok(Json(json!({ "trackId": tid })))
 }
 
 /// `POST /api/remote/stop` — 再生を停止する。
@@ -2457,6 +2752,7 @@ pub async fn remote_prev(State(state): State<ApiState>) -> Result<Json<Value>, A
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .advance_prev();
+    crate::commands::playback::emit_queue_changed(app);
     if let Some(tid) = prev_id {
         play_by_id_for_remote(&state, app, tid).await?;
         Ok(Json(json!({ "trackId": tid })))
@@ -2491,9 +2787,13 @@ pub async fn remote_seek(
 pub struct RemoteSetQueueBody {
     pub track_ids: Vec<i64>,
     pub start_index: Option<usize>,
+    /// true ならキューを置き換えた後、`start_index` の曲から再生を始める。
+    /// 省略/false は従来どおりキューの置き換えのみ (後方互換)。
+    #[serde(default)]
+    pub play: bool,
 }
 
-/// `POST /api/remote/set-queue` — 再生キューを設定する。
+/// `POST /api/remote/set-queue` — 再生キューを設定する。`play: true` なら開始位置の曲を再生する。
 pub async fn remote_set_queue(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<RemoteSetQueueBody>,
@@ -2502,10 +2802,23 @@ pub async fn remote_set_queue(
         .app
         .as_ref()
         .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "no app handle"))?;
-    app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>()
-        .lock()
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .set_queue(body.track_ids, body.start_index.unwrap_or(0));
+    let start_tid = {
+        let player = app.state::<std::sync::Mutex<crate::audio::AudioPlayer>>();
+        let mut guard = player
+            .lock()
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        guard.set_queue(body.track_ids, body.start_index.unwrap_or(0));
+        // set_queue 後の order_pos は開始曲を指す (shuffle ON でも開始曲が先頭)。
+        guard.current_track_id_in_order()
+    };
+    crate::commands::playback::emit_queue_changed(app);
+    if body.play {
+        if let Some(tid) = start_tid {
+            play_by_id_for_remote(&state, app, tid).await?;
+            app.state::<crate::analyzer::Analyzer>()
+                .submit(vec![tid], false);
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2548,6 +2861,7 @@ pub async fn remote_shuffle(
         .lock()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .set_shuffle(body.on);
+    crate::commands::playback::emit_queue_changed(app);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2686,13 +3000,17 @@ fn apply_track_edit(
 pub async fn patch_track(
     State(state): State<ApiState>,
     Path(track_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+    Query(bq): Query<EffectiveBpmQuery>,
     ExtractJson(edit): ExtractJson<crate::models::TrackEdit>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
-    let r = match apply_track_edit(&db, track_id, &edit)? {
+    let mut r = match apply_track_edit(&db, track_id, &edit)? {
         Some(r) => r,
         None => return Err(ApiError::not_found("track not found")),
     };
+    // 応答の `track.bpm` も他の曲 API と同じ規則 (書き戻しは effectiveBpm=false でタグ値)。
+    apply_effective_bpm(&db, &state, &headers, &bq, std::slice::from_mut(&mut r.track))?;
     let track_val = serde_json::to_value(&r.track)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state.notify_library_changed(None);

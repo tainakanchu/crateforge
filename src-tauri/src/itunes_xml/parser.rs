@@ -19,7 +19,7 @@ pub enum PlistValue {
     Int(i64),
     Bool(bool),
     Date(String),
-    #[allow(dead_code)]
+    /// `<data>` の中身 (base64 テキストのまま)。`get_data` でバイト列に戻す。
     Data(String),
 }
 
@@ -29,11 +29,15 @@ pub struct RawPlaylist {
     pub track_ids: Vec<i64>,
 }
 
-pub fn import_library(xml_path: &str, db: &Database) -> Result<(usize, usize, usize), String> {
+/// iTunes Library XML を読み込んでパースする (DB には触れない)。
+pub fn parse_library_file(xml_path: &str) -> Result<(Vec<RawTrack>, Vec<RawPlaylist>), String> {
     let content =
         fs::read_to_string(xml_path).map_err(|e| format!("Failed to read XML file: {}", e))?;
+    parse_itunes_xml(&content)
+}
 
-    let (tracks, playlists) = parse_itunes_xml(&content)?;
+pub fn import_library(xml_path: &str, db: &Database) -> Result<(usize, usize, usize), String> {
+    let (tracks, playlists) = parse_library_file(xml_path)?;
 
     let mut missing_files = 0;
     let mut track_id_map = HashMap::new();
@@ -85,6 +89,13 @@ pub fn import_library(xml_path: &str, db: &Database) -> Result<(usize, usize, us
         )
         .map_err(|e| e.to_string())?;
     }
+
+    // 全プレイリストを入れ終えてから Smart Criteria を変換する (参照先が後ろにあっても解決できるように)。
+    // 既に条件を持つ行 (ローカルで編集済み) は上書きしない。
+    let source = super::smart_restore::XmlSmartSource::from_raw(&[], &playlists);
+    let report = super::smart_restore::apply_smart_sources(db, &[source], false)
+        .map_err(|e| e.to_string())?;
+    super::smart_restore::log_report("import", &report);
 
     db.finish_import().map_err(|e| e.to_string())?;
 
@@ -364,6 +375,19 @@ impl RawTrack {
             _ => None,
         })
     }
+
+    /// `<data>` 値を base64 デコードして返す。
+    #[allow(dead_code)]
+    pub fn get_data(&self, key: &str) -> Option<Vec<u8>> {
+        get_data(&self.fields, key)
+    }
+}
+
+fn get_data(fields: &HashMap<String, PlistValue>, key: &str) -> Option<Vec<u8>> {
+    fields.get(key).and_then(|v| match v {
+        PlistValue::Data(s) => super::smart_criteria::decode_plist_data(s),
+        _ => None,
+    })
 }
 
 impl RawPlaylist {
@@ -389,5 +413,47 @@ impl RawPlaylist {
                 _ => None,
             })
             .unwrap_or(false)
+    }
+
+    /// `<data>` 値 (Smart Criteria / Smart Info など) を base64 デコードして返す。
+    pub fn get_data(&self, key: &str) -> Option<Vec<u8>> {
+        get_data(&self.fields, key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `<data>` は改行・タブ入りの base64 で来る。get_data でバイト列に戻せる
+    /// (以前は get_str で見ていたためスマートプレイリストを検出できなかった)。
+    #[test]
+    fn data_values_are_decoded() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>Tracks</key>
+	<dict>
+	</dict>
+	<key>Playlists</key>
+	<array>
+		<dict>
+			<key>Name</key><string>S</string>
+			<key>Smart Info</key>
+			<data>
+			AQEAAwAA
+			AAI=
+			</data>
+		</dict>
+	</array>
+</dict>
+</plist>"#;
+        let (_, playlists) = parse_itunes_xml(xml).unwrap();
+        assert_eq!(playlists.len(), 1);
+        assert_eq!(playlists[0].get_str("Smart Info"), None);
+        assert_eq!(
+            playlists[0].get_data("Smart Info"),
+            Some(vec![1, 1, 0, 3, 0, 0, 0, 2])
+        );
     }
 }

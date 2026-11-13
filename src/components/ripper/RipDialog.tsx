@@ -6,9 +6,13 @@ import { useStore } from "../../store/useStore";
 import { Icon } from "../Icon";
 import type {
   DiscToc,
+  DuplicateHit,
   EncodeFormat,
   ReleaseCandidate,
+  RipTrackAction,
 } from "../../types";
+import { DuplicateActionSelect, DuplicateBadge, countActions } from "../DuplicateControls";
+import { defaultDecision, replaceTargetOf, type DuplicateDecision } from "../../lib/duplicates";
 import { defaultDevice } from "../../lib/disc";
 import { primeRipChime } from "../../lib/ripChime";
 
@@ -57,6 +61,47 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
   const [addToLibrary, setAddToLibrary] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const ripStatus = useStore((s) => s.ripStatus);
+  // 取り込み済み検出 (トラック番号 → 一致した既存曲) と、トラックごとの扱い。
+  const [dupHits, setDupHits] = useState<Map<number, DuplicateHit[]>>(new Map());
+  const [decisions, setDecisions] = useState<Map<number, DuplicateDecision>>(new Map());
+  const [dupChecking, setDupChecking] = useState(false);
+  // 開始前の「N 曲はすでにライブラリにあります」確認
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  // リリースを選んだら、各トラックがライブラリにあるかを照合する。
+  useEffect(() => {
+    setDupHits(new Map());
+    setDecisions(new Map());
+    setConfirmOpen(false);
+    if (!isOpen || !selectedRelease) return;
+    let cancelled = false;
+    setDupChecking(true);
+    ripperApi
+      .findRipDuplicates({
+        album: selectedRelease.title,
+        albumArtist: selectedRelease.artist,
+        tracks: selectedRelease.tracks,
+      })
+      .then((res) => {
+        if (cancelled) return;
+        const hits = new Map<number, DuplicateHit[]>();
+        const dec = new Map<number, DuplicateDecision>();
+        for (const r of res) {
+          if (r.hits.length === 0) continue;
+          hits.set(r.position, r.hits);
+          dec.set(r.position, defaultDecision(r.hits));
+        }
+        setDupHits(hits);
+        setDecisions(dec);
+      })
+      .catch((e: unknown) => console.warn("duplicate check failed:", e))
+      .finally(() => {
+        if (!cancelled) setDupChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, selectedRelease]);
 
 
   useEffect(() => {
@@ -136,9 +181,57 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
     }
   }, [setRipOutputDir]);
 
-  const handleRip = useCallback(() => {
+  // 選択中で、取り込み済みとして見つかったトラック。
+  const selectedDupPositions = useMemo(
+    () => Array.from(selectedTracks).filter((n) => dupHits.has(n)),
+    [selectedTracks, dupHits],
+  );
+  const decisionOf = useCallback(
+    (n: number): DuplicateDecision =>
+      decisions.get(n) ?? { action: "import", replaceTrackId: null },
+    [decisions],
+  );
+  // 実際にリップする曲数 (スキップ指定は読まない)。
+  const ripCount = useMemo(
+    () => Array.from(selectedTracks).filter((n) => decisionOf(n).action !== "skip").length,
+    [selectedTracks, decisionOf],
+  );
+
+  const setAllDecisions = (action: "skip" | "replace") => {
+    setDecisions((prev) => {
+      const next = new Map(prev);
+      for (const [n, hits] of dupHits) {
+        next.set(
+          n,
+          action === "replace"
+            ? { action, replaceTrackId: replaceTargetOf(hits) }
+            : { action, replaceTrackId: null },
+        );
+      }
+      return next;
+    });
+  };
+
+  const handleRip = useCallback((confirmed = false) => {
     if (!toc || (!organizeActive && !outputDir)) {
       pushToast("info", "先に出力先フォルダを選んでください");
+      return;
+    }
+    // 取り込み済みの曲があれば、開始前に扱いの内訳を確認する (iTunes と同様)。
+    if (!confirmed && selectedDupPositions.length > 0) {
+      setConfirmOpen(true);
+      return;
+    }
+    setConfirmOpen(false);
+
+    const sorted = Array.from(selectedTracks).sort((a, b) => a - b);
+    const trackActions: RipTrackAction[] = sorted
+      .map((n) => ({ n, d: decisionOf(n) }))
+      .filter(({ d }) => d.action !== "import")
+      .map(({ n, d }) => ({ position: n, action: d.action, replaceTrackId: d.replaceTrackId }));
+    const toRip = sorted.filter((n) => decisionOf(n).action !== "skip");
+    if (toRip.length === 0) {
+      pushToast("info", "すべてスキップのため、リッピングする曲がありません");
       return;
     }
 
@@ -146,9 +239,10 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
       device,
       outputDir: organizeActive ? undefined : outputDir,
       format,
-      tracks: Array.from(selectedTracks).sort((a, b) => a - b),
+      tracks: toRip,
       release: selectedRelease,
       addToLibrary: organizeActive ? true : addToLibrary,
+      trackActions,
     };
 
     onClose(); // モーダルを即閉じ
@@ -172,7 +266,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
       });
       useStore.getState().pushToast("error", `リッピング失敗: ${e}`);
     });
-  }, [toc, organizeActive, outputDir, device, format, selectedTracks, selectedRelease, addToLibrary, onClose, pushToast]);
+  }, [toc, organizeActive, outputDir, device, format, selectedTracks, selectedRelease, addToLibrary, onClose, pushToast, selectedDupPositions, decisionOf]);
 
   const trackList = useMemo(() => {
     if (!toc) return [];
@@ -216,7 +310,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
         <div className="modal rip-dialog" onClick={(e) => e.stopPropagation()}>
           <div className="modal-header">
             <h2>
-              <Icon name="disc" size={16} /> Rip CD —{" "}
+              <Icon name="disc" size={16} /> CD を取り込む —{" "}
               {ripStatus.phase === "ripping"
                 ? "リッピング中"
                 : ripStatus.phase === "done"
@@ -253,7 +347,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
       <div className="modal rip-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>
-            <Icon name="disc" size={16} /> Rip CD
+            <Icon name="disc" size={16} /> CD を取り込む
           </h2>
           <button className="modal-close" onClick={onClose}>
             <Icon name="x" size={16} />
@@ -263,7 +357,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
         <div className="modal-body">
           {/* Device + detect */}
           <div className="rip-row">
-            <label>Drive:</label>
+            <label>ドライブ:</label>
             {drives.length > 0 && (
               <select
                 value={!customDevice && drives.includes(device) ? device : OTHER_DEVICE}
@@ -303,8 +397,8 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
               onClick={handleDetect}
               disabled={stage === "detecting" || stage === "looking-up" || stage === "ripping"}
             >
-              {stage === "detecting" ? "Reading TOC..." :
-                stage === "looking-up" ? "Looking up..." : "Detect Disc"}
+              {stage === "detecting" ? "TOC を読み取り中…" :
+                stage === "looking-up" ? "照会中…" : "ディスクを検出"}
             </button>
           </div>
 
@@ -329,7 +423,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
                 >
                   {candidates.map((c) => (
                     <option key={c.releaseId} value={c.releaseId}>
-                      {c.artist} — {c.title}
+                      {c.artist || "不明なアーティスト"} — {c.title}
                       {c.date ? ` (${c.date.slice(0, 4)})` : ""}
                       {c.country ? ` [${c.country}]` : ""}
                     </option>
@@ -337,7 +431,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
                 </select>
               ) : (
                 <div className="rip-note">
-                  No matching release. Files will be named "Track NN" unless you switch candidates manually.
+                  一致するリリースが見つかりません。候補を手動で切り替えない限り、ファイル名は「Track NN」になります。
                   <br />
                   Disc ID: <code>{toc.musicbrainzId}</code>
                 </div>
@@ -354,9 +448,15 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
 
               {/* Track list */}
               <div className="rip-section-title">
-                Tracks
+                <span>
+                  曲
+                  {dupChecking && <span className="dup-checking"> ライブラリと照合中…</span>}
+                  {!dupChecking && dupHits.size > 0 && (
+                    <span className="dup-checking"> {dupHits.size} 曲は取り込み済み</span>
+                  )}
+                </span>
                 <button className="rip-link" onClick={toggleAll}>
-                  {selectedTracks.size === toc.trackCount ? "Deselect all" : "Select all"}
+                  {selectedTracks.size === toc.trackCount ? "すべて解除" : "すべて選択"}
                 </button>
               </div>
               <div className="rip-track-list">
@@ -372,6 +472,17 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
                       {t.title}
                       {t.artist ? <span className="rip-track-artist"> — {t.artist}</span> : null}
                     </span>
+                    {dupHits.has(t.num) && (
+                      <>
+                        <DuplicateBadge hits={dupHits.get(t.num)!} />
+                        <DuplicateActionSelect
+                          hits={dupHits.get(t.num)!}
+                          value={decisionOf(t.num)}
+                          disabled={!selectedTracks.has(t.num)}
+                          onChange={(d) => setDecisions((prev) => new Map(prev).set(t.num, d))}
+                        />
+                      </>
+                    )}
                     <span className="rip-track-len">
                       {Math.floor(t.lengthSec / 60)}:{(t.lengthSec % 60).toString().padStart(2, "0")}
                     </span>
@@ -381,7 +492,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
 
               {/* Format + output dir */}
               <div className="rip-row">
-                <label>Format:</label>
+                <label>形式:</label>
                 <select
                   className="rip-select"
                   value={format}
@@ -400,16 +511,16 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
               </div>
               {!organizeActive && (
                 <div className="rip-row">
-                  <label>Output:</label>
+                  <label>出力先:</label>
                   <input
                     type="text"
                     className="rip-input"
                     value={outputDir}
-                    placeholder="Select folder..."
+                    placeholder="フォルダを選択…"
                     onChange={(e) => setOutputDir(e.target.value)}
                   />
                   <button className="toolbar-btn" onClick={handlePickOutputDir}>
-                    <Icon name="folderOpen" size={14} /> Browse
+                    <Icon name="folderOpen" size={14} /> 選択…
                   </button>
                 </div>
               )}
@@ -421,7 +532,7 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
                       checked={addToLibrary}
                       onChange={(e) => setAddToLibrary(e.target.checked)}
                     />
-                    &nbsp;Add ripped tracks to library
+                    &nbsp;取り込んだ曲をライブラリに追加
                   </label>
                 </div>
               )}
@@ -432,19 +543,95 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
         </div>
         {toc && stage !== "ripping" && stage !== "done" && (
           <div className="modal-footer">
-            <button className="toolbar-btn" onClick={onClose}>Cancel</button>
+            <button className="toolbar-btn" onClick={onClose}>キャンセル</button>
             <button
               className="toolbar-btn primary"
-              onClick={handleRip}
-              disabled={selectedTracks.size === 0 || (!organizeActive && !outputDir)}
+              onClick={() => handleRip()}
+              disabled={ripCount === 0 || (!organizeActive && !outputDir)}
             >
-              <Icon name="play" size={14} fill="currentColor" stroke={0} /> Start Ripping (
-              {selectedTracks.size})
+              <Icon name="play" size={14} fill="currentColor" stroke={0} /> 取り込み開始（
+              {ripCount} 曲）
             </button>
           </div>
+        )}
+        {confirmOpen && (
+          <RipDuplicatesConfirm
+            count={selectedDupPositions.length}
+            counts={countActions(selectedDupPositions.map(decisionOf))}
+            onSkipAll={() => setAllDecisions("skip")}
+            onReplaceAll={() => setAllDecisions("replace")}
+            onCancel={() => setConfirmOpen(false)}
+            onProceed={() => handleRip(true)}
+          />
         )}
       </div>
     </div>
   );
 }
 
+
+/** 開始前の「N 曲はすでにライブラリにあります」確認 (iTunes の取り込み済み確認相当)。 */
+function RipDuplicatesConfirm({
+  count,
+  counts,
+  onSkipAll,
+  onReplaceAll,
+  onCancel,
+  onProceed,
+}: {
+  count: number;
+  counts: { import: number; skip: number; replace: number };
+  onSkipAll: () => void;
+  onReplaceAll: () => void;
+  onCancel: () => void;
+  onProceed: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        onCancel();
+      }
+    };
+    // RipDialog 側の Esc より先に拾って確認だけを閉じる。
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onCancel]);
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>
+            <Icon name="disc" size={16} /> {count} 曲はすでにライブラリにあります
+          </h2>
+          <button className="modal-close" onClick={onCancel}>
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+        <div className="modal-body" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 13 }}>
+            取り込む {counts.import} 曲 / スキップ {counts.skip} 曲 / 置き換え {counts.replace} 曲
+          </div>
+          <div style={{ fontSize: 12, color: "var(--tx2)" }}>
+            スキップした曲は読み取りません。置き換えると、既存の曲（プレイリスト・レート・再生回数・編集したタグ）は
+            そのままに、ファイルだけを新しく取り込んだものに差し替えます。古いファイルは削除せず「_replaced」フォルダへ移します。
+          </div>
+          <div className="dup-bulk">
+            <button className="rip-link" onClick={onSkipAll}>すべてスキップ</button>
+            <button className="rip-link" onClick={onReplaceAll}>すべて置き換え</button>
+          </div>
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button className="toolbar-btn" onClick={onCancel}>
+              キャンセル
+            </button>
+            <button className="toolbar-btn primary" onClick={onProceed}>
+              続ける
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

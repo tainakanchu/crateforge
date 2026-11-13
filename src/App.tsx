@@ -10,6 +10,7 @@ import { RightRail } from "./components/RightRail";
 import { Toolbar } from "./components/Toolbar";
 import { TrackEditor } from "./components/TrackEditor";
 import { RipDialog } from "./components/ripper/RipDialog";
+import { ImportDuplicatesDialog } from "./components/ImportDuplicatesDialog";
 import { RulesPanel } from "./components/rules/RulesPanel";
 import { ConvertDialog } from "./components/ConvertDialog";
 import { SmartPlaylistEditor } from "./components/SmartPlaylistEditor";
@@ -33,11 +34,13 @@ import * as libraryApi from "./api/library";
 import * as playlistsApi from "./api/playlists";
 import * as playbackApi from "./api/playback";
 import * as castApi from "./api/cast";
+import * as openWithApi from "./api/openWith";
 import * as systemApi from "./api/system";
 import * as analysisApi from "./api/analysis";
 import * as ripperApi from "./api/ripper";
 import * as fontsApi from "./api/fonts";
 import * as audition from "./lib/audition";
+import { playOpenedFiles } from "./lib/openWith";
 import {
   INBOX_FETCH_LIMIT,
   loadTriagePersist,
@@ -46,6 +49,9 @@ import {
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
 import type { PlaybackState, RepeatMode, SortField, SortOrder, Track } from "./types";
 
+// 窓の幅がこれ未満なら右ペインを自動で畳む (最小 1024px でも曲名列が潰れないように)。
+const RAIL_AUTO_HIDE_WIDTH = 1200;
+
 const isTauri = "__TAURI_INTERNALS__" in window;
 
 /// Rust プレイヤー側の「フロントのストアと二重管理になっている値」。
@@ -53,6 +59,9 @@ type RemotePlayerState = { shuffle: boolean; repeat: RepeatMode; volume: number 
 
 /// f32 で往復するので音量は誤差を許容して比較する。
 const VOLUME_EPS = 0.005;
+
+/// 解析進捗 (analysis-progress の item) をストアへ反映する最短間隔 (ms)。
+const ANALYSIS_PROGRESS_THROTTLE_MS = 250;
 
 /// Rust プレイヤーの shuffle / repeat / volume をストアへ逆同期する。
 /// リモート API (/api/remote/shuffle など) や別クライアントからの変更を拾うのが目的。
@@ -449,6 +458,8 @@ export default function App() {
   // 同期が終わるまでポーリング側の逆同期は保留する (mountSyncedRef)。
   useEffect(() => {
     if (!isTauri) return;
+    let cancelled = false;
+    let unlistenOpen: (() => void) | undefined;
     (async () => {
       let restored = false;
       try {
@@ -477,7 +488,31 @@ export default function App() {
         ]);
       }
       mountSyncedRef.current = true;
+
+      // OS の「このアプリで開く」で渡されたファイルを再生する。上の同期の後に始める
+      // (先に再生すると shuffle の押し込みで開いた曲の再生順が組み直されるため)。
+      // 先にイベントを購読してから、起動時 / 準備前に届いていた分を取り出す。
+      // バックエンドはどちらか一方の経路でしか渡さないので、取りこぼしも二重再生も起きない。
+      if (cancelled) return;
+      const unlisten = await openWithApi.onOpenFiles((paths) => {
+        void playOpenedFiles(paths);
+      });
+      if (cancelled) {
+        unlisten();
+        return;
+      }
+      unlistenOpen = unlisten;
+      try {
+        const pending = await openWithApi.takePendingOpenFiles();
+        if (pending.length > 0) await playOpenedFiles(pending);
+      } catch {
+        // ignore
+      }
     })();
+    return () => {
+      cancelled = true;
+      unlistenOpen?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -502,13 +537,35 @@ export default function App() {
 
   // Sync now-playing to SMTC + listen to media key events from the OS.
   // 曲メタデータの検索はポーリング毎ではなく tracks / 再生中の曲が変わったときだけ行う。
-  const smtcTrack = useMemo(
+  const listedSmtcTrack = useMemo(
     () =>
       playback.currentTrackId
         ? tracks.find((t) => t.trackId === playback.currentTrackId) ?? null
         : null,
     [playback.currentTrackId, tracks],
   );
+  // 表示中の一覧に無い曲 (別ビューの曲 / 「このアプリで開く」の一時再生曲) は ID で取り直す。
+  const [fetchedSmtcTrack, setFetchedSmtcTrack] = useState<Track | null>(null);
+  useEffect(() => {
+    const id = playback.currentTrackId;
+    if (!isTauri || id == null || listedSmtcTrack) return;
+    if (fetchedSmtcTrack?.trackId === id) return;
+    let alive = true;
+    libraryApi
+      .getTracksByIds([id])
+      .then((r) => {
+        if (alive) setFetchedSmtcTrack(r[0] ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [playback.currentTrackId, listedSmtcTrack, fetchedSmtcTrack]);
+  const smtcTrack =
+    listedSmtcTrack ??
+    (fetchedSmtcTrack && fetchedSmtcTrack.trackId === playback.currentTrackId
+      ? fetchedSmtcTrack
+      : null);
   const smtcTitle = smtcTrack?.name ?? "";
   const smtcArtist = smtcTrack?.artist ?? "";
   const smtcAlbum = smtcTrack?.album ?? "";
@@ -614,17 +671,64 @@ export default function App() {
     if (!isTauri) return;
     loadAnalyses();
     let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    // item 進捗は 1 曲ごとに来るので、ストア更新は最大 ANALYSIS_PROGRESS_THROTTLE_MS ごとに
+    // 間引く (最後の値は必ず反映)。start / finished は即時反映し、保留中の item は捨てる (#213)。
+    let pendingItem: { done: number; total: number } | null = null;
+    let lastApplied = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const flushItem = () => {
+      timer = undefined;
+      if (!pendingItem) return;
+      lastApplied = Date.now();
+      setAnalysisActive(pendingItem);
+      pendingItem = null;
+    };
+    const dropPending = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+      pendingItem = null;
+    };
     (async () => {
-      unlisten = await analysisApi.onAnalysisProgress((p) => {
-        if (p.kind === "start") setAnalysisActive({ done: 0, total: p.total });
-        else if (p.kind === "item") setAnalysisActive({ done: p.done, total: p.total });
-        else if (p.kind === "finished") {
+      const u = await analysisApi.onAnalysisProgress((p) => {
+        if (p.kind === "start") {
+          dropPending();
+          lastApplied = Date.now();
+          setAnalysisActive({ done: 0, total: p.total });
+        } else if (p.kind === "item") {
+          pendingItem = { done: p.done, total: p.total };
+          // 最終アイテム (done === total) は待たずに反映する。
+          if (p.done >= p.total) {
+            if (timer !== undefined) clearTimeout(timer);
+            flushItem();
+            return;
+          }
+          if (timer !== undefined) return;
+          const wait = Math.max(0, lastApplied + ANALYSIS_PROGRESS_THROTTLE_MS - Date.now());
+          timer = setTimeout(flushItem, wait);
+        } else if (p.kind === "finished") {
+          dropPending();
           setAnalysisActive(null);
           loadAnalyses();
+          // 解析完了を知らせる (失敗があればエラー扱いで残す)。
+          if (p.analyzed + p.failed > 0) {
+            useStore
+              .getState()
+              .pushToast(
+                p.failed > 0 ? "error" : "success",
+                p.failed > 0
+                  ? `解析が完了しました（成功 ${p.analyzed} 曲 / 失敗 ${p.failed} 曲）`
+                  : `解析が完了しました（${p.analyzed} 曲）`,
+              );
+          }
         }
       });
+      if (cancelled) u();
+      else unlisten = u;
     })();
     return () => {
+      cancelled = true;
+      dropPending();
       if (unlisten) unlisten();
     };
   }, [loadAnalyses, setAnalysisActive]);
@@ -877,8 +981,11 @@ export default function App() {
     if (!isTauri) return;
     let unlisten: (() => void) | undefined;
     (async () => {
-      unlisten = await playlistsApi.onLibraryChanged(() => {
-        useStore.getState().bumpArtworkEpoch();
+      unlisten = await playlistsApi.onLibraryChanged((_playlistId, info) => {
+        // アートワークが実際に変わりうる変更のときだけ epoch を進める。
+        // 毎回進めると全 ArtworkImg が一斉に取り直してしまう (#213)。
+        // アプリ内のアートワーク編集は TrackEditor が直接 bumpArtworkEpoch する。
+        if (info.artworkChanged) useStore.getState().bumpArtworkEpoch();
         reloadPlaylists();
         setReloadCount((c) => c + 1);
         libraryDirtyRef.current = true;
@@ -896,6 +1003,13 @@ export default function App() {
     setReloadCount((c) => c + 1);
     reloadPlaylists();
   }, [reloadPlaylists, scheduleAutoExport]);
+
+  // 取り寄せ / 送信の完了後は、曲一覧に加えて解析結果 (BPM/Key/Energy) も読み直す
+  // (取り寄せた解析値がリロードするまで一覧に出なかった: E3)。
+  const reloadAfterSync = useCallback(() => {
+    triggerReload();
+    void loadAnalyses();
+  }, [triggerReload, loadAnalyses]);
 
   // CD リッピング進捗のグローバル購読
   useEffect(() => {
@@ -939,11 +1053,24 @@ export default function App() {
             current: prev?.total ?? p.writtenFiles.length,
             total: prev?.total ?? p.writtenFiles.length,
             label: prev?.label ?? "",
-            log: [...(prev?.log ?? []), `Done. ${p.writtenFiles.length} file(s), ${p.addedTracks} added.`],
+            log: [
+              ...(prev?.log ?? []),
+              ...(p.movedOldFiles ?? []).map((f) => `  置き換え前のファイルを移動: ${f}`),
+              ...(p.replaceErrors ?? []).map((e) => `  置き換え失敗: ${e}`),
+              `Done. ${p.writtenFiles.length} file(s), ${p.addedTracks} added` +
+                (p.replacedTracks > 0 ? `, ${p.replacedTracks} replaced.` : "."),
+            ],
             addedTracks: p.addedTracks,
           });
           triggerReload();
-          pushToast("success", `リッピング完了: ${p.addedTracks} 曲`);
+          pushToast(
+            "success",
+            `リッピング完了: ${p.addedTracks} 曲` +
+              (p.replacedTracks > 0 ? `（置き換え ${p.replacedTracks} 曲）` : ""),
+          );
+          if ((p.replaceErrors ?? []).length > 0) {
+            pushToast("error", `置き換えに失敗した曲があります（${p.replaceErrors.length} 曲）。ログを確認してください`, 6000);
+          }
         }
       });
     })();
@@ -1243,6 +1370,27 @@ export default function App() {
     }
   }, [rightRailVisible, rightRailWidth]);
 
+  // 狭い窓 (幅 < RAIL_AUTO_HIDE_WIDTH) では右ペインを自動で畳み、一覧 (曲名列) の幅を確保する。
+  // 自動で畳んだ場合だけ、広げたときに戻す (利用者が自分で閉じた状態は変えない)。
+  // 狭いまま利用者が開き直した場合は、そのまま尊重する。
+  const railAutoHiddenRef = useRef(false);
+  useEffect(() => {
+    const check = () => {
+      const narrow = window.innerWidth < RAIL_AUTO_HIDE_WIDTH;
+      const st = useStore.getState();
+      if (narrow && st.rightRailVisible && !railAutoHiddenRef.current) {
+        railAutoHiddenRef.current = true;
+        st.setRightRailVisible(false);
+      } else if (!narrow && railAutoHiddenRef.current) {
+        railAutoHiddenRef.current = false;
+        if (!st.rightRailVisible) st.setRightRailVisible(true);
+      }
+    };
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+
   const handleRemoveFromInbox = useCallback(
     (_trackId: number) => {
       // TriagePanel が先に setTracks 済み。現在の tracks 件数をバッジへ反映。
@@ -1267,6 +1415,7 @@ export default function App() {
         onPlaylistsChanged={triggerReload}
         onEditSmart={(id, name) => setSmartEditor({ playlistId: id, name })}
         onUsbExport={(ids) => setUsbExportIds(ids)}
+        reloadKey={reloadCount}
       />
       <div className="cb-main">
         <UpdateBanner />
@@ -1357,6 +1506,7 @@ export default function App() {
         onClose={() => { setRipOpen(false); setRipInitialDevice(null); }}
         onLibraryChanged={triggerReload}
       />
+      <ImportDuplicatesDialog />
       <RulesPanel open={rulesOpen} onClose={() => setRulesOpen(false)} onLibraryChanged={triggerReload} />
       {editorTracks && (
         <TrackEditor
@@ -1386,7 +1536,7 @@ export default function App() {
       {syncProvisionOpen && (
         <SyncProvisionDialog
           onClose={() => setSyncProvisionOpen(false)}
-          onLibraryChanged={triggerReload}
+          onLibraryChanged={reloadAfterSync}
         />
       )}
       {usbExportIds && (
@@ -1399,7 +1549,16 @@ export default function App() {
       {detectedDisc && (
         <DiscDetectedDialog
           disc={detectedDisc}
-          onRip={() => { setRipInitialDevice(detectedDisc.device); dismissDisc(); setRipOpen(true); }}
+          onRip={() => {
+            // 前回の取り込み結果 (完了/エラーのログ) を閉じずに CD を入れ替えると、RipDialog が
+            // ripStatus を見て前回の結果ビューを出してしまう。新しいディスクなので片付けておく
+            // (リッピング中はそもそも検出が止まっているので、ここに来るのは done / error のみ)。
+            const st = useStore.getState();
+            if (st.ripStatus && st.ripStatus.phase !== "ripping") st.clearRipStatus();
+            setRipInitialDevice(detectedDisc.device);
+            dismissDisc();
+            setRipOpen(true);
+          }}
           onDismiss={dismissDisc}
         />
       )}

@@ -4,24 +4,30 @@
 // アルバムモード: distinct アルバムを一覧。検索でクライアント絞り込み。タップで詳細へ。
 // アーティストモード: クライアント側集計のアーティスト一覧。タップで詳細へ。
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, FlatList, Pressable, Text, TextInput, View, StyleSheet } from "react-native";
+import { albumHref, artistHref } from "@/lib/albumHref";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FlatList, Pressable, RefreshControl, Text, TextInput, View, StyleSheet } from "react-native";
+import { isSearchable, matchesNormalized, naturalCompare } from "@/lib/normalize";
+import { loadPref, savePref } from "@/lib/prefs";
+import { showActionSheet } from "@/components/ActionSheet";
 import { showTrackMenu } from "@/features/playback/trackMenu";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 
-import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, useConnection, usePlayer, useDownloads, useSettings } from "@crateforge/core";
+import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import TrackRow from "@/components/TrackRow";
 import IconButton from "@/components/IconButton";
 import DownloadButton from "@/components/DownloadButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
+import ConnectionNotice from "@/components/ConnectionNotice";
 import { useTracks, useGenres, useAlbums, useArtists, BROWSE_LIMIT } from "@/features/browse/hooks";
 import GenreChips from "@/features/browse/GenreChips";
 import AlbumRow from "@/features/browse/AlbumRow";
 import ArtistRow from "@/features/browse/ArtistRow";
+import { LIGHT_LIST_FRESH_MS, usePullToRefresh, useRefetchStaleOnFocus } from "@/hooks/use-refresh";
 
 type Mode = "tracks" | "albums" | "artists";
 
@@ -33,9 +39,11 @@ const SORT_FIELD_LABELS: Record<SortField, string> = {
   dateAdded: "追加日",
   year: "年",
   bpm: "BPM",
-  rating: "レート",
+  rating: "評価",
   playCount: "再生回数",
 };
+
+const MODE_PREF_KEY = "crateforge.ui.libraryMode";
 
 const SORT_FIELDS: SortField[] = ["name", "artist", "album", "dateAdded", "year", "bpm", "rating", "playCount"];
 
@@ -44,7 +52,20 @@ export default function LibraryScreen() {
   const client = useConnection((s) => s.client);
 
   // 既定は「アーティスト」モード（アーティスト→アルバム→曲の導線を優先）。
-  const [mode, setMode] = useState<Mode>("artists");
+  const [mode, setModeState] = useState<Mode>("artists");
+  const modeTouched = useRef(false);
+  const setMode = (m: Mode) => {
+    modeTouched.current = true;
+    setModeState(m);
+    void savePref(MODE_PREF_KEY, m);
+  };
+  // 前回の表示モードを復元する（復元前にユーザーが切り替えていたらそちらを優先）。
+  useEffect(() => {
+    void loadPref(MODE_PREF_KEY).then((v) => {
+      if (modeTouched.current) return;
+      if (v === "tracks" || v === "albums" || v === "artists") setModeState(v);
+    });
+  }, []);
 
   // 検索はデバウンス（入力ごとに叩かない）。
   const [search, setSearch] = useState("");
@@ -61,8 +82,9 @@ export default function LibraryScreen() {
   const setTrackSort = useSettings((s) => s.setTrackSort);
 
   // 検索クエリは最小2文字ガード（debounced は trim 済み）。1文字だと巨大ヒット＝
-  // 全件転送になり得るので投げない。空のときは undefined（フィルタ無し一覧）に戻る。
-  const searchQuery = debounced.length >= 2 ? debounced : undefined;
+  // 全件転送になり得るので投げない。ただし CJK は 1 文字でも意味を持つので 1 文字から検索する。
+  // 空のときは undefined（フィルタ無し一覧）に戻る。
+  const searchQuery = isSearchable(debounced) ? debounced : undefined;
 
   // アクティブなモードだけ取得する（既定アルバム時に全曲フェッチしない＝重さ回避）。
   const tracksQuery = useTracks(
@@ -79,24 +101,59 @@ export default function LibraryScreen() {
   const albumsQuery = useAlbums(mode === "albums");
   const artistsQuery = useArtists(mode === "artists");
 
+  // プル更新（表示中モードの一覧 + ジャンル）と、タブに戻ったときの再取得（stale のみ）。
+  const refetchActive = useCallback(
+    () =>
+      Promise.all([
+        mode === "tracks"
+          ? tracksQuery.refetch()
+          : mode === "albums"
+            ? albumsQuery.refetch()
+            : artistsQuery.refetch(),
+        genresQuery.refetch(),
+      ]),
+    [mode, tracksQuery, albumsQuery, artistsQuery, genresQuery],
+  );
+  const { refreshing, onRefresh } = usePullToRefresh(refetchActive);
+  // タブに戻ったら表示中モードの一覧だけ取り直す（他タブのクエリは対象外。ジャンルは曲モードのみ表示。round-3 N5）。
+  // アルバム/アーティストは軽いので 10 秒の鮮度閾値、全曲一覧は従来どおり stale（5 分）のときだけ。
+  useRefetchStaleOnFocus(
+    mode === "tracks"
+      ? [{ queryKey: ["tracks"] }, { queryKey: ["genres"] }]
+      : mode === "albums"
+        ? [{ queryKey: ["albums"], freshMs: LIGHT_LIST_FRESH_MS }]
+        : [{ queryKey: ["artists"], freshMs: LIGHT_LIST_FRESH_MS }],
+  );
+  const refreshControl = (
+    <RefreshControl
+      refreshing={refreshing}
+      onRefresh={onRefresh}
+      tintColor={PALETTE.accent}
+      colors={[PALETTE.accent]}
+    />
+  );
+
   const tracks = tracksQuery.data ?? [];
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
   const listRef = useRef<FlatList<Track>>(null);
 
   // アルバムモードは検索でアルバム名をクライアント側で絞り込む。
+  // 全角半角・かなカナ・大小・記号のゆれは正規化して吸収し、並びは自然順（2 < 10）。
+  // 不明なアルバム（album: ""）は末尾に置き、検索は表示ラベル（「不明なアルバム」）で照合する。
   const albums = useMemo(() => {
-    const all = albumsQuery.data ?? [];
-    const q = debounced.toLowerCase();
-    if (!q) return all;
-    return all.filter((a) => a.album.toLowerCase().includes(q));
+    const all = [...(albumsQuery.data ?? [])].sort(compareNamesUnknownLast((a) => a.album));
+    if (!debounced) return all;
+    return all.filter((a) => matchesNormalized(albumLabel(a.album), debounced));
   }, [albumsQuery.data, debounced]);
 
   // アーティストモードは検索でアーティスト名をクライアント側で絞り込む。
+  // 不明なアーティスト（artist: ""）は末尾、検索は表示ラベルで照合する。
   const artists = useMemo((): Artist[] => {
-    const all: Artist[] = artistsQuery.data ?? [];
-    const q = debounced.toLowerCase();
-    if (!q) return all;
-    return all.filter((a) => a.artist.toLowerCase().includes(q));
+    const all: Artist[] = [...(artistsQuery.data ?? [])].sort(
+      compareNamesUnknownLast((a) => a.artist),
+    );
+    if (!debounced) return all;
+    return all.filter((a) => matchesNormalized(artistLabel(a.artist), debounced));
   }, [artistsQuery.data, debounced]);
 
   const onPressTrack = (index: number) => {
@@ -106,15 +163,14 @@ export default function LibraryScreen() {
 
   /** ソートフィールド選択ダイアログを開く。 */
   const openSortPicker = () => {
-    const buttons: Parameters<typeof Alert.alert>[2] = SORT_FIELDS.map((field) => ({
-      text:
-        trackSort.field === field
-          ? `✓ ${SORT_FIELD_LABELS[field]}`
-          : SORT_FIELD_LABELS[field],
-      onPress: () => setTrackSort({ field, order: trackSort.order }),
-    }));
-    buttons.push({ text: "キャンセル", style: "cancel" });
-    Alert.alert("並び順", undefined, buttons);
+    showActionSheet({
+      title: "並び順",
+      actions: SORT_FIELDS.map((field) => ({
+        label: SORT_FIELD_LABELS[field],
+        selected: trackSort.field === field,
+        onPress: () => setTrackSort({ field, order: trackSort.order }),
+      })),
+    });
   };
 
   /** asc/desc トグル。 */
@@ -170,7 +226,8 @@ export default function LibraryScreen() {
             <Pressable
               onPress={openSortPicker}
               accessibilityRole="button"
-              accessibilityLabel="ソートフィールドを選択"
+              accessibilityLabel="並び順を選択"
+              hitSlop={{ top: 4, bottom: 4 }}
               style={({ pressed }) => [styles.sortFieldBtn, pressed && styles.pressed]}
             >
               <Ionicons name="swap-vertical" size={15} color={PALETTE.textDim} />
@@ -212,6 +269,7 @@ export default function LibraryScreen() {
             }
             contentContainerStyle={tracks.length === 0 ? styles.emptyContent : styles.listContent}
             keyboardShouldPersistTaps="handled"
+            refreshControl={refreshControl}
           />
         </>
       ) : mode === "albums" ? (
@@ -221,10 +279,8 @@ export default function LibraryScreen() {
           renderItem={({ item }: { item: Album }) => (
             <AlbumRow
               album={item}
-              onPress={() => {
-                if (!item.album) return;
-                router.push(`/album/${encodeURIComponent(item.album)}`);
-              }}
+              // 不明なアルバム（空名）も albumHref が unknown=1 のルートへ振り分ける。
+              onPress={() => router.push(albumHref(item.album))}
             />
           )}
           ListEmptyComponent={
@@ -241,6 +297,7 @@ export default function LibraryScreen() {
           }
           contentContainerStyle={albums.length === 0 ? styles.emptyContent : styles.listContent}
           keyboardShouldPersistTaps="handled"
+          refreshControl={refreshControl}
         />
       ) : (
         <>
@@ -256,10 +313,8 @@ export default function LibraryScreen() {
             renderItem={({ item }: { item: Artist }) => (
               <ArtistRow
                 artist={item}
-                onPress={() => {
-                  if (!item.artist) return;
-                  router.push(`/artist/${encodeURIComponent(item.artist)}`);
-                }}
+                // 不明なアーティスト（空名）も artistHref が unknown=1 のルートへ振り分ける。
+                onPress={() => router.push(artistHref(item.artist))}
               />
             )}
             ListEmptyComponent={
@@ -276,6 +331,7 @@ export default function LibraryScreen() {
             }
             contentContainerStyle={artists.length === 0 ? styles.emptyContent : styles.listContent}
             keyboardShouldPersistTaps="handled"
+            refreshControl={refreshControl}
           />
         </>
       )}
@@ -307,7 +363,8 @@ function OfflineLibrary() {
     [entries],
   );
 
-  // entries から album 名でグルーピングしてアルバム一覧を導出する（album が空の曲は除外）。
+  // entries から album 名でグルーピングしてアルバム一覧を導出する（album が空の曲は "" の
+  // 「不明なアルバム」1 件にまとめて末尾）。
   // アルバムごとに 曲数 / 表示アーティスト / アート用の代表トラックID を持たせる。
   const offlineAlbums = useMemo((): OfflineAlbum[] => {
     // album 名 → { 曲数, アーティスト集合, 代表トラックID } を集約。
@@ -316,8 +373,7 @@ function OfflineLibrary() {
       { count: number; artists: Set<string>; repTrackId: number }
     >();
     for (const e of Object.values(entries)) {
-      const album = e.track.album;
-      if (!album) continue;
+      const album = e.track.album?.trim() ? e.track.album : "";
       const existing = map.get(album);
       if (existing) {
         existing.count += 1;
@@ -329,37 +385,40 @@ function OfflineLibrary() {
           repTrackId: e.track.trackId,
         });
       }
-      // 表示アーティストは albumArtist 優先・非空のみを distinct 収集。
-      const artist = e.track.albumArtist ?? e.track.artist;
-      if (artist) map.get(album)!.artists.add(artist);
+      // 表示アーティストは albumArtist 優先で distinct 収集。通常のアルバムは非空のみ数える。
+      // 不明なアルバムは寄せ集めなので、アーティスト無しの曲も 1 値として数える
+      // （サーバーの /api/albums と同じ規則。数えないと特定アーティストのアルバムに見える）。
+      const artist = (e.track.albumArtist?.trim() || e.track.artist?.trim() || "");
+      if (artist || album === "") map.get(album)!.artists.add(artist);
     }
     return Array.from(map.entries())
       .map(([name, v]) => ({
         name,
         count: v.count,
         // distinct なアーティストが1つなら其れ、2つ以上なら "Various Artists"、空なら空文字。
+        // 不明なアルバムで複数アーティストなら、Various Artists ではなく空文字（サーバーの NULL に対応）。
         artist:
           v.artists.size === 0
             ? ""
             : v.artists.size === 1
               ? [...v.artists][0]
-              : "Various Artists",
+              : name === ""
+                ? ""
+                : "Various Artists",
         repTrackId: v.repTrackId,
       }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(compareNamesUnknownLast((a) => a.name));
   }, [entries]);
 
-  // entries をアーティストでグルーピング（空アーティストは除外）。
+  // entries をアーティストでグルーピング（空アーティストは "" の「不明なアーティスト」1 件で末尾）。
   // 束ね方は設定 (artistGrouping) に追従させ、artist ページの nameOf と一致させる
   // （"albumArtist" なら albumArtist 優先、それ以外は artist 優先）。
   const offlineArtists = useMemo((): OfflineArtist[] => {
     const map = new Map<string, { count: number; repTrackId: number }>();
     for (const e of Object.values(entries)) {
+      // 束ねキーはアーティスト画面のオフライン絞り込み（trackArtistKey 等）と同じ。
       const name =
-        artistGrouping === "albumArtist"
-          ? (e.track.albumArtist ?? e.track.artist)
-          : (e.track.artist ?? e.track.albumArtist);
-      if (!name) continue;
+        artistGrouping === "albumArtist" ? trackAlbumArtistKey(e.track) : trackArtistKey(e.track);
       const existing = map.get(name);
       if (existing) {
         existing.count += 1;
@@ -370,7 +429,7 @@ function OfflineLibrary() {
     }
     return Array.from(map.entries())
       .map(([name, v]) => ({ name, count: v.count, repTrackId: v.repTrackId }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(compareNamesUnknownLast((a) => a.name));
   }, [entries, artistGrouping]);
 
   // DL済みプレイリスト（新しい順）。
@@ -390,30 +449,11 @@ function OfflineLibrary() {
 
   return (
     <Screen>
-      <View style={styles.offlineBanner}>
-        <Ionicons name="cloud-offline-outline" size={15} color={PALETTE.textDim} />
-        <Text style={styles.offlineText}>
-          {tracks.length > 0
-            ? `サーバー未接続 ・ ダウンロード済み ${tracks.length}曲`
-            : "サーバー未接続"}
-        </Text>
-      </View>
+      {/* 未接続の理由 1 行 + 復帰導線（トークン再入力 / 再試行 / 接続画面へ）。 */}
+      <ConnectionNotice suffix={tracks.length > 0 ? `ダウンロード済み ${tracks.length}曲` : null} />
 
       {!hasAnything ? (
-        <>
-          <EmptyView message="ダウンロード済みの曲はありません" icon="cloud-offline-outline" />
-          <View style={styles.offlineActions}>
-            <Pressable
-              onPress={() => router.push("/connect")}
-              accessibilityRole="button"
-              accessibilityLabel="サーバーに接続"
-              style={({ pressed }) => [styles.connectBtn, pressed && styles.pressed]}
-            >
-              <Ionicons name="wifi" size={18} color={BRAND.accentText} />
-              <Text style={styles.connectBtnText}>サーバーに接続</Text>
-            </Pressable>
-          </View>
-        </>
+        <EmptyView message="ダウンロード済みの曲はありません" icon="cloud-offline-outline" />
       ) : (
         <FlatList
           data={tracks}
@@ -442,6 +482,19 @@ function OfflineLibrary() {
       )}
     </Screen>
   );
+}
+
+/**
+ * 名前の自然順比較。ただし空名（不明なアルバム / アーティスト）は常に末尾に置く
+ * （デスクトップの Artists / Albums と同じ並び）。
+ */
+function compareNamesUnknownLast<T>(nameOf: (x: T) => string): (a: T, b: T) => number {
+  return (a, b) => {
+    const an = nameOf(a).trim();
+    const bn = nameOf(b).trim();
+    if (!an !== !bn) return an ? -1 : 1;
+    return naturalCompare(nameOf(a), nameOf(b));
+  };
 }
 
 /** オフライン時のアルバム集約（アート用代表トラック・表示アーティスト付き）。 */
@@ -509,15 +562,15 @@ function OfflineCollectionHeader({
           {albums.map((a) => (
             <Pressable
               key={a.name}
-              onPress={() => router.push(`/album/${encodeURIComponent(a.name)}`)}
+              onPress={() => router.push(albumHref(a.name))}
               accessibilityRole="button"
-              accessibilityLabel={a.name}
+              accessibilityLabel={albumLabel(a.name)}
               style={({ pressed }) => [styles.collectionRow, pressed && styles.pressed]}
             >
               <LocalArt uri={getLocalArtworkUri(a.repTrackId)} fallbackIcon="albums-outline" />
               <View style={styles.collectionText}>
                 <Text style={styles.collectionName} numberOfLines={1}>
-                  {a.name}
+                  {albumLabel(a.name)}
                 </Text>
                 {a.artist ? (
                   <Text style={styles.collectionSub} numberOfLines={1}>
@@ -539,15 +592,15 @@ function OfflineCollectionHeader({
           {artists.map((ar) => (
             <Pressable
               key={ar.name}
-              onPress={() => router.push(`/artist/${encodeURIComponent(ar.name)}`)}
+              onPress={() => router.push(artistHref(ar.name))}
               accessibilityRole="button"
-              accessibilityLabel={ar.name}
+              accessibilityLabel={artistLabel(ar.name)}
               style={({ pressed }) => [styles.collectionRow, pressed && styles.pressed]}
             >
               <LocalArt uri={getLocalArtworkUri(ar.repTrackId)} fallbackIcon="person-outline" circular />
               <View style={styles.collectionText}>
                 <Text style={styles.collectionName} numberOfLines={1}>
-                  {ar.name}
+                  {artistLabel(ar.name)}
                 </Text>
                 <Text style={styles.collectionMeta}>{ar.count}曲</Text>
               </View>
@@ -621,7 +674,7 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
 }
 
 function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : "読み込みに失敗しました";
+  return describeApiError(e, { action: "読み込み" });
 }
 
 // コレクション行のサムネイル寸法（AlbumRow に倣う）。
@@ -688,8 +741,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
+    minHeight: 36,
     paddingVertical: 4,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     borderRadius: 6,
     backgroundColor: PALETTE.surface,
     borderWidth: 1,
@@ -707,43 +761,6 @@ const styles = StyleSheet.create({
   },
   emptyContent: {
     flexGrow: 1,
-  },
-  offlineBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 4,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-  },
-  offlineText: {
-    color: PALETTE.textDim,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  offlineActions: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-  },
-  connectBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: PALETTE.accent,
-  },
-  connectBtnText: {
-    color: BRAND.accentText,
-    fontSize: 15,
-    fontWeight: "700",
   },
   sectionHeader: {
     color: PALETTE.textDim,

@@ -46,8 +46,8 @@ Crateforge 支援 Windows / macOS / Linux。最新版可從 GitHub 的
 ## 首次啟動
 
 1. 啟動應用程式後會開啟一個空的音樂庫。
-2. 若你已有既有的 `iTunes Library.xml`，請用工具列的 **「📥 Import XML」** 匯入（[音樂庫匯入](../import/)）。
-3. 若沒有 XML，也可用 **「🎵 Add Files」** 直接匯入手邊的音樂檔案。
+2. 若你已有既有的 `iTunes Library.xml`，請用工具列的 **「iTunes XML を取り込む」（匯入 iTunes XML）** 匯入（[音樂庫匯入](../import/)）。
+3. 若沒有 XML，也可用 **「ファイルを追加」（加入檔案）** 直接匯入手邊的音樂檔案。
 
 由於音樂庫的真實資料常駐於 SQLite (WAL)，首次匯入後，往後再開啟都會很快。
 

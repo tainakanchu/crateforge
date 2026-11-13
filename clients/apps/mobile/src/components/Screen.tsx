@@ -19,12 +19,12 @@ export interface ScreenProps {
 
 export default function Screen({ children, style, edges = ["top"] }: ScreenProps) {
   const insets = useSafeAreaInsets();
-  const padding: ViewStyle = {
-    paddingTop: edges.includes("top") ? insets.top : 0,
-    paddingBottom: edges.includes("bottom") ? insets.bottom : 0,
-    paddingLeft: edges.includes("left") ? insets.left : 0,
-    paddingRight: edges.includes("right") ? insets.right : 0,
-  };
+  // 指定された辺だけ padding を設定する（未指定の辺を 0 で上書きして style の paddingHorizontal を潰さない）。
+  const padding: ViewStyle = {};
+  if (edges.includes("top")) padding.paddingTop = insets.top;
+  if (edges.includes("bottom")) padding.paddingBottom = insets.bottom;
+  if (edges.includes("left")) padding.paddingLeft = insets.left;
+  if (edges.includes("right")) padding.paddingRight = insets.right;
   return <View style={[styles.root, padding, style]}>{children}</View>;
 }
 

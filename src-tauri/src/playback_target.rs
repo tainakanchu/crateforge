@@ -536,7 +536,17 @@ impl PlaybackCoordinator {
     }
 
     /// 曲を解決し、Cast に渡せるか (ファイル有無・形式・LAN 公開) を確かめる。
+    ///
+    /// ライブラリ外の一時再生曲は Cast しない: Receiver への配信 (Media Ticket → API サーバー)
+    /// は DB の曲を前提にしているため。曲固有のエラー (`TRACK_UNAVAILABLE`) で断るので、
+    /// Cast 中の自動送りはその曲を飛ばして次へ進み、一時再生中の Cast への切替は断られる。
     fn resolve_castable(&self, track_id: i64) -> Result<TrackInfo, CastError> {
+        if crate::transient::is_transient_id(track_id) {
+            return Err(CastError::new(
+                CastErrorCode::TrackUnavailable,
+                "ライブラリ外のファイル (一時再生中の曲) はキャストできません。「ライブラリに追加」してから再生してください",
+            ));
+        }
         let track = self
             .env
             .track(track_id)
@@ -1219,16 +1229,34 @@ impl CoordinatorEnv for TauriEnv {
     }
 
     fn track(&self, track_id: i64) -> Result<TrackInfo, String> {
+        // ライブラリ外の一時再生曲は DB ではなくレジストリから解決する (ReplayGain は不明)。
+        if crate::transient::is_transient_id(track_id) {
+            use tauri::Manager;
+            let t = self
+                .app
+                .state::<crate::transient::TransientTracks>()
+                .get(track_id)
+                .ok_or("曲が見つかりません")?;
+            return Ok(TrackInfo {
+                track_id,
+                path: t.path,
+                duration_ms: t.track.total_time_ms.unwrap_or(0).max(0) as u64,
+                gain_db: None,
+                title: t.track.name,
+                artist: t.track.artist,
+                album: t.track.album,
+            });
+        }
         let db = crate::commands::library::open_db(&self.app)?;
         let track = db
             .get_track_by_track_id(track_id)
             .map_err(|e| e.to_string())?
-            .ok_or("Track not found")?;
+            .ok_or("曲が見つかりません")?;
         let path = track
             .location_path
             .clone()
             .filter(|p| !p.is_empty())
-            .ok_or("No file path for this track")?;
+            .ok_or("この曲にはファイルの場所がありません")?;
         let gain_db = db
             .get_analysis(track_id)
             .ok()
@@ -1255,6 +1283,10 @@ impl CoordinatorEnv for TauriEnv {
     }
 
     fn add_recent(&self, track_id: i64) {
+        // 一時再生曲は「最近再生」に残さない (DB に行が無い)。
+        if crate::transient::is_transient_id(track_id) {
+            return;
+        }
         if let Ok(db) = crate::commands::library::open_db(&self.app) {
             let _ = db.add_recent_track(track_id);
         }
@@ -1345,7 +1377,7 @@ mod tests {
             self.tracks
                 .get(&track_id)
                 .cloned()
-                .ok_or_else(|| "Track not found".to_string())
+                .ok_or_else(|| "曲が見つかりません".to_string())
         }
         fn apply_report(&self, report: Option<PlayReport>) {
             if let Some(r) = report {

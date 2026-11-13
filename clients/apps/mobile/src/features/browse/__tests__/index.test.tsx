@@ -3,7 +3,9 @@
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react-native";
 
-import { type Track, usePlayer } from "@crateforge/core";
+import { router } from "expo-router";
+
+import { type Track, useConnection, usePlayer } from "@crateforge/core";
 import { setTestConnection, createQueryWrapper, resetTestState } from "@/test-utils";
 import LibraryScreen from "@/app/(tabs)/index";
 
@@ -118,5 +120,26 @@ describe("LibraryScreen", () => {
     );
     expect(await screen.findByText("ダウンロード済みの曲はありません")).toBeTruthy();
     expect(screen.getByLabelText("サーバーに接続")).toBeTruthy();
+  });
+
+  test("token mismatch shows the reason and a re-enter-token action (M6)", async () => {
+    useConnection.setState({
+      baseUrl: "http://h:1",
+      token: "old",
+      status: "error",
+      errorKind: "unauthorized",
+      error: "トークンが違います",
+      client: null,
+    });
+    (router.push as jest.Mock).mockClear();
+    const Wrapper = createQueryWrapper();
+    await render(
+      <Wrapper>
+        <LibraryScreen />
+      </Wrapper>,
+    );
+    expect(await screen.findByText(/トークンが一致しません/)).toBeTruthy();
+    fireEvent.press(screen.getByLabelText("トークンを入力し直す"));
+    expect(router.push).toHaveBeenCalledWith("/connect?reauth=1");
   });
 });

@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { Playlist, Track, SortField, SortOrder, SmartCriteria } from "../types";
+import type {
+  Playlist,
+  Track,
+  SortField,
+  SortOrder,
+  SmartCriteria,
+  SmartRestoreReport,
+} from "../types";
 
 export async function getPlaylists(): Promise<Playlist[]> {
   return invoke("get_playlists");
@@ -45,8 +52,22 @@ export async function renamePlaylist(
   return invoke("rename_playlist", { playlistId, name });
 }
 
-export async function deletePlaylist(playlistId: number): Promise<void> {
-  return invoke("delete_playlist", { playlistId });
+/**
+ * プレイリストを削除する。フォルダで `withContents` が true なら中身 (子孫) ごと削除、
+ * false / 省略なら中身は残してフォルダの親へ繰り上げる。
+ */
+export async function deletePlaylist(playlistId: number, withContents = false): Promise<void> {
+  return invoke("delete_playlist", { playlistId, withContents });
+}
+
+/** プレイリストの実際の曲数 (スマートはライブ評価、フォルダは子孫の和集合)。 */
+export async function getPlaylistTrackCount(playlistId: number): Promise<number> {
+  return invoke("get_playlist_track_count", { playlistId });
+}
+
+/** 全スマートプレイリストのライブ評価件数 (playlistId → 件数)。 */
+export async function getSmartPlaylistCounts(): Promise<Record<number, number>> {
+  return invoke("get_smart_playlist_counts");
 }
 
 export async function addTracksToPlaylist(
@@ -99,6 +120,16 @@ export async function getSmartCriteria(playlistId: number): Promise<SmartCriteri
   return invoke("get_smart_criteria", { playlistId });
 }
 
+/// 既存ライブラリ向け: iTunes XML (複数可・先頭のファイルを優先) のスマートプレイリスト条件を、
+/// Persistent ID が一致するプレイリストへ復元する。曲・プレイリスト自体は取り込まない。
+/// `overwrite` が false なら既に条件があるプレイリストは変更しない。
+export async function restoreItunesSmartPlaylists(
+  paths: string[],
+  overwrite: boolean,
+): Promise<SmartRestoreReport> {
+  return invoke("restore_itunes_smart_playlists", { paths, overwrite });
+}
+
 /// スマートプレイリストの曲をライブ評価で取得する。`query` は通常プレイリストと同じく
 /// プレイリスト内検索として criteria の結果へ AND で効く。
 export async function getSmartPlaylistTracks(
@@ -122,10 +153,21 @@ export async function getSmartPlaylistTracks(
 // ===== ライブラリ変更通知 =====
 
 /// API 経由などライブラリ変更時に発火するイベントを購読する。
+/// `library-changed` の付随情報。`artworkChanged` は埋め込みアートワークが
+/// 変わりうる書き込み (API の artwork PUT/DELETE・upload repair・同期) のときだけ true。
+/// 古いバックエンド / 付与されないイベントでは false 扱い。
+export interface LibraryChangedInfo {
+  artworkChanged: boolean;
+}
+
 export function onLibraryChanged(
-  cb: (playlistId: number | null) => void,
+  cb: (playlistId: number | null, info: LibraryChangedInfo) => void,
 ): Promise<UnlistenFn> {
-  return listen<{ playlistId: number | null }>("library-changed", (e) =>
-    cb(e.payload?.playlistId ?? null),
+  return listen<{ playlistId?: number | null; artworkChanged?: boolean } | null>(
+    "library-changed",
+    (e) =>
+      cb(e.payload?.playlistId ?? null, {
+        artworkChanged: e.payload?.artworkChanged === true,
+      }),
   );
 }

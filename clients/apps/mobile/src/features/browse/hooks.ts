@@ -7,7 +7,7 @@
 import { useCallback, useMemo } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, trackArtist, trackAlbumArtist, useConnection, useDownloads, useSettings } from "@crateforge/core";
+import { ApiError, type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, filterAlbumTracks, trackArtistKey, trackAlbumArtistKey, useConnection, useDownloads, useSettings } from "@crateforge/core";
 
 import { usePendingEdits } from "@/store/pendingEdits";
 
@@ -59,11 +59,16 @@ export function albumYearMap(tracks: Track[]): Map<string, number> {
  */
 export function useTracks(query?: TracksQuery, enabled = true) {
   const client = useConnection((s) => s.client);
+  // 絞り込み無しの全曲取得は重い（数万件）ので、フォーカス/前面復帰のたびに取り直さないよう
+  // staleTime を長めにする（既定は 1 分）。最新化はプル更新で行える。
+  const unfiltered = !query?.q && !query?.genre;
   return useQuery<Track[]>({
     queryKey: ["tracks", query ?? {}],
     enabled: !!client && enabled,
     queryFn: ({ signal }) => client!.listTracks(query, signal),
     placeholderData: keepPreviousData,
+    // undefined を渡すと既定（QueryClient の staleTime）を上書きしてしまうので、指定時だけ載せる。
+    ...(unfiltered ? { staleTime: 5 * 60 * 1000 } : {}),
   });
 }
 
@@ -137,15 +142,21 @@ export function useAlbums(enabled = true) {
   });
 }
 
-/** 指定アルバムの曲（album が null のときは無効）。disc→track 昇順でソート。 */
+/** 指定アルバムの曲（album が null のときは無効）。disc→track 昇順でソート。
+ * album 名は完全一致（`?album=` は部分一致なので "Dawn" が "Dawn (Remixes)" を含んでしまう）。
+ * 新しいホストには albumExact=true で絞らせ、古いホスト向けにクライアントでも完全一致で絞る。
+ * albumArtist では絞らない: アルバム一覧（/api/albums）が album 名単位の集計なので、詳細も同じ粒度にする
+ * （コンピ/DJ ミックスで album_artist が曲ごとに違っても全曲出す。round-2 M1）。
+ */
 export function useAlbumTracks(album: string | null) {
   const client = useConnection((s) => s.client);
   return useQuery<Track[], Error, Track[]>({
     queryKey: ["album-tracks", album],
     enabled: !!client && album != null,
-    queryFn: () => client!.listTracks({ album: album!, limit: BROWSE_LIMIT }),
+    queryFn: ({ signal }) =>
+      client!.listTracks({ album: album!, albumExact: true, limit: BROWSE_LIMIT }, signal),
     select: (tracks) =>
-      [...tracks].sort(
+      filterAlbumTracks(tracks, album ?? "").sort(
         (a, b) =>
           (a.discNumber ?? 0) - (b.discNumber ?? 0) ||
           (a.trackNumber ?? 0) - (b.trackNumber ?? 0),
@@ -203,16 +214,17 @@ function deriveArtistAlbums(
   grouping: ArtistGrouping,
   downloadedIds: Set<number>,
 ): Album[] {
-  const nameOf = grouping === "albumArtist" ? trackAlbumArtist : trackArtist;
+  // 束ねキー（不明なアーティストは ""。/api/artists の artist と同じ）で突き合わせる。
+  const nameOf = grouping === "albumArtist" ? trackAlbumArtistKey : trackArtistKey;
   const map = new Map<
     string,
     { album: string; albumArtist: string | null; trackCount: number; sampleTrackId: number; sampleDownloaded: boolean; year: number | null }
   >();
   for (const t of tracks) {
     if (nameOf(t) !== artist) continue;
-    const album = t.album ?? "";
-    // album が空/NULL の曲は "" キーで 1 グループ（「アルバムなし」）に束ねる。
-    // 表示は AlbumRow が空名を「アルバムなし」と出し、遷移はアーティスト画面が
+    const album = (t.album ?? "").trim() ? (t.album as string) : "";
+    // album が空/NULL の曲は "" キーで 1 グループ（「不明なアルバム」）に束ねる。
+    // 表示は AlbumRow が空名を「不明なアルバム」と出し、遷移はアーティスト画面が
     // 専用パラメータ(noAlbum)へ振り分ける（/album/ 空セグメントのクラッシュは回避済み）。
     const isDownloaded = downloadedIds.has(t.trackId);
     const entry = map.get(album);
@@ -242,7 +254,7 @@ function deriveArtistAlbums(
   return [...map.values()]
     .map(({ album, albumArtist, trackCount, sampleTrackId, year }) => ({ album, albumArtist, trackCount, sampleTrackId, year }))
     .sort((a, b) => {
-      // 「アルバムなし」(空アルバム) グループは常に末尾へ。
+      // 「不明なアルバム」(空アルバム) グループは常に末尾へ。
       if (!a.album !== !b.album) return a.album ? -1 : 1;
       return compareAlbums(a, b);
     })

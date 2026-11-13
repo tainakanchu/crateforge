@@ -24,8 +24,15 @@ function artistKey(t: Track): string | null {
   return a || null;
 }
 
-function nameArtistKey(t: Track): string {
-  return `${(t.name ?? "").trim().toLowerCase()}::${(t.artist ?? "").trim().toLowerCase()}`;
+function nameArtistKey(t: Track): string | null {
+  const name = (t.name ?? "").trim().toLowerCase();
+  if (!name) return null;
+  const artist = (t.artist ?? "").trim().toLowerCase();
+  if (artist) return `${name}::${artist}`;
+  // アーティスト不明 (タグ無し) 同士は曲名 (ファイル名由来の "Track 01" 等) だけでは
+  // 同じ曲と言えない。長さ (秒) も一致するときだけ重複とみなす。
+  if (t.totalTimeMs == null || t.totalTimeMs <= 0) return null;
+  return `${name}::\u0000${Math.round(t.totalTimeMs / 1000)}`;
 }
 
 /**
@@ -75,13 +82,13 @@ export function lintSet(
     seenIds.add(t.trackId);
 
     const nak = nameArtistKey(t);
-    if (nak !== "::") {
+    if (nak !== null) {
       const prev = seenNameArtist.get(nak);
       if (prev != null) {
         items.push({
           key: `dup-name-${prev}-${t.trackId}`,
           severity: "warn",
-          message: `同名曲の重複: ${t.name || "(unknown)"} — ${t.artist || ""}`,
+          message: `同名曲の重複: ${[t.name || "(unknown)", t.artist].filter(Boolean).join(" — ")}`,
           trackIds: [prev, t.trackId],
         });
       } else {

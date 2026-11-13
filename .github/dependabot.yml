@@ -11,3 +11,15 @@ updates:
         patterns:
           - "astro"
           - "@astrojs/*"
+
+  # GitHub Actions (.github/workflows/*.yml). Actions are pinned to full commit
+  # SHAs with the release tag as a trailing comment; Dependabot bumps both.
+  # Batch all action updates into one weekly PR.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

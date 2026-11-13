@@ -4,7 +4,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export interface ApiServerStatus {
   enabled: boolean;
   running: boolean;
+  /** 稼働中は実際に待ち受けているポート (フォールバック後)、停止中は設定値。 */
   port: number;
+  /** 設定上の希望ポート。稼働中に port と違えば、使用中のため別ポートで起動した。 */
+  configuredPort: number;
   url: string | null;
   lanEnabled: boolean;
   token: string | null;

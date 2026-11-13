@@ -46,8 +46,8 @@ Because it is unsigned, Gatekeeper shows a warning on first launch. Bypass it in
 ## First launch
 
 1. Launching the app opens an empty library.
-2. If you already have an `iTunes Library.xml`, import it with **"📥 Import XML"** in the toolbar ([Library import](../import/)).
-3. If you don't have an XML, you can import your own music files directly with **"🎵 Add Files"**.
+2. If you already have an `iTunes Library.xml`, import it with **"iTunes XML を取り込む" (Import iTunes XML)** in the toolbar ([Library import](../import/)).
+3. If you don't have an XML, you can import your own music files directly with **"ファイルを追加" (Add Files)**.
 
 The source of truth for the library lives in SQLite (WAL), so after the first import it opens instantly every time after that.
 

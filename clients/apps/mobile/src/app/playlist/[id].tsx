@@ -1,19 +1,23 @@
 // Playlist 詳細。プレイリスト名 + 曲数 + 一括ダウンロードのヘッダを出し、
 // 曲を一覧する。タップでその位置からプレイリスト全体をキューにして再生する。
 
-import { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, Text, View, StyleSheet } from "react-native";
+import { useCallback, useMemo, useState } from "react";
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
-import { type Track, useConnection, usePlayer, useDownloads } from "@crateforge/core";
-import { PALETTE } from "@/constants/brand";
+import { type Track, useConnection, usePlayer, useDownloads, describeApiError } from "@crateforge/core";
+import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
+import BackButton from "@/components/BackButton";
+import DesktopPlayButton from "@/components/DesktopPlayButton";
 import TrackRow from "@/components/TrackRow";
 import DownloadButton from "@/components/DownloadButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { usePlaylist, usePlaylistTracks } from "@/features/browse/hooks";
 import { showTrackMenu } from "@/features/playback/trackMenu";
+import { positionalTrackKey } from "@/lib/listKeys";
+import { usePullToRefresh } from "@/hooks/use-refresh";
 
 export default function PlaylistScreen() {
   const router = useRouter();
@@ -22,6 +26,10 @@ export default function PlaylistScreen() {
   const client = useConnection((s) => s.client);
   const detailQuery = usePlaylist(playlistId);
   const query = usePlaylistTracks(playlistId);
+  // プル更新（曲とプレイリスト情報）。
+  const { refreshing, onRefresh } = usePullToRefresh(
+    useCallback(() => Promise.all([query.refetch(), detailQuery.refetch()]), [query, detailQuery]),
+  );
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
 
   // オフライン保存したプレイリストとその曲（client が無いときに使う）。
@@ -46,6 +54,20 @@ export default function PlaylistScreen() {
     router.push("/player");
   };
 
+  const onPlayAll = () => {
+    if (tracks.length === 0) return;
+    usePlayer.getState().setShuffle(false);
+    usePlayer.getState().setQueue(tracks, 0);
+    router.push("/player");
+  };
+
+  const onShuffle = () => {
+    if (tracks.length === 0) return;
+    usePlayer.getState().setShuffle(true);
+    usePlayer.getState().setQueue(tracks, Math.floor(Math.random() * tracks.length));
+    router.push("/player");
+  };
+
   const togglePin = async () => {
     if (pinBusy) return;
     setPinBusy(true);
@@ -62,6 +84,7 @@ export default function PlaylistScreen() {
 
   return (
     <Screen edges={["top"]}>
+      <BackButton />
       <View style={styles.header}>
         <View style={styles.headerText}>
           <Text style={styles.title} numberOfLines={2}>
@@ -105,6 +128,30 @@ export default function PlaylistScreen() {
         ) : null}
       </View>
 
+      {tracks.length > 0 ? (
+        <View style={styles.actions}>
+          <Pressable
+            onPress={onPlayAll}
+            accessibilityRole="button"
+            accessibilityLabel="再生"
+            style={({ pressed }) => [styles.playButton, pressed && styles.pressed]}
+          >
+            <Ionicons name="play" size={18} color={BRAND.accentText} />
+            <Text style={styles.playLabel}>再生</Text>
+          </Pressable>
+          <Pressable
+            onPress={onShuffle}
+            accessibilityRole="button"
+            accessibilityLabel="シャッフル再生"
+            style={({ pressed }) => [styles.shuffleButton, pressed && styles.pressed]}
+          >
+            <Ionicons name="shuffle" size={18} color={PALETTE.accent} />
+            <Text style={styles.shuffleLabel}>シャッフル</Text>
+          </Pressable>
+          <DesktopPlayButton tracks={tracks} />
+        </View>
+      ) : null}
+
       {/* オフライン時のバナー */}
       {!client ? (
         <View style={styles.offlineBanner}>
@@ -123,7 +170,7 @@ export default function PlaylistScreen() {
         ) : (
           <FlatList
             data={tracks}
-            keyExtractor={(t) => String(t.trackId)}
+            keyExtractor={positionalTrackKey}
             renderItem={({ item, index }: { item: Track; index: number }) => (
               <TrackRow
                 track={item}
@@ -135,6 +182,7 @@ export default function PlaylistScreen() {
               />
             )}
             contentContainerStyle={styles.listContent}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PALETTE.accent} colors={[PALETTE.accent]} />}
           />
         )
       ) : offlineTracks.length === 0 ? (
@@ -145,7 +193,7 @@ export default function PlaylistScreen() {
       ) : (
         <FlatList
           data={tracks}
-          keyExtractor={(t) => String(t.trackId)}
+          keyExtractor={positionalTrackKey}
           renderItem={({ item, index }: { item: Track; index: number }) => (
             <TrackRow
               track={item}
@@ -164,10 +212,41 @@ export default function PlaylistScreen() {
 }
 
 function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : "読み込みに失敗しました";
+  return describeApiError(e, { action: "読み込み" });
 }
 
 const styles = StyleSheet.create({
+  actions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  playButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    minHeight: 44,
+    paddingHorizontal: 20,
+    borderRadius: 22,
+    backgroundColor: PALETTE.accent,
+  },
+  playLabel: { color: BRAND.accentText, fontSize: 15, fontWeight: "700" },
+  shuffleButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    minHeight: 44,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: PALETTE.accent,
+  },
+  shuffleLabel: { color: PALETTE.accent, fontSize: 15, fontWeight: "700" },
   header: {
     flexDirection: "row",
     alignItems: "center",

@@ -309,7 +309,9 @@ impl MasterClient {
         let mut tracks = Vec::new();
         loop {
             let path = format!(
-                "/api/playlists/{playlist_id}/tracks?limit={PLAYLIST_PAGE}&offset={}",
+                // effectiveBpm=false: bpm は解析値で埋めずタグ値のまま受け取る
+                // (取り寄せた bpm はタグとして保存されるため。D3)。
+                "/api/playlists/{playlist_id}/tracks?limit={PLAYLIST_PAGE}&offset={}&effectiveBpm=false",
                 tracks.len()
             );
             let page: Vec<Track> = self.get_json(&path).await?;
@@ -1029,6 +1031,7 @@ mod tests {
             file_size_bytes: None,
             codec: None,
             key_camelot_user: None,
+            grouping: None,
         }
     }
 
@@ -1259,6 +1262,9 @@ mod tests {
         assert_eq!(tracks.len(), 2);
         assert_eq!(tracks[0].rating, Some(80));
         assert_eq!(tracks[0].play_count, Some(5));
+        // D3: 親の API が実効 BPM を返すようになっても、取り寄せでは解析 BPM (128) を
+        // タグ値として保存しない (タグ BPM が無い曲は無いまま)。
+        assert!(tracks.iter().all(|t| t.bpm.is_none()), "{:?}", tracks.iter().map(|t| t.bpm).collect::<Vec<_>>());
         assert!(slave.get_analysis(tracks[0].track_id).unwrap().is_some());
         let playlist = slave
             .get_playlists()

@@ -1,13 +1,10 @@
 // 曲のアートワーク。接続中は API の artwork を表示、未接続/欠損はプレースホルダ。
 // ローカル保存済みアートがあればオフラインでも表示する。
+// プレースホルダは常に下に敷き、画像を上に重ねる（404 = アート無しでも頭文字が見える。LayeredArtwork）。
 // CRITICAL: アートワーク URL は track.trackId（iTunes trackId）で取得する。
 
-import { View, StyleSheet } from "react-native";
-import { Image } from "expo-image";
-import { Ionicons } from "@expo/vector-icons";
-
-import { type Track, useConnection, useDownloads } from "@crateforge/core";
-import { PALETTE } from "@/constants/brand";
+import { type Track, trackTitle, useConnection, useDownloads } from "@crateforge/core";
+import LayeredArtwork from "@/components/LayeredArtwork";
 
 export interface ArtworkProps {
   track: Track;
@@ -20,34 +17,14 @@ export default function Artwork({ track, size = 48, radius = 6 }: ArtworkProps) 
   // ローカル保存済みアートを最優先。DL完了で再描画されるようリアクティブに取得する。
   const localArtworkUri = useDownloads((s) => s.getLocalArtworkUri(track.trackId));
   const source = localArtworkUri ?? client?.artworkSource(track.trackId);
-  const dimensions = { width: size, height: size, borderRadius: radius };
-
-  if (!source) {
-    return (
-      <View style={[styles.placeholder, dimensions]}>
-        <Ionicons name="musical-note" size={Math.round(size * 0.5)} color={PALETTE.textFaint} />
-      </View>
-    );
-  }
 
   return (
-    <Image
+    <LayeredArtwork
       source={source}
-      style={[styles.image, dimensions]}
-      contentFit="cover"
-      transition={120}
+      name={track.album || trackTitle(track)}
+      size={size}
+      radius={radius}
       recyclingKey={String(track.trackId)}
     />
   );
 }
-
-const styles = StyleSheet.create({
-  image: {
-    backgroundColor: PALETTE.surfaceAlt,
-  },
-  placeholder: {
-    backgroundColor: PALETTE.surfaceAlt,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-});

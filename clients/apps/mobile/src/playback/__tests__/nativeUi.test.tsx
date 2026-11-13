@@ -2,7 +2,7 @@
 // エラー表示・「AAC で再ダウンロード」導線（design D7）のテスト。
 
 import { createElement } from "react";
-import { Platform, ToastAndroid, Alert } from "react-native";
+import { Platform } from "react-native";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { useSegments } from "expo-router";
 
@@ -15,6 +15,7 @@ import {
 } from "@crateforge/core";
 import MiniPlayer from "@/components/MiniPlayer";
 import PlaybackErrorToast, { UNSUPPORTED_FORMAT_HINT } from "@/components/PlaybackErrorToast";
+import { useToast } from "@/components/Toast";
 import DownloadsScreen from "@/app/downloads";
 import PlayerScreen from "@/app/player";
 import { createQueryWrapper, resetTestState, setTestConnection } from "@/test-utils";
@@ -101,9 +102,8 @@ describe("プレイヤー画面のスリープタイマー", () => {
 });
 
 describe("PlaybackErrorToast", () => {
-  it("UNSUPPORTED_FORMAT は「AAC で再ダウンロード」への案内を添えて長めに出す", async () => {
-    jest.replaceProperty(Platform, "OS", "android");
-    const show = jest.spyOn(ToastAndroid, "show").mockImplementation(() => {});
+  it("UNSUPPORTED_FORMAT は「AAC で再ダウンロード」への案内を添えて出す", async () => {
+    useToast.setState({ message: null, kind: "info" });
     await installNative();
     await render(<PlaybackErrorToast />);
     await act(() =>
@@ -111,11 +111,10 @@ describe("PlaybackErrorToast", () => {
         lastError: { code: "UNSUPPORTED_FORMAT", message: "この形式は再生できません", trackId: 1, atEpochMs: 10 },
       }),
     );
-    await waitFor(() => expect(show).toHaveBeenCalled());
-    expect(show).toHaveBeenCalledWith(
-      `この形式は再生できません\n${UNSUPPORTED_FORMAT_HINT}`,
-      ToastAndroid.LONG,
+    await waitFor(() =>
+      expect(useToast.getState().message).toBe(`この形式は再生できません\n${UNSUPPORTED_FORMAT_HINT}`),
     );
+    expect(useToast.getState().kind).toBe("error");
     // 表示後に消費（ネイティブ側も clearError）。
     await waitFor(() => expect(usePlayer.getState().lastError).toBeNull());
     await act(async () => {
@@ -126,8 +125,7 @@ describe("PlaybackErrorToast", () => {
   });
 
   it("コマンド失敗は既存の通知経路で出る", async () => {
-    jest.replaceProperty(Platform, "OS", "ios");
-    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    useToast.setState({ message: null, kind: "info" });
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     await installNative();
     bridge.skipNext.mockRejectedValueOnce(new Error("x"));
@@ -136,7 +134,7 @@ describe("PlaybackErrorToast", () => {
       usePlayer.getState().next();
       await flushPromises(20);
     });
-    expect(alert).toHaveBeenCalledWith("再生エラー", "操作に失敗しました");
+    expect(useToast.getState().message).toBe("操作に失敗しました");
     jest.restoreAllMocks();
     warn.mockRestore();
   });

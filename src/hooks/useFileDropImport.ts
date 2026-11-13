@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import * as libraryApi from "../api/library";
 import { useStore } from "../store/useStore";
 import { AUDIO_EXTENSIONS } from "../lib/audioExtensions";
+import { importWithDuplicateCheck, summarizeImport } from "../lib/importFlow";
 
 const EXT_SET = new Set<string>(AUDIO_EXTENSIONS);
 
@@ -31,9 +31,10 @@ function looksImportable(path: string): boolean {
  * Tauri ネイティブの drag-drop イベントを購読し、ドロップされたオーディオファイル /
  * フォルダをライブラリ(DB)に取り込む。
  *
- * ドロップされたパスは（フォルダを捨てずに）そのまま `import_folders` に渡す。
+ * ドロップされたパスは（フォルダを捨てずに）そのまま `plan_import` に渡す。
  * Rust 側が実パスを見てフォルダなら再帰的に走査し、対応拡張子のファイルだけを
- * 取り込む。既にライブラリにあるパスはスキップされる。
+ * 照合・取り込みする。既にライブラリにあるパスはスキップされ、別ファイルとして
+ * 取り込み済みの曲があれば確認ダイアログで扱いを選ばせる (lib/importFlow)。
  *
  * @param onImported - 取り込み成功後に呼ぶコールバック（ライブラリ再読込用）
  * @returns isDragOver - ウィンドウ上にファイルがドラッグ中かどうか
@@ -63,21 +64,25 @@ export function useFileDropImport(onImported: () => void): boolean {
           if (paths.length === 0) return;
 
           try {
-            const r = await libraryApi.importFolders(paths);
-            if (r.imported === 0 && r.skipped === 0 && r.failed === 0) {
+            // 取り込み済み検出 → (衝突があれば確認ダイアログ) → 取り込み。
+            const r = await importWithDuplicateCheck(paths);
+            if (!r) return; // キャンセル
+            if (r.imported + r.skipped + r.replaced + r.failed === 0) {
               pushToast("info", "対応フォーマットのファイルがありません");
               return;
             }
-            const base =
-              `${r.imported} ファイルを取り込みました` +
-              (r.skipped > 0 ? `（${r.skipped} 件は取り込み済み）` : "") +
-              (r.failed > 0 ? `（${r.failed} 件失敗）` : "");
+            const summary = summarizeImport(r);
+            const changed = r.imported + r.replaced > 0;
             const msg =
               r.imported > 0
-                ? `${base} — Inbox に追加されました。サイドバーの Inbox から整理できます`
-                : base;
-            pushToast(r.imported > 0 ? "success" : "info", msg, r.imported > 0 ? 5200 : 3200);
-            onImported();
+                ? `${summary} — Inbox に追加されました。サイドバーの Inbox から整理できます`
+                : summary;
+            pushToast(
+              r.failed > 0 ? "error" : changed ? "success" : "info",
+              msg,
+              changed ? 5200 : 3200,
+            );
+            if (changed) onImported();
           } catch (err) {
             pushToast("error", `取り込みエラー: ${err}`);
           }

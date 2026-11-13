@@ -10,15 +10,17 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 
 ## 有効化と待受先
 
-設定の **「AI 連携 / API」** で API サーバーを有効化します。
+設定の **「モバイル / API」** で API サーバーを有効化します。
 
 - 既定は **OFF**。既定ポートは **8787**。
 - 既定では **`127.0.0.1`（ループバックのみ）** で待ち受けます。
 - **「LAN 公開」** を有効にすると、同じ Wi-Fi のスマホ / TV / PC のブラウザからアクセスできます。
   接続 URL と **QR コード** が設定に表示されます。
 
-サーバーの停止が確実に完了してから再起動するよう堅牢化されており（`SO_REUSEADDR` / `SO_REUSEPORT`）、
+サーバーの停止が確実に完了してから再起動するよう堅牢化されており（`SO_REUSEADDR`）、
 「前のサーバーが落ち切らずに起動できない（address in use）」を解消しています。
+別の Crateforge が同じポートで待ち受け中のときは同じポートに二重に待ち受けず、空いている別のポートへ切り替えます
+（実際のポートは設定の接続 URL に表示され、「8787 は使用中のため 9797 で起動しました」のように切り替えたことも明示されます）。
 
 ## 認証・トークン・ペアリング
 
@@ -38,12 +40,27 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 ### 読み取り
 
 - `GET /api/health` — サーバーの素性 + 現在の曲数
-- `GET /api/tracks`（`?q` 検索、`?album` / `?genre` 部分一致、offset/limit）
-- `GET /api/tracks/{id}` / `POST /api/tracks/by-ids`
+- `GET /api/tracks`（`?q` 検索、`?album` / `?genre` 部分一致、offset/limit）。`?albumExact=true` を付けると `album` を完全一致で絞ります
+- `GET /api/tracks/{id}` / `POST /api/tracks/by-ids`（ID 列 → 曲。読み取り専用なので LAN からもトークン付きで使えます）
+- `GET /api/tracks/{id}/stream` — 音源の配信（`?native=true` 端末で再生できる形式は無変換 / `?original=true` 原本 / `?fmt=aac&br=192` AAC 変換）
 - `GET /api/tracks/{id}/analysis` — 解析結果（未解析なら null）
 - `GET /api/tracks/{id}/similar` — 類似曲
 - `GET /api/stats` / `GET /api/genres` / `GET /api/albums`
 - `GET /api/playlists` / `GET /api/playlists/{id}`（スマート条件 `smartCriteria` を含む） / `GET /api/playlists/{id}/tracks`
+  （スマートプレイリストの `trackCount` は条件のライブ評価の件数です）
+
+曲を返す API（`/api/tracks` 系・`/api/tracks/by-ids`・`/api/tracks/lookup`・`/similar`・`/api/playlists/{id}/tracks`・
+`PATCH /api/tracks/{id}` の応答）の `bpm` は、常に **実効 BPM**（タグの BPM、無ければ解析 BPM）です。
+タグの値そのものが要るときは `?effectiveBpm=false` を付けて明示してください（sync ロールのトークンも常にタグの値）。
+同期（取り寄せ・書き戻し）は解析値をタグとして保存しないよう、必ず `?effectiveBpm=false` を付けて要求します。
+
+タグにアーティスト / アルバムが無い曲は、フォルダ名などで補わず空のまま扱います（曲名はファイル名で補います）。
+`GET /api/artists` はそのような曲を `artist: ""` の 1 件に、`GET /api/albums` は `album: ""` の 1 件にまとめて末尾に返します
+（「不明なアーティスト」「不明なアルバム」といった表示名はクライアント側で付けてください）。
+その曲は `GET /api/tracks?artist=`（空）／ `GET /api/tracks?album=&albumExact=true` で取得できます。
+
+クエリの真偽値は `true` / `false` のほか `1` / `0` も受け付けます。
+クライアントが `Accept-Encoding: gzip` を送ると、大きな JSON 応答（全曲一覧など）は gzip 圧縮して返します。
 
 ### 書き込み（メタデータ）
 
@@ -113,6 +130,9 @@ iOS は **「ホーム画面に追加」で全画面アプリ化（PWA）** で�
 リモコンには **再生 / 一時停止・前後・シーク・音量スライダー・シャッフル / リピートのトグル** があり、
 状態は `GET /api/remote/state`（音量 / シャッフル / リピートを含む）、操作は `POST /api/remote/*`
 （`play` / `pause` / `resume` / `next` / `prev` / `seek` / `volume` / `shuffle` / `repeat` など）で行います。
+停止後の `resume` はキューの現在位置の曲から再生し直します。キューの任意の位置から再生するには
+`POST /api/remote/play-at`（`{index}`。`GET /api/remote/queue` の `trackIds` に対する位置）を、
+キューを置き換えてすぐ再生するには `POST /api/remote/set-queue` に `play: true` を付けます。
 
 Web UI にはデスクトップ本体に近い **キーボードショートカット** があり、`?` で一覧を開けます
 （`Space` 再生 / 一時停止、`J` / `K` 前後、`Shift + ←` / `Shift + →` 5 秒シーク、`S` シャッフル、`R` リピート、

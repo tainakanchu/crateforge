@@ -29,7 +29,7 @@ const SECTIONS: { key: Section; label: string; icon: string }[] = [
   { key: "fonts", label: "フォント", icon: "sliders" },
   { key: "ffmpeg", label: "変換 (ffmpeg)", icon: "waveform" },
   { key: "usb", label: "USB 書き出し (rbx-cli)", icon: "upload" },
-  { key: "api", label: "AI 連携 / API", icon: "info" },
+  { key: "api", label: "モバイル / API", icon: "info" },
   { key: "updates", label: "アップデート", icon: "download" },
   { key: "about", label: "情報・ライセンス", icon: "info" },
 ];
@@ -173,7 +173,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     // API サーバーの初期状態を取得。
     serverApi.getApiServerStatus().then((s) => {
       setApiStatus(s);
-      setPortInput(String(s.port));
+      setPortInput(String(s.configuredPort));
     }).catch(() => {});
     // フォント設定の初期読み込み（重い OS フォント列挙 listSystemFonts は
     // 「表示(fonts)」セクションを開いた時に遅延ロードする＝設定を開くだけでは走らせない）。
@@ -342,17 +342,17 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const handleToggleApiServer = useCallback(async () => {
     if (!apiStatus) return;
     const nextEnabled = !apiStatus.enabled;
-    const port = Number(portInput) || apiStatus.port;
+    const port = Number(portInput) || apiStatus.configuredPort;
     try {
       const next = await serverApi.setApiServerConfig(nextEnabled, port);
       setApiStatus(next);
-      setPortInput(String(next.port));
+      setPortInput(String(next.configuredPort));
     } catch (err) {
       pushToast("error", `API サーバーの設定に失敗しました: ${err}`);
       // 失敗した場合は最新状態を再取得してトグルをリセット。
       serverApi.getApiServerStatus().then((s) => {
         setApiStatus(s);
-        setPortInput(String(s.port));
+        setPortInput(String(s.configuredPort));
       }).catch(() => {});
     }
   }, [apiStatus, portInput, pushToast]);
@@ -363,7 +363,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     const port = Number(portInput);
     if (!port || port < 1 || port > 65535) {
       pushToast("error", `ポート番号が不正です: ${portInput}`);
-      setPortInput(String(apiStatus.port));
+      setPortInput(String(apiStatus.configuredPort));
       return;
     }
     if (!apiStatus.enabled) {
@@ -373,12 +373,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     try {
       const next = await serverApi.setApiServerConfig(true, port);
       setApiStatus(next);
-      setPortInput(String(next.port));
+      setPortInput(String(next.configuredPort));
     } catch (err) {
       pushToast("error", `ポートの変更に失敗しました: ${err}`);
       serverApi.getApiServerStatus().then((s) => {
         setApiStatus(s);
-        setPortInput(String(s.port));
+        setPortInput(String(s.configuredPort));
       }).catch(() => {});
     }
   }, [apiStatus, portInput, pushToast]);
@@ -1272,8 +1272,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 <div className="settings-note">
                   <Icon name="info" size={14} />
                   <span>
-                    ループバック（127.0.0.1）のみで待受するローカル HTTP API サーバーです。
-                    デフォルトは <b>無効</b> です。AI エージェントや外部ツールとの連携に使います。
+                    ローカル HTTP API サーバーです（既定はループバック 127.0.0.1 のみで待受）。
+                    デフォルトは <b>無効</b> です。モバイルアプリ・ウェブプレイヤー（下の「LAN 公開」）や、
+                    AI エージェント・外部ツールとの連携に使います。
                   </span>
                 </div>
 
@@ -1314,6 +1315,14 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     <Icon name="check" size={14} />
                     <span>
                       稼働中: <code>{apiStatus.url}</code>
+                      {/* 希望ポートが使用中で別ポートに逃げたときは明示する (E7)。 */}
+                      {apiStatus.port !== apiStatus.configuredPort && (
+                        <>
+                          <br />
+                          {apiStatus.configuredPort} は使用中のため {apiStatus.port} で起動しました。
+                          モバイルアプリなどにはこのポートの URL を使ってください。
+                        </>
+                      )}
                     </span>
                   </div>
                 )}
@@ -1326,11 +1335,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 )}
 
                 {/* LAN 公開セクション */}
-                <div className="settings-sectitle">LAN 公開（ウェブプレイヤー）</div>
+                <div className="settings-sectitle">LAN 公開（モバイルアプリ・ウェブプレイヤー）</div>
 
+                {/* 見出しと同じ文言を繰り返さない (D9)。行は操作 (オン/オフ) の名前にする。 */}
                 <Row
-                  title="LAN 公開（スマホ/TV で再生）"
-                  desc="同じ Wi-Fi の端末のブラウザからライブラリを再生できます。読み取り専用＋トークン必須。"
+                  title="LAN に公開する"
+                  desc="同じ Wi-Fi のスマホの Crateforge モバイルアプリや、スマホ / TV のブラウザ（ウェブプレイヤー）からライブラリを再生・操作できます。アクセスにはトークンが必要です。"
                 >
                   <Toggle
                     on={apiStatus?.lanEnabled ?? false}
@@ -1353,7 +1363,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                         {/* おすすめ接続先 */}
                         <div className="settings-kv">
                           <div>
-                            <span className="k">接続 URL（おすすめ）</span>
+                            {/* 見出しは 1 行で (幅 60px の .k だと 3 行に折り返していた。D9) */}
+                            <span className="k k-wide">おすすめの接続 URL</span>
                           </div>
                           <div style={{ alignItems: "flex-start", flexDirection: "column", gap: 8 }}>
                             <div style={{ display: "flex", alignItems: "center", width: "100%", gap: 6 }}>
@@ -1444,6 +1455,23 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                             ? `${apiStatus.token.slice(0, 8)}…`
                             : "（未設定）"}
                         </span>
+                        {apiStatus.token && (
+                          <button
+                            className="toolbar-btn"
+                            onClick={() => handleCopyUrl(apiStatus.token!)}
+                            title="モバイルアプリの「トークン」欄に貼り付けます"
+                          >
+                            {copiedUrl === apiStatus.token ? (
+                              <>
+                                <Icon name="check" size={13} /> コピーしました
+                              </>
+                            ) : (
+                              <>
+                                <Icon name="filePlus" size={13} /> トークンをコピー
+                              </>
+                            )}
+                          </button>
+                        )}
                         <button className="toolbar-btn" onClick={handleRegenerateToken}>
                           <Icon name="sparkle" size={14} /> 再生成
                         </button>

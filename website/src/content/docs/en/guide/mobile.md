@@ -18,6 +18,11 @@ From mobile, connect in one of the following ways.
 
 (Pairing is a feature for the Android TV client; the mobile app connects via QR / manual entry.)
 
+- If the token no longer matches (for example, it was changed on the desktop), the library / playlists / remote / settings
+  screens show the reason and **"Re-enter token"** (the connect screen opens with the URL filled in and the old token cleared).
+- While connected, the app checks the connection about every 25 seconds and switches to the offline view when the desktop
+  becomes unreachable (it reconnects automatically). "Last connected" in settings is the last time a request to the desktop succeeded.
+
 ## Browsing
 
 While connected, you can browse the desktop library in the following units.
@@ -28,6 +33,9 @@ While connected, you can browse the desktop library in the following units.
 - When opening an album, the track order is **disc number → track number**
 - Opening an artist lists their albums, sorted by album artist
 - How artists are grouped can be switched in settings (**album artist / artist**)
+- Albums are grouped **by album name** (compilations and DJ mixes whose tracks have different album artists show and download all tracks)
+- Album details offer **shuffle play**
+- Lists support **pull to refresh**. Stale lists are also re-fetched when you return to a tab or bring the app to the foreground
 
 ## On-device and background playback
 
@@ -48,6 +56,7 @@ While connected, you can browse the desktop library in the following units.
 Switching to "Play on PC (remote)" lets you control desktop playback from mobile.
 You can do play / pause, previous/next, seek, volume, and shuffle / repeat, and the playing state stays in sync.
 Tapping the playing artist (and album) navigates to that page.
+"Play on desktop…" in the track menu asks for confirmation before replacing the desktop queue when it already has tracks.
 
 ## Offline download / browsing / playback
 

@@ -10,15 +10,17 @@ Enabling it lets you integrate with AI agents (such as dj-curator) and play and 
 
 ## Enabling and listen address
 
-Enable the API server under **"AI integration / API"** in settings.
+Enable the API server under **"Mobile / API"** in settings.
 
 - It is **OFF** by default. The default port is **8787**.
 - By default it listens on **`127.0.0.1` (loopback only)**.
 - Enabling **"Expose on LAN"** lets you access it from a phone / TV / PC browser on the same Wi-Fi.
   The connection URL and a **QR code** are shown in settings.
 
-It has been hardened to restart only after the server has reliably stopped (`SO_REUSEADDR` / `SO_REUSEPORT`),
+It has been hardened to restart only after the server has reliably stopped (`SO_REUSEADDR`),
 resolving the "can't start because the previous server hasn't fully shut down (address in use)" problem.
+If another Crateforge is already listening on the same port, it does not double-bind that port and switches to a free one instead
+(the actual port is shown in the connection URL in Settings, along with a note such as "8787 は使用中のため 9797 で起動しました" — 8787 was in use, so it started on 9797).
 
 ## Authentication, tokens, and pairing
 
@@ -38,12 +40,27 @@ It exposes a REST API for reading and writing the library, analysis data, and pl
 ### Read
 
 - `GET /api/health` — server identity + current track count
-- `GET /api/tracks` (`?q` search, `?album` / `?genre` partial match, offset/limit)
-- `GET /api/tracks/{id}` / `POST /api/tracks/by-ids`
+- `GET /api/tracks` (`?q` search, `?album` / `?genre` partial match, offset/limit). Add `?albumExact=true` to match `album` exactly
+- `GET /api/tracks/{id}` / `POST /api/tracks/by-ids` (IDs → tracks; read-only, so it also works from the LAN with a token)
+- `GET /api/tracks/{id}/stream` — audio streaming (`?native=true` serves device-playable formats as-is / `?original=true` original bytes / `?fmt=aac&br=192` AAC transcode)
 - `GET /api/tracks/{id}/analysis` — analysis results (null if not analyzed)
 - `GET /api/tracks/{id}/similar` — similar tracks
 - `GET /api/stats` / `GET /api/genres` / `GET /api/albums`
 - `GET /api/playlists` / `GET /api/playlists/{id}` (includes the smart criteria `smartCriteria`) / `GET /api/playlists/{id}/tracks`
+  (for smart playlists, `trackCount` is the live-evaluated count)
+
+The `bpm` of APIs that return tracks (`/api/tracks*`, `/api/tracks/by-ids`, `/api/tracks/lookup`, `/similar`, `/api/playlists/{id}/tracks`,
+and the response of `PATCH /api/tracks/{id}`) is always the **effective BPM** (the tag BPM, or the analyzed BPM when the tag has none).
+To get the raw tag value, ask for it explicitly with `?effectiveBpm=false` (sync-role tokens also always get the tag value).
+Sync (provisioning and write-back) always sends `?effectiveBpm=false`, so it never stores an analyzed value as a tag.
+
+Tracks whose tags have no artist / album are kept empty rather than filled in from folder names (the title still falls back to the file name).
+`GET /api/artists` groups them into a single `artist: ""` entry and `GET /api/albums` into a single `album: ""` entry, both listed last
+(clients should label them, e.g. "Unknown Artist" / "Unknown Album").
+Those tracks can be fetched with `GET /api/tracks?artist=` (empty) / `GET /api/tracks?album=&albumExact=true`.
+
+Boolean query parameters accept `1` / `0` as well as `true` / `false`.
+When the client sends `Accept-Encoding: gzip`, large JSON responses (such as the full track list) are gzip-compressed.
 
 ### Write (metadata)
 
@@ -112,6 +129,9 @@ On iOS, you can make it a full-screen app (**PWA**) with **"Add to Home Screen."
 The remote has **play / pause, previous/next, seek, a volume slider, and shuffle / repeat toggles**,
 with state via `GET /api/remote/state` (including volume / shuffle / repeat) and operations via `POST /api/remote/*`
 (`play` / `pause` / `resume` / `next` / `prev` / `seek` / `volume` / `shuffle` / `repeat`, etc.).
+After a stop, `resume` starts again from the track at the current queue position. To play from any queue position use
+`POST /api/remote/play-at` (`{index}`, a position in the `trackIds` of `GET /api/remote/queue`);
+to replace the queue and start playing right away, add `play: true` to `POST /api/remote/set-queue`.
 
 The web UI has **keyboard shortcuts** close to the desktop app, and `?` opens the list
 (`Space` play / pause, `J` / `K` previous / next, `Shift + ←` / `Shift + →` seek 5 seconds, `S` shuffle, `R` repeat,

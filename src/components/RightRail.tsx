@@ -24,6 +24,8 @@ import { Icon, Stars } from "./Icon";
 import { ratingToStars } from "../lib/rating";
 import { Cover, ArtworkImg } from "./Cover";
 import { SetArc } from "./SetArc";
+import { useCurrentTrack } from "../hooks/useCurrentTrack";
+import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import { GigReadinessDialog } from "./GigReadinessDialog";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
 import type { RailTab, Track, SimilarHit, CrateSection } from "../types";
@@ -42,6 +44,14 @@ interface RightRailProps {
   onOpenSync?: () => void;
   onOpenSettings?: () => void;
 }
+
+/// Up Next で解決・描画する曲数の上限。キュー全体 (数千曲) を毎回 IPC で
+/// 解決・描画しないよう先頭だけを扱い、残りは「+N more」として件数だけ出す (#213)。
+const UP_NEXT_LIMIT = 100;
+
+/// 表示中の Up Next の自己修復用フォールバック間隔。通常はイベント駆動
+/// (queue-changed / playback-advanced) で即時更新されるので、取りこぼし対策のみ。
+const UP_NEXT_FALLBACK_POLL_MS = 10_000;
 
 /// Up Next の 1 行。order(再生順) 上の絶対位置を併せ持つ。
 interface QueueItem {
@@ -101,6 +111,14 @@ function nextAnchor(cur: AnchorKind | null): AnchorKind | null {
   return ANCHOR_CYCLE[(i + 1) % ANCHOR_CYCLE.length] ?? null;
 }
 
+/** 右ペインのタブ名 (ツールチップ用)。タブのボタン表記と合わせる。 */
+const RAIL_TAB_LABEL: Record<string, string> = {
+  now: "再生中",
+  next: "次に再生",
+  crate: "Crate",
+  similar: "似た曲",
+};
+
 export function RightRail({
   onPlaylistsChanged,
   onOpenSync,
@@ -146,6 +164,8 @@ export function RightRail({
   } = useStore();
 
   const [queueTracks, setQueueTracks] = useState<QueueItem[]>([]);
+  /** UP_NEXT_LIMIT を超えて表示していない後続曲の数。 */
+  const [queueMore, setQueueMore] = useState(0);
   const dragIdx = useRef<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
   const [crateExternalOver, setCrateExternalOver] = useState(false);
@@ -258,9 +278,9 @@ export function RightRail({
   const showNow = railTab === "now" && !workbenchSplit;
   const showNext = railTab === "next" && !workbenchSplit;
 
-  const now = playback.currentTrackId
-    ? tracks.find((t) => t.trackId === playback.currentTrackId) ?? null
-    : null;
+  // 再生中の曲 (表示中の一覧に無ければ ID で取り直す)。
+  const now = useCurrentTrack();
+  const nowBpm = now ? effectiveBpm(now, analysisByTrack.get(now.trackId)) : null;
 
   const switchRailTab = useCallback(
     (tab: RailTab) => {
@@ -279,14 +299,14 @@ export function RightRail({
 
   // Up Next: バックエンドのキューを解決する。曲名はロード済み tracks に依存せず
   // getTracksByIds で取り直すため、別ビュー/別ページの曲もタイトル表示できる。
+  // 解決するのは先頭 UP_NEXT_LIMIT 曲だけ (残りは件数のみ)。
   const aliveRef = useRef(false);
-  const loadQueue = useCallback(async () => {
-    // ドラッグ中はローカルの並びを正とし、取得結果で上書きしない。
-    if (draggingQueue.current) return;
+  const fetchQueueOnce = useCallback(async () => {
     try {
       const q = await playbackApi.getQueue();
       const startAt = q.currentIndex != null ? q.currentIndex + 1 : 0;
-      const upcomingIds = q.trackIds.slice(startAt);
+      const allUpcoming = q.trackIds.slice(startAt);
+      const upcomingIds = allUpcoming.slice(0, UP_NEXT_LIMIT);
       // 入力順を保って解決(欠損 ID はスキップされる)。
       const resolved =
         upcomingIds.length > 0
@@ -302,29 +322,74 @@ export function RightRail({
         })
         .filter((x): x is QueueItem => !!x);
       setQueueTracks(upcoming);
+      setQueueMore(allUpcoming.length - upcomingIds.length);
     } catch {
-      if (aliveRef.current) setQueueTracks([]);
+      if (aliveRef.current) {
+        setQueueTracks([]);
+        setQueueMore(0);
+      }
     }
   }, []);
 
-  // Up Next タブを開いているときだけ取得する。
+  // 取得の多重発火 (queue-changed + playback-advanced + 曲変化が同時に来る等) をまとめる:
+  // 取得中に要求が来たら「もう 1 回」だけ予約し、終わったら最新状態で取り直す。
+  const queueLoadingRef = useRef(false);
+  const queueReloadPendingRef = useRef(false);
+  const loadQueue = useCallback(async () => {
+    // ドラッグ中はローカルの並びを正とし、取得結果で上書きしない。
+    if (draggingQueue.current) return;
+    if (queueLoadingRef.current) {
+      queueReloadPendingRef.current = true;
+      return;
+    }
+    queueLoadingRef.current = true;
+    try {
+      do {
+        queueReloadPendingRef.current = false;
+        await fetchQueueOnce();
+      } while (
+        queueReloadPendingRef.current &&
+        aliveRef.current &&
+        !draggingQueue.current
+      );
+    } finally {
+      queueLoadingRef.current = false;
+    }
+  }, [fetchQueueOnce]);
+
+  // Up Next タブを開いているときだけ取得・購読する。
+  // 1 秒ポーリングはやめ、キュー変更系コマンド/リモート API が emit する queue-changed と
+  // 曲の自動遷移 (playback-advanced) で取り直す (#213)。
   useEffect(() => {
     if (!showNext) return;
     aliveRef.current = true;
     loadQueue();
-    // enqueue や曲の自動遷移を反映するため、表示中は定期的に取り直す。
-    const iv = setInterval(loadQueue, 1000);
-    // 曲の自動遷移(playback-advanced)で即座に取り直し、1 秒待たずに反映する。
-    let unlisten: (() => void) | undefined;
+    // 取りこぼし (イベントを出さない経路) の自己修復用に、表示中だけ低頻度で取り直す。
+    const iv = setInterval(loadQueue, UP_NEXT_FALLBACK_POLL_MS);
+    let cancelled = false;
+    const unlisteners: Array<() => void> = [];
+    const keep = (u: () => void) => {
+      if (cancelled) u();
+      else unlisteners.push(u);
+    };
     (async () => {
-      unlisten = await playbackApi.onPlaybackAdvanced(() => loadQueue());
+      keep(await playbackApi.onPlaybackAdvanced(() => loadQueue()));
+    })();
+    (async () => {
+      keep(await playbackApi.onQueueChanged(() => loadQueue()));
     })();
     return () => {
+      cancelled = true;
       aliveRef.current = false;
       clearInterval(iv);
-      if (unlisten) unlisten();
+      for (const u of unlisteners) u();
     };
-    // shuffle / repeat 変更で再生順が変わるので Up Next を取り直す。
+  }, [showNext, loadQueue]);
+
+  // 再生曲 / shuffle / repeat の変化 (フロント状態経由で気づくもの) でも取り直す。
+  useEffect(() => {
+    if (!showNext) return;
+    loadQueue();
   }, [showNext, playback.currentTrackId, shuffle, repeat, loadQueue]);
 
   // Similar: 基準曲が解析済みなら似た曲を取得（サーバー側: BPM / Key / Energy フィルタ）。
@@ -751,7 +816,7 @@ export function RightRail({
   const previewBlocked = isCasting(castStatus);
   const previewTitle = previewBlocked
     ? audition.CAST_PREVIEW_BLOCKED_MESSAGE
-    : "Preview / 試聴 (playCount を増やさない)";
+    : "試聴 (再生回数を増やさない)";
 
   // 単曲プレビュー (playCount / recent を汚さない)。
   const previewTrack = useCallback(async (track: Track) => {
@@ -1004,12 +1069,12 @@ export function RightRail({
             className="cb-set-title"
             type="text"
             value={setMeta.title}
-            placeholder="Set title / セット名"
+            placeholder="セット名"
             title="セット名"
             onChange={(e) => setSetMeta({ title: e.target.value })}
           />
           <span className="cb-cmeta">
-            <b>{crate.length}</b> tracks
+            <b>{crate.length}</b> 曲
             {crate.length > 0 && (
               <>
                 {" · "}
@@ -1030,36 +1095,36 @@ export function RightRail({
                   : "解析済みの曲を貪欲最近傍で滑らかな並びに"
               }
             >
-              smooth
+              整列
             </button>
           )}
           <button
             className={"cb-clear" + (setToolsOpen ? " on" : "")}
-            title="Set tools: Arc / Lint"
+            title="セットツール: 流れ (Arc) / チェック (Lint)"
             onClick={() => setSetToolsOpen(!setToolsOpen)}
           >
-            set
+            セット
           </button>
           <button
             className="cb-clear"
-            title="Gig Readiness — ギグ前チェック (#122)"
+            title="ギグ前チェック (Gig Readiness)"
             onClick={() => setGigDialogOpen(true)}
           >
-            Ready?
+            本番前
           </button>
           {crate.length > 0 && (
             <button
               className="cb-clear"
-              title="Clear crate"
+              title="Crate を空にする"
               onClick={() => {
                 if (
-                  window.confirm(`クレート ${crate.length} 曲をすべて外しますか？`)
+                  window.confirm(`Crate の ${crate.length} 曲をすべて外しますか？`)
                 ) {
                   clearCrate();
                 }
               }}
             >
-              clear
+              空にする
             </button>
           )}
         </div>
@@ -1167,7 +1232,7 @@ export function RightRail({
       >
         {crate.length === 0 ? (
           <div className="cb-rail-empty">
-            曲リストやカバーの「＋」でクレートに追加。一覧や Similar からドラッグでも追加できます。
+            曲リストやカバーの「＋」で Crate に追加。一覧や「似た曲」からドラッグでも追加できます。
           </div>
         ) : (
           crate.map((t, i) => {
@@ -1336,7 +1401,7 @@ export function RightRail({
                   </button>
                   <button
                     className="cb-cx cb-cact"
-                    title="Find Similar / 似た曲"
+                    title="似た曲を探す"
                     onClick={(e) => {
                       e.stopPropagation();
                       crateRowFindSimilar(t.trackId);
@@ -1346,7 +1411,7 @@ export function RightRail({
                   </button>
                   <button
                     className="cb-cx cb-cact"
-                    title="Play next / 次に再生"
+                    title="次に再生"
                     onClick={(e) => {
                       e.stopPropagation();
                       crateRowPlayNext(t.trackId);
@@ -1356,7 +1421,7 @@ export function RightRail({
                   </button>
                   <button
                     className="cb-cx cb-cact"
-                    title="Play from here / ここから再生"
+                    title="ここから再生"
                     onClick={(e) => {
                       e.stopPropagation();
                       playFromCrate(t);
@@ -1366,7 +1431,7 @@ export function RightRail({
                   </button>
                   <button
                     className="cb-cx"
-                    title="Remove from crate / クレートから外す"
+                    title="Crate から外す"
                     onClick={(e) => {
                       e.stopPropagation();
                       removeFromCrate(t.trackId);
@@ -1423,11 +1488,11 @@ export function RightRail({
                 onClick={handleSaveAsPlaylistOpen}
                 disabled={crate.length === 0}
               >
-                <Icon name="check" size={15} /> Save as Playlist
+                <Icon name="check" size={15} /> プレイリストとして保存
               </button>
               <button
                 className="cb-ghost"
-                title="Play crate"
+                title="Crate を再生"
                 onClick={handlePlayCrate}
                 disabled={crate.length === 0}
                 style={{ flexShrink: 0 }}
@@ -1477,7 +1542,7 @@ export function RightRail({
             <div style={{ display: "flex", gap: 6, alignItems: "center", width: "100%" }}>
               <button
                 className="cb-ghost"
-                title="Play crate"
+                title="Crate を再生"
                 onClick={handlePlayCrate}
                 disabled={crate.length === 0}
                 style={{ width: "auto", padding: "0 10px", height: 32 }}
@@ -1488,9 +1553,9 @@ export function RightRail({
                 className="cb-clear"
                 onClick={handleSaveAsPlaylistOpen}
                 disabled={crate.length === 0}
-                title="Save as Playlist"
+                title="プレイリストとして保存"
               >
-                Save as Playlist…
+                プレイリストとして保存…
               </button>
             </div>
           )}
@@ -1502,7 +1567,7 @@ export function RightRail({
   const renderSimilarPanel = (compact: boolean) => (
     <>
       <div className="cb-cratehd">
-        <b>Similar</b>
+        <b>似た曲</b>
         <span className="cb-cmeta">
           {filteredSimilar.length > 0 && (
             <>
@@ -1510,7 +1575,7 @@ export function RightRail({
               {similar.length !== filteredSimilar.length && (
                 <span className="cb-sim-count-raw">/{similar.length}</span>
               )}
-              {" hits"}
+              {" 曲"}
             </>
           )}
         </span>
@@ -1526,7 +1591,7 @@ export function RightRail({
             onClick={digGoBack}
           >
             <Icon name="chevronR" size={12} style={{ transform: "rotate(180deg)" }} />
-            Back
+            戻る
           </button>
           <button
             className="cb-chip-btn cb-sim-nav-btn"
@@ -1534,7 +1599,7 @@ export function RightRail({
             disabled={similarForwardStack.length === 0}
             onClick={digGoForward}
           >
-            Forward
+            進む
             <Icon name="chevronR" size={12} />
           </button>
         </div>
@@ -1557,7 +1622,7 @@ export function RightRail({
               <>
                 <span className="cb-sim-bc-sep">›</span>
                 <span className="cb-sim-bc-current ell" title={similarBase.name || ""}>
-                  {similarBase.name || "(unknown)"}
+                  {similarBase.name || "(不明)"}
                 </span>
               </>
             )}
@@ -1574,10 +1639,10 @@ export function RightRail({
             />
             <div className="cb-sim-base-meta">
               <div className="cj ell" title={similarBase.name || ""}>
-                {similarBase.name || "(unknown)"}
+                {similarBase.name || "(不明)"}
               </div>
               <div className="la ell">
-                {similarBaseTrackId != null ? "Pin" : "Now Playing"}
+                {similarBaseTrackId != null ? "固定" : "再生中"}
                 {similarBase.artist ? ` · ${similarBase.artist}` : ""}
                 {baseKey ? ` · ${formatKey(baseKey, keyNotation)}` : ""}
                 {baseAnalysis?.bpm != null
@@ -1614,7 +1679,7 @@ export function RightRail({
               title="ピンを解除（再生中にフォールバック）"
               onClick={clearSimilarPin}
             >
-              Clear
+              解除
             </button>
           )}
         </div>
@@ -1627,11 +1692,11 @@ export function RightRail({
           onClick={() => setSimilarFilters({ harmonic: !harmonic })}
           title="Camelot 互換キーのみに絞る（BPM フィルタとは独立）"
         >
-          Harmonic
+          キー互換
         </button>
         <label
           className="cb-sim-filter-label"
-          title="BPM 許容差（base 比）。Harmonic とは独立して効く"
+          title="BPM 許容差（基準曲比）。キー互換とは独立して効く"
         >
           BPM
           <select
@@ -1647,15 +1712,15 @@ export function RightRail({
             <option value="0.04">4%</option>
             <option value="0.08">8%</option>
             <option value="0.12">12%</option>
-            <option value="off">off</option>
+            <option value="off">指定なし</option>
           </select>
         </label>
         <button
           className={"cb-tab" + (energyClose ? " on" : "")}
           onClick={() => setSimilarFilters({ energyClose: !energyClose })}
-          title="Energy 差 ≤ 0.15 のみ"
+          title="エネルギー差 ≤ 0.15 のみ"
         >
-          Energy close
+          エネルギー近い
         </button>
         <label className="cb-sim-check" title="クレート内の曲を除外">
           <input
@@ -1671,7 +1736,7 @@ export function RightRail({
             checked={excludeSameArtist}
             onChange={(e) => setSimilarFilters({ excludeSameArtist: e.target.checked })}
           />
-          除外: 同一Artist
+          除外: 同じアーティスト
         </label>
         <label className="cb-sim-check" title="レーティング ★★★ 以上のみ">
           <input
@@ -1690,7 +1755,7 @@ export function RightRail({
           </div>
         ) : !baseAnalyzed ? (
           <div className="cb-rail-empty">
-            基準曲が未解析です。右クリック →「Analyze」で BPM/Key/Energy を解析してください。
+            基準曲が未解析です。右クリック →「解析 (BPM / Key / Energy)」で解析してください。
           </div>
         ) : simLoading ? (
           <div className="cb-rail-empty">探索中…</div>
@@ -1698,13 +1763,13 @@ export function RightRail({
           <div className="cb-rail-empty">
             似た曲が見つかりませんでした。
             {harmonic || bpmTol != null || energyClose
-              ? " Harmonic / BPM / Energy フィルタを緩めると広がります。"
+              ? " キー互換 / BPM / エネルギー近いの絞り込みを緩めると広がります。"
               : ""}
           </div>
         ) : filteredSimilar.length === 0 ? (
           <div className="cb-rail-empty">
             {clientFilterNote ||
-              "クライアントフィルタで全件除外されました。除外条件を外してください。"}
+              "除外条件ですべて除外されました。除外条件を外してください。"}
           </div>
         ) : (
           filteredSimilar.map((h) => {
@@ -1788,7 +1853,7 @@ export function RightRail({
                   </button>
                   <button
                     className="cb-cx cb-cact"
-                    title="Set as base / この曲を基準に掘る"
+                    title="この曲を基準に掘る"
                     onClick={(e) => {
                       e.stopPropagation();
                       digSetBase(t.trackId, t);
@@ -1798,7 +1863,7 @@ export function RightRail({
                   </button>
                   <button
                     className="cb-cx cb-cact"
-                    title="Play next / 次に再生"
+                    title="次に再生"
                     onClick={(e) => {
                       e.stopPropagation();
                       crateRowPlayNext(t.trackId);
@@ -1808,7 +1873,7 @@ export function RightRail({
                   </button>
                   <button
                     className="cb-cx"
-                    title={inCrate ? "In crate" : "Add to crate"}
+                    title={inCrate ? "Crate に追加済み" : "Crate に追加"}
                     disabled={inCrate}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1836,7 +1901,7 @@ export function RightRail({
               style={compact ? { height: 32, fontSize: 12 } : undefined}
             >
               <Icon name="layers" size={15} />
-              {allInCrate ? " All added" : " Add all to Crate"}
+              {allInCrate ? " すべて追加済み" : " すべて Crate に追加"}
             </button>
           </div>
         );
@@ -1866,10 +1931,16 @@ export function RightRail({
           <>
             <div className="cb-nowart" style={{ background: artGradient(now.album) }}>
               <span className="g">{leadingGlyph(now.name)}</span>
+              {/* 大きく出すヒーローなので size を渡さず原本を読む (1 枚だけなので負荷は小さい)。 */}
               <ArtworkImg path={now.fileExists ? now.locationPath : null} />
               <div className="ov">
-                {now.bpm != null && (
-                  <span style={{ color: bpmColor(now.bpm) }}>{now.bpm} BPM</span>
+                {nowBpm && (
+                  <span
+                    style={{ color: bpmColor(nowBpm.value), opacity: nowBpm.fromAnalysis ? 0.6 : undefined }}
+                    title={nowBpm.fromAnalysis ? ANALYZED_BPM_TITLE : undefined}
+                  >
+                    {nowBpm.value} BPM
+                  </span>
                 )}
                 {now.rating != null && now.rating > 0 && (
                   <Stars value={ratingToStars(now.rating)} size={10} />
@@ -1877,10 +1948,10 @@ export function RightRail({
               </div>
             </div>
             <div className="cb-nowmeta">
-              <div className="cj">{now.name || "(unknown)"}</div>
+              <div className="cj">{now.name || "(不明)"}</div>
               <div className="ar">
-                {now.artist || ""}
-                {now.album ? ` — ${now.album}` : ""}
+                {/* 片方だけ空 (タグ無し) でも先頭/末尾に区切りが残らないように連結する。 */}
+                {[now.artist, now.album].filter((v) => v && v.trim()).join(" — ")}
               </div>
             </div>
           </>
@@ -1898,13 +1969,13 @@ export function RightRail({
             className={"cb-tab" + (railTab === "now" && !workbenchSplit ? " on" : "")}
             onClick={() => switchRailTab("now")}
           >
-            Now
+            再生中
           </button>
           <button
             className={"cb-tab" + (railTab === "next" && !workbenchSplit ? " on" : "")}
             onClick={() => switchRailTab("next")}
           >
-            Up Next
+            次に再生
           </button>
         </div>
         <span className="cb-tabsep" aria-hidden />
@@ -1935,11 +2006,11 @@ export function RightRail({
             onClick={() => switchRailTab("similar")}
             title={
               similarBaseTrackId != null
-                ? "Similar — 基準曲が設定されています"
-                : "Similar"
+                ? "似た曲 — 基準曲が固定されています"
+                : "似た曲"
             }
           >
-            Similar
+            似た曲
             {/* 基準曲がピンされていることをドットで知らせる (#151) */}
             {similarBaseTrackId != null && (
               <span className="cb-tab-dot" aria-hidden />
@@ -1956,17 +2027,17 @@ export function RightRail({
           disabled={!splitAvailable}
           title={
             splitAvailable
-              ? "Crate と Similar を上下分割表示"
-              : "分割表示は Crate / Similar タブでのみ有効"
+              ? "Crate と似た曲を上下分割表示"
+              : "分割表示は Crate / 似た曲タブでのみ有効"
           }
         >
-          Split
+          分割
         </button>
         {prevRailTab && (
           <button
             className="cb-tab cb-prev-tab"
             onClick={goPrevRailTab}
-            title={`前のタブへ (${prevRailTab})`}
+            title={`前のタブへ (${RAIL_TAB_LABEL[prevRailTab] ?? prevRailTab})`}
             style={{ flex: "0 0 auto", padding: "7px 6px" }}
           >
             <Icon name="chevronR" size={12} style={{ transform: "rotate(180deg)" }} />
@@ -1982,15 +2053,18 @@ export function RightRail({
             const nowKey = formatKey(effectiveKeyCamelot(now, na), keyNotation);
             return (
               <div style={{ padding: "4px 6px", display: "flex", flexDirection: "column", gap: 8 }}>
-                <NowRow label="Album" value={now.album} />
-                <NowRow label="Artist" value={now.artist} />
-                <NowRow label="Genre" value={now.genre} />
-                <NowRow label="BPM" value={now.bpm != null ? String(now.bpm) : null} />
+                <NowRow label="アルバム" value={now.album} />
+                <NowRow label="アーティスト" value={now.artist} />
+                <NowRow label="ジャンル" value={now.genre} />
+                <NowRow
+                  label="BPM"
+                  value={nowBpm ? `${nowBpm.value}${nowBpm.fromAnalysis ? "（解析値）" : ""}` : null}
+                />
                 {nowKey != null && <NowRow label="Key" value={nowKey} />}
                 {na?.energy != null && (
                   <NowRow label="Energy" value={String(Math.round(na.energy * 100)) + "%"} />
                 )}
-                <NowRow label="Plays" value={now.playCount != null ? String(now.playCount) : null} />
+                <NowRow label="再生回数" value={now.playCount != null ? String(now.playCount) : null} />
               </div>
             );
           })() : (
@@ -2002,13 +2076,16 @@ export function RightRail({
       {/* Up Next */}
       {showNext && (
         <div className="cb-cratehd">
-          <b>Up Next</b>
+          <b>次に再生</b>
           <span className="cb-cmeta">
-            {queueTracks.length > 0 && (
+            {(queueTracks.length > 0 || queueMore > 0) && (
               <>
-                <b>{queueTracks.length}</b> 曲
+                <b>{queueTracks.length + queueMore}</b> 曲
                 {" · "}
-                <b>{fmtTotal(queueTracks.map((q) => q.track))}</b>
+                <b>
+                  {fmtTotal(queueTracks.map((q) => q.track))}
+                  {queueMore > 0 ? "+" : ""}
+                </b>
               </>
             )}
             {shuffle && (
@@ -2024,7 +2101,7 @@ export function RightRail({
                   letterSpacing: "0.04em",
                 }}
               >
-                Shuffle
+                シャッフル
               </span>
             )}
           </span>
@@ -2032,7 +2109,7 @@ export function RightRail({
       )}
       {showNext && (
         <div className="cb-cratelist">
-          {queueTracks.length === 0 ? (
+          {queueTracks.length === 0 && queueMore === 0 ? (
             <div className="cb-rail-empty">キューは空です。トラックをダブルクリックで再生開始。</div>
           ) : (
             queueTracks.map(({ track: t, orderIndex }, i) => (
@@ -2048,7 +2125,7 @@ export function RightRail({
                 onDragOver={(e) => onQueueDragOver(e, i)}
                 onDragEnd={onQueueDragEnd}
                 onDoubleClick={() => playFromQueue(orderIndex, t)}
-                title={t.fileExists ? "Double-click to play / drag to reorder" : "File not found"}
+                title={t.fileExists ? "ダブルクリックで再生 / ドラッグで並べ替え" : "ファイルが見つかりません"}
               >
                 <span className="cb-cgrip">
                   <Icon name="dragHandle" size={15} />
@@ -2071,7 +2148,7 @@ export function RightRail({
                 </div>
                 <button
                   className="cb-cx cb-qx"
-                  title="Remove from queue"
+                  title="キューから外す"
                   onClick={(e) => {
                     e.stopPropagation();
                     removeFromQueue(orderIndex);
@@ -2081,6 +2158,9 @@ export function RightRail({
                 </button>
               </div>
             ))
+          )}
+          {queueMore > 0 && (
+            <div className="cb-rail-empty">+{queueMore} more</div>
           )}
         </div>
       )}

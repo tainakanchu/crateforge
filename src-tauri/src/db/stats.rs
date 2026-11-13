@@ -19,10 +19,13 @@ impl Database {
             |r| r.get(0),
         )?;
 
+        let artist_count = self.artist_count()?;
+
         Ok(LibraryStats {
             track_count,
             playlist_count,
             total_time_ms,
+            artist_count,
         })
     }
 

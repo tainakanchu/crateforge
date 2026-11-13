@@ -13,6 +13,9 @@ import { DeleteTracksDialog } from "./DeleteTracksDialog";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
 import { ratingToStars, starsToRating } from "../lib/rating";
 import type { Track, Playlist } from "../types";
+import { EmptyState } from "./EmptyState";
+import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
+import { splitGenre } from "../lib/genre";
 
 type Row = { tracks: Track[] };
 
@@ -50,6 +53,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     setSimilarBase,
   } = useStore();
   const pushToast = useStore((s) => s.pushToast);
+  const analysisByTrack = useStore((s) => s.analysisByTrack);
 
   const parentRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -202,14 +206,16 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleAddToPlaylist = useCallback(async (playlistId: number) => {
     if (!contextMenu) return;
     try {
-      await playlistsApi.addTracksToPlaylist(playlistId, [contextMenu.track.trackId]);
+      const added = await playlistsApi.addTracksToPlaylist(playlistId, [contextMenu.track.trackId]);
       pushRecentPlaylist(playlistId);
       onTracksChanged();
+      const name = playlists.find((p) => p.playlistId === playlistId)?.name ?? "プレイリスト";
+      pushToast("success", `「${name}」に ${added} 曲を追加しました`);
     } catch (err) {
       pushToast("error", `追加に失敗しました: ${err}`);
     }
     closeMenu();
-  }, [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast]);
+  }, [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast, playlists]);
 
   const handleRemoveFromPlaylist = useCallback(async () => {
     if (!contextMenu || viewMode !== "playlist" || selectedPlaylistId === null) return;
@@ -263,14 +269,12 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const recentPlaylists = recentPlaylistIds
     .map((id) => targetPlaylists.find((p) => p.playlistId === id))
     .filter((p): p is Playlist => Boolean(p));
-  const ctxGenreTags = ctxTrack?.genre ? ctxTrack.genre.split(/\s+/).filter(Boolean) : [];
+  const ctxGenreTags = ctxTrack?.genre ? splitGenre(ctxTrack.genre) : [];
 
   if (tracks.length === 0 && !isLoading) {
     return (
       <div className="cb-grid-wrap">
-        <div className="cb-empty">
-          No tracks. Import an iTunes Library XML, rip a CD, or add files to get started.
-        </div>
+        <EmptyState />
       </div>
     );
   }
@@ -303,11 +307,12 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                   padding: `0 ${PAD_X}px ${GAP}px`,
                 }}
               >
-                {row.tracks.map((t) => {
+                {row.tracks.map((t, j) => {
                   const inCrate = crateSet.has(t.trackId);
                   const isCurrent = playback.currentTrackId === t.trackId;
                   return (
-                    <div key={t.id} className="cb-cardwrap">
+                    // プレイリストに同じ曲が複数あると t.id が重複するため位置込みの key にする。
+                    <div key={`${t.id}-${j}`} className="cb-cardwrap">
                       <div
                         className={"cb-card" + (inCrate ? " incrate" : "") + (isCurrent ? " playing" : "")}
                         style={{ background: artGradient(t.album || t.name || ""), height: cardW }}
@@ -315,16 +320,30 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                         onContextMenu={(e) => openTrackMenu(e, t)}
                       >
                         <span className="glyph">{leadingGlyph(t.album || t.name || "")}</span>
-                        <ArtworkImg path={t.fileExists ? t.locationPath : null} />
+                        <ArtworkImg path={t.fileExists ? t.locationPath : null} size={cardW} />
                         <span className="grad" />
-                        {t.bpm != null && (
-                          <div className="kbtag">
-                            <span style={{ color: bpmColor(t.bpm) }}>{t.bpm}</span>
-                          </div>
-                        )}
+                        {(() => {
+                          // 実効 BPM (タグ ?? 解析値)。解析値は薄く表示する。
+                          const b = effectiveBpm(t, analysisByTrack.get(t.trackId));
+                          return b ? (
+                            <div
+                              className="kbtag"
+                              title={b.fromAnalysis ? ANALYZED_BPM_TITLE : undefined}
+                            >
+                              <span
+                                style={{
+                                  color: bpmColor(b.value),
+                                  opacity: b.fromAnalysis ? 0.6 : undefined,
+                                }}
+                              >
+                                {b.value}
+                              </span>
+                            </div>
+                          ) : null;
+                        })()}
                         <button
                           className="cov-play"
-                          title="Play track"
+                          title="再生"
                           onClick={(e) => {
                             e.stopPropagation();
                             void playTrack(t);
@@ -336,14 +355,14 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                           <span
                             className="addbtn"
                             style={{ opacity: 1, transform: "none" }}
-                            title="In crate"
+                            title="Crate に追加済み"
                           >
                             <Icon name="check" size={17} />
                           </span>
                         ) : (
                           <button
                             className="addbtn"
-                            title="Add to crate"
+                            title="Crate に追加"
                             onClick={(e) => {
                               e.stopPropagation();
                               addToCrate(t);
@@ -357,7 +376,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                         className="cov-meta"
                         onDoubleClick={() => void playTrack(t)}
                         onContextMenu={(e) => openTrackMenu(e, t)}
-                        title={`${t.name || "(unknown)"} — ${t.artist || ""}`}
+                        title={[t.name || "(unknown)", t.artist].filter(Boolean).join(" — ")}
                       >
                         <div className="cj">{t.name || "(unknown)"}</div>
                         <div className="la">{t.artist || ""}</div>
@@ -420,7 +439,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           <div className="modal" style={{ width: 360 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>
-                <Icon name="tag" size={16} /> Add genre tag
+                <Icon name="tag" size={16} /> ジャンルタグを追加
               </h2>
               <button className="modal-close" onClick={() => setShowAddTagDialog(false)}>
                 <Icon name="x" size={16} />
@@ -431,7 +450,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 autoFocus
                 type="text"
                 className="rip-input"
-                placeholder="e.g. House"
+                placeholder="例: Deep House"
                 value={newTag}
                 onChange={(e) => setNewTag(e.target.value)}
                 onKeyDown={(e) => {
@@ -442,10 +461,10 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
               />
               <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
                 <button className="toolbar-btn" onClick={() => setShowAddTagDialog(false)}>
-                  Cancel
+                  キャンセル
                 </button>
                 <button className="toolbar-btn primary" onClick={() => void handleApplyAddTag()}>
-                  Add
+                  追加
                 </button>
               </div>
             </div>

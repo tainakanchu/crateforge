@@ -1,112 +1,101 @@
-//! GeneratedPlaylist のリストから folder/playlist のツリーを組み立てる。
+//! ルールのパス ("A/B/name") から namespace 配下の folder/playlist ツリーを組み立てる。
+//!
+//! 子の並びは YAML に最初に出てきた順 (フォルダとプレイリストを混在させたまま保つ)。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use super::models::{FolderNodeOut, GeneratedPlaylist, PlaylistNodeOut, TreeNodeOut};
+use super::models::{FolderNodeOut, TreeNodeOut};
+use super::schema::PlaylistRule;
 
-pub fn build_folder_tree(namespace: &str, playlists: &[GeneratedPlaylist]) -> FolderNodeOut {
-    // We build the tree by full path. `folders[path] -> children index list` is
-    // tracked separately so we can append children in insertion order.
-    let mut folders: HashMap<String, FolderNodeOut> = HashMap::new();
-    folders.insert(
-        namespace.to_string(),
-        FolderNodeOut {
-            name: namespace.to_string(),
-            full_path: namespace.to_string(),
-            parent_path: None,
-            children: Vec::new(),
-        },
-    );
+/// 作るべきツリーのノード。
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpecNode {
+    Folder(FolderSpec),
+    Playlist(PlaylistSpec),
+}
 
-    // Track which (parent, child_name) pairs we've already created to dedupe
-    // folder creation across multiple playlists.
-    let mut order: Vec<String> = Vec::new();
-    order.push(namespace.to_string());
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderSpec {
+    pub name: String,
+    /// namespace を含まない相対パス (ルートは "")。
+    pub path: String,
+    pub children: Vec<SpecNode>,
+}
 
-    // Helper: ensure folder + all ancestors exist.
-    fn ensure_folder(
-        full_path: &str,
-        folders: &mut HashMap<String, FolderNodeOut>,
-        order: &mut Vec<String>,
-    ) {
-        if folders.contains_key(full_path) {
-            return;
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistSpec {
+    pub name: String,
+    /// namespace を含まない相対パス (= ルール名)。
+    pub path: String,
+    /// 対応するルールの添字。
+    pub rule_index: usize,
+}
+
+/// ルール列からツリーを作る。重複パス・空のパス要素・フォルダとプレイリストの衝突はエラー。
+pub fn build_spec_tree(namespace: &str, rules: &[PlaylistRule]) -> Result<FolderSpec, String> {
+    let mut root = FolderSpec {
+        name: namespace.to_string(),
+        path: String::new(),
+        children: Vec::new(),
+    };
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (rule_index, rule) in rules.iter().enumerate() {
+        let path = rule.name.as_str();
+        if !seen.insert(path) {
+            return Err(format!("生成するプレイリストのパスが重複しています: 「{}」", path));
         }
-        let (parent_path, name) = match full_path.rsplit_once('/') {
-            Some((p, n)) => (p.to_string(), n.to_string()),
-            None => (String::new(), full_path.to_string()),
-        };
-        ensure_folder(&parent_path, folders, order);
-
-        folders.insert(
-            full_path.to_string(),
-            FolderNodeOut {
-                name,
-                full_path: full_path.to_string(),
-                parent_path: Some(parent_path),
-                children: Vec::new(),
-            },
-        );
-        order.push(full_path.to_string());
-    }
-
-    for pl in playlists {
-        let playlist_full_path = format!("{}/{}", namespace, pl.path);
-        let (parent_full_path, playlist_name) = match playlist_full_path.rsplit_once('/') {
-            Some((p, n)) => (p.to_string(), n.to_string()),
-            None => (namespace.to_string(), playlist_full_path.clone()),
-        };
-
-        ensure_folder(&parent_full_path, &mut folders, &mut order);
-
-        let parent = folders
-            .get_mut(&parent_full_path)
-            .expect("folder was ensured");
-        parent.children.push(TreeNodeOut::Playlist(PlaylistNodeOut {
-            name: playlist_name,
-            full_path: playlist_full_path,
-            parent_path: Some(parent_full_path.clone()),
-            track_ids: pl.track_ids.clone(),
+        let segments: Vec<&str> = path.split('/').collect();
+        if segments.iter().any(|s| s.trim().is_empty()) {
+            return Err(format!("生成するプレイリストのパスが不正です: 「{}」", path));
+        }
+        let (name, folders) = segments.split_last().expect("split yields at least one");
+        let mut current = &mut root;
+        for (depth, seg) in folders.iter().enumerate() {
+            let folder_path = segments[..=depth].join("/");
+            let pos = current.children.iter().position(|c| match c {
+                SpecNode::Folder(f) => f.name == *seg,
+                SpecNode::Playlist(p) => p.name == *seg,
+            });
+            let idx = match pos {
+                Some(i) => {
+                    if matches!(current.children[i], SpecNode::Playlist(_)) {
+                        return Err(format!(
+                            "生成するプレイリストのパス「{}」が、プレイリスト「{}」をフォルダとして使っています",
+                            path, folder_path
+                        ));
+                    }
+                    i
+                }
+                None => {
+                    current.children.push(SpecNode::Folder(FolderSpec {
+                        name: seg.to_string(),
+                        path: folder_path,
+                        children: Vec::new(),
+                    }));
+                    current.children.len() - 1
+                }
+            };
+            let SpecNode::Folder(f) = &mut current.children[idx] else {
+                unreachable!("checked above")
+            };
+            current = f;
+        }
+        if current.children.iter().any(|c| match c {
+            SpecNode::Folder(f) => f.name == *name,
+            SpecNode::Playlist(p) => p.name == *name,
+        }) {
+            return Err(format!(
+                "生成するプレイリストのパス「{}」はフォルダとしても使われています",
+                path
+            ));
+        }
+        current.children.push(SpecNode::Playlist(PlaylistSpec {
+            name: name.to_string(),
+            path: path.to_string(),
+            rule_index,
         }));
     }
-
-    // Now attach child folders to their parents.
-    // Process in reverse order so children are placed before parents finalize.
-    // We do two passes: first collect parent->child folder relationships.
-    let mut child_folders: HashMap<String, Vec<String>> = HashMap::new();
-    for full_path in &order {
-        if full_path == namespace {
-            continue;
-        }
-        if let Some(folder) = folders.get(full_path) {
-            if let Some(parent) = &folder.parent_path {
-                child_folders
-                    .entry(parent.clone())
-                    .or_default()
-                    .push(full_path.clone());
-            }
-        }
-    }
-
-    // Bottom-up assemble.
-    // Remove folders one-by-one from `folders` and attach them to their parents.
-    let mut processed: HashSet<String> = HashSet::new();
-    let order_rev: Vec<String> = order.iter().rev().cloned().collect();
-    for full_path in &order_rev {
-        if full_path == namespace || processed.contains(full_path) {
-            continue;
-        }
-        if let Some(folder) = folders.remove(full_path) {
-            let parent_path = folder.parent_path.clone().unwrap_or_default();
-            let node = TreeNodeOut::Folder(folder);
-            if let Some(parent) = folders.get_mut(&parent_path) {
-                parent.children.push(node);
-            }
-            processed.insert(full_path.clone());
-        }
-    }
-
-    folders.remove(namespace).expect("root must exist")
+    Ok(root)
 }
 
 pub fn count_nodes(root: &FolderNodeOut) -> (usize, usize) {
@@ -153,4 +142,54 @@ pub fn collect_referenced_tracks(root: &FolderNodeOut) -> HashSet<i64> {
         walk(c, &mut set);
     }
     set
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::playlist_rules::schema::parse_rules_yaml;
+
+    fn rules(names: &[&str]) -> Vec<PlaylistRule> {
+        let mut yaml = String::from("namespace: N\nplaylists:\n");
+        for n in names {
+            yaml.push_str(&format!("  - name: \"{n}\"\n    match: {{all: []}}\n"));
+        }
+        parse_rules_yaml(&yaml).unwrap().playlists
+    }
+
+    fn shape(node: &SpecNode) -> String {
+        match node {
+            SpecNode::Folder(f) => format!(
+                "{}[{}]",
+                f.name,
+                f.children.iter().map(shape).collect::<Vec<_>>().join(",")
+            ),
+            SpecNode::Playlist(p) => p.name.clone(),
+        }
+    }
+
+    /// 子は YAML に最初に出てきた順 (フォルダとプレイリストの混在も保つ)。
+    #[test]
+    fn keeps_yaml_order() {
+        let root =
+            build_spec_tree("N", &rules(&["Top", "A/x", "B/y", "A/z", "A/S/w", "Last"])).unwrap();
+        let got: Vec<String> = root.children.iter().map(shape).collect();
+        assert_eq!(got, vec!["Top", "A[x,z,S[w]]", "B[y]", "Last"]);
+    }
+
+    #[test]
+    fn rejects_bad_paths() {
+        assert!(build_spec_tree("N", &rules(&["A", "A"]))
+            .unwrap_err()
+            .contains("重複"));
+        assert!(build_spec_tree("N", &rules(&["A", "A/b"]))
+            .unwrap_err()
+            .contains("フォルダとして使っています"));
+        assert!(build_spec_tree("N", &rules(&["A/b", "A"]))
+            .unwrap_err()
+            .contains("フォルダとしても使われています"));
+        assert!(build_spec_tree("N", &rules(&["A//b"]))
+            .unwrap_err()
+            .contains("不正"));
+    }
 }

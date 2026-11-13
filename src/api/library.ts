@@ -8,6 +8,9 @@ import type {
   ExportResult,
   ImportFileResult,
   ImportSummary,
+  ImportPlanItem,
+  ImportActionItem,
+  ImportActionsSummary,
   LibraryStats,
   TrackEdit,
   GenreTagCount,
@@ -37,6 +40,26 @@ export async function importFiles(paths: string[]): Promise<ImportFileResult> {
  */
 export async function importFolders(paths: string[]): Promise<ImportSummary> {
   return invoke("import_folders", { paths });
+}
+
+/**
+ * 取り込み前の計画。フォルダを展開してタグを読み、ライブラリの既存曲と照合する
+ * (取り込み済み検出)。進捗は `import-plan-progress`。
+ */
+export async function planImport(paths: string[]): Promise<ImportPlanItem[]> {
+  return invoke("plan_import", { paths });
+}
+
+/** 計画に対する指示 (取り込む / スキップ / 置き換え) どおりに取り込む。進捗は `import-progress`。 */
+export async function importWithActions(items: ImportActionItem[]): Promise<ImportActionsSummary> {
+  return invoke("import_with_actions", { items });
+}
+
+/** 取り込み計画 (タグ読み・照合) の進捗を購読する。 */
+export async function onImportPlanProgress(
+  handler: (p: ImportProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ImportProgress>("import-plan-progress", (e) => handler(e.payload));
 }
 
 /** フォルダ取り込みの進捗 (`import_folders` 実行中に随時飛んでくる)。 */
@@ -240,8 +263,10 @@ export async function getArtists(
   sortOrder?: SortOrder,
   limit?: number,
   offset?: number,
+  /** 検索クエリ (検索ボックス + フィルタタグ)。指定時は一致する曲を持つアーティストだけ。 */
+  query?: string,
 ): Promise<ArtistRow[]> {
-  return invoke("get_artists", { sortField, sortOrder, limit, offset });
+  return invoke("get_artists", { sortField, sortOrder, limit, offset, query: query || null });
 }
 
 /// 指定アーティストのアルバム一覧 (年→アルバム名順)。name は getArtists が返した表示名。

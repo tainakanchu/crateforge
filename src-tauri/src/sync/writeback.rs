@@ -210,7 +210,8 @@ impl MasterClient {
         let mut tracks = Vec::new();
         for chunk in persistent_ids.chunks(LOOKUP_CHUNK) {
             let response = Self::checked(
-                self.request(reqwest::Method::POST, "/api/tracks/lookup")
+                // effectiveBpm=false: base との比較はタグ値で行う (解析 BPM を親の変更と誤認しない)。
+                self.request(reqwest::Method::POST, "/api/tracks/lookup?effectiveBpm=false")
                     .json(&json!({ "persistentIds": chunk }))
                     .send()
                     .await,
@@ -242,7 +243,11 @@ impl MasterClient {
             body.insert(update.field.clone(), value);
         }
         let response = Self::checked(
-            self.request(reqwest::Method::PATCH, &format!("/api/tracks/{track_id}"))
+            // effectiveBpm=false: 応答の track は base として保存するのでタグ値で受け取る。
+            self.request(
+                reqwest::Method::PATCH,
+                &format!("/api/tracks/{track_id}?effectiveBpm=false"),
+            )
                 .json(&body)
                 .send()
                 .await,
@@ -632,12 +637,24 @@ fn compute_plan(local: &LocalInput, remote: &RemoteInput) -> Result<WritebackPla
                         })
                     }
                 }
-                match classify_playlist_change(
+                let membership_change = classify_playlist_change(
                     selection.and_then(|selection| selection.base_membership.as_deref()),
                     row.track_persistent_ids.as_slice(),
                     membership.as_slice(),
-                ) {
+                );
+                // スマートプレイリスト (母艦側・手元側どちらか) の曲目は条件の評価結果であり、
+                // 曲目を送っても母艦の playlist_tracks に入るだけで反映されないため送らない。
+                let smart = master.is_smart || row.playlist.is_smart;
+                match membership_change {
                     PlaylistChange::Untouched => {}
+                    PlaylistChange::Push | PlaylistChange::Conflict if smart => {
+                        plan.playlist_ops.push(PlaylistOp::SkippedConflict {
+                            persistent_id: pid,
+                            name: row.playlist.name.clone(),
+                            reason: "スマートプレイリストの曲目は条件で決まるため母艦へ反映しません"
+                                .to_string(),
+                        })
+                    }
                     PlaylistChange::Push => plan.playlist_ops.push(PlaylistOp::ReplaceTracks {
                         persistent_id: pid,
                         master_playlist_id: master.playlist_id,
@@ -1194,6 +1211,7 @@ mod tests {
             file_size_bytes: None,
             codec: None,
             key_camelot_user: None,
+            grouping: None,
         }
     }
 
@@ -1397,6 +1415,49 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    /// スマートプレイリストの曲目は条件で決まるので、手元で変わっていても母艦へ送らない
+    /// (送っても母艦の playlist_tracks に入るだけで反映されない)。
+    #[test]
+    fn smart_playlist_membership_is_not_pushed() {
+        let strings = |pids: &[&str]| pids.iter().map(|pid| pid.to_string()).collect::<Vec<_>>();
+        let mut master_playlist = playlist_fixture(LIST_PID, "List");
+        master_playlist.playlist_id = 9;
+        master_playlist.is_smart = true;
+        let mut local_playlist = playlist_fixture(LIST_PID, "List");
+        local_playlist.playlist_id = 3;
+        local_playlist.is_smart = true;
+        let plan = compute_plan(
+            &LocalInput {
+                tracks: Vec::new(),
+                playlists: vec![SyncedPlaylistSnapshot {
+                    playlist: local_playlist,
+                    track_persistent_ids: strings(&["AAAABBBBCCCC0002"]),
+                }],
+                selections: vec![selection_fixture(
+                    LIST_PID,
+                    Some("List"),
+                    Some(&["AAAABBBBCCCC0001"]),
+                )],
+            },
+            &RemoteInput {
+                tracks: HashMap::new(),
+                playlists: HashMap::from([(
+                    LIST_PID.to_string(),
+                    (master_playlist, strings(&["AAAABBBBCCCC0001"])),
+                )]),
+            },
+        )
+        .unwrap();
+        assert!(!plan
+            .playlist_ops
+            .iter()
+            .any(|op| matches!(op, PlaylistOp::ReplaceTracks { .. })));
+        assert!(plan
+            .playlist_ops
+            .iter()
+            .any(|op| matches!(op, PlaylistOp::SkippedConflict { .. })));
     }
 
     /// 母艦だけの追加・リネームは follow 再同期の担当で、書き戻しは触らない。
