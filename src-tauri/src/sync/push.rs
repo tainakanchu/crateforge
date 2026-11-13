@@ -174,7 +174,7 @@ impl MasterClient {
         };
 
         let mut last_network_error = None;
-        let upload_id = loop {
+        let upload_id = {
             let mut response = None;
             for _ in 0..UPLOAD_ATTEMPTS {
                 match self
@@ -215,7 +215,7 @@ impl MasterClient {
                 .json::<TrackUploadReady>()
                 .await
                 .map_err(|error| SyncError::InvalidResponse(error.to_string()))?;
-            break ready.upload_id;
+            ready.upload_id
         };
 
         let mut last_network_error = None;
