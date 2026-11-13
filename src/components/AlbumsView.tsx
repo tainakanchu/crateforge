@@ -13,7 +13,7 @@ import { TrackContextMenu } from "./TrackContextMenu";
 import { DeleteTracksDialog } from "./DeleteTracksDialog";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
 import { ALBUM_SORT_FIELDS } from "../types";
-import type { Track, Playlist, AlbumRow, SortField, SortOrder } from "../types";
+import type { ConvertMode, Track, Playlist, AlbumRow, SortField, SortOrder } from "../types";
 import { EmptyState } from "./EmptyState";
 import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import { splitGenre } from "../lib/genre";
@@ -29,7 +29,7 @@ interface AlbumsViewProps {
   onLoadMore: () => void;
   onTracksChanged: () => void;
   onEditTrack: (tracks: Track[]) => void;
-  onConvert: (trackIds: number[]) => void;
+  onConvert: (trackIds: number[], mode?: ConvertMode) => void;
 }
 
 // 描画用に正規化したアルバム1枚分の情報。ライブラリスコープ (サーバ集約 AlbumRow) と
@@ -601,6 +601,12 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     closeMenu();
   }, [contextMenu, onConvert, closeMenu]);
 
+  const handleConvertReplace = useCallback(() => {
+    if (!contextMenu) return;
+    onConvert(contextMenu.trackIds, "replace");
+    closeMenu();
+  }, [contextMenu, onConvert, closeMenu]);
+
   // Finder / エクスプローラで表示（単曲メニューのときのみ有効）。
   const handleReveal = useCallback(async () => {
     const path = contextMenu?.primary.locationPath;
@@ -882,6 +888,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onAnalyze={handleAnalyze}
           onFindSimilar={handleFindSimilar}
           onConvert={handleConvert}
+          onConvertReplace={handleConvertReplace}
           onGetInfo={handleGetInfo}
           onRemoveFromPlaylist={handleRemoveFromPlaylist}
           onReveal={() => void handleReveal()}

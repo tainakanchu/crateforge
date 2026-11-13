@@ -37,6 +37,19 @@ For lossy formats (MP3 / AAC / Opus), you can choose the **bitrate**.
 
 During conversion, the library's tags and embedded cover art carry over to the new file.
 
+## Convert and replace
+
+**Right-click → "変換して置き換え…" (Convert and replace)** (or pick "置き換え" as the method in the convert dialog) converts next to the original file with the same name and swaps **the same track** (rating, play count, playlists and edited tags stay) to the new file.
+
+- Tags and embedded cover art are carried over from the original file.
+- Before swapping, the new file is decoded to the end and its length is checked against the original. A failed track keeps its original file.
+- The original file goes to **the trash** (default) or is **kept in the `_replaced` folder** (the last choice is remembered). It is never moved when another track references the same file.
+- Tracks already in the target format at the same or a lower bitrate (e.g. MP3 320 → MP3 320) are skipped.
+- Lossy to lossy (e.g. AAC → MP3) is allowed, but loses quality, so the count is flagged with ⚠.
+- The result shows counts (done / skipped / failed); "詳細" (details) lists the reason per track.
+
+It can also be run from the local API (`POST /api/convert-replace`; see [API server](../api-server/)).
+
 ## About ffmpeg
 
 Conversion **uses ffmpeg as an external process**.

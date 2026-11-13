@@ -47,7 +47,7 @@ import {
   mergeInboxSources,
 } from "./lib/triage";
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
-import type { DiscToc, PlaybackState, RepeatMode, SortField, SortOrder, Track } from "./types";
+import type { ConvertMode, DiscToc, PlaybackState, RepeatMode, SortField, SortOrder, Track } from "./types";
 
 // 窓の幅がこれ未満なら右ペインを自動で畳む (最小 1024px でも曲名列が潰れないように)。
 const RAIL_AUTO_HIDE_WIDTH = 1200;
@@ -169,7 +169,7 @@ export default function App() {
   const [ripInitialDisc, setRipInitialDisc] = useState<DiscToc | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [editorTracks, setEditorTracks] = useState<Track[] | null>(null);
-  const [convertIds, setConvertIds] = useState<number[] | null>(null);
+  const [convertReq, setConvertReq] = useState<{ ids: number[]; mode: ConvertMode } | null>(null);
   const [smartEditor, setSmartEditor] = useState<{
     playlistId: number | null;
     name?: string;
@@ -1467,21 +1467,21 @@ export default function App() {
             onLoadMore={handleLoadMore}
             onTracksChanged={triggerReload}
             onEditTrack={(ts) => setEditorTracks(ts)}
-            onConvert={(ids) => setConvertIds(ids)}
+            onConvert={(ids, mode) => setConvertReq({ ids, mode: mode ?? "export" })}
           />
         ) : displayMode === "tracks" ? (
           <TracksView
             onLoadMore={handleLoadMore}
             onTracksChanged={triggerReload}
             onEditTrack={(ts) => setEditorTracks(ts)}
-            onConvert={(ids) => setConvertIds(ids)}
+            onConvert={(ids, mode) => setConvertReq({ ids, mode: mode ?? "export" })}
           />
         ) : (
           <TrackTable
             onLoadMore={handleLoadMore}
             onTracksChanged={triggerReload}
             onEditTrack={(ts) => setEditorTracks(ts)}
-            onConvert={(ids) => setConvertIds(ids)}
+            onConvert={(ids, mode) => setConvertReq({ ids, mode: mode ?? "export" })}
           />
         )}
       </div>
@@ -1516,10 +1516,11 @@ export default function App() {
           onSaved={triggerReload}
         />
       )}
-      {convertIds && (
+      {convertReq && (
         <ConvertDialog
-          trackIds={convertIds}
-          onClose={() => setConvertIds(null)}
+          trackIds={convertReq.ids}
+          initialMode={convertReq.mode}
+          onClose={() => setConvertReq(null)}
           onLibraryChanged={triggerReload}
         />
       )}

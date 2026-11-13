@@ -21,7 +21,7 @@ import {
   setTrackIdsData,
 } from "../lib/trackDrag";
 import { FIELD_DEFS } from "../types";
-import type { Track, FieldKey, Playlist } from "../types";
+import type { ConvertMode, Track, FieldKey, Playlist } from "../types";
 import { describeKey, effectiveKeyCamelot, formatKey, isKeyOverridden } from "../lib/keyNotation";
 import { EmptyState } from "./EmptyState";
 import { joinGenre, splitGenre } from "../lib/genre";
@@ -50,7 +50,7 @@ interface TrackTableProps {
   onLoadMore: () => void;
   onTracksChanged: () => void;
   onEditTrack: (tracks: Track[]) => void;
-  onConvert: (trackIds: number[]) => void;
+  onConvert: (trackIds: number[], mode?: ConvertMode) => void;
 }
 
 interface ContextMenuState {
@@ -691,6 +691,12 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     setContextMenu(null);
   }, [ctxIds, onConvert]);
 
+  const handleConvertReplace = useCallback(() => {
+    const ids = ctxIds();
+    if (ids.length > 0) onConvert(ids, "replace");
+    setContextMenu(null);
+  }, [ctxIds, onConvert]);
+
   // 選択（or 右クリック対象）の曲を削除確認モーダルへ渡す。
   const handleDelete = useCallback(() => {
     const ids = new Set(ctxIds());
@@ -1320,6 +1326,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onAnalyze={handleAnalyzeSelection}
           onFindSimilar={handleFindSimilar}
           onConvert={handleConvert}
+          onConvertReplace={handleConvertReplace}
           onGetInfo={handleGetInfo}
           onRemoveFromPlaylist={handleRemoveFromPlaylist}
           onReveal={() => void handleReveal(ctxTrack.locationPath ?? "")}
