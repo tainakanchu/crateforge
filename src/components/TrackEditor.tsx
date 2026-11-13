@@ -579,7 +579,6 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
           <Field label="ジャンル">
             <GenreTagInput
               value={splitGenre(form.genre)}
-              allowSpaces
               suggestions={genreSuggestions}
               placeholder={
                 initial.genre.mixed && !dirty.has("genre")

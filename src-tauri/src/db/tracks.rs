@@ -104,43 +104,39 @@ fn compute_search_text(fields: [Option<&str>; 6]) -> String {
         .join("\n")
 }
 
-/// genre 文字列をタグに分割する。区切りは明示区切り (`;` `,` `/`) のみで、空白では割らない
-/// ("Deep House" は 1 タグ)。前後の空白は落とし、空要素は捨てる。
-/// フロント (`src/lib/genre.ts`) とモバイルの分割規則と一致させること。
+/// genre 文字列をタグに分割する (仕様: ジャンルは空白区切りのタグ集合)。
+/// 任意の空白に加え `;` `,` でも分割する (v0.18–v0.19 が `"; "` で保存した文字列の互換)。
+/// `/` は区切りではない ("R&B/Soul" は 1 タグ)。空要素は捨てる。
+/// フロント (`src/lib/genre.ts`) の分割規則と一致させること。
 pub(crate) fn split_genre_tags(genre: &str) -> Vec<&str> {
     genre
-        .split([';', ',', '/'])
-        .map(str::trim)
+        .split(|c: char| c.is_whitespace() || c == ';' || c == ',')
         .filter(|t| !t.is_empty())
         .collect()
 }
 
-/// タグを genre 文字列へ戻すときの区切り。
-const GENRE_JOIN: &str = "; ";
+/// タグを genre 文字列へ戻すときの区切り (フロントの GENRE_JOIN と同じ)。
+const GENRE_JOIN: &str = " ";
 
-/// 既存 genre 文字列に tag を追加。重複 (大小無視) は無視し、元の文字列はそのまま保つ。
+/// 既存 genre 文字列に tag を追加。重複 (大小無視) は無視する。
+/// 追加時は既存タグを空白 1 つで連結し直す (旧 `; ` 区切りもここで正規化される)。
 fn merge_tag(current: &str, tag: &str) -> String {
     let tag = tag.trim();
     if tag.is_empty() {
         return current.to_string();
     }
-    let tags = split_genre_tags(current);
+    let mut tags = split_genre_tags(current);
     if tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
         return current.to_string();
     }
-    if tags.is_empty() {
-        return tag.to_string();
-    }
-    format!("{}{GENRE_JOIN}{tag}", current.trim())
+    tags.push(tag);
+    tags.join(GENRE_JOIN)
 }
 
 fn remove_tag(current: &str, tag: &str) -> String {
     let tag = tag.trim();
-    let tags = split_genre_tags(current);
-    if !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
-        return current.trim().to_string();
-    }
-    tags.into_iter()
+    split_genre_tags(current)
+        .into_iter()
         .filter(|t| !t.eq_ignore_ascii_case(tag))
         .collect::<Vec<_>>()
         .join(GENRE_JOIN)
@@ -1698,7 +1694,7 @@ impl Database {
         rows.collect()
     }
 
-    /// genre を明示区切り (`;` `,` `/`) のタグ集合として扱い、tag を追加。重複は無視。
+    /// genre を空白区切り (`;` `,` も可) のタグ集合として扱い、tag を追加。重複は無視。
     pub fn add_genre_tag(&self, track_id: i64, tag: &str) -> Result<()> {
         let current: Option<String> = self
             .conn
@@ -1752,7 +1748,7 @@ impl Database {
         Ok(())
     }
 
-    /// DB 中の全 genre 値を明示区切り (`;` `,` `/`) でバラして頻度順に返す (空白では割らない)。
+    /// DB 中の全 genre 値を空白 (と `;` `,`) でバラして頻度順に返す。
     pub fn get_all_genre_tags(&self) -> Result<Vec<GenreTagCount>> {
         let mut stmt = self
             .conn
@@ -2670,34 +2666,45 @@ mod tests {
         assert_eq!(db.get_track_by_track_id(1).unwrap().unwrap().bpm, None);
     }
 
-    /// ジャンルは明示区切り (`;` `,` `/`) でのみ分割し、空白では割らない。
+    /// ジャンルは空白 (と `;` `,`) で分割する。`/` は区切りではない。
     #[test]
-    fn genre_tags_split_on_explicit_separators_only() {
-        assert_eq!(split_genre_tags("Deep House"), vec!["Deep House"]);
+    fn genre_tags_split_on_whitespace_and_legacy_separators() {
         assert_eq!(
-            split_genre_tags(" Deep House; Tech House ,Hip-Hop/Rap ;; "),
-            vec!["Deep House", "Tech House", "Hip-Hop", "Rap"]
+            split_genre_tags("Anime Remix Eurobeat"),
+            vec!["Anime", "Remix", "Eurobeat"]
         );
-        assert_eq!(merge_tag("Deep House", "Techno"), "Deep House; Techno");
-        assert_eq!(merge_tag("Deep House", "deep house"), "Deep House");
+        assert_eq!(split_genre_tags("DeepHouse"), vec!["DeepHouse"]);
+        assert_eq!(split_genre_tags("House; Techno"), vec!["House", "Techno"]);
+        assert_eq!(split_genre_tags("R&B/Soul"), vec!["R&B/Soul"]);
+        assert_eq!(
+            split_genre_tags("  House \t Techno ,, ; Trance  "),
+            vec!["House", "Techno", "Trance"]
+        );
+        assert!(split_genre_tags(" ; , ").is_empty());
+        // 追加: 旧 "; " 区切りは空白 1 つへ正規化。大小無視で重複は無視。
+        assert_eq!(merge_tag("House; Techno", "Trance"), "House Techno Trance");
+        assert_eq!(merge_tag("House  Techno", "trance"), "House Techno trance");
+        assert_eq!(merge_tag("House; Techno", "house"), "House; Techno");
         assert_eq!(merge_tag("", "Techno"), "Techno");
-        assert_eq!(remove_tag("Deep House; Techno", "techno"), "Deep House");
-        // "House" は "Deep House" の一部であってタグではないので消さない。
-        assert_eq!(remove_tag("Deep House", "House"), "Deep House");
+        assert_eq!(merge_tag("House", " "), "House");
+        // 削除: 大小無視、空白 1 つで連結し直す。
+        assert_eq!(remove_tag("House; Techno Trance", "techno"), "House Trance");
+        assert_eq!(remove_tag("House", "Techno"), "House");
+        assert_eq!(remove_tag("House", "house"), "");
 
         let db = Database::open_memory().unwrap();
         db.conn
             .execute_batch(
                 "INSERT INTO tracks (track_id, name, genre, file_exists) VALUES
-                   (1, 'a', 'Deep House', 1),
-                   (2, 'b', 'Deep House; Techno', 1);",
+                   (1, 'a', 'DeepHouse', 1),
+                   (2, 'b', 'DeepHouse; Techno', 1);",
             )
             .unwrap();
         let tags = db.get_all_genre_tags().unwrap();
         let pairs: Vec<(String, i64)> = tags.into_iter().map(|t| (t.tag, t.count)).collect();
         assert_eq!(
             pairs,
-            vec![("Deep House".to_string(), 2), ("Techno".to_string(), 1)]
+            vec![("DeepHouse".to_string(), 2), ("Techno".to_string(), 1)]
         );
     }
 

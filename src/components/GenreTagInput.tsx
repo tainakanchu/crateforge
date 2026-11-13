@@ -10,21 +10,16 @@ interface GenreTagInputProps {
   suggestions?: string[];
   placeholder?: string;
   autoFocus?: boolean;
-  /// true なら空白を含むタグを許す (ジャンル: "Deep House" を 1 タグにする)。
-  /// 区切りは `;` `,` `/` (lib/genre の GENRE_SEPARATORS) と Enter / Tab のみ。
-  /// false (既定) は従来どおり空白・カンマでも区切る (Tags 欄)。
-  allowSpaces?: boolean;
 }
 
 /// ジャンル / タグを「タグチップ＋補完」で編集する入力。
-/// allowSpaces=false のタグは半角空白を含めない単一トークン。
+/// タグは空白・`;`・`,` を含めない単一トークン (保存時は空白区切りで連結する前提)。
 export function GenreTagInput({
   value,
   onChange,
   suggestions = [],
   placeholder,
   autoFocus,
-  allowSpaces = false,
 }: GenreTagInputProps) {
   const [text, setText] = useState("");
   const [open, setOpen] = useState(false);
@@ -45,7 +40,7 @@ export function GenreTagInput({
   const addTag = (raw: string) => {
     // 区切りで複数まとめて貼られても分解して取り込む。
     const parts = raw
-      .split(allowSpaces ? GENRE_SEPARATORS : /\s+/)
+      .split(GENRE_SEPARATORS)
       .map((p) => p.trim())
       .filter(Boolean);
     if (parts.length === 0) return;
@@ -74,9 +69,7 @@ export function GenreTagInput({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    const isSeparatorKey = allowSpaces
-      ? e.key === ";" || e.key === "," || e.key === "/"
-      : e.key === "," || e.key === " ";
+    const isSeparatorKey = e.key === " " || e.key === "," || e.key === ";";
     if (e.key === "Enter" || e.key === "Tab" || isSeparatorKey) {
       // Tab: テキストあり or 候補ハイライト中なら確定してフォーカス移動を抑止
       if (e.key === "Tab") {

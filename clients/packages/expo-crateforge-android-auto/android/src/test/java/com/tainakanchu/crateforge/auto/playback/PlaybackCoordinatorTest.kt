@@ -57,6 +57,19 @@ class PlaybackCoordinatorTest {
 
   private fun idle() = shadowOf(Looper.getMainLooper()).idle()
 
+  /**
+   * ExoPlayer の再生スレッドから main へ戻ってくる処理を待つ。`idle()` 1 回だと遅い CI では
+   * 戻りがまだ届いておらず、状態の検証が揺れる。
+   */
+  private fun idleUntil(timeoutMs: Long = 5_000, condition: () -> Boolean) {
+    val deadline = System.nanoTime() + timeoutMs * 1_000_000
+    while (true) {
+      idle()
+      if (condition() || System.nanoTime() > deadline) return
+      Thread.sleep(10)
+    }
+  }
+
   private fun currentId() = c.model.current?.trackId
 
   private fun playUntilPaused() {
@@ -364,7 +377,7 @@ class PlaybackCoordinatorTest {
     idle()
     val before = states.size
     c.sessionPlayer!!.seekTo(5_000)
-    idle()
+    idleUntil { states.size > before && (states.last()["positionMs"] as Long) >= 5_000L }
     assertThat(states.size).isGreaterThan(before)
     assertThat(states.last()["positionMs"] as Long).isAtLeast(5_000L)
     assertThat(states.last()["isPlaying"]).isEqualTo(false)

@@ -1417,7 +1417,6 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
               value={genreEdit.tags}
               suggestions={genreSuggestions}
               placeholder="タグを入力して Enter / 候補から選択"
-              allowSpaces
               onChange={(tags) => setGenreEdit((g) => (g ? { ...g, tags } : g))}
             />
             <div className="genre-pop-foot">
