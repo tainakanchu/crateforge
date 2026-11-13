@@ -13,6 +13,9 @@ use crate::db::Database;
 use crate::importer;
 use crate::models::{ConvertFormat, ConvertProgress, ConvertRequest, Track};
 
+pub mod in_place;
+pub mod jobs;
+
 /// 指定トラックを順に変換する。`add_to_library` ならその場参照で DB へ追加する。
 /// `ffmpeg` は呼び出し側で解決済みの ffmpeg 実行ファイルパス。
 pub fn convert_tracks(
@@ -115,7 +118,7 @@ fn convert_one(
 }
 
 /// 衝突しないパスを返す (`name.ext`, `name (2).ext`, …)。
-fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
+pub(crate) fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     let mut p = dir.join(format!("{stem}.{ext}"));
     let mut n = 2;
     while p.exists() {
@@ -123,6 +126,34 @@ fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
         n += 1;
     }
     p
+}
+
+/// 出力フォーマットのエンコーダ指定 (`-c:a ...` とビットレート) を足す。
+/// MP3 は LAME の既定設定のまま CBR (`-c:a libmp3lame -b:a <N>k`) で、追加のフラグは付けない。
+pub(crate) fn push_codec_args(cmd: &mut Command, format: ConvertFormat, bitrate: Option<u32>) {
+    match format {
+        ConvertFormat::Mp3 => {
+            cmd.args(["-c:a", "libmp3lame", "-b:a"]);
+            cmd.arg(format!("{}k", bitrate.unwrap_or(320)));
+        }
+        ConvertFormat::Flac => {
+            cmd.args(["-c:a", "flac", "-compression_level", "8"]);
+        }
+        ConvertFormat::Alac => {
+            cmd.args(["-c:a", "alac"]);
+        }
+        ConvertFormat::Aac => {
+            cmd.args(["-c:a", "aac", "-b:a"]);
+            cmd.arg(format!("{}k", bitrate.unwrap_or(256)));
+        }
+        ConvertFormat::Opus => {
+            cmd.args(["-c:a", "libopus", "-b:a"]);
+            cmd.arg(format!("{}k", bitrate.unwrap_or(192)));
+        }
+        ConvertFormat::Wav => {
+            cmd.args(["-c:a", "pcm_s16le"]);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -146,29 +177,9 @@ fn run_ffmpeg(
         cmd.arg("-vn");
     }
 
-    match format {
-        ConvertFormat::Mp3 => {
-            cmd.args(["-c:a", "libmp3lame", "-b:a"]);
-            cmd.arg(format!("{}k", bitrate.unwrap_or(320)));
-            cmd.args(["-id3v2_version", "3"]);
-        }
-        ConvertFormat::Flac => {
-            cmd.args(["-c:a", "flac", "-compression_level", "8"]);
-        }
-        ConvertFormat::Alac => {
-            cmd.args(["-c:a", "alac"]);
-        }
-        ConvertFormat::Aac => {
-            cmd.args(["-c:a", "aac", "-b:a"]);
-            cmd.arg(format!("{}k", bitrate.unwrap_or(256)));
-        }
-        ConvertFormat::Opus => {
-            cmd.args(["-c:a", "libopus", "-b:a"]);
-            cmd.arg(format!("{}k", bitrate.unwrap_or(192)));
-        }
-        ConvertFormat::Wav => {
-            cmd.args(["-c:a", "pcm_s16le"]);
-        }
+    push_codec_args(&mut cmd, format, bitrate);
+    if format == ConvertFormat::Mp3 {
+        cmd.args(["-id3v2_version", "3"]);
     }
 
     // ソースのタグを引き継ぎつつ、ライブラリ (DB) の値で主要フィールドを上書き。

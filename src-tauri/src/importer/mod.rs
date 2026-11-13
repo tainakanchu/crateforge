@@ -861,6 +861,7 @@ fn replace_from_file(
             owned,
             desired,
             library_root,
+            old_policy: replace::OldFilePolicy::MoveToReplaced,
         },
     )
 }

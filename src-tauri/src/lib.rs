@@ -379,6 +379,7 @@ pub fn run() {
             commands::ripping::organize_active,
             // conversion
             commands::convert::convert_tracks,
+            commands::convert::convert_replace_tracks,
             // ffmpeg (resolution / on-demand download)
             commands::ffmpeg::get_ffmpeg_status,
             commands::ffmpeg::download_ffmpeg,
