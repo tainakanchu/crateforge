@@ -47,7 +47,7 @@ import {
   mergeInboxSources,
 } from "./lib/triage";
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
-import type { PlaybackState, RepeatMode, SortField, SortOrder, Track } from "./types";
+import type { DiscToc, PlaybackState, RepeatMode, SortField, SortOrder, Track } from "./types";
 
 // 窓の幅がこれ未満なら右ペインを自動で畳む (最小 1024px でも曲名列が潰れないように)。
 const RAIL_AUTO_HIDE_WIDTH = 1200;
@@ -164,8 +164,9 @@ export default function App() {
   const runAutoExportCallbackRef = useRef<() => Promise<void>>(async () => {});
   const [reloadCount, setReloadCount] = useState(0);
   const [ripOpen, setRipOpen] = useState(false);
-  // 検出ダイアログから開いたときに RipDialog へ渡すドライブ (検出元)
-  const [ripInitialDevice, setRipInitialDevice] = useState<string | null>(null);
+  // 検出ダイアログから開いたときに RipDialog へ渡すディスク (検出元ドライブ + 読み取り済み TOC)。
+  // RipDialog はこれを使ってドライブ選択・再検出なしで候補照会から始める。
+  const [ripInitialDisc, setRipInitialDisc] = useState<DiscToc | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [editorTracks, setEditorTracks] = useState<Track[] | null>(null);
   const [convertIds, setConvertIds] = useState<number[] | null>(null);
@@ -1502,8 +1503,8 @@ export default function App() {
       />
       <RipDialog
         open={ripOpen}
-        initialDevice={ripInitialDevice}
-        onClose={() => { setRipOpen(false); setRipInitialDevice(null); }}
+        initialDisc={ripInitialDisc}
+        onClose={() => { setRipOpen(false); setRipInitialDisc(null); }}
         onLibraryChanged={triggerReload}
       />
       <ImportDuplicatesDialog />
@@ -1555,7 +1556,7 @@ export default function App() {
             // (リッピング中はそもそも検出が止まっているので、ここに来るのは done / error のみ)。
             const st = useStore.getState();
             if (st.ripStatus && st.ripStatus.phase !== "ripping") st.clearRipStatus();
-            setRipInitialDevice(detectedDisc.device);
+            setRipInitialDisc(detectedDisc);
             dismissDisc();
             setRipOpen(true);
           }}

@@ -13,13 +13,15 @@ import type {
 } from "../../types";
 import { DuplicateActionSelect, DuplicateBadge, countActions } from "../DuplicateControls";
 import { defaultDecision, replaceTargetOf, type DuplicateDecision } from "../../lib/duplicates";
-import { defaultDevice } from "../../lib/disc";
+import { defaultDevice, initialRipDevice } from "../../lib/disc";
 import { primeRipChime } from "../../lib/ripChime";
 
 interface RipDialogProps {
   open: boolean;
-  // 検出ダイアログから開いたときの検出元ドライブ。null なら保存済み/自動検出に従う。
-  initialDevice?: string | null;
+  // 検出ダイアログから開いたときのディスク (検出元ドライブ + 読み取り済み TOC)。
+  // 指定されていればドライブ選択・「ディスクを検出」を挟まず候補の照会から始める。
+  // null なら保存済み/自動検出のドライブで、利用者が「ディスクを検出」を押す。
+  initialDisc?: DiscToc | null;
   onClose: () => void;
   onLibraryChanged: () => void;
 }
@@ -36,7 +38,7 @@ const FORMATS: { value: EncodeFormat; label: string; desc: string }[] = [
   { value: "wav", label: "WAV", desc: "無圧縮" },
 ];
 
-export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibraryChanged: _onLibraryChanged }: RipDialogProps) {
+export function RipDialog({ open: isOpen, initialDisc = null, onClose, onLibraryChanged: _onLibraryChanged }: RipDialogProps) {
   // グローバルトースト通知
   const pushToast = useStore((s) => s.pushToast);
   const ripFormat = useStore((s) => s.ripFormat);
@@ -110,50 +112,14 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
     }
   }, [isOpen]);
 
-  // 開くたびにドライブを検出し、初期ドライブを決める。
-  // 優先順: 検出ダイアログの検出元 > 保存済み (ripDevice) > 検出した先頭 > 既定値
-  useEffect(() => {
-    if (!isOpen) return;
-    let cancelled = false;
-    setCustomDevice(false);
-    if (initialDevice) {
-      // 新しく入れたディスクなので、前回の TOC/候補は捨てる
-      setDevice(initialDevice);
-      setToc(null);
-      setCandidates([]);
-      setSelectedRelease(null);
-      setErrorMsg("");
-      setStage("idle");
-    } else {
-      const saved = useStore.getState().ripDevice;
-      if (saved) setDevice(saved);
-    }
-    ripperApi
-      .listCdDrives()
-      .catch(() => [] as string[])
-      .then((list) => {
-        if (cancelled) return;
-        setDrives(list);
-        if (!initialDevice && !useStore.getState().ripDevice) {
-          setDevice(list[0] ?? defaultDevice());
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, initialDevice]);
-
-  const handleDetect = useCallback(async () => {
-    setStage("detecting");
-    setErrorMsg("");
-    try {
-      const t = await ripperApi.detectDisc(device);
+  // 読み取った TOC を反映し、MusicBrainz で候補を照会する。
+  const loadToc = useCallback(
+    async (dev: string, t: DiscToc) => {
       // 読み取れたドライブを次回の既定 & ディスク監視対象として覚える
-      setRipDevice(device);
+      setRipDevice(dev);
       setToc(t);
       setSelectedTracks(new Set(Array.from({ length: t.trackCount }, (_, i) => i + 1)));
       setStage("looking-up");
-      // MusicBrainz lookup
       let releases: ReleaseCandidate[] = [];
       if (t.musicbrainzId) {
         try {
@@ -167,11 +133,61 @@ export function RipDialog({ open: isOpen, initialDevice = null, onClose, onLibra
         setSelectedRelease(releases[0]);
       }
       setStage("ready");
+    },
+    [setRipDevice],
+  );
+
+  // 開くたびにドライブを検出し、初期ドライブを決める。
+  // 優先順: 検出ダイアログの検出元 > 保存済み (ripDevice) > 検出した先頭 > 既定値
+  // 検出ダイアログから開いた場合は TOC も読み取り済みなので、そのまま照会まで進める
+  // (ドライブを選び直して「ディスクを検出」を押させない)。ドライブ選択は変更用に残す。
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    setCustomDevice(false);
+    const saved = useStore.getState().ripDevice;
+    setDevice(
+      initialRipDevice({ detected: initialDisc?.device ?? null, saved, drives: null, fallback: defaultDevice() }),
+    );
+    if (initialDisc) {
+      // 新しく入れたディスクなので、前回の TOC/候補は捨てて検出済みの TOC から始める
+      setCandidates([]);
+      setSelectedRelease(null);
+      setErrorMsg("");
+      void loadToc(initialDisc.device, initialDisc);
+    }
+    ripperApi
+      .listCdDrives()
+      .catch(() => [] as string[])
+      .then((list) => {
+        if (cancelled) return;
+        setDrives(list);
+        setDevice(
+          initialRipDevice({
+            detected: initialDisc?.device ?? null,
+            saved: useStore.getState().ripDevice,
+            drives: list,
+            fallback: defaultDevice(),
+          }),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+    // loadToc は setRipDevice (zustand の安定参照) にしか依存しない。
+  }, [isOpen, initialDisc]);
+
+  const handleDetect = useCallback(async () => {
+    setStage("detecting");
+    setErrorMsg("");
+    try {
+      const t = await ripperApi.detectDisc(device);
+      await loadToc(device, t);
     } catch (e) {
       setErrorMsg(`${e}`);
       setStage("error");
     }
-  }, [device, setRipDevice]);
+  }, [device, loadToc]);
 
   const handlePickOutputDir = useCallback(async () => {
     const dir = await open({ directory: true, multiple: false });
