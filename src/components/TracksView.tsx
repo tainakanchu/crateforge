@@ -12,7 +12,7 @@ import { TrackContextMenu } from "./TrackContextMenu";
 import { DeleteTracksDialog } from "./DeleteTracksDialog";
 import { artGradient, bpmColor, leadingGlyph } from "../lib/art";
 import { ratingToStars, starsToRating } from "../lib/rating";
-import type { Track, Playlist } from "../types";
+import type { ConvertMode, Track, Playlist } from "../types";
 import { EmptyState } from "./EmptyState";
 import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import { splitGenre } from "../lib/genre";
@@ -29,7 +29,7 @@ interface TracksViewProps {
   onLoadMore: () => void;
   onTracksChanged: () => void;
   onEditTrack: (tracks: Track[]) => void;
-  onConvert: (trackIds: number[]) => void;
+  onConvert: (trackIds: number[], mode?: ConvertMode) => void;
 }
 
 const GAP = 18;
@@ -176,6 +176,12 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleConvert = useCallback(() => {
     if (!contextMenu) return;
     onConvert([contextMenu.track.trackId]);
+    closeMenu();
+  }, [contextMenu, onConvert, closeMenu]);
+
+  const handleConvertReplace = useCallback(() => {
+    if (!contextMenu) return;
+    onConvert([contextMenu.track.trackId], "replace");
     closeMenu();
   }, [contextMenu, onConvert, closeMenu]);
 
@@ -416,6 +422,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onAnalyze={handleAnalyze}
           onFindSimilar={handleFindSimilar}
           onConvert={handleConvert}
+          onConvertReplace={handleConvertReplace}
           onGetInfo={handleGetInfo}
           onRemoveFromPlaylist={handleRemoveFromPlaylist}
           onReveal={() => void handleReveal()}

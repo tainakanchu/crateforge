@@ -12,6 +12,10 @@
 //!
 //! どこかで失敗したら、自分で作った新ファイルを消し、退避した旧ファイルを戻して
 //! 既存行・旧ファイルには手を付けていない状態でエラーを返す。
+//!
+//! [`OldFilePolicy::Trash`] のときは 4 を飛ばし、5 の成功後に旧ファイルをゴミ箱へ送る
+//! (ゴミ箱へ送れなければ `_replaced` へ退避する)。DB 更新に失敗した時点では旧ファイルに
+//! 一切触れていないので、戻す処理は要らない。
 
 use std::path::{Path, PathBuf};
 
@@ -35,12 +39,35 @@ pub enum OldFileDisposition {
     Missing,
     /// 他の曲も同じファイルを参照しているので残した。
     KeptShared,
+    /// OS のゴミ箱へ移動した。
+    Trashed,
+    /// ゴミ箱へも `_replaced` へも移せず、元の場所に残した (ライブラリからは参照されない)。
+    LeftInPlace,
+}
+
+/// ゴミ箱へ送る関数 (テストでは本物のゴミ箱を汚さないよう差し替える)。
+pub type TrashFn<'a> = &'a dyn Fn(&Path) -> Result<(), String>;
+
+/// 置き換えが成功した後の旧ファイルの扱い。
+#[derive(Clone, Copy)]
+pub enum OldFilePolicy<'a> {
+    /// `_replaced/<YYYYMMDD>/` へ退避する (従来の挙動)。
+    MoveToReplaced,
+    /// ゴミ箱へ送る。送れなければ `_replaced` へ退避する。
+    Trash(TrashFn<'a>),
+}
+
+/// OS のゴミ箱 (Windows のごみ箱 / macOS の Trash / freedesktop Trash) へ送る。
+pub fn os_trash(path: &Path) -> Result<(), String> {
+    trash::delete(path).map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplaceOutcome {
     pub new_path: String,
     pub old_file: OldFileDisposition,
+    /// ゴミ箱へ送れず `_replaced` へ退避したときの理由。
+    pub trash_error: Option<String>,
 }
 
 /// 置き換え先 (新ファイル) の情報。
@@ -55,6 +82,8 @@ pub struct NewFile<'a> {
     pub desired: Option<PathBuf>,
     /// `_replaced` を作る基準 (ライブラリルート)。None なら旧ファイルの隣に作る。
     pub library_root: Option<&'a Path>,
+    /// 置き換え後の旧ファイルの扱い。
+    pub old_policy: OldFilePolicy<'a>,
 }
 
 /// 既存行のメタデータから整理先 (`<root>/<artist>/<album>/<file>`) を決める。
@@ -141,6 +170,7 @@ pub fn finalize_replacement(
         owned,
         desired,
         library_root,
+        old_policy,
     } = new_file;
     let cleanup = |p: &Path| {
         if owned {
@@ -219,41 +249,40 @@ pub fn finalize_replacement(
         }
     };
 
-    // 4. 旧ファイルの退避。
+    // 4. 旧ファイルの退避 (ゴミ箱へ送る場合は DB 更新の後)。
+    let shared = match (&old_path, old_exists) {
+        (Some(old), true) => db
+            .other_tracks_reference_path(&old.to_string_lossy(), track_id)
+            .map_err(|e| {
+                cleanup(&new_path);
+                e.to_string()
+            })?,
+        _ => false,
+    };
     let mut moved_to: Option<PathBuf> = None;
-    let old_file = match (&old_path, old_exists) {
-        (Some(old), true) => {
-            let old_str = old.to_string_lossy();
-            let shared = db
-                .other_tracks_reference_path(&old_str, track_id)
-                .map_err(|e| {
+    let mut old_file = match (&old_path, old_exists) {
+        (Some(_), true) if shared => OldFileDisposition::KeptShared,
+        (Some(old), true) => match old_policy {
+            OldFilePolicy::MoveToReplaced => {
+                let dest = move_to_replaced(old, library_root).inspect_err(|_| {
                     cleanup(&new_path);
-                    e.to_string()
                 })?;
-            if shared {
-                OldFileDisposition::KeptShared
-            } else {
-                let date = chrono::Local::now().format("%Y%m%d").to_string();
-                let dest = replaced_destination(old, library_root, &date);
-                let dest = organizer::resolve_collision(&dest, old);
-                if let Err(e) = move_file(old, &dest) {
-                    cleanup(&new_path);
-                    return Err(format!("旧ファイルを退避できませんでした: {e}"));
-                }
                 moved_to = Some(dest.clone());
                 OldFileDisposition::Moved {
                     to: dest.to_string_lossy().to_string(),
                 }
             }
-        }
+            // 後で (DB 更新の成功後に) ゴミ箱へ送る。
+            OldFilePolicy::Trash(_) => OldFileDisposition::Trashed,
+        },
         _ => OldFileDisposition::Missing,
     };
 
     // 衝突回避で名前が変わっていたら、旧ファイルが退いて空いた本来の名前へ。
     if owned {
-        if let Some(d) = desired.filter(|d| *d != new_path && !d.exists()) {
-            if std::fs::rename(&new_path, &d).is_ok() {
-                new_path = d;
+        if let Some(d) = desired.as_ref().filter(|d| **d != new_path && !d.exists()) {
+            if std::fs::rename(&new_path, d).is_ok() {
+                new_path = d.clone();
             }
         }
     }
@@ -267,18 +296,73 @@ pub fn finalize_replacement(
         duration_ms,
         &tech_meta,
     ) {
-        // 旧ファイルを戻し、新ファイルを片付ける。
+        // 新ファイルを片付けてから旧ファイルを戻す (新ファイルが旧ファイルの名前へ改名済みの
+        // ことがあるので、逆順だと戻した旧ファイルを消してしまう)。
+        cleanup(&new_path);
         if let (Some(dest), Some(old)) = (&moved_to, &old_path) {
             let _ = move_file(dest, old);
         }
-        cleanup(&new_path);
         return Err(format!("ライブラリを更新できませんでした: {e}"));
+    }
+
+    // 6. ゴミ箱へ送る (DB は付け替え済み。失敗しても置き換え自体は成功扱い)。
+    let mut trash_error = None;
+    let mut new_str = new_str;
+    if let (OldFileDisposition::Trashed, Some(old), OldFilePolicy::Trash(trash_fn)) =
+        (&old_file, &old_path, old_policy)
+    {
+        match trash_fn(old) {
+            Ok(()) => {
+                // 旧ファイルが退いて本来の名前が空いたなら改名して付け替え直す。
+                if owned {
+                    if let Some(d) = desired.filter(|d| *d != new_path && !d.exists()) {
+                        let d_str = d.to_string_lossy().to_string();
+                        if std::fs::rename(&new_path, &d).is_ok() {
+                            if db
+                                .apply_track_replacement(
+                                    track_id,
+                                    &d_str,
+                                    &path_to_file_url(&d_str),
+                                    duration_ms,
+                                    &tech_meta,
+                                )
+                                .is_ok()
+                            {
+                                new_str = d_str;
+                            } else {
+                                let _ = std::fs::rename(&d, &new_path);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                trash_error = Some(e);
+                old_file = match move_to_replaced(old, library_root) {
+                    Ok(dest) => OldFileDisposition::Moved {
+                        to: dest.to_string_lossy().to_string(),
+                    },
+                    // 退避もできなければ元の場所に残す (DB からはもう参照されない)。
+                    Err(_) => OldFileDisposition::LeftInPlace,
+                };
+            }
+        }
     }
 
     Ok(ReplaceOutcome {
         new_path: new_str,
         old_file,
+        trash_error,
     })
+}
+
+/// 旧ファイルを `_replaced/<今日>/...` へ移し、移動先を返す。
+fn move_to_replaced(old: &Path, library_root: Option<&Path>) -> Result<PathBuf, String> {
+    let date = chrono::Local::now().format("%Y%m%d").to_string();
+    let dest = replaced_destination(old, library_root, &date);
+    let dest = organizer::resolve_collision(&dest, old);
+    move_file(old, &dest).map_err(|e| format!("旧ファイルを退避できませんでした: {e}"))?;
+    Ok(dest)
 }
 
 #[cfg(test)]
@@ -433,6 +517,7 @@ pub(crate) mod tests {
                 owned: true,
                 desired: Some(desired.clone()),
                 library_root: Some(&f.root),
+                old_policy: OldFilePolicy::MoveToReplaced,
             },
         )
         .unwrap();
@@ -490,6 +575,7 @@ pub(crate) mod tests {
                 owned: true,
                 desired: Some(desired.clone()),
                 library_root: Some(&f.root),
+                old_policy: OldFilePolicy::MoveToReplaced,
             },
         )
         .unwrap();
@@ -513,6 +599,7 @@ pub(crate) mod tests {
                 owned: true,
                 desired: None,
                 library_root: Some(&f.root),
+                old_policy: OldFilePolicy::MoveToReplaced,
             },
         );
         assert!(err.is_err());
@@ -535,6 +622,7 @@ pub(crate) mod tests {
                 owned: true,
                 desired: None,
                 library_root: Some(&f.root),
+                old_policy: OldFilePolicy::MoveToReplaced,
             },
         );
         assert!(err.is_err());
@@ -571,6 +659,7 @@ pub(crate) mod tests {
                 owned: false,
                 desired: None,
                 library_root: None,
+                old_policy: OldFilePolicy::MoveToReplaced,
             },
         )
         .unwrap();
@@ -591,6 +680,7 @@ pub(crate) mod tests {
                 owned: false,
                 desired: None,
                 library_root: None,
+                old_policy: OldFilePolicy::MoveToReplaced,
             },
         )
         .unwrap();

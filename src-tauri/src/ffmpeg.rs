@@ -89,6 +89,11 @@ fn path_has_ffmpeg() -> bool {
     cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
+/// AppHandle 無しで (= API サーバー単体起動のテスト等) PATH 上の ffmpeg を使う。
+pub fn resolve_on_path() -> Option<PathBuf> {
+    path_has_ffmpeg().then(|| PathBuf::from("ffmpeg"))
+}
+
 /// 使用する ffmpeg を解決する（取得元の種別も返す）。
 pub fn resolve(app: &AppHandle) -> Option<(PathBuf, &'static str)> {
     if let Some(p) = cache_path(app) {

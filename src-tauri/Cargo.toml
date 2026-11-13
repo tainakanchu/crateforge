@@ -96,6 +96,8 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
 tauri-plugin-window-state = "2.4.1"
 tauri-plugin-single-instance = "2"
+# 「変換して置き換え」で元ファイルを OS のゴミ箱へ送る (MIT)。
+trash = "5"
 
 # === Unix-only: MusicBrainz disc id via libdiscid (C lib comes from Nix/Brew/apt). ===
 # Skipped on Windows because libdiscid isn't trivially available via the standard

@@ -40,6 +40,7 @@ interface TrackContextMenuProps {
   onAnalyze: () => void;
   onFindSimilar: () => void;
   onConvert: () => void;
+  onConvertReplace: () => void;
   onGetInfo: () => void;
   onRemoveFromPlaylist: () => void;
   onReveal: () => void;
@@ -131,6 +132,7 @@ export function TrackContextMenu({
   onAnalyze,
   onFindSimilar,
   onConvert,
+  onConvertReplace,
   onGetInfo,
   onRemoveFromPlaylist,
   onReveal,
@@ -163,7 +165,7 @@ export function TrackContextMenu({
   // ── メニュー項目（フォーカス可能なものだけ）を上から順に id 化 ──
   const navIds = useMemo(() => {
     // 「プレイリストに追加…」は Crate に追加の直下 (D5: 長いメニューの下に隠れないように)。
-    const ids = ["play", "rating", "crate", "playlist", "playnext", "queue", "analyze", "similar", "convert", "info"];
+    const ids = ["play", "rating", "crate", "playlist", "playnext", "queue", "analyze", "similar", "convert", "convertReplace", "info"];
     // ファイルが無い曲では「表示」できないので、キーボード移動の対象からも外す。
     if (revealPath) ids.push("reveal");
     if (relocateTrack) ids.push("relocate");
@@ -234,6 +236,7 @@ export function TrackContextMenu({
       if (id === "analyze") return run(onAnalyze)();
       if (id === "similar") return run(onFindSimilar)();
       if (id === "convert") return run(onConvert)();
+      if (id === "convertReplace") return run(onConvertReplace)();
       if (id === "info") return run(onGetInfo)();
       if (id === "remove") return run(onRemoveFromPlaylist)();
       if (id === "reveal") return run(onReveal)();
@@ -248,7 +251,7 @@ export function TrackContextMenu({
         return run(() => onRemoveTag(id.slice(4)))();
       }
     },
-    [run, onPlay, onAddToCrate, onPlayNext, onEnqueue, onAnalyze, onFindSimilar, onConvert, onGetInfo, onRemoveFromPlaylist, onReveal, onRelocate, onDelete, onAddTag, onAddToPlaylist, onRemoveTag],
+    [run, onPlay, onAddToCrate, onPlayNext, onEnqueue, onAnalyze, onFindSimilar, onConvert, onConvertReplace, onGetInfo, onRemoveFromPlaylist, onReveal, onRelocate, onDelete, onAddTag, onAddToPlaylist, onRemoveTag],
   );
 
   // フライアウトの位置を「プレイリストに追加…」項目の現在位置に合わせる。
@@ -518,6 +521,9 @@ export function TrackContextMenu({
       </div>
       <div {...itemProps("convert")} onClick={run(onConvert)}>
         <Icon name="settings" size={14} /> 形式を変換…
+      </div>
+      <div {...itemProps("convertReplace")} onClick={run(onConvertReplace)}>
+        <Icon name="settings" size={14} /> 変換して置き換え…
       </div>
       <div {...itemProps("info")} onClick={run(onGetInfo)}>
         <Icon name="info" size={14} /> 情報を見る / 編集

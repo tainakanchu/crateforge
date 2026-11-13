@@ -17,6 +17,7 @@ import type {
   RepeatMode,
   TrackAnalysis,
   EncodeFormat,
+  OriginalAction,
   RipStage,
   SetMeta,
   CrateAnchors,
@@ -181,6 +182,8 @@ interface PersistedSettings {
   ripOutputDir: string | null;
   // 最後に使った CD ドライブ (例: "E:")。null なら自動検出に任せる。
   ripDevice: string | null;
+  // 「変換して置き換え」で最後に選んだ元ファイルの扱い。
+  convertOriginal: OriginalAction;
   // サーバーから取り寄せる際に最後に選んだ保存先。
   lastSyncDestRoot: string | null;
   // Similar タブの絞り込み条件 (#151)。
@@ -396,6 +399,7 @@ interface AppState extends PersistedSettings {
   setRipFormat: (f: EncodeFormat) => void;
   setRipOutputDir: (dir: string | null) => void;
   setRipDevice: (device: string | null) => void;
+  setConvertOriginal: (v: OriginalAction) => void;
   setLastSyncDestRoot: (dir: string | null) => void;
 
   // Analysis
@@ -725,6 +729,7 @@ export const useStore = create<AppState>()(
       ripFormat: "alac",
       ripOutputDir: null,
       ripDevice: null,
+      convertOriginal: "trash",
       lastSyncDestRoot: null,
       usbExport: { ...DEFAULT_USB_EXPORT_SETTINGS },
       similarFilters: DEFAULT_SIMILAR_FILTERS,
@@ -1010,6 +1015,7 @@ export const useStore = create<AppState>()(
       setAutoBackupEnabled: (autoBackupEnabled) => set({ autoBackupEnabled }),
       setRipSoundEnabled: (ripSoundEnabled) => set({ ripSoundEnabled }),
       setRipFormat: (ripFormat) => set({ ripFormat }),
+      setConvertOriginal: (convertOriginal) => set({ convertOriginal }),
       setRipOutputDir: (ripOutputDir) => set({ ripOutputDir }),
       setRipDevice: (ripDevice) => set({ ripDevice }),
       setLastSyncDestRoot: (lastSyncDestRoot) => set({ lastSyncDestRoot }),
@@ -1101,6 +1107,7 @@ export const useStore = create<AppState>()(
           ripFormat: state.ripFormat,
           ripOutputDir: state.ripOutputDir,
           ripDevice: state.ripDevice,
+          convertOriginal: state.convertOriginal,
           lastSyncDestRoot: state.lastSyncDestRoot,
           similarFilters: state.similarFilters,
           viewMode: state.viewMode,

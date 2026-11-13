@@ -267,6 +267,7 @@ pub fn rip_cd(
                     owned: true,
                     desired,
                     library_root: library_root.as_deref(),
+                    old_policy: replace::OldFilePolicy::MoveToReplaced,
                 },
             ) {
                 Ok(out) => {

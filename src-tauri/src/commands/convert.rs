@@ -28,3 +28,36 @@ pub async fn convert_tracks(app: AppHandle, request: ConvertRequest) -> Result<(
     });
     Ok(())
 }
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertReplaceRequest {
+    pub track_ids: Vec<i64>,
+    #[serde(flatten)]
+    pub options: crate::converter::in_place::InPlaceOptions,
+}
+
+/// 選択トラックを変換し、同じ曲のまま新しいファイルへ置き換える (バックグラウンド実行)。
+/// 進捗は `convert-replace-progress` イベントで配信し、ジョブ ID を返す。
+#[tauri::command]
+pub async fn convert_replace_tracks(
+    app: AppHandle,
+    request: ConvertReplaceRequest,
+) -> Result<String, String> {
+    if request.track_ids.is_empty() {
+        return Err("No tracks selected".to_string());
+    }
+    let ffmpeg = ffmpeg::ensure(&app).await?;
+    let db_app = app.clone();
+    let job_id = converter::jobs::spawn(
+        request.track_ids,
+        request.options,
+        ffmpeg,
+        move || open_db(&db_app),
+        move |ev| {
+            use tauri::Emitter;
+            let _ = app.emit("convert-replace-progress", ev);
+        },
+    );
+    Ok(job_id)
+}

@@ -89,6 +89,20 @@ GUI に即時反映します。書き戻しの処理はデスクトップ GUI �
 
 他のデバイスで計算済みの解析結果を取り込む同期用の `POST /api/analysis` とは別物です。進捗はデスクトップ GUI にも通常どおり表示されます。
 
+### 変換して置き換え
+
+曲を別フォーマットへ変換し、**同じ曲のまま**（ID・レート・再生回数・プレイリスト・編集したタグはそのまま）新しいファイルへ付け替えます。ファイルを移動・削除するため **ループバック専用** です（LAN からはトークン・ロールに関係なく `403`）。
+
+- `POST /api/convert-replace`（`{trackIds, format?, bitrateKbps?, original?}`） — バックグラウンドのジョブを開始し、`202` で `{jobId, total}` を返します。`format` は `mp3`（既定）/ `aac` / `opus` / `flac` / `alac` / `wav`、`bitrateKbps` は非可逆の場合のみ（MP3 の既定は 320）。`original` は元ファイルの扱いで `trash`（既定、OS のゴミ箱）か `replaced`（`_replaced/<日付>/` に残す）。1 リクエスト最大 5000 件。ジョブは 1 つずつ順に実行されます。
+- `GET /api/convert-replace/{jobId}` — `state`（`queued` / `running` / `done` / `failed`）、`done` / `total`、`counts`（`ok` / `skipped` / `failed`）と曲ごとの `results`。
+
+`results` の各要素は `trackId`、`status`（`ok` / `skipped` / `failed`）、`reason`（`already_target_format` / `no_file` / `encode_failed` / `decode_failed` / `duration_mismatch` など）、`warnings`（`lossy_to_lossy` = 非可逆 → 非可逆、`trash_failed` = ゴミ箱へ移せず `_replaced` に退避）、`sourceCodec` / `sourceLossless`（実ファイルから判定）、`newLocationPath`、`original`（`{kind: "trashed" | "moved" | "keptShared" | ...}`）を持ちます。
+
+- 変換先と同じコーデックで、ビットレートも同じか低い曲（MP3 320 → MP3 320 など）は何もせず `skipped` にします。非可逆 → 非可逆は拒否せず警告だけ付けます。
+- 付け替える前に新しいファイルを最後までデコードし、長さが元とほぼ同じかを確かめます。失敗した曲は元ファイル・曲の情報に手を付けません。
+- 他の曲も参照している元ファイルは移動しません。
+- 対象を絞り込むには、曲の `codec`（`ALAC` / `AAC` / `FLAC` / `MP3` …）・`bitrateKbps`・`bitDepth` を使えます（ジョブ自体も実ファイルでコーデックを判定するので、候補をそのまま渡しても構いません）。
+
 ### プレイリスト
 
 - `POST /api/playlists` — 新規作成
