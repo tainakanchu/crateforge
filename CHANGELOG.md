@@ -10,6 +10,24 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+### 日本語
+
+#### デスクトップ
+- **変換して置き換え**: 曲の右クリック「変換して置き換え…」（変換ダイアログの方式「置き換え」）で、元ファイルの隣に別フォーマットで書き出し、同じ曲のまま（レート・再生回数・プレイリスト・編集したタグはそのまま）新しいファイルへ差し替えられるようにした。タグと埋め込みカバーアートを引き継ぎ、差し替える前に新しいファイルを最後までデコードして長さを確かめる（失敗した曲は元ファイルに手を付けない）。元ファイルはゴミ箱へ（既定）か `_replaced` フォルダに残すかを選べ、最後の選択を覚える。他の曲も参照している元ファイルは移動しない。同じ形式で同じか低いビットレートへの変換はスキップし、非可逆 → 非可逆になる曲は件数を ⚠ で示す。
+- **CD 検出から取り込むときにドライブを選び直さなくてよいように**: 「CD を検出しました」で「取り込む」を押すと、検出したドライブで読み取り済みのディスク情報からそのまま候補の照会を始める（「ディスクを検出」を押し直す必要がなくなった）。ドライブの切り替えは引き続きできる。
+
+#### API
+- **変換して置き換えのジョブ API**: `POST /api/convert-replace`（`{trackIds, format?, bitrateKbps?, original?}`）でバックグラウンドのジョブを開始し、`GET /api/convert-replace/{jobId}` で進捗と曲ごとの結果（成功 / スキップ / 失敗と理由、警告、元のコーデック、新しい場所）を取得できる。ファイルを移動・削除するためループバック専用（LAN からは常に `403`）。
+
+### English
+
+#### Desktop
+- **Convert and replace**: right-click a track → "変換して置き換え…" (or pick "置き換え" as the method in the convert dialog) to write the track in another format next to the original and swap the same track (rating, play count, playlists and edited tags stay) to the new file. Tags and embedded cover art are carried over, and the new file is decoded to the end and its length checked before swapping (a failed track keeps its original file). The original goes to the trash (default) or stays in the `_replaced` folder, and the last choice is remembered. An original file that another track references is never moved. Converting to the same format at the same or a lower bitrate is skipped, and tracks that would go lossy to lossy are flagged with ⚠ and a count.
+- **No need to pick the drive again when ripping from CD detection**: pressing "取り込む" (Import) on the "CD detected" dialog now starts the release lookup right away from the disc that was already read on the detected drive (no more pressing "Detect disc" again). Switching drives is still possible.
+
+#### API
+- **Convert-and-replace job API**: `POST /api/convert-replace` (`{trackIds, format?, bitrateKbps?, original?}`) starts a background job, and `GET /api/convert-replace/{jobId}` returns progress and per-track results (done / skipped / failed with reasons, warnings, source codec, new location). Because it moves and deletes files it is loopback only (always `403` from the LAN).
+
 ## [v0.18.1] - 2026-11-13
 
 ### 日本語
