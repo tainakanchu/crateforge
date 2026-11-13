@@ -10,6 +10,22 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.20.0] - 2026-11-14
+
+### 日本語
+
+#### デスクトップ
+- **USB 書き出しを rbx-cli 0.2.0 に更新し、古い CDJ で読めない問題を修正**: 書き出しに使う rbx-cli を 0.2.0（rbxport 1.10.0）に上げた。これまでの書き出しでは `export.pdb` の各行にページ内の位置が書かれておらず、CDJ-350 / CDJ-900NXS など古い世代のプレーヤーで USB を読めないことがあった。ほかにも rekordbox と同じ形で書くための修正（曲のライブラリ ID、追加日の書き位置など）が入っている。初回の書き出し時に、ダイアログの案内に従って rbx-cli 0.2.0 を取得し直す必要がある（実機での確認はまだ）。 (#252)
+- **仕様変更: ファイルが見つからない曲・書き出せない曲があっても書き出しを止めない**: 以前この USB に書き出した曲のファイルが見つからないときは、書き出しを中止せず、USB 上の既存の曲・解析・キューをそのまま残してほかの曲を書き出す。読めない・変換できない曲は飛ばして続け、完了画面に「書き出せなかった曲」として理由とともに表示する。計画と完了画面には「USB 上の既存のファイルを残す曲」も表示する。 (#252)
+- **仕様変更: CDJ で変更したキュー/グリッドの扱いを変更**: 「CDJ で変更したキュー/グリッドを優先する」がオフ（既定）のとき、これまでは書き出しを中止していたが、Traktor のキュー/グリッドで上書きして書き出すようにした。オンのときはこれまでどおり CDJ で変更した曲だけ USB 上のキュー/グリッドを残す。これに伴い「CDJ の変更を優先して再試行」ボタンはなくなった。 (#252)
+
+### English
+
+#### Desktop
+- **USB export updated to rbx-cli 0.2.0, fixing sticks older CDJs could not read**: the rbx-cli used for USB export is now 0.2.0 (rbxport 1.10.0). Previous exports did not write each row's position within its page into `export.pdb`, so older players such as the CDJ-350 / CDJ-900NXS could fail to read the stick. It also includes other fixes that write the stick the way rekordbox does (each track's library ids, where the date added is written, and more). On the first export you need to download rbx-cli 0.2.0 again as the dialog guides you (not yet verified on real hardware). (#252)
+- **Behavior change: missing or unexportable tracks no longer stop the export**: when the file of a track previously exported to this stick cannot be found, the export no longer aborts; the track's existing file, analysis and cues on the stick are kept and the other tracks are exported. Tracks whose audio cannot be read or converted are skipped, and the result screen lists them as "書き出せなかった曲" (tracks that could not be exported) with the reason. The plan and result screens also show the tracks whose existing files on the stick were kept. (#252)
+- **Behavior change: cues/grids edited on a CDJ are handled differently**: with "CDJ で変更したキュー/グリッドを優先する" (prefer cues/grids changed on the CDJ) off (the default), the export used to abort; it now overwrites them with Traktor's cues/grids and goes ahead. With it on, as before, only the tracks changed on the CDJ keep their cues/grids on the stick. The "CDJ の変更を優先して再試行" (retry preferring CDJ changes) button has been removed accordingly. (#252)
+
 ## [v0.19.1] - 2026-11-13
 
 ### 日本語
