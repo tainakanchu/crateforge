@@ -8,6 +8,8 @@ export const WINDOW_PAGE_SIZE = 200;
 export const WINDOW_MAX_PAGES = 20;
 /** 表示範囲の前後に先読みするページ数。 */
 export const WINDOW_PREFETCH_PAGES = 1;
+/** 失敗したページを自動で取り直すまでの待ち時間 (ms)。2 回まで再試行し、だめなら失敗として見せる。 */
+export const WINDOW_RETRY_DELAYS_MS: readonly number[] = [400, 1200];
 /** 離れた位置へ跳んだとき、取得を始めるまでスクロールの停止を待つ時間 (ms)。 */
 export const WINDOW_SETTLE_MS = 100;
 /** 表示中の項目の範囲 (通し番号。両端を含む)。 */
@@ -156,6 +158,35 @@ export class PageCache<T> {
     }
   }
 
+  /**
+   * count 件に対して短いページ (件数が増えて、続きがあるはずのページ) を「取り直し待ち」にする。
+   * 件数が増えたとき、最後のページの続きが未取得のまま残らないようにする。
+   */
+  staleShortPages(count: number): void {
+    for (const [page, p] of this.pages) {
+      const expected = Math.min(this.pageSize, count - page * this.pageSize);
+      if (p.items.length < expected) p.stale = true;
+    }
+  }
+
+  /**
+   * 持っているページを並べ替える (プレイリストの手動並べ替えの先行表示)。
+   * itemAt(通し番号) が新しい並びでの項目を返す。1 つでも返せない項目があるページは捨てる
+   * (次の取得で埋まる)。新しい内容として扱う (取り直し待ちにはしない)。
+   */
+  remap(itemAt: (index: number) => T | undefined): void {
+    for (const [page, p] of this.pages) {
+      const next: T[] = [];
+      for (let i = 0; i < p.items.length; i++) {
+        const item = itemAt(page * this.pageSize + i);
+        if (item === undefined) break;
+        next.push(item);
+      }
+      if (next.length === p.items.length) p.items = next;
+      else this.pages.delete(page);
+    }
+  }
+
   clear(): void {
     this.pages.clear();
   }
@@ -234,16 +265,23 @@ export interface WindowLoaderOptions<T> {
   fetchPage: (offset: number, limit: number) => Promise<T[]>;
   /** ページが届いた (取得済みの内容が変わった) とき。 */
   onChange: () => void;
-  /** ページの取得に失敗したとき (世代ごとに 1 回)。 */
+  /** ページの取得が (再試行しても) 失敗したとき (世代ごとに 1 回)。 */
   onError?: (err: unknown) => void;
   pageSize?: number;
   maxPages?: number;
   settleMs?: number;
+  /** 失敗したページを取り直すまでの待ち時間 (ms)。要素数が自動で再試行する回数。 */
+  retryDelaysMs?: readonly number[];
 }
 
 /** 一覧の同一性 (key)・取り直しの合図 (revision)・全件数 (count)。 */
 export interface WindowTarget {
   key: string;
+  /**
+   * 並び順だけが違う一覧に共通の名前 (省略時は key)。key が変わっても group が同じなら
+   * (= 並び順の変更)、先頭のページを古い内容のまま残し、新しい並びが届くまで表示に使う。
+   */
+  group?: string;
   revision: unknown;
   count: number;
 }
@@ -255,6 +293,8 @@ export interface WindowTarget {
  * - 重複排除: 取得中のページは世代ごとに覚え、同じページを二重に取らない。
  * - キャッシュ: {@link PageCache} (LRU)。revision の変化では表示中のページを古い内容のまま残す。
  * - タイミング: {@link fetchTiming}。key の切り替え直後と取り直しは待たずに取る。
+ * - 失敗: 少し待って自動で取り直す ({@link WINDOW_RETRY_DELAYS_MS})。それでもだめなページは
+ *   「失敗」として覚え、勝手には取り直さない ({@link retryFailed} で取り直す)。
  */
 export class WindowLoader<T> {
   readonly pageSize: number;
@@ -270,11 +310,19 @@ export class WindowLoader<T> {
   private eager = true;
   private errorReported = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private readonly retryDelaysMs: readonly number[];
+  /** ページごとの失敗回数 (この世代)。 */
+  private readonly attempts = new Map<number, number>();
+  /** 再試行を待っているページ。 */
+  private readonly retryTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** 再試行しても取れなかったページ。 */
+  private readonly failed = new Set<number>();
 
   constructor(opts: WindowLoaderOptions<T>) {
     this.opts = opts;
     this.pageSize = opts.pageSize ?? WINDOW_PAGE_SIZE;
     this.settleMs = opts.settleMs ?? WINDOW_SETTLE_MS;
+    this.retryDelaysMs = opts.retryDelaysMs ?? WINDOW_RETRY_DELAYS_MS;
     this.cache = new PageCache<T>(this.pageSize, opts.maxPages ?? WINDOW_MAX_PAGES);
   }
 
@@ -293,17 +341,25 @@ export class WindowLoader<T> {
    */
   sync(next: WindowTarget): void {
     if (!this.started || this.target.key !== next.key) {
+      const sameGroup =
+        this.started && (this.target.group ?? this.target.key) === (next.group ?? next.key);
       this.started = true;
       this.newGeneration();
-      this.cache.clear();
       // 一覧が切り替わったら呼び出し側は先頭へスクロールを戻す。表示範囲も先頭へ戻しておき、
       // 範囲が伝え直されなくても (先頭にいたまま切り替わったときなど) 先頭のページを取れるようにする。
       this.range = this.range ? { start: 0, end: this.range.end - this.range.start } : null;
+      // 並び順だけの変更なら、先頭のページは古い並びのまま残して空白にしない (届いたら入れ替わる)。
+      if (sameGroup) this.cache.invalidate(this.wantedPages());
+      else this.cache.clear();
     } else if (!Object.is(this.target.revision, next.revision)) {
       this.newGeneration();
       this.cache.invalidate(this.wantedPages());
     }
-    if (this.target.count !== next.count) this.cache.truncate(next.count);
+    if (this.target.count !== next.count) {
+      // 減ったぶんは捨てる。増えたときは、最後のページの続きを取り直す (短いページを残さない)。
+      this.cache.truncate(next.count);
+      this.cache.staleShortPages(next.count);
+    }
     this.target = { ...next };
   }
 
@@ -337,7 +393,7 @@ export class WindowLoader<T> {
   schedule(moved: number = 0): void {
     const wanted = this.wantedPages();
     this.cache.touch(wanted);
-    const missing = wanted.filter((p) => !this.cache.isFresh(p) && !this.inflight.has(p));
+    const missing = wanted.filter((p) => this.isMissing(p));
     if (missing.length === 0) return;
     const visible = this.range
       ? pagesForRange(this.range, this.target.count, this.pageSize, 0)
@@ -352,7 +408,41 @@ export class WindowLoader<T> {
       return;
     }
     // 待っているあいだに範囲が動くので、止まった時点で見えている範囲を取る。
-    this.timer = setTimeout(() => this.request(this.wantedPages()), this.settleMs);
+    this.timer = setTimeout(
+      () => this.request(this.wantedPages().filter((p) => this.isMissing(p))),
+      this.settleMs,
+    );
+  }
+
+  /**
+   * 持っているページを並べ替える (先行表示)。itemAt は新しい並びでの通し番号 → 項目。
+   * 取得中の応答は古い並びなので捨てる (続けて {@link schedule} すれば取り直す)。
+   */
+  remap(itemAt: (index: number) => T | undefined): void {
+    this.newGeneration();
+    this.eager = false;
+    this.cache.remap(itemAt);
+    this.opts.onChange();
+    this.schedule();
+  }
+
+  /** 表示中のページのどれかが、再試行しても取れなかったか (再試行の案内を出す)。 */
+  hasFailedVisible(): boolean {
+    if (!this.range || this.failed.size === 0) return false;
+    return pagesForRange(this.range, this.target.count, this.pageSize, 0).some((p) =>
+      this.failed.has(p),
+    );
+  }
+
+  /** 失敗したページを取り直す (利用者の操作から)。 */
+  retryFailed(): void {
+    if (this.failed.size === 0) return;
+    this.failed.clear();
+    this.attempts.clear();
+    this.errorReported = false;
+    this.eager = true;
+    this.opts.onChange();
+    this.schedule();
   }
 
   /** index の項目を (未取得なら取得して) 返す。待つあいだに一覧が切り替わったら undefined。 */
@@ -361,11 +451,29 @@ export class WindowLoader<T> {
     const generation = this.generation;
     const page = pageOf(index, this.pageSize);
     if (!this.cache.isFresh(page)) {
+      // 明示的に求められたページは、失敗済み・再試行待ちでもすぐ取りに行く。
+      this.failed.delete(page);
+      this.cancelRetry(page);
       this.request([page]);
       await this.inflight.get(page);
       if (generation !== this.generation) return undefined;
     }
     return this.cache.itemAt(index);
+  }
+
+  /** 取りに行くべきページか (新しい内容が無く、取得中・再試行待ち・失敗済みでもない)。 */
+  private isMissing(page: number): boolean {
+    return (
+      !this.cache.isFresh(page) &&
+      !this.inflight.has(page) &&
+      !this.retryTimers.has(page) &&
+      !this.failed.has(page)
+    );
+  }
+
+  private cancelRetry(page: number): void {
+    clearTimeout(this.retryTimers.get(page));
+    this.retryTimers.delete(page);
   }
 
   private wantedPages(): number[] {
@@ -378,6 +486,10 @@ export class WindowLoader<T> {
     this.eager = true;
     this.errorReported = false;
     clearTimeout(this.timer);
+    for (const timer of this.retryTimers.values()) clearTimeout(timer);
+    this.retryTimers.clear();
+    this.attempts.clear();
+    this.failed.clear();
   }
 
   private request(pages: readonly number[]): void {
@@ -388,8 +500,10 @@ export class WindowLoader<T> {
         (items) => {
           if (generation !== this.generation) return;
           this.inflight.delete(page);
+          this.attempts.delete(page);
+          // 件数より先にページが届くことがある (取り直しで件数が増えたとき) ので、ここでは
+          // いまの件数で切り詰めない。範囲外は get が件数で隠し、件数が減れば sync が捨てる。
           this.cache.set(page, items, this.wantedPages());
-          this.cache.truncate(this.target.count);
           this.opts.onChange();
           // 表示中のページが届いたら、その先読みを続ける。
           this.schedule();
@@ -397,6 +511,23 @@ export class WindowLoader<T> {
         (err) => {
           if (generation !== this.generation) return;
           this.inflight.delete(page);
+          const failures = (this.attempts.get(page) ?? 0) + 1;
+          this.attempts.set(page, failures);
+          const delay = this.retryDelaysMs[failures - 1];
+          if (delay !== undefined) {
+            // 一時的な失敗 (DB のロックなど) は少し待って取り直す。
+            this.retryTimers.set(
+              page,
+              setTimeout(() => {
+                this.retryTimers.delete(page);
+                if (generation === this.generation) this.request([page]);
+              }, delay),
+            );
+            return;
+          }
+          // 再試行してもだめ: 失敗として覚え、表示側に案内を出させる。
+          this.failed.add(page);
+          this.opts.onChange();
           if (this.errorReported) return;
           this.errorReported = true;
           this.opts.onError?.(err);
