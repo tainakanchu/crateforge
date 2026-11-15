@@ -9,6 +9,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   type ArtistGrouping,
   type Track,
+  byDiscTrack,
   albumLabel,
   trackArtistKey,
   filterAlbumTracks,
@@ -29,11 +30,6 @@ import { useAlbumTracks, useArtistTracks } from "@/features/browse/hooks";
 import { showTrackMenu } from "@/features/playback/trackMenu";
 import { usePullToRefresh } from "@/hooks/use-refresh";
 import { nameFromParams } from "@/lib/albumHref";
-
-/** disc 番号 → トラック番号 の収録順比較。 */
-function byDiscTrack(a: Track, b: Track): number {
-  return (a.discNumber ?? 0) - (b.discNumber ?? 0) || (a.trackNumber ?? 0) - (b.trackNumber ?? 0);
-}
 
 export default function AlbumScreen() {
   const router = useRouter();

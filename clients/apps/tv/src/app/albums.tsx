@@ -16,6 +16,8 @@ import {
   type Album,
   type Track,
   albumLabel,
+  byDiscTrack,
+  compareAlbums,
   filterAlbumTracks,
   useConnection,
   usePlayer,
@@ -30,23 +32,12 @@ import { PALETTE, TV_FONT, TV_LAYOUT, FOCUS_RING } from "@/theme/palette";
 const BROWSE_LIMIT = 100000;
 
 /**
- * アルバムの並び順比較（mobile compareAlbums の簡易版）。
- * 「アルバムアーティスト（無ければアルバム名）→ アルバム名」の昇順。
- * /api/albums は year を返さないため年順は省略（安定ソートで十分）。
+ * TV のアルバム並び順。不明なアルバム（album: ""）は常に末尾、それ以外は core の compareAlbums
+ * （アルバムアーティスト（無ければアルバム名）→ アルバム名）。/api/albums は year を返さないので年順は効かない。
  */
-function compareAlbums(a: Album, b: Album): number {
-  // 不明なアルバム（album: ""）は常に末尾。
+function compareAlbumsUnknownLast(a: Album, b: Album): number {
   if (!a.album.trim() !== !b.album.trim()) return a.album.trim() ? -1 : 1;
-  const byArtist = (a.albumArtist ?? a.album).localeCompare(b.albumArtist ?? b.album, undefined, {
-    sensitivity: "base",
-  });
-  if (byArtist !== 0) return byArtist;
-  return a.album.localeCompare(b.album, undefined, { sensitivity: "base" });
-}
-
-/** disc 番号 → トラック番号 の収録順比較。 */
-function byDiscTrack(a: Track, b: Track): number {
-  return (a.discNumber ?? 0) - (b.discNumber ?? 0) || (a.trackNumber ?? 0) - (b.trackNumber ?? 0);
+  return compareAlbums(a, b);
 }
 
 export default function AlbumsScreen() {
@@ -63,7 +54,7 @@ export default function AlbumsScreen() {
     enabled: !!client,
     queryFn: () => client!.albums(),
     placeholderData: keepPreviousData,
-    select: (albums) => [...albums].sort(compareAlbums),
+    select: (albums) => [...albums].sort(compareAlbumsUnknownLast),
   });
   const albums = albumsQuery.data ?? [];
 

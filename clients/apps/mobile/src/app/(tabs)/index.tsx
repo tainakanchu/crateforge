@@ -14,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 
-import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError, isSearchable, matchesNormalized, naturalCompare } from "@crateforge/core";
+import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError, compareNamesUnknownLast, isSearchable, matchesNormalized } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import TrackRow from "@/components/TrackRow";
@@ -481,19 +481,6 @@ function OfflineLibrary() {
       )}
     </Screen>
   );
-}
-
-/**
- * 名前の自然順比較。ただし空名（不明なアルバム / アーティスト）は常に末尾に置く
- * （デスクトップの Artists / Albums と同じ並び）。
- */
-function compareNamesUnknownLast<T>(nameOf: (x: T) => string): (a: T, b: T) => number {
-  return (a, b) => {
-    const an = nameOf(a).trim();
-    const bn = nameOf(b).trim();
-    if (!an !== !bn) return an ? -1 : 1;
-    return naturalCompare(nameOf(a), nameOf(b));
-  };
 }
 
 /** オフライン時のアルバム集約（アート用代表トラック・表示アーティスト付き）。 */

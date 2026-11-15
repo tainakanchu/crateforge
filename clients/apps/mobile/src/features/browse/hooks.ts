@@ -7,40 +7,12 @@
 import { useCallback, useMemo } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, filterAlbumTracks, trackArtistKey, trackAlbumArtistKey, useConnection, useDownloads, useSettings } from "@crateforge/core";
+import { ApiError, type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, byDiscTrack, compareAlbums, filterAlbumTracks, trackArtistKey, trackAlbumArtistKey, useConnection, useDownloads, useSettings } from "@crateforge/core";
 
 import { usePendingEdits } from "@/store/pendingEdits";
 
 /** 大規模ライブラリでも全件取得（仮想リスト前提）。500/200 上限の撤廃。 */
 export const BROWSE_LIMIT = 100000;
-
-/** アルバム並べ替えに必要な最小キー。year は代表年（MIN 推奨, 無ければ null）。 */
-type AlbumSortKey = { album: string; albumArtist: string | null; year?: number | null };
-
-/**
- * アルバムの共通ソート比較。順序は「アルバムアーティスト → アルバム名 → 年(昇順)」。
- * - 名前比較は localeCompare（base sensitivity）。読み仮名フィールドが無いため漢字は
- *   文字コード順になり得るが許容（簡易ソート）。ロケールは undefined（Hermes 互換重視）。
- * - year は MIN(year) を想定。null/undefined は「年不明」として最後に置く。
- * deriveArtistAlbums と useAlbums の両方から再利用して重複を避ける。
- */
-export function compareAlbums(a: AlbumSortKey, b: AlbumSortKey): number {
-  const byArtist = (a.albumArtist ?? a.album).localeCompare(
-    b.albumArtist ?? b.album,
-    undefined,
-    { sensitivity: "base" },
-  );
-  if (byArtist !== 0) return byArtist;
-  const byAlbum = a.album.localeCompare(b.album, undefined, { sensitivity: "base" });
-  if (byAlbum !== 0) return byAlbum;
-  // 年順（昇順）。不明（null/undefined）は最後。
-  const ay = a.year ?? null;
-  const by = b.year ?? null;
-  if (ay == null && by == null) return 0;
-  if (ay == null) return 1;
-  if (by == null) return -1;
-  return ay - by;
-}
 
 /** トラック配列から「アルバム名 → 代表年(MIN)」のマップを作る（year を持つ曲のみ集計）。 */
 export function albumYearMap(tracks: Track[]): Map<string, number> {
@@ -156,11 +128,7 @@ export function useAlbumTracks(album: string | null) {
     queryFn: ({ signal }) =>
       client!.listTracks({ album: album!, albumExact: true, limit: BROWSE_LIMIT }, signal),
     select: (tracks) =>
-      filterAlbumTracks(tracks, album ?? "").sort(
-        (a, b) =>
-          (a.discNumber ?? 0) - (b.discNumber ?? 0) ||
-          (a.trackNumber ?? 0) - (b.trackNumber ?? 0),
-      ),
+      filterAlbumTracks(tracks, album ?? "").sort(byDiscTrack),
   });
 }
 

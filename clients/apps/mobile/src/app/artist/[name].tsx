@@ -8,7 +8,7 @@ import { FlatList, Pressable, RefreshControl, Text, View, StyleSheet } from "rea
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
-import { type Album, type Track, artistLabel, useConnection, usePlayer, useDownloads, useSettings, trackArtistKey, trackAlbumArtistKey, describeApiError } from "@crateforge/core";
+import { type Album, type Track, artistLabel, byDiscTrack, useConnection, usePlayer, useDownloads, useSettings, trackArtistKey, trackAlbumArtistKey, describeApiError } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import BackButton from "@/components/BackButton";
@@ -53,8 +53,7 @@ export default function ArtistScreen() {
       .sort(
         (a, b) =>
           (a.album ?? "").localeCompare(b.album ?? "", undefined, { sensitivity: "base" }) ||
-          (a.discNumber ?? 0) - (b.discNumber ?? 0) ||
-          (a.trackNumber ?? 0) - (b.trackNumber ?? 0),
+          byDiscTrack(a, b),
       );
   }, [client, artist, artistParam, entries, artistGrouping]);
   const tracks = client ? (query.data ?? []) : offlineTracks;
