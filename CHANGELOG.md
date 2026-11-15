@@ -24,6 +24,16 @@ Each release is documented in both Japanese and English.
 #### モバイル
 - **仕様変更: 評価・タグの保存失敗をどこから操作してもトーストで知らせる**: プレイヤー画面の星は失敗しても星が元に戻るだけで、プレイヤー画面のタグ操作は画面内の短い一言だけだった。長押しメニューと同じ文言・理由つきのトーストに揃えた（デスクトップがタグに未対応のときも同じ）。未対応のデスクトップで「あとで聴く」を付けたときは、プレイヤー画面からでも端末に保留する（次の同期で送り直し、そのときも未対応なら破棄される）。未接続のとき「あとで聴く」は、タグメニューから選んでも保留一覧に「あとで」として記録する（同期される内容は同じ）。
 
+- **同期で退避した曲が再生キューに残る問題を修正**: 同期の「退避」でライブラリから消えた曲が、再生キューや再生中の曲に残ったままになっていた。ライブラリから曲を削除したときと同じく、退避した曲はキューから外し、再生中なら止める。途中の曲でエラーが起きても、それまでに退避した曲は同じように外す。
+
+#### API
+- **仕様変更: `PATCH /api/tracks/{trackId}`・`PATCH /api/tracks` の不正な `keyCamelotUser` は `400`**: Camelot として解釈できない値を送ると、これまでは `500` が返っていた。入力の誤りなので `400`（`invalid Camelot key: <値>`）を返す。そのリクエストでは何も更新されない（一括で `trackIds` が空でも `400`、曲が存在しない場合も `404` より先に `400`）。Key の上書きとほかの項目の更新は 1 つのトランザクションで確定する。
+- **仕様変更: `POST /api/playlists/{playlistId}/tracks` は負の `trackId` を追加しない**: ライブラリ外の一時再生曲（負の `trackId`）を送ると、これまでは曲一覧に出ない行としてプレイリストに入り、`trackCount` とレスポンスの `added` だけが増えていた。デスクトップと同じく追加せず、`added` は実際に追加した件数を返す。
+
+### English
+
+
+
 ### English
 
 #### Desktop
@@ -37,6 +47,16 @@ Each release is documented in both Japanese and English.
 
 #### Mobile
 - **Behavior change: a toast reports failed rating / tag changes wherever you make them**: on the player screen a failed rating only reverted the stars, and tag actions showed just a short in-screen note. They now show the same toast, with the reason, as the long-press menu (also when the desktop does not support tags). Adding "あとで聴く" (listen later) against a desktop without tag support is now kept on the device as pending from the player screen too (it is sent again at the next sync and discarded if the desktop still does not support tags). While offline, "listen later" is recorded in the pending list as "あとで" even when chosen from the tag menu (what gets synced is unchanged).
+
+- **Fixed tracks evicted by sync staying in the play queue**: tracks removed from the library by sync eviction used to remain in the play queue or keep playing. As with deleting tracks from the library, evicted tracks are now removed from the queue and playback stops if one of them is playing. If an error occurs partway through, the tracks evicted up to that point are still removed.
+
+#### API
+- **Behavior change: an invalid `keyCamelotUser` in `PATCH /api/tracks/{trackId}` / `PATCH /api/tracks` is now `400`**: sending a value that cannot be read as a Camelot key used to return `500`. Since it is an input error it now returns `400` (`invalid Camelot key: <value>`), and nothing is updated by that request (also `400` for a bulk request with an empty `trackIds`, and `400` takes precedence over `404` when the track does not exist). The key override and the other fields are now committed in a single transaction.
+- **Behavior change: `POST /api/playlists/{playlistId}/tracks` no longer adds negative `trackId`s**: sending a temporary track that is not in the library (a negative `trackId`) used to insert a row that never shows up in the track list, while `trackCount` and the response's `added` still went up. As in the desktop app it is no longer added, and `added` is the number of tracks actually added.
+
+### English
+
+
 
 ## [v0.20.0] - 2026-11-14
 
