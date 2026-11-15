@@ -114,6 +114,15 @@ export function addedToPlaylistMessage(result: { added: number; name: string }):
   return `「${result.name}」に ${result.added} 曲を追加しました`;
 }
 
+/**
+ * ジャンルタグの追加・削除で、ファイルのタグへ書き込めなかった曲があるときのトーストの文言。
+ * 無ければ null。ライブラリ (DB) は更新済みなので、操作自体の失敗 (runTrackAction) とは別に知らせる。
+ */
+export function genreFileWriteFailureMessage(result: { fileWriteFailed: number }): string | null {
+  if (!(result.fileWriteFailed > 0)) return null;
+  return `${result.fileWriteFailed} 曲のファイルにジャンルを書き込めませんでした (ライブラリは更新済みです)`;
+}
+
 // ---- 失敗の通知 ----
 
 /** 曲操作の種類 (失敗トーストの文言を決める)。 */

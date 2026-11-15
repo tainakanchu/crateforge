@@ -10,10 +10,8 @@ use crate::organizer;
 /// [`apply_track_edit`] の失敗。
 #[derive(Debug)]
 pub enum EditError {
-    /// Key の手動上書きが Camelot 表記として解釈できない (入力の誤り。何も書き換えていない)。
-    InvalidKey(String),
-    /// rating が 0..=100 の外 (入力の誤り。何も書き換えていない)。
-    InvalidRating(i64),
+    /// 入力の誤り (不正な Camelot キー、0..=100 の外の rating)。何も書き換えていない。API は 400。
+    Invalid(InvalidTrackEdit),
     /// DB の読み書きに失敗した。
     Db(rusqlite::Error),
 }
@@ -21,9 +19,8 @@ pub enum EditError {
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EditError::InvalidKey(raw) => write!(f, "{}", InvalidTrackEdit::Key(raw.clone())),
-            EditError::InvalidRating(v) => write!(f, "{}", InvalidTrackEdit::Rating(*v)),
-            EditError::Db(e) => e.fmt(f),
+            EditError::Invalid(e) => write!(f, "{e}"),
+            EditError::Db(e) => write!(f, "{e}"),
         }
     }
 }
@@ -32,10 +29,7 @@ impl std::error::Error for EditError {}
 
 impl From<InvalidTrackEdit> for EditError {
     fn from(e: InvalidTrackEdit) -> Self {
-        match e {
-            InvalidTrackEdit::Key(raw) => EditError::InvalidKey(raw),
-            InvalidTrackEdit::Rating(v) => EditError::InvalidRating(v),
-        }
+        EditError::Invalid(e)
     }
 }
 
@@ -58,8 +52,8 @@ pub struct TrackEditOutcome {
 
 /// 1 曲に編集を適用する。
 ///
-/// 0. 入力を検証する。不正な Camelot キーは何も書かずに [`EditError::InvalidKey`]、
-///    0..=100 の外の rating は [`EditError::InvalidRating`]。
+/// 0. 入力を検証する。不正な Camelot キー・0..=100 の外の rating は、何も書かずに
+///    [`EditError::Invalid`]。
 /// 1. DB を更新する (ここまでは必ず確定させる。Key と本体の UPDATE は 1 トランザクション)。
 /// 2. **更新後の DB の値** を最終値として実ファイルのタグへ書き戻す (他アプリにも見えるように。
 ///    整理先フォルダの設定とは無関係に常に行う: #163)。最終値の導出はここ 1 か所。
@@ -205,7 +199,7 @@ mod tests {
         assert!(!out.relocate_failed);
     }
 
-    /// 不正な Camelot キーは InvalidKey。同じ edit の他の項目も含め、何も書き換えない。
+    /// 不正な Camelot キーは Invalid(Key)。同じ edit の他の項目も含め、何も書き換えない。
     #[test]
     fn invalid_key_is_rejected_without_writing() {
         let db = db_with_track(1);
@@ -215,7 +209,7 @@ mod tests {
             ..Default::default()
         };
         let err = apply_track_edit(&db, 1, &edit).unwrap_err();
-        assert!(matches!(err, EditError::InvalidKey(_)), "{err:?}");
+        assert!(matches!(err, EditError::Invalid(InvalidTrackEdit::Key(_))), "{err:?}");
         assert_eq!(err.to_string(), "invalid Camelot key: 13Z");
         let track = db.get_track_by_track_id(1).unwrap().unwrap();
         assert_eq!(track.name.as_deref(), Some("Old"));
@@ -223,11 +217,11 @@ mod tests {
         // 存在しない曲でも入力の誤りが先 (404 ではなく 400 相当)。
         assert!(matches!(
             apply_track_edit(&db, 99, &edit),
-            Err(EditError::InvalidKey(_))
+            Err(EditError::Invalid(InvalidTrackEdit::Key(_)))
         ));
     }
 
-    /// 範囲外の rating は InvalidRating。同じ edit の他の項目も含め、何も書き換えない。
+    /// 範囲外の rating は Invalid(Rating)。同じ edit の他の項目も含め、何も書き換えない。
     #[test]
     fn out_of_range_rating_is_rejected_without_writing() {
         let db = db_with_track(1);
@@ -239,7 +233,7 @@ mod tests {
             };
             let err = apply_track_edit(&db, 1, &edit).unwrap_err();
             assert!(
-                matches!(err, EditError::InvalidRating(v) if v == bad),
+                matches!(err, EditError::Invalid(InvalidTrackEdit::Rating(v)) if v == bad),
                 "{err:?}"
             );
             assert_eq!(

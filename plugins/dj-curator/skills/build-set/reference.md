@@ -195,7 +195,7 @@ DB を更新したうえで、**実ファイルの ID3 / Vorbis / MP4 タグに�
 ### `POST /api/tracks/genre-tags/add`
 ボディ `{ "trackIds": [i64,...], "tag": String }` → 各曲の genre 末尾に `tag` を追記（重複は付かない）。
 → `{ "updated": n, "fileWriteFailed": m }`。`tag` が空白のみなら `400`。
-`updated` は DB 更新がエラーにならなかった件数で、**存在しない `trackId` も数えられる**（0 行更新でもエラーにならないため）。
+`updated` は **genre が実際に変わった曲数**（既にそのタグが付いていた曲と、存在しない `trackId` は数えない。その曲は DB もファイルも書き換えない）。remove も同じ（もともとそのタグが無い曲は数えない）。
 ```
 crate-api.sh POST /api/tracks/genre-tags/add '{"trackIds":[12,7],"tag":"台語"}'
 ```

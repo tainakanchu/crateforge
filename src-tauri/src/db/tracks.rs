@@ -1751,47 +1751,41 @@ impl Database {
         rows.collect()
     }
 
-    /// genre を空白区切り (`;` `,` も可) のタグ集合として扱い、tag を追加。重複は無視。
-    pub fn add_genre_tag(&self, track_id: i64, tag: &str) -> Result<()> {
-        let current: Option<String> = self
+    /// genre を空白区切り (`;` `,` も可) のタグ集合として扱い、`add` のタグを足して `remove` の
+    /// タグを外す (1 曲につき UPDATE は 1 回)。足すタグが既にある・外すタグが無いなどで
+    /// **タグの集合が変わらない** ときは何も書かない (date_modified も進めない)。
+    /// 比較は ASCII の大文字小文字を区別しない。
+    pub fn edit_genre_tags(
+        &self,
+        track_id: i64,
+        add: &[&str],
+        remove: &[&str],
+    ) -> Result<GenreTagEdit> {
+        let current: Option<Option<String>> = self
             .conn
             .query_row(
                 "SELECT genre FROM tracks WHERE track_id = ?1",
                 params![track_id],
                 |r| r.get(0),
             )
-            .ok();
-
-        let new_genre = merge_tag(current.as_deref().unwrap_or(""), tag);
-        self.conn.execute(
-            "UPDATE tracks SET genre = ?1, date_modified = ?2 WHERE track_id = ?3",
-            params![
-                new_genre,
-                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-                track_id
-            ],
-        )?;
-        // genre は検索対象列なので search_text を再計算する。
-        self.recompute_search_text(track_id)?;
-        Ok(())
-    }
-
-    pub fn remove_genre_tag(&self, track_id: i64, tag: &str) -> Result<()> {
-        let current: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT genre FROM tracks WHERE track_id = ?1",
-                params![track_id],
-                |r| r.get(0),
-            )
-            .ok();
-
-        let new_genre = remove_tag(current.as_deref().unwrap_or(""), tag);
-        let new_value: Option<String> = if new_genre.is_empty() {
-            None
-        } else {
-            Some(new_genre)
+            .optional()?;
+        let Some(current) = current else {
+            return Ok(GenreTagEdit::NotFound);
         };
+        let current = current.unwrap_or_default();
+
+        let mut edited = current.clone();
+        for tag in add {
+            edited = merge_tag(&edited, tag);
+        }
+        for tag in remove {
+            edited = remove_tag(&edited, tag);
+        }
+        if split_genre_tags(&edited) == split_genre_tags(&current) {
+            return Ok(GenreTagEdit::Unchanged);
+        }
+        // タグが 1 つも残らなければ NULL (「ジャンルなし」)。
+        let new_value = (!edited.is_empty()).then_some(edited);
         self.conn.execute(
             "UPDATE tracks SET genre = ?1, date_modified = ?2 WHERE track_id = ?3",
             params![
@@ -1802,7 +1796,7 @@ impl Database {
         )?;
         // genre は検索対象列なので search_text を再計算する。
         self.recompute_search_text(track_id)?;
-        Ok(())
+        Ok(GenreTagEdit::Changed(new_value))
     }
 
     /// DB 中の全 genre 値を空白 (と `;` `,`) でバラして頻度順に返す。
@@ -2318,6 +2312,17 @@ pub fn delete_track_cascade(conn: &Connection, track_id: i64) -> Result<bool> {
     Ok(conn.execute("DELETE FROM tracks WHERE track_id = ?1", params![track_id])? > 0)
 }
 
+/// [`Database::edit_genre_tags`] の結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GenreTagEdit {
+    /// その track_id の曲が無い。
+    NotFound,
+    /// タグの集合が変わらないので何も書いていない。
+    Unchanged,
+    /// 書き換えた。中身は新しい genre (タグが無くなれば `None`)。
+    Changed(Option<String>),
+}
+
 /// [`TrackEdit`] の入力の誤り (何も書き換える前に見つける)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidTrackEdit {
@@ -2566,6 +2571,51 @@ mod tests {
         assert_eq!(ids(&db, "genre:Electronic/Dance"), vec![4]);
         // フィールド指定なしは部分一致のまま (DeepHouse も拾う)。
         assert_eq!(ids(&db, "house"), vec![1, 2, 3]);
+    }
+
+    /// edit_genre_tags: タグの集合が変わらなければ何も書かない。複数の追加・削除は 1 回で反映。
+    #[test]
+    fn edit_genre_tags_skips_no_op_and_applies_all_at_once() {
+        use super::GenreTagEdit;
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks (track_id, name, genre, file_exists, date_modified) VALUES
+                   (1, 'A', 'House; Techno', 1, '2020-01-01T00:00:00Z'),
+                   (2, 'B', NULL, 1, '2020-01-01T00:00:00Z');",
+            )
+            .unwrap();
+        let get = |id| db.get_track_by_track_id(id).unwrap().unwrap();
+
+        // 既にあるタグの追加 / 無いタグの削除 / 何も指定しない → 変化なし (旧区切りも正規化しない)。
+        for (add, remove) in [(vec!["house"], vec![]), (vec![], vec!["Trance"]), (vec![], vec![])] {
+            assert_eq!(
+                db.edit_genre_tags(1, &add, &remove).unwrap(),
+                GenreTagEdit::Unchanged
+            );
+        }
+        assert_eq!(get(1).genre.as_deref(), Some("House; Techno"));
+        assert_eq!(get(1).date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+        assert_eq!(
+            db.edit_genre_tags(2, &[], &["House"]).unwrap(),
+            GenreTagEdit::Unchanged
+        );
+        assert_eq!(get(2).genre, None);
+        assert_eq!(db.edit_genre_tags(99, &["X"], &[]).unwrap(), GenreTagEdit::NotFound);
+
+        // 追加 2 つ + 削除 1 つを 1 回で。
+        assert_eq!(
+            db.edit_genre_tags(1, &["Acid", "Dub"], &["techno"]).unwrap(),
+            GenreTagEdit::Changed(Some("House Acid Dub".into()))
+        );
+        assert_ne!(get(1).date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+        // 最後の 1 つを外すと NULL。
+        db.edit_genre_tags(2, &["House"], &[]).unwrap();
+        assert_eq!(
+            db.edit_genre_tags(2, &[], &["House"]).unwrap(),
+            GenreTagEdit::Changed(None)
+        );
+        assert_eq!(get(2).genre, None);
     }
 
     /// rating だけの編集は date_modified を進めない (set_rating と同じ規則)。
@@ -2927,7 +2977,7 @@ mod tests {
         );
 
         // genre タグ追加でも search_text が更新される。
-        db.add_genre_tag(1, "ハウス").unwrap();
+        db.edit_genre_tags(1, &["ハウス"], &[]).unwrap();
         assert_eq!(
             db.search_tracks("はうす", 100, 0, None, None)
                 .unwrap()

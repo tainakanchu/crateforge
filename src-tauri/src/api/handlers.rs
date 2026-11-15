@@ -1792,15 +1792,21 @@ pub struct GenreTagBody {
 }
 
 /// `POST /api/tracks/genre-tags/{add,remove}` の共通処理。GUI と同じ
-/// [`crate::library::genre::edit_genre_tag`] を呼び、`{ "updated": n, "fileWriteFailed": m }` を返す。
-/// 空タグは 400。DB を更新できなかった曲は `updated` に数えない (従来どおりエラーにはしない)。
+/// [`crate::library::genre::edit_genre_tags`] を呼び、`{ "updated": n, "fileWriteFailed": m }` を返す。
+/// `updated` は genre が実際に変わった曲数 (既に付いていた / もともと無かった曲、存在しない
+/// trackId は数えない)。空タグは 400。DB を更新できなかった曲も数えない (エラーにはしない)。
 fn edit_genre_tags(
     state: &ApiState,
     body: &GenreTagBody,
-    op: crate::library::genre::GenreTagOp,
+    op: GenreTagOp,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
-    let outcome = crate::library::genre::edit_genre_tag(&db, &body.track_ids, &body.tag, op)
+    let tag = [body.tag.as_str()];
+    let (add, remove): (&[&str], &[&str]) = match op {
+        GenreTagOp::Add => (&tag, &[]),
+        GenreTagOp::Remove => (&[], &tag),
+    };
+    let outcome = crate::library::genre::edit_genre_tags(&db, &body.track_ids, add, remove)
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
     if outcome.updated > 0 {
         state.notify_library_changed(None);
@@ -1811,6 +1817,13 @@ fn edit_genre_tags(
     })))
 }
 
+/// どちらのエンドポイントか (ハンドラ内だけで使う)。
+#[derive(Clone, Copy)]
+enum GenreTagOp {
+    Add,
+    Remove,
+}
+
 /// `POST /api/tracks/genre-tags/add` — 指定タグを各曲の genre 末尾に一括追記 (重複回避)。
 /// DB 更新後、その曲の genre のみを実ファイルにも書き戻す (他タグは保持)。空タグは 400。
 /// 返り値 `{ "updated": n, "fileWriteFailed": m }`。
@@ -1818,7 +1831,7 @@ pub async fn add_genre_tags(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<GenreTagBody>,
 ) -> Result<Json<Value>, ApiError> {
-    edit_genre_tags(&state, &body, crate::library::genre::GenreTagOp::Add)
+    edit_genre_tags(&state, &body, GenreTagOp::Add)
 }
 
 /// `POST /api/tracks/genre-tags/remove` — 指定タグを各曲の genre から一括除去。
@@ -1827,7 +1840,7 @@ pub async fn remove_genre_tags(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<GenreTagBody>,
 ) -> Result<Json<Value>, ApiError> {
-    edit_genre_tags(&state, &body, crate::library::genre::GenreTagOp::Remove)
+    edit_genre_tags(&state, &body, GenreTagOp::Remove)
 }
 
 /// `POST /api/tracks/tags/{add,remove}` のボディ。first-class Tags (ファイル書き戻しなし)。

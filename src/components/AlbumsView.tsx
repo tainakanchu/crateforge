@@ -644,10 +644,12 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     if (!tag || !ids || ids.length === 0) return;
     setNewTag("");
     await run("addTag", async () => {
-      await libraryApi.addGenreTag(ids, tag);
+      const result = await libraryApi.addGenreTag(ids, tag);
       onTracksChanged();
+      const warning = trackActions.genreFileWriteFailureMessage(result);
+      if (warning) pushToast("error", warning);
     });
-  }, [newTag, addTagTargetIds, onTracksChanged, run]);
+  }, [newTag, addTagTargetIds, onTracksChanged, run, pushToast]);
 
   const handleRemoveTag = useCallback(
     async (tag: string) => {
@@ -655,11 +657,13 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       const ids = contextMenu.trackIds;
       closeMenu();
       await run("removeTag", async () => {
-        await libraryApi.removeGenreTag(ids, tag);
+        const result = await libraryApi.removeGenreTag(ids, tag);
         onTracksChanged();
+        const warning = trackActions.genreFileWriteFailureMessage(result);
+        if (warning) pushToast("error", warning);
       });
     },
-    [contextMenu, onTracksChanged, closeMenu, run],
+    [contextMenu, onTracksChanged, closeMenu, run, pushToast],
   );
 
   // メニュー表示用の派生値 (レーティングは最新の tracks から引き直す)。

@@ -604,21 +604,25 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     if (!tag || !ids || ids.length === 0) return;
     setNewTag("");
     await run("addTag", async () => {
-      await libraryApi.addGenreTag(ids, tag);
+      const result = await libraryApi.addGenreTag(ids, tag);
       onTracksChanged();
+      const warning = trackActions.genreFileWriteFailureMessage(result);
+      if (warning) pushToast("error", warning);
     });
-  }, [newTag, addTagTargetIds, onTracksChanged, run]);
+  }, [newTag, addTagTargetIds, onTracksChanged, run, pushToast]);
 
   const handleRemoveGenreTag = useCallback(
     async (tag: string) => {
       const ids = ctxIds();
       setContextMenu(null);
       await run("removeTag", async () => {
-        await libraryApi.removeGenreTag(ids, tag);
+        const result = await libraryApi.removeGenreTag(ids, tag);
         onTracksChanged();
+        const warning = trackActions.genreFileWriteFailureMessage(result);
+        if (warning) pushToast("error", warning);
       });
     },
-    [ctxIds, onTracksChanged, run],
+    [ctxIds, onTracksChanged, run, pushToast],
   );
 
   const handleGetInfo = useCallback(() => {

@@ -290,6 +290,7 @@ pub fn run() {
             commands::library::set_track_rating,
             commands::library::add_genre_tag,
             commands::library::remove_genre_tag,
+            commands::library::edit_genre_tags,
             commands::library::get_all_genre_tags,
             commands::library::get_all_tags,
             commands::library::get_track_tags,

@@ -160,7 +160,7 @@ export async function setTrackRating(trackId: number, rating: number): Promise<v
 
 /** ジャンルタグの追加・削除の結果。DB とファイルのタグの両方を更新する。 */
 export interface GenreTagResult {
-  /** DB を更新した曲数 */
+  /** ジャンルが実際に変わった曲数 (既に付いていた / もともと無かった曲は数えない) */
   updated: number;
   /** ファイルのタグへの書き込みを試みて失敗した曲数 (ファイルが無い曲は数えない) */
   fileWriteFailed: number;
@@ -172,6 +172,18 @@ export async function addGenreTag(trackIds: number[], tag: string): Promise<Genr
 
 export async function removeGenreTag(trackIds: number[], tag: string): Promise<GenreTagResult> {
   return invoke("remove_genre_tag", { trackIds, tag });
+}
+
+/**
+ * 複数のジャンルタグの追加・削除をまとめて適用する (Get Info の複数曲編集)。
+ * 1 曲につき DB の更新とファイルの書き込みは 1 回ずつ。
+ */
+export async function editGenreTags(
+  trackIds: number[],
+  add: string[],
+  remove: string[],
+): Promise<GenreTagResult> {
+  return invoke("edit_genre_tags", { trackIds, add, remove });
 }
 
 export async function getAllGenreTags(): Promise<GenreTagCount[]> {

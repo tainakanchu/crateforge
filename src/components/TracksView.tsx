@@ -216,20 +216,24 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     if (!tag || !ids || ids.length === 0) return;
     setNewTag("");
     await run("addTag", async () => {
-      await libraryApi.addGenreTag(ids, tag);
+      const result = await libraryApi.addGenreTag(ids, tag);
       onTracksChanged();
+      const warning = trackActions.genreFileWriteFailureMessage(result);
+      if (warning) pushToast("error", warning);
     });
-  }, [newTag, addTagTargetIds, onTracksChanged, run]);
+  }, [newTag, addTagTargetIds, onTracksChanged, run, pushToast]);
 
   const handleRemoveTag = useCallback(async (tag: string) => {
     if (!contextMenu) return;
     const id = contextMenu.track.trackId;
     closeMenu();
     await run("removeTag", async () => {
-      await libraryApi.removeGenreTag([id], tag);
+      const result = await libraryApi.removeGenreTag([id], tag);
       onTracksChanged();
+      const warning = trackActions.genreFileWriteFailureMessage(result);
+      if (warning) pushToast("error", warning);
     });
-  }, [contextMenu, onTracksChanged, closeMenu, run]);
+  }, [contextMenu, onTracksChanged, closeMenu, run, pushToast]);
 
   const crateSet = useMemo(() => new Set(crate.map((t) => t.trackId)), [crate]);
 

@@ -5,6 +5,7 @@ import {
   addedToPlaylistMessage,
   albumLoadFailureMessage,
   enqueueTracks,
+  genreFileWriteFailureMessage,
   playNextTracks,
   playQueueFrom,
   playTracks,
@@ -228,5 +229,17 @@ test("albumLoadFailureMessage: 何枚失敗しても文言は 1 つ (枚数 + �
   assert.equal(
     albumLoadFailureMessage([{ message: "database is locked" }, new Error("x"), "y"]),
     "3 枚のアルバムの曲を取得できませんでした: database is locked",
+  );
+});
+
+test("genreFileWriteFailureMessage: ファイルに書けなかった曲があるときだけ文言を返す", () => {
+  assert.equal(genreFileWriteFailureMessage({ fileWriteFailed: 0 }), null);
+  assert.equal(
+    genreFileWriteFailureMessage({ fileWriteFailed: 1 }),
+    "1 曲のファイルにジャンルを書き込めませんでした (ライブラリは更新済みです)",
+  );
+  assert.equal(
+    genreFileWriteFailureMessage({ fileWriteFailed: 12 }),
+    "12 曲のファイルにジャンルを書き込めませんでした (ライブラリは更新済みです)",
   );
 });

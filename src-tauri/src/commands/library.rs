@@ -335,17 +335,19 @@ pub struct GenreTagResult {
     pub file_write_failed: usize,
 }
 
-/// ジャンルタグの追加・削除。API と同じ [`crate::library::genre::edit_genre_tag`] を使い、
+/// ジャンルタグの追加・削除。API と同じ [`crate::library::genre::edit_genre_tags`] を使い、
 /// DB と実ファイルのタグの両方を更新する (docs/genre/design.md §2)。
 /// DB の更新に失敗した曲があれば、残りの曲を処理したうえで最初のエラーを返す。
-fn edit_genre_tag(
+fn edit_genre_tags_blocking(
     app: &AppHandle,
     track_ids: &[i64],
-    tag: &str,
-    op: crate::library::genre::GenreTagOp,
+    add: &[String],
+    remove: &[String],
 ) -> Result<GenreTagResult, String> {
     let db = open_db(app)?;
-    let outcome = crate::library::genre::edit_genre_tag(&db, track_ids, tag, op)
+    let add: Vec<&str> = add.iter().map(String::as_str).collect();
+    let remove: Vec<&str> = remove.iter().map(String::as_str).collect();
+    let outcome = crate::library::genre::edit_genre_tags(&db, track_ids, &add, &remove)
         .map_err(|e| e.to_string())?;
     if let Some((_, e)) = outcome.db_errors.first() {
         return Err(e.to_string());
@@ -356,22 +358,37 @@ fn edit_genre_tag(
     })
 }
 
-#[tauri::command]
+// ジャンルタグのコマンドは曲ごとにファイルのタグを書き換える (曲数ぶんのファイル IO)。
+// メインスレッドを塞がないよう `command(async)` でスレッドプール上で実行する。
+
+#[tauri::command(async)]
 pub fn add_genre_tag(
     app: AppHandle,
     track_ids: Vec<i64>,
     tag: String,
 ) -> Result<GenreTagResult, String> {
-    edit_genre_tag(&app, &track_ids, &tag, crate::library::genre::GenreTagOp::Add)
+    edit_genre_tags_blocking(&app, &track_ids, &[tag], &[])
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remove_genre_tag(
     app: AppHandle,
     track_ids: Vec<i64>,
     tag: String,
 ) -> Result<GenreTagResult, String> {
-    edit_genre_tag(&app, &track_ids, &tag, crate::library::genre::GenreTagOp::Remove)
+    edit_genre_tags_blocking(&app, &track_ids, &[], &[tag])
+}
+
+/// 複数のジャンルタグの追加・削除をまとめて適用する (Get Info の複数曲編集)。
+/// 1 曲につき DB の更新とファイルの書き込みは 1 回ずつ (タグの数だけ書き直さない)。
+#[tauri::command(async)]
+pub fn edit_genre_tags(
+    app: AppHandle,
+    track_ids: Vec<i64>,
+    add: Vec<String>,
+    remove: Vec<String>,
+) -> Result<GenreTagResult, String> {
+    edit_genre_tags_blocking(&app, &track_ids, &add, &remove)
 }
 
 #[tauri::command]
