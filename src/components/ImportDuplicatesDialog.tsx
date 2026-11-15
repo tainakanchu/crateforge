@@ -4,7 +4,7 @@ import { DuplicateActionSelect, DuplicateBadge, countActions } from "./Duplicate
 import { planDefaultDecision, useImportDuplicates } from "../lib/importFlow";
 import { replaceTargetOf, type DuplicateDecision } from "../lib/duplicates";
 import type { ImportPlanItem, ItemAction } from "../types";
-import { formatClock } from "../lib/format";
+import { formatDuplicateLength } from "../lib/format";
 
 function baseName(p: string): string {
   return p.split(/[\\/]/).pop() ?? p;
@@ -32,7 +32,6 @@ function formatOf(p: string): string {
   return m ? m[1].toUpperCase() : "?";
 }
 
-const fmtLength = (ms: number | null) => formatClock(ms, { empty: "--:--", round: "round" });
 
 /**
  * ファイル取り込みで「すでにライブラリにある曲」が見つかったときの確認ダイアログ
@@ -164,7 +163,7 @@ function ImportDuplicatesDialogBody({
                     </span>
                     <span className="dup-row-meta">
                       <span className="dup-row-fmt">{formatOf(i.path)}</span>
-                      <span className="rip-track-len">{fmtLength(i.durationMs)}</span>
+                      <span className="rip-track-len">{formatDuplicateLength(i.durationMs)}</span>
                       {/* 長いパスは先頭側を省略し、ファイル名は必ず見せる (D6)。 */}
                       <span className="dup-row-path">
                         <span className="dup-row-dir">{"\u200e" + dirName(i.path) + "\u200e"}</span>

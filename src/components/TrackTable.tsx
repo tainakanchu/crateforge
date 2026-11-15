@@ -23,7 +23,7 @@ import type { ConvertMode, Track, FieldKey, Playlist } from "../types";
 import { describeKey, effectiveKeyCamelot, formatKey, isKeyOverridden } from "../lib/keyNotation";
 import { EmptyState } from "./EmptyState";
 import { joinGenre, splitGenre } from "../lib/genre";
-import { formatClock } from "../lib/format";
+import { formatTrackTime } from "../lib/format";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
 import { AddGenreTagDialog } from "./AddGenreTagDialog";
@@ -34,7 +34,6 @@ const NAME_MIN_WIDTH = 180;
 const ROW_SIDE_PADDING = 18;
 const ADD_CELL_WIDTH = 40;
 
-const formatTime = (ms: number | null) => formatClock(ms, { empty: "" });
 
 
 /// 並べ替えコミット時に「プレイリストの全曲順」を取り直すときの上限。
@@ -957,7 +956,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       case "plays":
         return <span className="cb-fmono cb-dim">{t.playCount ?? ""}</span>;
       case "time":
-        return <span className="cb-fmono cb-dim">{formatTime(t.totalTimeMs)}</span>;
+        return <span className="cb-fmono cb-dim">{formatTrackTime(t.totalTimeMs)}</span>;
       case "trackNumber":
         return <span className="cb-fmono cb-dim">{t.trackNumber ?? ""}</span>;
       case "dateAdded":

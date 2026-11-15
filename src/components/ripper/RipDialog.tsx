@@ -15,7 +15,7 @@ import { DuplicateActionSelect, DuplicateBadge, countActions } from "../Duplicat
 import { defaultDecision, replaceTargetOf, type DuplicateDecision } from "../../lib/duplicates";
 import { defaultDevice, initialRipDevice } from "../../lib/disc";
 import { primeRipChime } from "../../lib/ripChime";
-import { formatClock } from "../../lib/format";
+import { formatDiscTrackLength } from "../../lib/format";
 
 interface RipDialogProps {
   open: boolean;
@@ -501,7 +501,7 @@ export function RipDialog({ open: isOpen, initialDisc = null, onClose, onLibrary
                       </>
                     )}
                     <span className="rip-track-len">
-                      {formatClock(t.lengthSec * 1000)}
+                      {formatDiscTrackLength(t.lengthSec)}
                     </span>
                   </label>
                 ))}

@@ -12,15 +12,10 @@ import { useElementWidth } from "../hooks/useElementWidth";
 import { bpmColor } from "../lib/art";
 import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import * as audition from "../lib/audition";
-import { formatClock } from "../lib/format";
+import { formatPlaybackTime, formatRemainingTime } from "../lib/format";
 import { isTauri } from "../lib/env";
 
 // 残り時間を "-mm:ss" 形式でフォーマット。
-function formatRemainingTime(positionMs: number, durationMs: number): string {
-  return `-${formatClock(Math.max(0, durationMs - positionMs))}`;
-}
-
-const formatTime = (ms: number) => formatClock(ms);
 
 // ブラウザ (vite dev) では IPC が使えないので、ストア更新のみで動かす。
 
@@ -375,7 +370,7 @@ export function PlayerBar() {
           )}
         </div>
         <div className="cb-seek">
-          <span>{formatTime(playback.positionMs)}</span>
+          <span>{formatPlaybackTime(playback.positionMs)}</span>
           {/* ドラッグシーク対応: pointerDown/Move/Up + setPointerCapture でドラッグを捕捉 */}
           <div
             ref={waveRef}
@@ -428,7 +423,7 @@ export function PlayerBar() {
           >
             {showRemainingTime
               ? formatRemainingTime(playback.positionMs, playback.durationMs)
-              : formatTime(playback.durationMs)}
+              : formatPlaybackTime(playback.durationMs)}
           </span>
         </div>
       </div>

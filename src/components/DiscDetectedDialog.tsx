@@ -1,6 +1,6 @@
 import type { DiscToc } from "../types";
 import { Icon } from "./Icon";
-import { formatClock } from "../lib/format";
+import { formatDiscTotal } from "../lib/format";
 import { useEscapeKey } from "../hooks/useEscapeKey";
 
 interface DiscDetectedDialogProps {
@@ -9,7 +9,6 @@ interface DiscDetectedDialogProps {
   onDismiss: () => void;
 }
 
-const formatTotal = (sec: number) => formatClock(sec * 1000, { hours: true, round: "round" });
 
 /**
  * CD 挿入を検出したときの確認ダイアログ（issue #219）。
@@ -48,7 +47,7 @@ export function DiscDetectedDialog({ disc, onRip, onDismiss }: DiscDetectedDialo
           <div>このディスクを取り込みますか？</div>
           <div style={{ fontSize: 12, color: "var(--mut)" }}>
             {disc.trackCount} トラック
-            {totalSec > 0 && ` / ${formatTotal(totalSec)}`}
+            {totalSec > 0 && ` / ${formatDiscTotal(totalSec)}`}
             {" · "}
             {disc.device}
           </div>

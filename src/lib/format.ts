@@ -15,8 +15,7 @@ export interface ClockOptions {
 /**
  * ミリ秒を `m:ss` / `h:mm:ss` に整形する。
  *
- * 丸め・時の有無・空表示は呼び出し元ごとに違う (現状の表示を保つためオプションで受ける)。
- * 表示の統一は docs/refactor/design.md フェーズ 2 (A2)。
+ * 整形の中核。画面からは下の用途別の関数 (formatTrackTime など) を使う。
  */
 export function formatClock(ms: number | null | undefined, opts: ClockOptions = {}): string {
   const { hours = false, empty, round = "floor" } = opts;
@@ -34,6 +33,55 @@ export function formatClock(ms: number | null | undefined, opts: ClockOptions = 
   }
   return `${Math.floor(total / 60)}:${sec}`;
 }
+
+// ---- 用途別の時間表示 ----
+// 丸め・時の有無・値なしの表示が用途ごとに違うのは現状どおり (tests/desktop/format.test.ts で固定)。
+// 揃えるのはフェーズ 2 (A2)。呼び出し元は formatClock を直接使わず、ここの関数を使う。
+
+type Ms = number | null | undefined;
+
+/** 曲の長さ (TrackTable の Time 列・AlbumsView の曲行): `m:ss`、切り捨て、値なしは空。 */
+export const formatTrackTime = (ms: Ms): string => formatClock(ms, { empty: "" });
+
+/** アルバムの合計時間 (AlbumsView の展開ヘッダー): `m:ss` (時を付けない)、切り捨て、値なしは空。 */
+export const formatAlbumTotal = (ms: Ms): string => formatClock(ms, { empty: "" });
+
+/**
+ * ArtistsView のアルバム合計時間と曲の長さ: 1 時間以上は `h:mm:ss`、切り捨て、値なしは空。
+ */
+export const formatArtistViewTime = (ms: Ms): string =>
+  formatClock(ms, { hours: true, empty: "" });
+
+/** プレイヤーバーの再生位置・曲長: `m:ss`、切り捨て、値なしは `0:00`。 */
+export const formatPlaybackTime = (ms: Ms): string => formatClock(ms);
+
+/** プレイヤーバーの残り時間: `-m:ss` (曲長を超えた位置は `-0:00`)。 */
+export const formatRemainingTime = (positionMs: number, durationMs: number): string =>
+  `-${formatClock(Math.max(0, durationMs - positionMs))}`;
+
+/** Crate / キューの合計時間 (RightRail): `m:ss` (時を付けない)、切り捨て、空なら `0:00`。 */
+export const formatListTotal = (ms: Ms): string => formatClock(ms);
+
+/** トリアージパネルの曲長: `m:ss`、切り捨て、値なしは `—`。 */
+export const formatTriageDuration = (ms: Ms): string => formatClock(ms, { empty: "—" });
+
+/** 重複確認 (取り込み・リップ) の曲長: `m:ss`、四捨五入、値なしは `--:--`。 */
+export const formatDuplicateLength = (ms: Ms): string =>
+  formatClock(ms, { empty: "--:--", round: "round" });
+
+/** Get Info の「長さ」: 1 時間以上は `h:mm:ss`、四捨五入、値なしは `—`。 */
+export const formatInfoDuration = (ms: Ms): string =>
+  formatClock(ms, { hours: true, empty: "—", round: "round" });
+
+/** セット (Gig Readiness) の合計時間: 1 時間以上は `h:mm:ss`、切り捨て、値なしは `0:00`。 */
+export const formatSetDuration = (ms: Ms): string => formatClock(ms, { hours: true });
+
+/** CD の合計時間 (秒で受ける): 1 時間以上は `h:mm:ss`、四捨五入。 */
+export const formatDiscTotal = (sec: number): string =>
+  formatClock(sec * 1000, { hours: true, round: "round" });
+
+/** CD のトラック長 (整数秒で受ける): `m:ss`。 */
+export const formatDiscTrackLength = (sec: number): string => formatClock(sec * 1000);
 
 /** バイト数を 1024 基準の単位で整形する (`0 B` / `12.3 MB`)。 */
 export function formatBytes(bytes: number | null | undefined): string {

@@ -13,10 +13,8 @@ import type { Track, TrackEdit } from "../types";
 import { formatTagStr } from "../types";
 import { ALL_CAMELOT_KEYS, describeKey, formatKey } from "../lib/keyNotation";
 import { joinGenre, splitGenre } from "../lib/genre";
-import { formatClock } from "../lib/format";
+import { formatInfoDuration } from "../lib/format";
 
-const formatDuration = (ms: number | null | undefined) =>
-  formatClock(ms, { hours: true, empty: "—", round: "round" });
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -767,7 +765,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               </div>
               <div className="te-info-grid">
                 <InfoCell k="形式" v={fileKind(tracks[0].locationPath, tracks[0].trackType)} />
-                <InfoCell k="長さ" v={formatDuration(tracks[0].totalTimeMs)} />
+                <InfoCell k="長さ" v={formatInfoDuration(tracks[0].totalTimeMs)} />
                 <InfoCell k="再生回数" v={String(tracks[0].playCount ?? 0)} />
                 <InfoCell k="スキップ回数" v={String(tracks[0].skipCount ?? 0)} />
                 <InfoCell k="追加日" v={formatDate(tracks[0].dateAdded)} />

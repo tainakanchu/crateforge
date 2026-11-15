@@ -20,7 +20,7 @@ import {
 } from "../lib/gridRows";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
-import { formatClock } from "../lib/format";
+import { formatArtistViewTime } from "../lib/format";
 import { isTauri } from "../lib/env";
 import { combineQuery } from "../lib/query";
 import * as trackActions from "../lib/trackActions";
@@ -45,8 +45,6 @@ interface ArtistsViewProps {
   reloadKey: number;
 }
 
-// 現行の表示を保つ (1 時間以上は h:mm:ss・切り捨て・値なしは空)。統一はフェーズ 2 (A2)。
-const formatTime = (ms: number | null) => formatClock(ms, { hours: true, empty: "" });
 
 const ARTIST_SORT_SET = new Set<string>(ARTIST_SORT_FIELDS);
 
@@ -522,7 +520,7 @@ function ArtistExpansion({
                       <div className="s">
                         {al.year != null ? `${al.year} · ` : ""}
                         {al.trackCount} 曲
-                        {al.totalTimeMs > 0 ? ` · ${formatTime(al.totalTimeMs)}` : ""}
+                        {al.totalTimeMs > 0 ? ` · ${formatArtistViewTime(al.totalTimeMs)}` : ""}
                       </div>
                     </div>
                     <button
@@ -577,7 +575,7 @@ function ArtistExpansion({
                               isCurrent={isCurrent}
                               inCrate={isIn}
                               showArtist={showArtist}
-                              time={formatTime(t.totalTimeMs)}
+                              time={formatArtistViewTime(t.totalTimeMs)}
                               onPlay={() => onPlayAlbum(al, t.trackId)}
                               onAddToCrate={() => onCrateTrack(t)}
                             />

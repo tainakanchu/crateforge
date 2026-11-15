@@ -16,7 +16,7 @@ import {
 import type { GigCheckItem, GigReadinessResult, GigSnapshot } from "../types/gig";
 import type { Track } from "../types";
 import { Icon } from "./Icon";
-import { formatClock } from "../lib/format";
+import { formatSetDuration } from "../lib/format";
 
 type SourceMode = "crate" | "playlist";
 type DialogTab = "check" | "snapshots";
@@ -49,7 +49,6 @@ function severityIcon(sev: GigCheckItem["severity"]): string {
   return "checkCircle";
 }
 
-const fmtDuration = (ms: number) => formatClock(ms, { hours: true });
 
 function fmtDate(iso: string): string {
   const d = new Date(iso);
@@ -443,7 +442,7 @@ export function GigReadinessDialog({
                         <strong>{badge.text}</strong>
                         <span>
                           {sourceName} · {result.summary.total} tracks ·{" "}
-                          {fmtDuration(result.summary.durationMs)}
+                          {formatSetDuration(result.summary.durationMs)}
                           {result.summary.missing > 0 &&
                             ` · missing ${result.summary.missing}`}
                           {result.summary.unanalyzed > 0 &&
@@ -570,7 +569,7 @@ export function GigReadinessDialog({
                     </div>
                     <div>
                       <dt>Duration</dt>
-                      <dd>{fmtDuration(viewSnapshot.summary.durationMs)}</dd>
+                      <dd>{formatSetDuration(viewSnapshot.summary.durationMs)}</dd>
                     </div>
                     <div>
                       <dt>Missing @ save</dt>

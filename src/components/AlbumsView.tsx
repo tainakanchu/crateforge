@@ -25,7 +25,7 @@ import {
 } from "../lib/gridRows";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
-import { formatClock } from "../lib/format";
+import { formatAlbumTotal, formatTrackTime } from "../lib/format";
 import { combineQuery } from "../lib/query";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
@@ -76,8 +76,6 @@ interface CoversCtxMenu {
 }
 
 
-// 現行の表示を保つ (m:ss・切り捨て・値なしは空)。統一はフェーズ 2 (A2)。
-const formatTime = (ms: number | null) => formatClock(ms, { empty: "" });
 
 // サーバ集約の AlbumRow を描画用 AlbumVM へ。曲は展開時に遅延取得するので tracks=null。
 function albumRowToVM(r: AlbumRow): AlbumVM {
@@ -919,7 +917,7 @@ function AlbumExpansion({
         <div className="cov-exp-title">
           <span className="t">{albumLabel(vm.album)}</span>
           <span className="s">
-            {[vm.albumArtist, `${tracks.length} tracks`, formatTime(totalMs)]
+            {[vm.albumArtist, `${tracks.length} tracks`, formatAlbumTotal(totalMs)]
               .filter(Boolean)
               .join(" · ")}
           </span>
@@ -944,7 +942,7 @@ function AlbumExpansion({
               isCurrent={isCurrent}
               inCrate={isIn}
               showArtist={showArtist}
-              time={formatTime(t.totalTimeMs)}
+              time={formatTrackTime(t.totalTimeMs)}
               onPlay={() => onPlayTrack(t.trackId)}
               onContextMenu={(e) => onTrackContextMenu(e, t)}
               onAddToCrate={() => onAddTrack(t)}
