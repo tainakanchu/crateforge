@@ -7,7 +7,6 @@
 import { albumHref, artistHref } from "@/lib/albumHref";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, RefreshControl, Text, TextInput, View, StyleSheet } from "react-native";
-import { isSearchable, matchesNormalized, naturalCompare } from "@/lib/normalize";
 import { loadPref, savePref } from "@/lib/prefs";
 import { showActionSheet } from "@/components/ActionSheet";
 import { showTrackMenu } from "@/features/playback/trackMenu";
@@ -15,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 
-import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError } from "@crateforge/core";
+import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError, isSearchable, matchesNormalized, naturalCompare } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import TrackRow from "@/components/TrackRow";

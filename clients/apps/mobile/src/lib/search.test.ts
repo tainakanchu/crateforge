@@ -4,7 +4,7 @@ import {
   matchesNormalized,
   naturalCompare,
   normalizeSearchText,
-} from "@/lib/normalize";
+} from "@crateforge/core";
 
 describe("normalizeSearchText", () => {
   it("全角英数と半角を同一視する", () => {
