@@ -1742,6 +1742,7 @@ pub async fn delete_playlist(
 // エラーの HTTP ステータスへの写像は `api/error.rs`。
 
 /// `POST /api/playlists/:playlistId/tracks` — 曲を追加 → { added: n }。
+/// 負の trackId (ライブラリ外の一時再生曲) は追加せず、n にも数えない。
 pub async fn add_tracks(
     State(state): State<ApiState>,
     Path(playlist_id): Path<i64>,

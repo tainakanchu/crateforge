@@ -50,13 +50,22 @@ pub fn ensure_tracks_editable(db: &Database, playlist_id: i64) -> Result<(), Pla
 }
 
 /// 曲を末尾に追加する。追加した行数を返す (同じ曲を重ねて入れられる)。
+///
+/// ライブラリ外の一時再生曲 (負の ID。[`crate::transient`]) は DB に行が無いので入れず、
+/// 行数にも数えない。入れてしまうと、どの一覧にも出ないのに件数だけ増える行が残る。
+/// それ以外の ID の存在は確かめない (従来どおり)。
 pub fn add_tracks(
     db: &Database,
     playlist_id: i64,
     track_ids: &[i64],
 ) -> Result<usize, PlaylistEditError> {
     ensure_tracks_editable(db, playlist_id)?;
-    Ok(db.add_tracks_to_playlist(playlist_id, track_ids)?)
+    let track_ids: Vec<i64> = track_ids
+        .iter()
+        .copied()
+        .filter(|&id| !crate::transient::is_transient_id(id))
+        .collect();
+    Ok(db.add_tracks_to_playlist(playlist_id, &track_ids)?)
 }
 
 /// 曲を 1 件外す (同じ曲が複数回入っていれば最初の 1 行だけ)。入っていなければ何もしない。
@@ -195,6 +204,22 @@ mod tests {
 
         reorder_tracks(&db, pl, &[1, 3]).unwrap();
         assert_eq!(member_ids(&db, pl), vec![1, 3]);
+    }
+
+    /// 一時再生曲 (負の ID) は追加しない。GUI・API のどちらから来ても同じ。
+    #[test]
+    fn add_skips_transient_tracks() {
+        let db = db_with_tracks(&[1, 2]);
+        let pl = db.create_playlist("P", None, false).unwrap().playlist_id;
+
+        assert_eq!(add_tracks(&db, pl, &[1, -1, 2, -7]).unwrap(), 2);
+        assert_eq!(member_ids(&db, pl), vec![1, 2]);
+        assert_eq!(add_tracks(&db, pl, &[-1]).unwrap(), 0);
+        assert_eq!(member_ids(&db, pl), vec![1, 2]);
+        // 件数表示 (playlist_tracks の行数) も増えない。
+        let listed = db.get_playlists().unwrap();
+        let p = listed.iter().find(|p| p.playlist_id == pl).unwrap();
+        assert_eq!(p.track_count, 2);
     }
 
     /// 全置換はプレイリスト・曲の存在を確かめ、失敗時は元の曲目を保つ。

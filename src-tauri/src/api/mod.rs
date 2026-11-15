@@ -1907,6 +1907,42 @@ mod tests {
         assert_eq!(ids, vec![3, 2, 3], "失敗前の所属と順序を維持する");
     }
 
+    // ===== 追加: 一時再生曲 (負の trackId) はプレイリストに入らない (GUI と同じ) =====
+    #[tokio::test]
+    async fn case_add_tracks_skips_transient_ids() {
+        let (_dir, app) = setup();
+        let uri = "/api/playlists/100/tracks";
+        let (_, before) = req(app.clone(), "GET", "/api/playlists", None).await;
+        let count = |v: &Value| {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["playlistId"] == 100)
+                .unwrap()["trackCount"]
+                .as_i64()
+                .unwrap()
+        };
+
+        let (status, body) = req(
+            app.clone(),
+            "POST",
+            uri,
+            Some(json!({ "trackIds": [-1, 2, -3] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["added"], 1, "負の ID は数えない");
+
+        let (_, after) = req(app.clone(), "GET", "/api/playlists", None).await;
+        assert_eq!(count(&after), count(&before) + 1, "見えない行が件数を増やさない");
+
+        // 負の ID だけなら何も足さない。
+        let (status, body) =
+            req(app, "POST", uri, Some(json!({ "trackIds": [-1] }))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["added"], 0);
+    }
+
     // ===== ケース 14: 不正な JSON ボディ → 4xx =====
     #[tokio::test]
     async fn case14_invalid_json_body() {

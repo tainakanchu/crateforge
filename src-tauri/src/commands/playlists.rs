@@ -174,13 +174,7 @@ pub fn add_tracks_to_playlist(
     track_ids: Vec<i64>,
 ) -> Result<usize, String> {
     let db = open_db(&app)?;
-    // スマートプレイリストなら (従来どおり) 一時再生曲の除外より先に拒否する。
-    playlist_edit::ensure_tracks_editable(&db, playlist_id).map_err(|e| e.to_string())?;
-    // ライブラリ外の一時再生曲 (負の ID) は DB に行が無いので、プレイリストには入れない。
-    let track_ids: Vec<i64> = track_ids
-        .into_iter()
-        .filter(|&id| !crate::transient::is_transient_id(id))
-        .collect();
+    // ライブラリ外の一時再生曲 (負の ID) の除外は add_tracks が行う。
     playlist_edit::add_tracks(&db, playlist_id, &track_ids).map_err(|e| e.to_string())
 }
 

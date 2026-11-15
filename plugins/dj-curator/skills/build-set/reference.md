@@ -155,8 +155,9 @@ crate-api.sh POST /api/tracks/analyze '{"trackIds":[12,7,30]}'
 - `persistentId`（任意）は 16 桁の大文字 16 進数。指定した PID のプレイリストが既に在れば**作らずに `200` + 既存の `Playlist`** を返す（冪等作成）。形式不正は `400`。通常は省略してよい。
 
 ### `POST /api/playlists/{playlistId}/tracks`
-ボディ `{ "trackIds": [i64,...] }` → `{ "added": n }`（`n` = 送った件数）。
+ボディ `{ "trackIds": [i64,...] }` → `{ "added": n }`（`n` = 追加した件数）。
 既存の末尾に入力順で追記する。**重複チェック・存在チェックはしない**（同じ曲を 2 回送ると 2 回入る）ので、送る前に `trackIds` を重複排除しておく。
+ただし負の `trackId`（ライブラリ外の一時再生曲。`/api/remote/*` の再生状態に現れることがある）は追加されず、`n` にも数えない。
 
 ### `PUT /api/playlists/{playlistId}/tracks`
 ボディ `{ "trackIds": [i64,...] }` → 所属曲を**入力順どおりに全置換** → `204`。
