@@ -729,6 +729,16 @@ fn parse_energy_range(s: &str) -> Option<(f64, f64)> {
     }
 }
 
+/// 「値なしを末尾に置く」ソートキー (`ORDER BY` の先頭に置く真偽式)。
+/// 文字列列は NULL・空文字・空白のみを値なしとみなし、数値列は NULL のみ。
+fn missing_last(key: &str, is_text: bool) -> String {
+    if is_text {
+        format!("(NULLIF(TRIM({key}), '') IS NULL)")
+    } else {
+        format!("({key} IS NULL)")
+    }
+}
+
 /// ORDER BY 句を組み立てる。NULL は常に最後、最終的に track_id でタイブレーク。
 /// `prefix` は JOIN 時のテーブル別名 ("t." など)。`default` は sort_field が無効な時に丸ごと使う句。
 ///
@@ -752,13 +762,15 @@ pub(super) fn build_order_by(
     // 文字列は自然順 ("Song 2" < "Song 10"、大文字小文字は区別しない。D10)。
     let collate = if is_text { " COLLATE NATSORT" } else { "" };
 
-    // 主キー (NULL は最後)。bpm は実効 BPM (タグ ?? 解析値) で並べる。
+    // 主キー (値なしは方向によらず最後)。bpm は実効 BPM (タグ ?? 解析値) で並べる。
+    // 文字列列は NULL に加えて空文字・空白のみも「値なし」とみなす (コンピレーションの
+    // 空アルバムアーティストは API で消すと '' になる。album_order_by / フロントの cmpText と同じ)。
     let key = if col == "bpm" {
         effective_bpm_expr(prefix)
     } else {
         format!("{prefix}{col}")
     };
-    let mut order = format!("({key} IS NULL), {key}{collate} {dir}");
+    let mut order = format!("{}, {key}{collate} {dir}", missing_last(&key, is_text));
 
     // アルバム文脈のソートだけ、収録順のタイブレークを足す (主キーと同じ列はスキップ)。
     if matches!(
@@ -769,13 +781,12 @@ pub(super) fn build_order_by(
             if tb == col {
                 continue;
             }
-            let tb_collate = if tb == "album" || tb == "name" {
-                " COLLATE NATSORT"
-            } else {
-                ""
-            };
+            let tb_is_text = tb == "album" || tb == "name";
+            let tb_collate = if tb_is_text { " COLLATE NATSORT" } else { "" };
+            let tb_key = format!("{prefix}{tb}");
             order.push_str(&format!(
-                ", ({prefix}{tb} IS NULL), {prefix}{tb}{tb_collate} ASC"
+                ", {}, {tb_key}{tb_collate} ASC",
+                missing_last(&tb_key, tb_is_text)
             ));
         }
     }
@@ -2937,6 +2948,91 @@ mod tests {
         assert_eq!(
             names(db.search_tracks("bulk", 100, 0, Some("album"), Some("asc")).unwrap()),
             vec![3, 2, 1, 4]
+        );
+    }
+
+    /// 文字列列のソートでは NULL・空文字・空白のみを「値なし」として昇順・降順とも末尾に置く
+    /// (コンピレーションの空アルバムアーティストが先頭に来ていた不具合)。
+    /// 一覧 (get_tracks)・検索 (search_tracks)・静的プレイリスト (build_order_by "t.") の 3 経路。
+    #[test]
+    fn text_sort_puts_null_and_blank_last_both_directions() {
+        let db = Database::open_memory().unwrap();
+        for (id, aa) in [
+            (1, None),
+            (2, Some("")),
+            (3, Some("  ")),
+            (4, Some("Beta")),
+            (5, Some("alpha")),
+        ] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, artist, album_artist, album, file_exists)
+                     VALUES (?1, 'Song', 'A', ?2, 'X', 1)",
+                    params![id, aa],
+                )
+                .unwrap();
+        }
+        let ids = |v: Vec<crate::models::Track>| v.into_iter().map(|t| t.track_id).collect::<Vec<_>>();
+        let asc = vec![5, 4, 1, 2, 3];
+        let desc = vec![4, 5, 3, 2, 1];
+        assert_eq!(ids(db.get_tracks(100, 0, Some("albumArtist"), Some("asc")).unwrap()), asc);
+        assert_eq!(ids(db.get_tracks(100, 0, Some("albumArtist"), Some("desc")).unwrap()), desc);
+        assert_eq!(
+            ids(db.search_tracks("", 100, 0, Some("albumArtist"), Some("asc")).unwrap()),
+            asc
+        );
+        assert_eq!(
+            ids(db.search_tracks("", 100, 0, Some("albumArtist"), Some("desc")).unwrap()),
+            desc
+        );
+
+        // 別名付き (静的プレイリストの経路) でも同じ。
+        for (dir, want) in [("asc", &asc), ("desc", &desc)] {
+            let order = super::build_order_by(Some("albumArtist"), Some(dir), "t.", "t.track_id");
+            let sql = format!("SELECT t.track_id FROM tracks t ORDER BY {order}");
+            let got: Vec<i64> = db
+                .conn
+                .prepare(&sql)
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(&got, want, "{dir}: {order}");
+        }
+    }
+
+    /// アルバム文脈のタイブレーク (album / name) も空・空白を末尾に置く。
+    #[test]
+    fn album_context_tiebreak_puts_blank_album_last() {
+        let db = Database::open_memory().unwrap();
+        for (id, album) in [(1, Some("")), (2, None), (3, Some("Zeta")), (4, Some(" ")), (5, Some("Alpha"))] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, artist, album, file_exists)
+                     VALUES (?1, 'Song', 'Same', ?2, 1)",
+                    params![id, album],
+                )
+                .unwrap();
+        }
+        let got: Vec<i64> = db
+            .get_tracks(100, 0, Some("artist"), Some("desc"))
+            .unwrap()
+            .into_iter()
+            .map(|t| t.track_id)
+            .collect();
+        assert_eq!(got, vec![5, 3, 2, 1, 4]);
+    }
+
+    /// 数値列は従来どおり NULL のみを末尾に置く (TRIM を挟まない)。
+    #[test]
+    fn numeric_sort_key_keeps_is_null() {
+        let sql = super::build_order_by(Some("year"), Some("desc"), "", "x");
+        assert!(sql.starts_with("(year IS NULL), year DESC"), "{sql}");
+        let sql = super::build_order_by(Some("albumArtist"), Some("asc"), "", "x");
+        assert!(
+            sql.starts_with("(NULLIF(TRIM(album_artist), '') IS NULL), album_artist COLLATE NATSORT ASC"),
+            "{sql}"
         );
     }
 
