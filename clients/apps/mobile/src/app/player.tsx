@@ -18,7 +18,7 @@ import type { LayoutChangeEvent, GestureResponderEvent } from "react-native";
 import { useRouter } from "expo-router";
 
 import { BRAND, PALETTE } from "@/constants/brand";
-import { ApiError, type SimilarHit, type Track, formatDuration, isNativePlaybackActive, nextRepeat, ratingToHalfStars, starsToRating, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
+import { type SimilarHit, type Track, formatDuration, isNativePlaybackActive, nextRepeat, ratingToHalfStars, starsToRating, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
 import ModeToggleButton from "@/components/ModeToggleButton";
@@ -27,7 +27,7 @@ import TrackRow from "@/components/TrackRow";
 import RatingStars from "@/components/RatingStars";
 import { useSetRating } from "@/features/browse/hooks";
 import { COMMON_TRIAGE_TAGS, REVIEW_LATER_TAG } from "@/features/triage/commonTags";
-import { usePendingEdits } from "@/store/pendingEdits";
+import { writeReviewLater, writeTag } from "@/features/triage/edits";
 
 // 再生速度の選択肢
 const RATE_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] as const;
@@ -517,7 +517,7 @@ function NowPlaying({
  * 現在曲のレーティング（★×5）をタップで設定するコントロール。
  * - 表示は楽観的ローカル state。タップ即時に星を更新し、サーバ呼び出しが失敗したら元に戻す。
  * - 同じ星を再タップすると 0（未設定）にクリア（RatingStars 側のロジック）。
- * - オフライン時も操作可（pendingEdits に enqueue。useSetRating が振り分け）。
+ * - オフライン時も操作可（pendingEdits に enqueue。features/triage/edits.ts の writeRating が振り分け）。
  * - 成功/失敗後に rating を含むクエリ群を invalidate（useSetRating 内・オンライン時）。
  */
 function RatingControl({ track }: { track: Track }) {
@@ -556,7 +556,6 @@ function RatingControl({ track }: { track: Track }) {
  * 「あとで聴く」と定番タグ。オフライン時は pending キューへ。
  */
 function TriageQuickActions({ track }: { track: Track }) {
-  const client = useConnection((s) => s.client);
   const [busy, setBusy] = useState(false);
   const [showTagPicker, setShowTagPicker] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -570,35 +569,19 @@ function TriageQuickActions({ track }: { track: Track }) {
     if (busy) return;
     setBusy(true);
     setShowTagPicker(false);
+    const edit = { trackId: track.id, trackName: track.name };
     try {
-      if (client) {
-        try {
-          await client.addTrackTags([track.id], tag);
-          flash(tag === REVIEW_LATER_TAG ? "あとで聴くに追加" : `タグ: ${tag}`);
-        } catch (e) {
-          if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
-            flash("ホストがタグ未対応");
-          } else {
-            flash("失敗しました");
-          }
-        }
-      } else {
-        if (tag === REVIEW_LATER_TAG) {
-          usePendingEdits.getState().enqueue({
-            kind: "review-later",
-            trackId: track.id,
-            trackName: track.name,
-          });
-        } else {
-          usePendingEdits.getState().enqueue({
-            kind: "tag-add",
-            trackId: track.id,
-            tag,
-            trackName: track.name,
-          });
-        }
+      const outcome =
+        tag === REVIEW_LATER_TAG ? await writeReviewLater(edit) : await writeTag({ ...edit, tag });
+      if (outcome === "unsupported") {
+        flash("ホストがタグ未対応");
+      } else if (outcome === "queued") {
         flash("オフライン: 再接続時に同期");
+      } else {
+        flash(tag === REVIEW_LATER_TAG ? "あとで聴くに追加" : `タグ: ${tag}`);
       }
+    } catch {
+      flash("失敗しました");
     } finally {
       setBusy(false);
     }

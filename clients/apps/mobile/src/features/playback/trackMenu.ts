@@ -3,7 +3,6 @@
 // トリアージ系（評価・タグ・あとで聴く）はオンライン直書き / オフラインは pending キュー (#125)。
 
 import {
-  ApiError,
   type Track,
   describeApiError,
   trackArtist,
@@ -23,8 +22,8 @@ import { type ActionSheetAction, showActionSheet } from "@/components/ActionShee
 import { showToast } from "@/components/Toast";
 import { albumHref, artistHref } from "@/lib/albumHref";
 
-import { COMMON_TRIAGE_TAGS, REVIEW_LATER_TAG } from "@/features/triage/commonTags";
-import { usePendingEdits } from "@/store/pendingEdits";
+import { COMMON_TRIAGE_TAGS } from "@/features/triage/commonTags";
+import { queueReviewLater, writeRating, writeReviewLater, writeTag } from "@/features/triage/edits";
 import { startRadio } from "./radio";
 import { playTrackOnDesktop } from "./desktopPlay";
 
@@ -111,78 +110,54 @@ function showTagMenu(track: Track): void {
 }
 
 async function applyRating(track: Track, rating: number): Promise<void> {
-  const client = useConnection.getState().client;
-  const baseRating = track.rating ?? null;
-  if (client) {
-    try {
-      await client.setRating(track.id, rating);
+  try {
+    const outcome = await writeRating({
+      trackId: track.id,
+      rating,
+      baseRating: track.rating ?? null,
+      trackName: track.name,
+    });
+    if (outcome === "queued") {
+      showToast("オフライン: 再接続時に評価を同期します");
+    } else {
       showToast(rating > 0 ? `評価を保存しました（${formatRatingStars(rating)}）` : "評価をクリアしました");
-    } catch (e) {
-      showToast(`評価を保存できませんでした（${errorMessage(e)}）`, "error");
     }
-    return;
+  } catch (e) {
+    showToast(`評価を保存できませんでした（${errorMessage(e)}）`, "error");
   }
-  usePendingEdits.getState().enqueue({
-    kind: "rating",
-    trackId: track.id,
-    rating,
-    baseRating,
-    trackName: track.name,
-  });
-  showToast("オフライン: 再接続時に評価を同期します");
 }
 
 async function applyTagAdd(track: Track, tag: string): Promise<void> {
-  const client = useConnection.getState().client;
-  if (client) {
-    try {
-      await client.addTrackTags([track.id], tag);
+  try {
+    const outcome = await writeTag({ trackId: track.id, tag, trackName: track.name });
+    if (outcome === "unsupported") {
+      showToast("このデスクトップはタグ機能に未対応です（アプリを更新してください）", "error");
+    } else if (outcome === "queued") {
+      showToast("オフライン: 再接続時にタグを同期します");
+    } else {
       showToast("タグを付けました");
-    } catch (e) {
-      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
-        showToast("このデスクトップはタグ機能に未対応です（アプリを更新してください）", "error");
-        return;
-      }
-      showToast(`タグを付けられませんでした（${errorMessage(e)}）`, "error");
     }
-    return;
+  } catch (e) {
+    showToast(`タグを付けられませんでした（${errorMessage(e)}）`, "error");
   }
-  usePendingEdits.getState().enqueue({
-    kind: "tag-add",
-    trackId: track.id,
-    tag,
-    trackName: track.name,
-  });
-  showToast("オフライン: 再接続時にタグを同期します");
 }
 
 async function applyReviewLater(track: Track): Promise<void> {
-  const client = useConnection.getState().client;
-  if (client) {
-    try {
-      await client.addTrackTags([track.id], REVIEW_LATER_TAG);
+  const edit = { trackId: track.id, trackName: track.name };
+  try {
+    const outcome = await writeReviewLater(edit);
+    if (outcome === "unsupported") {
+      // タグ API 無しでもローカルフラグとしてキューへ。
+      queueReviewLater(edit);
+      showToast("デスクトップ未対応のため、端末側のみに記録しました");
+    } else if (outcome === "queued") {
+      showToast("オフライン: 再接続時に「あとで聴く」を同期します");
+    } else {
       showToast("「あとで聴く」に追加しました");
-    } catch (e) {
-      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
-        // タグ API 無しでもローカルフラグとしてキューへ。
-        usePendingEdits.getState().enqueue({
-          kind: "review-later",
-          trackId: track.id,
-          trackName: track.name,
-        });
-        showToast("デスクトップ未対応のため、端末側のみに記録しました");
-        return;
-      }
-      showToast(`記録できませんでした（${errorMessage(e)}）`, "error");
     }
-    return;
+  } catch (e) {
+    showToast(`記録できませんでした（${errorMessage(e)}）`, "error");
   }
-  usePendingEdits.getState().enqueue({
-    kind: "review-later",
-    trackId: track.id,
-    trackName: track.name,
-  });
-  showToast("オフライン: 再接続時に「あとで聴く」を同期します");
 }
 
 // API の生本文（{"error":...} / "HTTP 500"）を出さず、日本語の理由にする（round-3 N7）。
