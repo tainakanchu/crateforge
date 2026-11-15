@@ -70,7 +70,7 @@ beforeEach(() => {
 
 afterEach(() => {
   jest.restoreAllMocks();
-  useConnection.setState({ client: null, status: "idle" });
+  useConnection.setState({ client: null, status: "idle", baseUrl: null, errorKind: null });
 });
 
 describe("TV アルバム一覧の並び順", () => {
@@ -127,6 +127,24 @@ describe("TV アーティスト一覧の並び順", () => {
     const screen = await renderScreen(<ArtistsScreen />);
     await waitFor(() => expect(screen.getByText("Zed")).toBeTruthy());
     expect(rowNames(screen)).toEqual(["abba", "Artist 2", "Artist 10", "Zed", "不明なアーティスト"]);
+  });
+});
+
+describe("TV: デスクトップに届かない間の空表示", () => {
+  test("データが無いときは「ありません」ではなく接続待ちと出す", async () => {
+    const urls = mockApi({});
+    useConnection.setState({ client: null, status: "error", baseUrl: "http://host:8787", errorKind: "network" });
+    const screen = await renderScreen(<AlbumsScreen />);
+    expect(screen.getByText("デスクトップへの接続を待っています…")).toBeTruthy();
+    expect(screen.queryByText(/ありません/)).toBeNull();
+    expect(urls).toEqual([]);
+  });
+
+  test("接続中で本当に 0 件なら従来どおりの空表示", async () => {
+    mockApi({ "/api/albums": [] });
+    const screen = await renderScreen(<AlbumsScreen />);
+    await waitFor(() => expect(screen.queryByText("デスクトップへの接続を待っています…")).toBeNull());
+    await waitFor(() => expect(screen.getByText(/ありません/)).toBeTruthy());
   });
 });
 

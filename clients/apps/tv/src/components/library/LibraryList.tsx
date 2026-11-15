@@ -29,7 +29,11 @@ import {
   type ViewStyle,
 } from "react-native";
 
+import { selectIsOffline, useConnection } from "@crateforge/core";
 import { PALETTE, TV_FONT, TV_LAYOUT } from "@/theme/palette";
+
+/** デスクトップに届かず、表示できるデータも無いときの文言（空・エラーより優先）。 */
+export const OFFLINE_MESSAGE = "デスクトップへの接続を待っています…";
 
 export interface LibraryListProps<T> {
   /** 表示するデータ。 */
@@ -67,6 +71,7 @@ export function LibraryList<T>({
   ListHeaderComponent,
   contentContainerStyle,
 }: LibraryListProps<T>) {
+  const offline = useConnection(selectIsOffline);
   // データ未到着のときだけ状態表示にする（再取得中の点滅を避け、既存データは出し続ける）。
   if (data.length === 0) {
     if (isLoading) {
@@ -76,9 +81,12 @@ export function LibraryList<T>({
         </View>
       );
     }
+    // デスクトップに届かない間は取得できていないだけなので、「ありません」ではなく接続待ちと出す。
     return (
       <View style={styles.center}>
-        <Text style={styles.stateText}>{isError ? errorMessage : emptyMessage}</Text>
+        <Text style={styles.stateText}>
+          {offline ? OFFLINE_MESSAGE : isError ? errorMessage : emptyMessage}
+        </Text>
       </View>
     );
   }
