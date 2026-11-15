@@ -41,16 +41,19 @@ It exposes a REST API for reading and writing the library, analysis data, and pl
 
 - `GET /api/health` — server identity + current track count
 - `GET /api/tracks` (`?q` search, `?album` / `?genre` partial match, offset/limit). Add `?albumExact=true` to match `album` exactly
-- `GET /api/tracks/{id}` / `POST /api/tracks/by-ids` (IDs → tracks; read-only, so it also works from the LAN with a token)
-- `GET /api/tracks/{id}/stream` — audio streaming (`?native=true` serves device-playable formats as-is / `?original=true` original bytes / `?fmt=aac&br=192` AAC transcode)
-- `GET /api/tracks/{id}/analysis` — analysis results (null if not analyzed)
-- `GET /api/tracks/{id}/similar` — similar tracks
+- `GET /api/tracks/{trackId}` / `POST /api/tracks/by-ids` (IDs → tracks; read-only, so it also works from the LAN with a token)
+- `GET /api/tracks/{trackId}/stream` — audio streaming (`?native=true` serves device-playable formats as-is / `?original=true` original bytes / `?fmt=aac&br=192` AAC transcode)
+- `GET /api/tracks/{trackId}/analysis` — analysis results (null if not analyzed)
+- `GET /api/tracks/{trackId}/similar` — similar tracks
 - `GET /api/stats` / `GET /api/genres` / `GET /api/albums`
 - `GET /api/playlists` / `GET /api/playlists/{id}` (includes the smart criteria `smartCriteria`) / `GET /api/playlists/{id}/tracks`
   (for smart playlists, `trackCount` is the live-evaluated count)
 
+Tracks are always addressed by **`trackId`** (in paths and bodies). The `id` field of track JSON is a **deprecated alias of `trackId`** (same value).
+Earlier versions returned an internal row number in `id`, which differs from `trackId`. New clients should not use `id`.
+
 The `bpm` of APIs that return tracks (`/api/tracks*`, `/api/tracks/by-ids`, `/api/tracks/lookup`, `/similar`, `/api/playlists/{id}/tracks`,
-and the response of `PATCH /api/tracks/{id}`) is always the **effective BPM** (the tag BPM, or the analyzed BPM when the tag has none).
+and the response of `PATCH /api/tracks/{trackId}`) is always the **effective BPM** (the tag BPM, or the analyzed BPM when the tag has none).
 To get the raw tag value, ask for it explicitly with `?effectiveBpm=false` (sync-role tokens also always get the tag value).
 Sync (provisioning and write-back) always sends `?effectiveBpm=false`, so it never stores an analyzed value as a tag.
 
@@ -64,10 +67,17 @@ When the client sends `Accept-Encoding: gzip`, large JSON responses (such as the
 
 ### Write (metadata)
 
-- `PATCH /api/tracks/{id}` — partially update name / artist / album / genre / year / bpm / rating / composer / comments, etc.
+- `PATCH /api/tracks/{trackId}` — partially update name / artist / album / genre / year / bpm / rating / composer / comments, etc.
   name / artist / album / genre / year / composer / comments are also reflected in the actual file's tags, while `rating` / `disabled` / `playCount` / `skipCount` are DB-only.
-- `PATCH /api/tracks` (`{trackIds, edit}`) — bulk-update multiple tracks.
+- `PATCH /api/tracks` (`{trackIds, edit}` or `{persistentIds, edit}`) — bulk-update multiple tracks. Specify exactly one of `trackIds` / `persistentIds` (both or neither → `400`).
+  Tracks that are not found are returned in `notFound` as the values you sent (trackId / persistentId).
 - `POST /api/tracks/genre-tags/add` / `/remove` — add or remove genre tags at the end in bulk.
+
+**Guarding against the wrong track (optional)**: `PATCH /api/tracks/{trackId}` accepts an `If-Match: <persistentId>` header
+and/or an `expect: { persistentId?, name?, artist?, album? }` body field. If they do not match the target track, **nothing is written** and `409` is returned,
+with `track` (`trackId` / `persistentId` / `name` / `artist` / `album`) in the body describing the track the trackId actually points to.
+`PUT` / `DELETE /api/tracks/{trackId}/artwork` also honor `If-Match`.
+For scripts that rewrite many tracks, prefer the bulk update with `persistentIds`, or single updates with `If-Match` / `expect`.
 
 Metadata writes, in addition to updating the DB, are **written back to the actual file's ID3 / Vorbis / MP4 tags**,
 and are reflected in the GUI immediately. The write-back path is shared with editing in the desktop GUI.

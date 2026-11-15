@@ -4,9 +4,22 @@ use crate::audio::RepeatMode;
 
 // === Library models ===
 
+/// ライブラリの曲。
+///
+/// ## JSON の `id` は `trackId` の別名 (非推奨)
+/// API・Tauri IPC・同期ワイヤのどこでも、曲の指定はすべて `trackId` (`tracks.track_id`)。
+/// 以前は JSON の `id` に内部の行 id (`tracks.id`) を出していたが、両者は同じ数値範囲なので
+/// `id` を trackId と取り違えたクライアントが 200 のまま無関係な曲を上書きする事故が起きた
+/// (タグの一括書き換え、モバイルの★/タグ)。そこで直列化では `id` に **trackId の値**を出す
+/// (古いパーサー向けにキー自体は残す)。読み込みでは `id` が無くてもよく、値は無視する。
+/// 実装: derive は `remote = "Self"` で inherent な `Track::serialize` / `Track::deserialize`
+/// を生成させ、`Serialize` 実装でそこへ `"id": track_id` を足す (フィールドを二重管理しない)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(remote = "Self", rename_all = "camelCase")]
 pub struct Track {
+    /// 内部の行 id (`tracks.id`)。Rust 内部専用で JSON には出さない
+    /// (JSON の `id` は `track_id` の別名。上記参照)。デシリアライズ時は常に 0。
+    #[serde(skip)]
     pub id: i64,
     pub track_id: i64,
     pub persistent_id: Option<String>,
@@ -66,6 +79,37 @@ pub struct Track {
     /// 同期ワイヤ互換のため欠落時は None。
     #[serde(default)]
     pub grouping: Option<String>,
+}
+
+impl Serialize for Track {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        /// derive 生成の inherent `Track::serialize` (全フィールド) を呼ぶ薄いラッパー。
+        struct Fields<'a>(&'a Track);
+        impl Serialize for Fields<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                Track::serialize(self.0, serializer)
+            }
+        }
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            /// 非推奨: `trackId` の別名 (行 id ではない)。
+            id: i64,
+            #[serde(flatten)]
+            fields: Fields<'a>,
+        }
+        Wire {
+            id: self.track_id,
+            fields: Fields(self),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Track {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // 旧ピアが送る `id` (行 id) は未知フィールドとして無視される。
+        Track::deserialize(deserializer)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -772,6 +816,71 @@ pub enum ConvertProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_track_json() -> serde_json::Value {
+        serde_json::json!({
+            "trackId": 42,
+            "persistentId": "000000000000002A",
+            "name": "Song",
+            "artist": null,
+            "albumArtist": null,
+            "composer": null,
+            "album": null,
+            "genre": null,
+            "year": null,
+            "rating": null,
+            "playCount": null,
+            "skipCount": null,
+            "totalTimeMs": null,
+            "dateAdded": null,
+            "dateModified": null,
+            "bpm": null,
+            "comments": null,
+            "locationRaw": null,
+            "locationPath": null,
+            "trackType": null,
+            "disabled": false,
+            "compilation": false,
+            "discNumber": null,
+            "discCount": null,
+            "trackNumber": null,
+            "trackCount": null,
+            "fileExists": true,
+            "lastPlayed": null
+        })
+    }
+
+    /// JSON の `id` は行 id ではなく trackId の別名として出る。
+    #[test]
+    fn track_serializes_id_as_track_id_alias() {
+        let mut track: Track = serde_json::from_value(sample_track_json()).unwrap();
+        track.id = 7; // 内部の行 id は JSON に出ない
+        let v = serde_json::to_value(&track).unwrap();
+        assert_eq!(v["id"], 42);
+        assert_eq!(v["trackId"], 42);
+        assert_eq!(v["persistentId"], "000000000000002A");
+        assert_eq!(v["name"], "Song");
+        // 追加分 (default 付き) のフィールドもそのまま出る。
+        assert!(v.as_object().unwrap().contains_key("grouping"));
+    }
+
+    /// `id` の無い JSON (新形式の想定) も、旧ピアの `id` (行 id) 付き JSON も読める。値は無視する。
+    #[test]
+    fn track_deserializes_without_id_and_ignores_legacy_id() {
+        let track: Track = serde_json::from_value(sample_track_json()).unwrap();
+        assert_eq!(track.track_id, 42);
+        assert_eq!(track.id, 0);
+
+        let mut legacy = sample_track_json();
+        legacy["id"] = serde_json::json!(3);
+        let track: Track = serde_json::from_value(legacy).unwrap();
+        assert_eq!(track.track_id, 42);
+        assert_eq!(track.id, 0, "旧ピアの行 id は採用しない");
+
+        // 往復しても trackId は保たれる。
+        let again: Track = serde_json::from_str(&serde_json::to_string(&track).unwrap()).unwrap();
+        assert_eq!(again.track_id, 42);
+    }
 
     #[test]
     fn analysis_progress_item_serializes_fields_in_camel_case() {

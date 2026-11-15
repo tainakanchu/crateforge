@@ -63,7 +63,7 @@ argument-hint: "[フライヤー画像のパス | テーマ・ムードのテキ
 - 母集団の収集（メタデータ主体）:
   - `crate-api.sh GET "/api/tracks?genre=House&ratingMin=60&yearFrom=2015&limit=300"`
   - フリーテキストや BPM/Key/Energy トークンは `q` に渡せる: `q=energy:0.6-0.9`、`q=bpm:120-126`
-- 種曲から広げる（解析があれば）: `crate-api.sh GET "/api/tracks/<id>/similar?limit=20&keyCompatible=true"`
+- 種曲から広げる（解析があれば）: `crate-api.sh GET "/api/tracks/<trackId>/similar?limit=20&keyCompatible=true"`
 - **非 ASCII / 空白を含む検索**（曲名・アーティスト名・歌詞語など、日本語/中国語等）は `crate-api.sh GET /api/tracks q="<語>" genre=... limit=...` のように **`key=value` 形式**で渡す（`?...` に直書きすると URL エンコードされず壊れて全件返るので注意）。
 
 複数の角度（ジャンル別・年代別・種曲の類似・レート上位）で広めに集め、重複を排除する。
@@ -95,7 +95,7 @@ argument-hint: "[フライヤー画像のパス | テーマ・ムードのテキ
 - コンセプト文・ワークスペース方針に照らして取捨選択する。
 - **役割の素材が揃うように**広げる（オープナー級の落ち着き / コアのグルーヴ / 山場・アンセム / 箸休め / クローザー候補）。「全部バンガー」は避け、緩急の幅を持たせる（曲順は付けないが素材の多様性は選定品質）。
 - **曲順は付けない**（人間が GUI で詰める）。ただし「外せない曲」や「フックになりそうな曲」は根拠で触れてよい。
-- 解析値があれば補助的に使う（BPM 帯のまとまり、Key 互換、Energy のレンジ）。無くても無理に解析を要求しない（手順 3 で投入した解析が終わっていれば `GET /api/tracks/<id>/analysis` 等で取り直す）。
+- 解析値があれば補助的に使う（BPM 帯のまとまり、Key 互換、Energy のレンジ）。無くても無理に解析を要求しない（手順 3 で投入した解析が終わっていれば `GET /api/tracks/<trackId>/analysis` 等で取り直す）。
 
 ### 5. 新規プレイリストを作る
 - 名前はイベント名やコンセプトから（例「夏の夕暮れ chill house (叩き台)」）。

@@ -597,7 +597,7 @@ function ArtistExpansion({
                           const showArtist = !!t.artist && t.artist !== artist.name;
                           return (
                             <div
-                              key={`${t.id}-${i}`}
+                              key={`${t.trackId}-${i}`}
                               className={
                                 "cov-trk" +
                                 (isCurrent ? " play" : "") +

@@ -115,7 +115,7 @@ async function applyRating(track: Track, rating: number): Promise<void> {
   const baseRating = track.rating ?? null;
   if (client) {
     try {
-      await client.setRating(track.id, rating);
+      await client.setRating(track.trackId, rating);
       showToast(rating > 0 ? `評価を保存しました（${formatRatingStars(rating)}）` : "評価をクリアしました");
     } catch (e) {
       showToast(`評価を保存できませんでした（${errorMessage(e)}）`, "error");
@@ -124,7 +124,7 @@ async function applyRating(track: Track, rating: number): Promise<void> {
   }
   usePendingEdits.getState().enqueue({
     kind: "rating",
-    trackId: track.id,
+    trackId: track.trackId,
     rating,
     baseRating,
     trackName: track.name,
@@ -136,7 +136,7 @@ async function applyTagAdd(track: Track, tag: string): Promise<void> {
   const client = useConnection.getState().client;
   if (client) {
     try {
-      await client.addTrackTags([track.id], tag);
+      await client.addTrackTags([track.trackId], tag);
       showToast("タグを付けました");
     } catch (e) {
       if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
@@ -149,7 +149,7 @@ async function applyTagAdd(track: Track, tag: string): Promise<void> {
   }
   usePendingEdits.getState().enqueue({
     kind: "tag-add",
-    trackId: track.id,
+    trackId: track.trackId,
     tag,
     trackName: track.name,
   });
@@ -160,14 +160,14 @@ async function applyReviewLater(track: Track): Promise<void> {
   const client = useConnection.getState().client;
   if (client) {
     try {
-      await client.addTrackTags([track.id], REVIEW_LATER_TAG);
+      await client.addTrackTags([track.trackId], REVIEW_LATER_TAG);
       showToast("「あとで聴く」に追加しました");
     } catch (e) {
       if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
         // タグ API 無しでもローカルフラグとしてキューへ。
         usePendingEdits.getState().enqueue({
           kind: "review-later",
-          trackId: track.id,
+          trackId: track.trackId,
           trackName: track.name,
         });
         showToast("デスクトップ未対応のため、端末側のみに記録しました");
@@ -179,7 +179,7 @@ async function applyReviewLater(track: Track): Promise<void> {
   }
   usePendingEdits.getState().enqueue({
     kind: "review-later",
-    trackId: track.id,
+    trackId: track.trackId,
     trackName: track.name,
   });
   showToast("オフライン: 再接続時に「あとで聴く」を同期します");
