@@ -172,7 +172,7 @@ Car App Library（独自テンプレート）のアプリには使えない設�
 | Secret | `CRATEFORGE_ANDROID_KEY_PASSWORD` | 署名鍵のパスワード |
 | Variable | `CRATEFORGE_ANDROID_CERT_SHA256` | 期待する署名証明書の SHA-256（`:` 有無・大小文字は不問）。**設定されていると CI が一致を強制**する。未設定のときは警告のみで続行 |
 
-CI は keystore を `$RUNNER_TEMP/release.jks` に復元して、alias とパスワードを `keytool` で**ビルド前に**検査し、終了時に削除します。
+CI は keystore を `$RUNNER_TEMP/release.jks` に復元して、alias・keystore パスワード・証明書の SHA-256 と、鍵パスワードで秘密鍵を実際に復元できること（`keytool` は PKCS12 で `-keypass` を無視するため `scripts/CheckSigningKey.java` で検査）を**ビルド前に**確認し、終了時に削除します。
 Gradle には `CRATEFORGE_SIGNING_STORE_FILE / STORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD` と `CRATEFORGE_SIGNING_REQUIRED=true`、
 `CRATEFORGE_VERSION_NAME / CODE` が環境変数で渡ります（署名情報が欠けていれば debug 署名にフォールバックせずビルドが失敗します）。
 

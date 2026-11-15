@@ -274,7 +274,8 @@ jobs:
           retention-days: 7
 
       # 署名付きビルドのときだけ keystore を復元する。値はログに出ない (Secrets は自動マスク)。
-      # 早期に alias とパスワードを keytool で検査し、期待証明書と違えば 20 分ビルドする前に落とす。
+      # 早期に alias と keystore パスワードを keytool で、鍵パスワードを Java の KeyStore API (AGP と同じ経路) で検査し、
+      # 期待証明書と違えば 20 分ビルドする前に落とす。keytool は PKCS12 で -keypass を無視するため鍵パスワードは別途検査する。
       - name: Restore release keystore and pre-check it
         if: ${{ inputs.signed }}
         env:
@@ -313,6 +314,17 @@ jobs:
             fi
           else
             echo "::warning::repository variable CRATEFORGE_ANDROID_CERT_SHA256 is not set; the signing certificate identity is not enforced"
+          fi
+
+          # 鍵パスワードの検査 (keytool -keypass は PKCS12 で無視される)。AGP と同じく KeyStore.getKey で復元する。
+          rc=0
+          STORE_FILE="$ks" java clients/apps/mobile/scripts/CheckSigningKey.java || rc=$?
+          if [ "$rc" = 4 ]; then
+            echo "::error::CRATEFORGE_ANDROID_KEY_PASSWORD does not match the private key '$KEY_ALIAS' (keystore password and alias are OK; Gradle :app:packageRelease would fail with \"Cannot recover key\")"
+            exit 1
+          elif [ "$rc" != 0 ]; then
+            echo "::error::signing key pre-check (CheckSigningKey.java) failed with exit code $rc"
+            exit 1
           fi
           echo "CRATEFORGE_SIGNING_STORE_FILE=$ks" >> "$GITHUB_ENV"
 
