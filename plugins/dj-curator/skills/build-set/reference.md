@@ -256,7 +256,7 @@ crate-api.sh POST /api/tracks/tags/add '{"trackIds":[12,7],"tag":"mood:dreamy"}'
 - `GET /manifest.webmanifest` `/icon-512.png` `/icon-192.png` `/apple-touch-icon.png` `/favicon.ico` — PWA 資産（トークン不要）。
 - `POST /api/pair/start` / `GET /api/pair/poll` — モバイル等のペアリング（トークン不要）。
 - `GET /api/remote/queue` / `GET /api/remote/state` — 再生キュー・再生状態の取得。
-- `POST /api/remote/{play,pause,resume,stop,next,prev,seek,set-queue,volume,shuffle,repeat}` — アプリ本体の再生リモート操作。`prev` はデスクトップの ⏮ と同じ 3 秒ルール（今の曲を 3 秒を超えて再生していればその曲を頭から再生し直し、そうでなければキューの前の曲へ。返り値 `{ "trackId": 再生した曲 | null }`）。
+- `POST /api/remote/{play,pause,resume,stop,next,prev,seek,set-queue,volume,shuffle,repeat}` — アプリ本体の再生リモート操作。`prev` はデスクトップの ⏮ と同じ 3 秒ルール（今の曲を 3 秒を超えて再生していればその曲を頭から再生し直し、そうでなければキューの前の曲へ。返り値 `{ "trackId": 再生した曲 | null }`。デスクトップが試聴（Preview）中なら、⏮ と同じく試聴のまま再生する）。
 - `GET /api/tracks/{trackId}/stream` — 音源ストリーミング（トランスコード対応）。
 - `GET /api/tracks/{trackId}/artwork` — アートワーク配信（`size` / `format` でリサイズ）。
 - `PUT` / `DELETE /api/tracks/{trackId}/artwork` — 埋め込みアートワークの設定/削除（実ファイルを書き換える）。

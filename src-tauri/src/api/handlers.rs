@@ -2445,16 +2445,19 @@ fn play_error(e: crate::playback_target::PlayError) -> ApiError {
 }
 
 /// track_id で曲を再生するヘルパ (remote_play / remote_prev から呼ぶ)。
+/// `preview` は試聴 (preview) モードで再生するか。曲を指定して再生する操作は常に通常再生 (false)、
+/// 「前の曲」だけはデスクトップの ⏮ と同じく今のモードを保つ。
 async fn play_by_id_for_remote(
     state: &ApiState,
     app: &tauri::AppHandle,
     track_id: i64,
+    preview: bool,
 ) -> Result<(), ApiError> {
     // ライブラリ外の一時再生曲 (デスクトップで「このアプリで開く」した曲) は DB に無い。
     // キュー上の前後移動で当たることがあるので、DB 照合を飛ばして Coordinator に任せる。
     if crate::transient::is_transient_id(track_id) {
         return remote_coordinator(app)
-            .play_track(track_id, false)
+            .play_track(track_id, preview)
             .await
             .map_err(play_error);
     }
@@ -2469,9 +2472,8 @@ async fn play_by_id_for_remote(
             "この曲にはファイルの場所がありません",
         ));
     }
-    // リモート API 経由は常に通常再生 (preview ではない)。
     remote_coordinator(app)
-        .play_track(track_id, false)
+        .play_track(track_id, preview)
         .await
         .map_err(play_error)
 }
@@ -2545,7 +2547,7 @@ pub async fn remote_play(
     ExtractJson(body): ExtractJson<RemotePlayBody>,
 ) -> Result<StatusCode, ApiError> {
     let app = remote_app(&state)?;
-    play_by_id_for_remote(&state, app, body.track_id).await?;
+    play_by_id_for_remote(&state, app, body.track_id, false).await?;
     app.state::<crate::analyzer::Analyzer>()
         .submit(vec![body.track_id], false);
     Ok(StatusCode::NO_CONTENT)
@@ -2687,7 +2689,10 @@ pub async fn remote_prev(State(state): State<ApiState>) -> Result<Json<Value>, A
     let app = remote_app(&state)?;
     let prev_id = crate::commands::playback::prev_target(app)?;
     if let Some(tid) = prev_id {
-        play_by_id_for_remote(&state, app, tid).await?;
+        // デスクトップの ⏮ (play_prev) と同じく、試聴 (preview) 中ならそのモードのまま再生する。
+        // (リモートからの頭出しで、デスクトップの試聴が黙って通常再生に切り替わらないように。)
+        let preview = crate::commands::playback::preview_on(app);
+        play_by_id_for_remote(&state, app, tid, preview).await?;
         Ok(Json(json!({ "trackId": tid })))
     } else {
         Ok(Json(json!({ "trackId": Value::Null })))
@@ -2747,7 +2752,7 @@ pub async fn remote_set_queue(
     crate::commands::playback::emit_queue_changed(app);
     if body.play {
         if let Some(tid) = start_tid {
-            play_by_id_for_remote(&state, app, tid).await?;
+            play_by_id_for_remote(&state, app, tid, false).await?;
             app.state::<crate::analyzer::Analyzer>()
                 .submit(vec![tid], false);
         }

@@ -29,7 +29,8 @@ impl PreviewMode {
     }
 }
 
-fn preview_on(app: &AppHandle) -> bool {
+/// 試聴 (preview) モード中か。リモートの「前の曲」(`/api/remote/prev`) も同じフラグを見る。
+pub(crate) fn preview_on(app: &AppHandle) -> bool {
     app.state::<PreviewMode>().get()
 }
 
