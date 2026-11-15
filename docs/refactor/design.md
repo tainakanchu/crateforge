@@ -83,7 +83,7 @@
 | ID | 内容 |
 |---|---|
 | C1 | GUI のジャンルタグ追加/削除も実ファイルに書き戻す (`docs/genre/design.md` §2) |
-| C2 | rating はどの経路でも 0〜100 に収め、`date_modified` を進めない (`set_rating` の規則)。Get Info / `PATCH` / 星クリックで共通。API に範囲外の値が来たら **400** |
+| C2 | rating はどの経路でも 0〜100 に収まり、rating だけの変更では `date_modified` を進めない (`set_rating` の規則)。Get Info / `PATCH` / 星クリックで共通。範囲外の値は、`PATCH /api/tracks*` (単体・一括) では **400** で拒否して何も書かない (ユーザー決定の対象はこの経路)。`POST /api/tracks/{id}/rating` と GUI (星クリック / Get Info) は従来どおり 0〜100 に丸める |
 | C4 | リモートの「前の曲」に GUI と同じ 3 秒ルール (再生 3 秒超なら頭出し) |
 | G1 | `genre:` / `?genre=` をタグ単位の完全一致に (`docs/genre/design.md` §3) |
 | R1 | rating ↔ 星の丸めを検索構文の区間方式 (`rating:0` = 0〜19) に統一 (スマートプレイリスト側を合わせる) |
