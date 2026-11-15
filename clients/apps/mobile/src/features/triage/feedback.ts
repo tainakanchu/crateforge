@@ -37,7 +37,8 @@ export async function rateWithFeedback(edit: RatingEdit): Promise<EditResult> {
  * タグを付ける（`review:later` =「あとで聴く」を含む）。失敗・未対応はここでトーストを出す。
  * - 失敗: 理由つきのエラートーストを出して "failed"。
  * - デスクトップがタグ未対応: エラートーストを出して "unsupported"。
- *   「あとで聴く」だけは端末側のキューに記録し、その旨を知らせる。
+ *   「あとで聴く」だけは端末側のキューに積み、その旨を知らせる。キューは次の同期で送り直し、
+ *   そのときもデスクトップが未対応なら破棄される（syncPending の仕様）。文言でもそう伝える。
  * - applied / queued: 何も出さない（呼び出し側が見せる）。
  */
 export async function addTagWithFeedback(edit: TagEdit): Promise<EditResult> {
@@ -47,7 +48,7 @@ export async function addTagWithFeedback(edit: TagEdit): Promise<EditResult> {
     if (outcome === "unsupported") {
       if (reviewLater) {
         queueReviewLater(edit);
-        showToast("デスクトップ未対応のため、端末側のみに記録しました");
+        showToast("デスクトップがタグに未対応のため、端末に保留しました（次の同期でも未対応なら破棄されます）");
       } else {
         showToast("このデスクトップはタグ機能に未対応です（アプリを更新してください）", "error");
       }

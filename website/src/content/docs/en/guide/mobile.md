@@ -64,7 +64,7 @@ Tapping the playing artist (and album) navigates to that page.
 - From the long-press menu and the player screen you can add the common tags and **"あとで聴く" (listen later)**.
 - When not connected, the change is kept on the device as pending and synced to the desktop on reconnect (pending changes are listed in Settings).
 - If a change cannot be saved, or the desktop does not support tags, a **toast** with the same wording tells you, wherever you made the change
-  (on a desktop without tag support, only "listen later" is recorded on the device).
+  (on a desktop without tag support, only "listen later" is kept on the device as pending and sent again at the next sync; it is discarded if the desktop still does not support tags then).
 
 ## Offline download / browsing / playback
 

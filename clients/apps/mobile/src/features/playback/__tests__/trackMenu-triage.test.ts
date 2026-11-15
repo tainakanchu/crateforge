@@ -198,7 +198,7 @@ describe("長押しメニュー: タグ / あとで聴く", () => {
     connect({ addTrackTags: jest.fn(async () => Promise.reject(new ApiError(404, "nope"))) });
     await openTagMenu();
     await press("あとで聴く");
-    expect(toast()).toEqual({ message: "デスクトップ未対応のため、端末側のみに記録しました", kind: "info" });
+    expect(toast()).toEqual({ message: "デスクトップがタグに未対応のため、端末に保留しました（次の同期でも未対応なら破棄されます）", kind: "info" });
     expect(queuedKinds()).toEqual(["review-later"]);
   });
 
@@ -214,7 +214,7 @@ describe("長押しメニュー: タグ / あとで聴く", () => {
     connect({ addTrackTags: jest.fn(async () => Promise.reject(new ApiError(501, "nope"))) });
     showTrackMenu(makeTrack());
     await press("あとで聴く");
-    expect(toast()).toEqual({ message: "デスクトップ未対応のため、端末側のみに記録しました", kind: "info" });
+    expect(toast()).toEqual({ message: "デスクトップがタグに未対応のため、端末に保留しました（次の同期でも未対応なら破棄されます）", kind: "info" });
     expect(queuedKinds()).toEqual(["review-later"]);
   });
 

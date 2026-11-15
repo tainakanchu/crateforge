@@ -96,7 +96,7 @@ describe("あとで聴く（review:later）", () => {
   it("デスクトップ未対応なら端末側のキューに記録して知らせる", async () => {
     connect({ addTrackTags: failing(404) });
     await expect(addTagWithFeedback(edit)).resolves.toBe("unsupported");
-    expect(toast()).toEqual({ message: "デスクトップ未対応のため、端末側のみに記録しました", kind: "info" });
+    expect(toast()).toEqual({ message: "デスクトップがタグに未対応のため、端末に保留しました（次の同期でも未対応なら破棄されます）", kind: "info" });
     expect(queuedKinds()).toEqual(["review-later"]);
   });
 

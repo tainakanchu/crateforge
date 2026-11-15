@@ -22,7 +22,7 @@ Each release is documented in both Japanese and English.
 - **仕様変更: デスクトップに一時的に届かなくなっても接続画面に戻さない**: これまでは通信に失敗すると（起動時にデスクトップが落ちているときも）すぐペアリング画面へ戻っていた。モバイルと同じ接続監視を使い、接続中はおよそ 25 秒ごとに疎通を確認し、届かない間は画面をそのままにして上部の帯で知らせ、およそ 15 秒ごとに再接続を試して自動で復帰する。帯の「接続し直す」からペアリング画面を開ける。トークンが無効になったときはこれまでどおりペアリング画面へ戻る。
 
 #### モバイル
-- **仕様変更: 評価・タグの保存失敗をどこから操作してもトーストで知らせる**: プレイヤー画面の星は失敗しても星が元に戻るだけで、プレイヤー画面のタグ操作は画面内の短い一言だけだった。長押しメニューと同じ文言・理由つきのトーストに揃えた（デスクトップがタグに未対応のときも同じ）。未対応のデスクトップで「あとで聴く」を付けたときは、プレイヤー画面からでも端末側に記録する。未接続のとき「あとで聴く」は、タグメニューから選んでも保留一覧に「あとで」として記録する（同期される内容は同じ）。
+- **仕様変更: 評価・タグの保存失敗をどこから操作してもトーストで知らせる**: プレイヤー画面の星は失敗しても星が元に戻るだけで、プレイヤー画面のタグ操作は画面内の短い一言だけだった。長押しメニューと同じ文言・理由つきのトーストに揃えた（デスクトップがタグに未対応のときも同じ）。未対応のデスクトップで「あとで聴く」を付けたときは、プレイヤー画面からでも端末に保留する（次の同期で送り直し、そのときも未対応なら破棄される）。未接続のとき「あとで聴く」は、タグメニューから選んでも保留一覧に「あとで」として記録する（同期される内容は同じ）。
 
 ### English
 
@@ -36,7 +36,7 @@ Each release is documented in both Japanese and English.
 - **Behavior change: a temporarily unreachable desktop no longer sends you back to the connect screen**: any failed request (including starting the TV while the desktop was off) used to return you to the pairing screen at once. The TV now uses the same connection monitor as mobile: while connected it checks the desktop about every 25 seconds; while it is unreachable the current screen stays, a bar at the top tells you, and it retries about every 15 seconds and recovers on its own. "接続し直す" (reconnect) on the bar opens the pairing screen. An invalid token still returns you to the pairing screen as before.
 
 #### Mobile
-- **Behavior change: a toast reports failed rating / tag changes wherever you make them**: on the player screen a failed rating only reverted the stars, and tag actions showed just a short in-screen note. They now show the same toast, with the reason, as the long-press menu (also when the desktop does not support tags). Adding "あとで聴く" (listen later) against a desktop without tag support is now recorded on the device from the player screen too. While offline, "listen later" is recorded in the pending list as "あとで" even when chosen from the tag menu (what gets synced is unchanged).
+- **Behavior change: a toast reports failed rating / tag changes wherever you make them**: on the player screen a failed rating only reverted the stars, and tag actions showed just a short in-screen note. They now show the same toast, with the reason, as the long-press menu (also when the desktop does not support tags). Adding "あとで聴く" (listen later) against a desktop without tag support is now kept on the device as pending from the player screen too (it is sent again at the next sync and discarded if the desktop still does not support tags). While offline, "listen later" is recorded in the pending list as "あとで" even when chosen from the tag menu (what gets synced is unchanged).
 
 ## [v0.20.0] - 2026-11-14
 
