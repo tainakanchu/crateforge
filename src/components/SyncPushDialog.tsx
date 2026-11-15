@@ -10,6 +10,7 @@ import type {
 import { Icon } from "./Icon";
 import { errorMessage } from "../lib/errors";
 import { formatBytes } from "../lib/format";
+import { useTauriEvent } from "../hooks/useTauriEvent";
 
 interface SyncPushDialogProps {
   source: SyncSource;
@@ -86,23 +87,14 @@ export function SyncPushDialog({
     return () => window.clearTimeout(timer);
   }, [step]);
 
-  useEffect(() => {
-    let disposed = false;
-    let unlisteners: Array<() => void> = [];
-    Promise.all([
+  useTauriEvent(
+    () =>
       syncApi.onSyncProgress((nextProgress) => {
         if (nextProgress.phase === "pushing") setProgress(nextProgress);
       }),
-      syncApi.onPushComplete(finishPush),
-    ]).then((listeners) => {
-      if (disposed) listeners.forEach((unlisten) => unlisten());
-      else unlisteners = listeners;
-    });
-    return () => {
-      disposed = true;
-      unlisteners.forEach((unlisten) => unlisten());
-    };
-  }, [finishPush]);
+    [],
+  );
+  useTauriEvent(() => syncApi.onPushComplete(finishPush), [finishPush]);
 
   useEffect(() => {
     void loadPushable();

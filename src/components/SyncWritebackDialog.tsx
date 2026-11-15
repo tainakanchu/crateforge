@@ -15,6 +15,7 @@ import type {
 } from "../api/sync";
 import { Icon } from "./Icon";
 import { errorMessage } from "../lib/errors";
+import { useTauriEvent } from "../hooks/useTauriEvent";
 
 interface SyncWritebackDialogProps {
   source: SyncSource;
@@ -204,10 +205,8 @@ export function SyncWritebackDialog({
     return () => window.clearTimeout(timer);
   }, [step]);
 
-  useEffect(() => {
-    let disposed = false;
-    let unlisteners: Array<() => void> = [];
-    Promise.all([
+  useTauriEvent(
+    () =>
       syncApi.onSyncProgress((nextProgress) => {
         if (
           nextProgress.phase === "writebackPlanning" ||
@@ -216,16 +215,9 @@ export function SyncWritebackDialog({
           setProgress(nextProgress);
         }
       }),
-      syncApi.onWritebackComplete(finishApply),
-    ]).then((listeners) => {
-      if (disposed) listeners.forEach((unlisten) => unlisten());
-      else unlisteners = listeners;
-    });
-    return () => {
-      disposed = true;
-      unlisteners.forEach((unlisten) => unlisten());
-    };
-  }, [finishApply]);
+    [],
+  );
+  useTauriEvent(() => syncApi.onWritebackComplete(finishApply), [finishApply]);
 
   const loadPlan = useCallback(async () => {
     setStep("loading");

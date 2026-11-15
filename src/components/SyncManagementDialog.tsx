@@ -14,6 +14,7 @@ import type {
 import { Icon } from "./Icon";
 import { errorMessage } from "../lib/errors";
 import { formatBytes } from "../lib/format";
+import { useTauriEvent } from "../hooks/useTauriEvent";
 
 interface SyncManagementDialogProps {
   source: SyncSource;
@@ -120,23 +121,14 @@ export function SyncManagementDialog({
     void loadManagement("resyncComplete");
   }, [loadManagement, onLibraryChanged]);
 
-  useEffect(() => {
-    let disposed = false;
-    let unlisteners: Array<() => void> = [];
-    Promise.all([
+  useTauriEvent(
+    () =>
       syncApi.onSyncProgress((nextProgress) => {
         if (nextProgress.phase === "resyncing") setProgress(nextProgress);
       }),
-      syncApi.onResyncComplete(finishResync),
-    ]).then((listeners) => {
-      if (disposed) listeners.forEach((unlisten) => unlisten());
-      else unlisteners = listeners;
-    });
-    return () => {
-      disposed = true;
-      unlisteners.forEach((unlisten) => unlisten());
-    };
-  }, [finishResync]);
+    [],
+  );
+  useTauriEvent(() => syncApi.onResyncComplete(finishResync), [finishResync]);
 
   useEffect(() => {
     if (!selectAllRef.current) return;

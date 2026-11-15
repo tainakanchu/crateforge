@@ -1,11 +1,11 @@
-import { useEffect, useState, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as serverApi from "../api/server";
 import type { PairingRequest } from "../api/server";
 import type { DeviceRole } from "../api/server";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
-import { isTauri } from "../lib/env";
+import { useTauriEvent } from "../hooks/useTauriEvent";
 
 
 /**
@@ -27,29 +27,22 @@ export function PairingApprovalDialog() {
   const [role, setRole] = useState<DeviceRole>("remote");
   const pushToast = useStore((s) => s.pushToast);
 
-  useEffect(() => {
-    if (!isTauri) return;
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      unlisten = await serverApi.onPairingRequested((req) => {
-        setQueue((prev) => {
-          // 同一セッションの重複要求は無視。
-          if (prev.some((r) => r.session === req.session)) return prev;
-          return [...prev, req];
-        });
-        // 承認に気づけるようウィンドウを前面化する。
-        try {
-          const win = getCurrentWindow();
-          win.unminimize().catch(() => {});
-          win.setFocus().catch(() => {});
-        } catch {
-          // 非 Tauri 環境などでは無視。
-        }
+  useTauriEvent(() => {
+    return serverApi.onPairingRequested((req) => {
+      setQueue((prev) => {
+        // 同一セッションの重複要求は無視。
+        if (prev.some((r) => r.session === req.session)) return prev;
+        return [...prev, req];
       });
-    })();
-    return () => {
-      if (unlisten) unlisten();
-    };
+      // 承認に気づけるようウィンドウを前面化する。
+      try {
+        const win = getCurrentWindow();
+        win.unminimize().catch(() => {});
+        win.setFocus().catch(() => {});
+      } catch {
+        // 非 Tauri 環境などでは無視。
+      }
+    });
   }, []);
 
   const current = queue[0] ?? null;

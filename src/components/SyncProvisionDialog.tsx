@@ -16,6 +16,7 @@ import { SyncManagementDialog } from "./SyncManagementDialog";
 import { SyncPushDialog } from "./SyncPushDialog";
 import { errorMessage } from "../lib/errors";
 import { formatBytes } from "../lib/format";
+import { useTauriEvent } from "../hooks/useTauriEvent";
 
 interface SyncProvisionDialogProps {
   onClose: () => void;
@@ -123,11 +124,9 @@ export function SyncProvisionDialog({
     return () => window.clearTimeout(timer);
   }, [step, sourcesLoading, playlistsLoading, pushSource, writebackSource, managementSource]);
 
-  useEffect(() => {
-    let disposed = false;
-    let unlisteners: Array<() => void> = [];
-    Promise.all([
-      syncApi.onSyncProgress(setProgress),
+  useTauriEvent(() => syncApi.onSyncProgress(setProgress), []);
+  useTauriEvent(
+    () =>
       syncApi.onSyncComplete((result) => {
         setSummary(result);
         setProgress(null);
@@ -135,20 +134,17 @@ export function SyncProvisionDialog({
         setStep("complete");
         onLibraryChanged();
       }),
+    [onLibraryChanged],
+  );
+  useTauriEvent(
+    () =>
       syncApi.onSyncError((message) => {
         setError(message);
         setProgress(null);
         setStep("failed");
       }),
-    ]).then((listeners) => {
-      if (disposed) listeners.forEach((unlisten) => unlisten());
-      else unlisteners = listeners;
-    });
-    return () => {
-      disposed = true;
-      unlisteners.forEach((unlisten) => unlisten());
-    };
-  }, [onLibraryChanged]);
+    [],
+  );
 
   const loadPlaylists = useCallback(async (source: SyncSource) => {
     setSelectedSource(source);
