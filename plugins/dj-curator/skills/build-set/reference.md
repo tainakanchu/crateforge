@@ -27,8 +27,8 @@ GET/DELETE では `<path>` の後ろに `key=value` を並べると `curl -G --d
 - `ratingMin` / `ratingMax` — 0–100。例: ★3 以上は `ratingMin=60`。rating 未設定の曲は 0 扱い。
 - `genre` — **ジャンルタグの完全一致**（大小・全角半角は無視）。`genre=House` は `House` タグを持つ曲で、`DeepHouse` だけの曲は一致しない（別ジャンル。両方欲しければ 2 回引く）。値に空白を含めると全タグ必須（`genre=House Techno` = House かつ Techno）。`/` は区切らない（`Electronic/Dance` は 1 タグ）。タグ名は `GET /api/genres` が返すものをそのまま使える。空の値は絞り込まない。
 - `album` — アルバム名部分一致（大小無視）。
-- `artist` — 表示アーティスト名（`artist`、空なら `albumArtist`、どちらも無ければ `"Unknown Artist"`）と**完全一致**。`GET /api/artists` の `artist` 値をそのまま渡せる。
-- `albumArtist` — 表示アルバムアーティスト名（`albumArtist`、空なら `artist`、どちらも無ければ `"Unknown Artist"`）と**完全一致**。`GET /api/artists?grouping=albumArtist` の値と対応。
+- `artist` — 表示アーティスト名（`artist`、空なら `albumArtist`、どちらも無ければ空文字 `""`）と**完全一致**。`GET /api/artists` の `artist` 値をそのまま渡せる。`artist=`（空）はアーティストが分からない曲（artist も albumArtist も無い）に一致する。
+- `albumArtist` — 表示アルバムアーティスト名（`albumArtist`、空なら `artist`、どちらも無ければ空文字 `""`）と**完全一致**。`GET /api/artists?grouping=albumArtist` の値と対応。
 - `yearFrom` / `yearTo` — 年代範囲（指定時、year 未設定の曲は除外）。
 - `analyzed` — `true`=解析済みのみ / `false`=未解析のみ。
 - `limit` / `offset` — ページング（既定: 上限なし＝全件）。
@@ -100,11 +100,12 @@ first-class Tag（Genre とは独立した、DB のみのタグ。`mood:dreamy` 
 → `{ id, namespace, value, count }[]`（付与曲数の多い順。**どの曲にも付いていない tag も `count: 0` で含む**）。`q=tag:...` で絞り込みに使える。
 
 ### `GET /api/albums`
-distinct なアルバム一覧 → `{ album, albumArtist, trackCount, sampleTrackId }[]`（アルバム名昇順・大小無視。album が空の曲は除外。同名アルバムは 1 件にまとまる）。
+distinct なアルバム一覧 → `{ album, albumArtist, trackCount, sampleTrackId }[]`（アルバム名昇順・大小無視。同名アルバムは 1 件にまとまる）。
+album が無い（未設定・空白のみ）曲は除外されず、**`album: ""` の 1 件**（不明なアルバム）にまとまって末尾に来る。その曲は `GET /api/tracks?album=&albumExact=true` で引ける。
 
 ### `GET /api/artists`
 クエリ: `grouping` = `artist`（既定）| `albumArtist`。distinct な表示アーティスト一覧 → `{ artist, trackCount, sampleTrackId }[]`（表示名昇順・大小無視）。
-`artist` は表示名（`grouping=artist` なら artist→albumArtist→`"Unknown Artist"` の順でフォールバック、`albumArtist` なら逆順）。この値を `GET /api/tracks` の `artist` / `albumArtist` クエリにそのまま渡すと完全一致で引ける。
+`artist` は表示名（`grouping=artist` なら artist→albumArtist の順でフォールバック、`albumArtist` なら逆順）。どちらも無い曲は **`artist: ""` の 1 件**（不明なアーティスト。`"Unknown Artist"` のような文字列は入らない）にまとまって末尾に来る。この値を `GET /api/tracks` の `artist` / `albumArtist` クエリにそのまま渡すと完全一致で引ける。
 アーティスト軸で母集団を作るとき（名前の表記ゆれ確認・曲数の把握）に使う。
 
 ### `GET /api/playlists`
