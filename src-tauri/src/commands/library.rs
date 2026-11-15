@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::AudioPlayer;
@@ -322,22 +323,53 @@ pub fn set_track_rating(app: AppHandle, track_id: i64, rating: i64) -> Result<()
     db.set_rating(track_id, rating).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn add_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
-    let db = open_db(&app)?;
-    for tid in track_ids {
-        db.add_genre_tag(tid, &tag).map_err(|e| e.to_string())?;
+/// `add_genre_tag` / `remove_genre_tag` の結果 (`POST /api/tracks/genre-tags/*` と同じ形)。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenreTagResult {
+    /// DB を更新した曲数。
+    pub updated: usize,
+    /// ファイルのタグへの書き込みを試みて失敗した曲数。
+    pub file_write_failed: usize,
+}
+
+/// ジャンルタグの追加・削除。API と同じ [`crate::library::genre::edit_genre_tag`] を使い、
+/// DB と実ファイルのタグの両方を更新する (docs/genre/design.md §2)。
+/// DB の更新に失敗した曲があれば、残りの曲を処理したうえで最初のエラーを返す。
+fn edit_genre_tag(
+    app: &AppHandle,
+    track_ids: &[i64],
+    tag: &str,
+    op: crate::library::genre::GenreTagOp,
+) -> Result<GenreTagResult, String> {
+    let db = open_db(app)?;
+    let outcome = crate::library::genre::edit_genre_tag(&db, track_ids, tag, op)
+        .map_err(|e| e.to_string())?;
+    if let Some((_, e)) = outcome.db_errors.first() {
+        return Err(e.to_string());
     }
-    Ok(())
+    Ok(GenreTagResult {
+        updated: outcome.updated,
+        file_write_failed: outcome.file_write_failed,
+    })
 }
 
 #[tauri::command]
-pub fn remove_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
-    let db = open_db(&app)?;
-    for tid in track_ids {
-        db.remove_genre_tag(tid, &tag).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+pub fn add_genre_tag(
+    app: AppHandle,
+    track_ids: Vec<i64>,
+    tag: String,
+) -> Result<GenreTagResult, String> {
+    edit_genre_tag(&app, &track_ids, &tag, crate::library::genre::GenreTagOp::Add)
+}
+
+#[tauri::command]
+pub fn remove_genre_tag(
+    app: AppHandle,
+    track_ids: Vec<i64>,
+    tag: String,
+) -> Result<GenreTagResult, String> {
+    edit_genre_tag(&app, &track_ids, &tag, crate::library::genre::GenreTagOp::Remove)
 }
 
 #[tauri::command]

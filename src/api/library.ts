@@ -158,11 +158,19 @@ export async function setTrackRating(trackId: number, rating: number): Promise<v
   return invoke("set_track_rating", { trackId, rating });
 }
 
-export async function addGenreTag(trackIds: number[], tag: string): Promise<void> {
+/** ジャンルタグの追加・削除の結果。DB とファイルのタグの両方を更新する。 */
+export interface GenreTagResult {
+  /** DB を更新した曲数 */
+  updated: number;
+  /** ファイルのタグへの書き込みを試みて失敗した曲数 (ファイルが無い曲は数えない) */
+  fileWriteFailed: number;
+}
+
+export async function addGenreTag(trackIds: number[], tag: string): Promise<GenreTagResult> {
   return invoke("add_genre_tag", { trackIds, tag });
 }
 
-export async function removeGenreTag(trackIds: number[], tag: string): Promise<void> {
+export async function removeGenreTag(trackIds: number[], tag: string): Promise<GenreTagResult> {
   return invoke("remove_genre_tag", { trackIds, tag });
 }
 

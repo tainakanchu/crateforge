@@ -1783,15 +1783,6 @@ pub async fn replace_playlist_tracks(
 
 // ===== 曲メタデータ書き込み =====
 
-/// 実ファイルのタグへ書き戻す。`location_path` が無い / ファイルが存在しない場合は
-/// 何もしない (= 失敗ではない)。書き込みを試みて失敗したときだけ true を返す。
-/// 整理 (フォルダ移動) はせず、その場でタグだけ更新する (rekordbox 等 他アプリへ反映)。
-///
-/// 実体は GUI の `update_track` と共有する [`crate::organizer::write_tags_to_location`]。
-fn writeback(loc: Option<&str>, w: &crate::organizer::TagWrite) -> bool {
-    crate::organizer::write_tags_to_location(loc, w)
-}
-
 /// `POST /api/tracks/genre-tags/{add,remove}` のボディ。
 /// genre を空白区切りタグ集合として扱い、複数曲に対し 1 つのタグを一括追記/除去する。
 #[derive(Debug, Deserialize)]
@@ -1801,6 +1792,26 @@ pub struct GenreTagBody {
     pub tag: String,
 }
 
+/// `POST /api/tracks/genre-tags/{add,remove}` の共通処理。GUI と同じ
+/// [`crate::library::genre::edit_genre_tag`] を呼び、`{ "updated": n, "fileWriteFailed": m }` を返す。
+/// 空タグは 400。DB を更新できなかった曲は `updated` に数えない (従来どおりエラーにはしない)。
+fn edit_genre_tags(
+    state: &ApiState,
+    body: &GenreTagBody,
+    op: crate::library::genre::GenreTagOp,
+) -> Result<Json<Value>, ApiError> {
+    let db = state.db()?;
+    let outcome = crate::library::genre::edit_genre_tag(&db, &body.track_ids, &body.tag, op)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
+    if outcome.updated > 0 {
+        state.notify_library_changed(None);
+    }
+    Ok(Json(json!({
+        "updated": outcome.updated,
+        "fileWriteFailed": outcome.file_write_failed,
+    })))
+}
+
 /// `POST /api/tracks/genre-tags/add` — 指定タグを各曲の genre 末尾に一括追記 (重複回避)。
 /// DB 更新後、その曲の genre のみを実ファイルにも書き戻す (他タグは保持)。空タグは 400。
 /// 返り値 `{ "updated": n, "fileWriteFailed": m }`。
@@ -1808,34 +1819,7 @@ pub async fn add_genre_tags(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<GenreTagBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let tag = body.tag.trim();
-    if tag.is_empty() {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "tag is empty"));
-    }
-    let db = state.db()?;
-    let mut updated = 0_i64;
-    let mut file_failed = 0_i64;
-    for &id in &body.track_ids {
-        // 存在しない id は db 側で 0 行更新 (エラーにならない)。Ok なら計上する。
-        if db.add_genre_tag(id, tag).is_ok() {
-            updated += 1;
-            if let Ok(Some(t)) = db.get_track_by_track_id(id) {
-                let w = crate::organizer::TagWrite {
-                    genre: t.genre.as_deref(),
-                    ..Default::default()
-                };
-                if writeback(t.location_path.as_deref(), &w) {
-                    file_failed += 1;
-                }
-            }
-        }
-    }
-    if updated > 0 {
-        state.notify_library_changed(None);
-    }
-    Ok(Json(
-        json!({ "updated": updated, "fileWriteFailed": file_failed }),
-    ))
+    edit_genre_tags(&state, &body, crate::library::genre::GenreTagOp::Add)
 }
 
 /// `POST /api/tracks/genre-tags/remove` — 指定タグを各曲の genre から一括除去。
@@ -1844,33 +1828,7 @@ pub async fn remove_genre_tags(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<GenreTagBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let tag = body.tag.trim();
-    if tag.is_empty() {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "tag is empty"));
-    }
-    let db = state.db()?;
-    let mut updated = 0_i64;
-    let mut file_failed = 0_i64;
-    for &id in &body.track_ids {
-        if db.remove_genre_tag(id, tag).is_ok() {
-            updated += 1;
-            if let Ok(Some(t)) = db.get_track_by_track_id(id) {
-                let w = crate::organizer::TagWrite {
-                    genre: Some(t.genre.as_deref().unwrap_or("")),
-                    ..Default::default()
-                };
-                if writeback(t.location_path.as_deref(), &w) {
-                    file_failed += 1;
-                }
-            }
-        }
-    }
-    if updated > 0 {
-        state.notify_library_changed(None);
-    }
-    Ok(Json(
-        json!({ "updated": updated, "fileWriteFailed": file_failed }),
-    ))
+    edit_genre_tags(&state, &body, crate::library::genre::GenreTagOp::Remove)
 }
 
 /// `POST /api/tracks/tags/{add,remove}` のボディ。first-class Tags (ファイル書き戻しなし)。

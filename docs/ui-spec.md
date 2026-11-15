@@ -150,7 +150,8 @@ viewMode により切替:
 - ▶ Play / ➕ Add to Queue / ℹ Get Info / Edit
 - (プレイリスト表示中のみ) − Remove from this playlist
 - 区切り → **Add to playlist...** プレイリスト一覧
-- 区切り → **Genre tags**: ＋ Add tag… / 現タグごとに「− Remove "xxx"」
+- 区切り → **Genre tags**: ＋ Add tag… / 現タグごとに「− Remove "xxx"」。
+  DB と実ファイルのタグ (genre のみ) の両方を更新する (Get Info・API と同じ。ファイルが無い曲は DB のみ)
 
 ### 3.2 ArtistsView (viewMode = `artists`)
 **データ取得**: すべてサーバ集約 + 遅延取得で、全曲をメモリに載せない。
@@ -285,6 +286,7 @@ viewMode により切替:
 2. TrackEditor で全フィールドを編集。
 3. ★ レーティングは TrackTable / TrackEditor 両方からインライン編集可。
 4. ジャンルタグは「タグの集合」として `Add / Remove tag` を選択行群に対して一括適用可。
+   どの経路 (右クリック / Get Info / API) でも DB と実ファイルのタグの両方に書く (`docs/genre/design.md` §2)。
 
 **CD リッピング**:
 - Drive 入力 → Detect → MB 候補選択 → トラック選択 → Format/Output 指定 → Start。

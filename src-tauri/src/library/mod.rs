@@ -12,5 +12,6 @@
 
 pub mod delete;
 pub mod edit;
+pub mod genre;
 pub mod playlists;
 pub mod similar;
