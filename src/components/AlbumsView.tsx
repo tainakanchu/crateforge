@@ -31,6 +31,7 @@ import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
 import { AddGenreTagDialog } from "./AddGenreTagDialog";
 import { CovTrackRow } from "./CovTrackRow";
+import { useTrackActionRunner } from "../hooks/useTrackActionRunner";
 
 const SORT_LINE_H = 15; // ソートキー表示行 (.cov-meta .ls) のおよその高さ
 
@@ -304,6 +305,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   } = useStore();
   // グローバルトースト通知
   const pushToast = useStore((s) => s.pushToast);
+  const run = useTrackActionRunner();
   // グリッドのスクロール要素。初回描画が空状態 (データ到着前) だと要素が無いので、
   // 付いた時点で幅計測を始められるよう callback ref で持つ (useElementWidth)。
   const { ref: setParentRef, elRef: parentRef, width } = useElementWidth<HTMLDivElement>();
@@ -396,12 +398,8 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   // 解決済みトラックを頭から (または指定トラックから) 再生。
   const playTracks = useCallback(async (ts: Track[], startId?: number) => {
-    try {
-      await trackActions.playTracks(trackApi, ts, startId);
-    } catch (err) {
-      console.error("Failed to play:", err);
-    }
-  }, []);
+    await run("play", () => trackActions.playTracks(trackApi, ts, startId));
+  }, [run]);
 
   // アルバムを再生 (必要なら曲を取得してから)。
   const playAlbum = useCallback(
@@ -467,12 +465,10 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const applyRating = useCallback(
     async (trackIds: number[], stars: number) => {
       const rating = starsToRating(stars);
-      try {
-        await trackActions.setRatingForTracks(trackApi, trackIds, rating);
-      } catch (err) {
-        console.error("Failed to set rating:", err);
-        return;
-      }
+      const ok = await run("rating", () =>
+        trackActions.setRatingForTracks(trackApi, trackIds, rating),
+      );
+      if (!ok) return false;
       const ids = new Set(trackIds);
       setTrackCache((prev) => {
         let next: Map<string, Track[]> | null = null;
@@ -484,16 +480,18 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         return next ?? prev;
       });
       onTracksChanged();
+      return true;
     },
-    [onTracksChanged],
+    [onTracksChanged, run],
   );
 
   const handleSetRating = useCallback(
     async (stars: number) => {
       if (!contextMenu) return;
-      await applyRating(contextMenu.trackIds, stars);
+      // 星はメニューを開いたまま付け直せるが、失敗したら (プレビューの星が残らないよう) 閉じる。
+      if (!(await applyRating(contextMenu.trackIds, stars))) closeMenu();
     },
-    [contextMenu, applyRating],
+    [contextMenu, applyRating, closeMenu],
   );
 
   // メニューの操作対象 (trackIds) だけを入れる。contextMenu.tracks はアルバム全曲なので、
@@ -513,26 +511,25 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleEnqueue = useCallback(async () => {
     if (!contextMenu) return;
-    await trackActions.enqueueTracks(trackApi, contextMenu.trackIds);
+    const ids = contextMenu.trackIds;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("enqueue", () => trackActions.enqueueTracks(trackApi, ids));
+  }, [contextMenu, closeMenu, run]);
 
   // 「次に再生」: 現在曲の直後に選択順で並ぶ (挿入順の反転は playNextTracks 側)。
   const handlePlayNext = useCallback(async () => {
     if (!contextMenu) return;
-    await trackActions.playNextTracks(trackApi, contextMenu.trackIds);
+    const ids = contextMenu.trackIds;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("playNext", () => trackActions.playNextTracks(trackApi, ids));
+  }, [contextMenu, closeMenu, run]);
 
   const handleAnalyze = useCallback(async () => {
     if (!contextMenu) return;
-    try {
-      await analysisApi.analyzeTracks(contextMenu.trackIds, true);
-    } catch (err) {
-      console.error("Failed to queue analysis:", err);
-    }
+    const ids = contextMenu.trackIds;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("analyze", () => analysisApi.analyzeTracks(ids, true));
+  }, [contextMenu, closeMenu, run]);
 
   const handleFindSimilar = useCallback(() => {
     if (!contextMenu) return;
@@ -557,13 +554,9 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleReveal = useCallback(async () => {
     const path = contextMenu?.primary.locationPath;
     if (!path) return;
-    try {
-      await libraryApi.revealInFileManager(path);
-    } catch (err) {
-      pushToast("error", `ファイルマネージャで表示できませんでした: ${err}`);
-    }
     closeMenu();
-  }, [contextMenu, closeMenu, pushToast]);
+    await run("reveal", () => libraryApi.revealInFileManager(path));
+  }, [contextMenu, closeMenu, run]);
 
   // 削除対象はメニューの操作対象 (trackIds) と揃える。
   // アルバムのカバーから開いた場合はアルバム全曲が対象になる。
@@ -583,39 +576,29 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleAddToPlaylist = useCallback(
     async (playlistId: number) => {
       if (!contextMenu) return;
-      try {
-        const added = await trackActions.addTracksToPlaylist(
-          trackApi,
-          playlists,
-          playlistId,
-          contextMenu.trackIds,
-        );
+      const ids = contextMenu.trackIds;
+      closeMenu();
+      await run("addToPlaylist", async () => {
+        const added = await trackActions.addTracksToPlaylist(trackApi, playlists, playlistId, ids);
         pushRecentPlaylist(playlistId);
         onTracksChanged();
         pushToast("success", trackActions.addedToPlaylistMessage(added));
-      } catch (err) {
-        pushToast("error", `追加に失敗しました: ${err}`);
-      }
-      closeMenu();
+      });
     },
-    [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast, playlists],
+    [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast, playlists, run],
   );
 
   const handleRemoveFromPlaylist = useCallback(async () => {
     if (!contextMenu || viewMode !== "playlist" || selectedPlaylistId === null) return;
-    try {
+    const ids = contextMenu.trackIds;
+    closeMenu();
+    await run("removeFromPlaylist", async () => {
       // アルバムのカバーから開いた場合は全曲を 1 回の呼び出し (1 トランザクション) で外す。
-      const removed = await playlistsApi.removeTracksFromPlaylist(
-        selectedPlaylistId,
-        contextMenu.trackIds,
-      );
+      const removed = await playlistsApi.removeTracksFromPlaylist(selectedPlaylistId, ids);
       onTracksChanged();
       if (removed > 1) pushToast("success", `${removed} 曲をプレイリストから外しました`);
-    } catch (err) {
-      pushToast("error", `削除に失敗しました: ${err}`);
-    }
-    closeMenu();
-  }, [contextMenu, viewMode, selectedPlaylistId, onTracksChanged, closeMenu, pushToast]);
+    });
+  }, [contextMenu, viewMode, selectedPlaylistId, onTracksChanged, closeMenu, pushToast, run]);
 
   const handleApplyAddTag = useCallback(async () => {
     const tag = newTag.trim();
@@ -623,29 +606,27 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       setShowAddTagDialog(false);
       return;
     }
-    try {
-      await libraryApi.addGenreTag(contextMenu.trackIds, tag);
-      onTracksChanged();
-    } catch (err) {
-      pushToast("error", `タグの追加に失敗しました: ${err}`);
-    }
+    const ids = contextMenu.trackIds;
     setShowAddTagDialog(false);
     setNewTag("");
     closeMenu();
-  }, [newTag, contextMenu, onTracksChanged, closeMenu, pushToast]);
+    await run("addTag", async () => {
+      await libraryApi.addGenreTag(ids, tag);
+      onTracksChanged();
+    });
+  }, [newTag, contextMenu, onTracksChanged, closeMenu, run]);
 
   const handleRemoveTag = useCallback(
     async (tag: string) => {
       if (!contextMenu) return;
-      try {
-        await libraryApi.removeGenreTag(contextMenu.trackIds, tag);
-        onTracksChanged();
-      } catch (err) {
-        pushToast("error", `タグの削除に失敗しました: ${err}`);
-      }
+      const ids = contextMenu.trackIds;
       closeMenu();
+      await run("removeTag", async () => {
+        await libraryApi.removeGenreTag(ids, tag);
+        onTracksChanged();
+      });
     },
-    [contextMenu, onTracksChanged, closeMenu, pushToast],
+    [contextMenu, onTracksChanged, closeMenu, run],
   );
 
   // メニュー表示用の派生値 (レーティングは最新の tracks から引き直す)。

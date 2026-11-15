@@ -1,11 +1,14 @@
 // 曲に対する操作 (再生 / キュー追加 / 次に再生 / レーティング / プレイリスト追加) の手順。
 //
 // ビュー (TracksView / AlbumsView / ArtistsView / TrackTable) ごとに同じ手順を書いていたものを
-// まとめる。対象 ID の決め方 (選択・右クリック対象・アルバム全曲) と、失敗時の通知は
-// ビュー側に残す: ここの関数は失敗をそのまま throw する
-// (通知方針の一本化は docs/refactor/design.md フェーズ 2 の A3)。
+// まとめる。対象 ID の決め方 (選択・右クリック対象・アルバム全曲) はビュー側に残す。
+//
+// 手順の関数は失敗をそのまま throw する。失敗の通知は runTrackAction の 1 か所で行う
+// (docs/ui-spec.md §4.4「曲操作の失敗」: どのビューでも失敗はトーストで知らせる)。
 //
 // API は引数で受ける (テストで差し替えるため。実体は lib/trackActionsApi.ts)。
+
+import { errorMessage } from "./errors.ts";
 
 export interface PlayApi {
   /** 試聴 (プレビュー) 中なら抜けて通常再生に戻す。 */
@@ -109,4 +112,68 @@ export async function addTracksToPlaylist(
 /** プレイリスト追加の成功トーストの文言。 */
 export function addedToPlaylistMessage(result: { added: number; name: string }): string {
   return `「${result.name}」に ${result.added} 曲を追加しました`;
+}
+
+// ---- 失敗の通知 ----
+
+/** 曲操作の種類 (失敗トーストの文言を決める)。 */
+export type TrackActionKind =
+  | "play"
+  | "enqueue"
+  | "playNext"
+  | "rating"
+  | "addToPlaylist"
+  | "removeFromPlaylist"
+  | "addTag"
+  | "removeTag"
+  | "saveGenre"
+  | "analyze"
+  | "reveal";
+
+const FAILURE_LABEL: Record<TrackActionKind, string> = {
+  play: "再生に失敗しました",
+  enqueue: "キューへの追加に失敗しました",
+  playNext: "「次に再生」への追加に失敗しました",
+  rating: "レーティングを変更できませんでした",
+  addToPlaylist: "追加に失敗しました",
+  removeFromPlaylist: "削除に失敗しました",
+  addTag: "タグの追加に失敗しました",
+  removeTag: "タグの削除に失敗しました",
+  saveGenre: "ジャンルの保存に失敗しました",
+  analyze: "解析を開始できませんでした",
+  reveal: "ファイルマネージャで表示できませんでした",
+};
+
+/**
+ * 失敗トーストの文言 (`<何に失敗したか>: <理由>`)。
+ * 再生で曲名が分かるときは、どの曲かを添える。
+ */
+export function trackActionFailureMessage(
+  kind: TrackActionKind,
+  error: unknown,
+  trackName?: string,
+): string {
+  const what =
+    kind === "play" && trackName ? `『${trackName}』を再生できませんでした` : FAILURE_LABEL[kind];
+  return `${what}: ${errorMessage(error)}`;
+}
+
+/**
+ * 曲操作を実行し、失敗したら notify (エラートースト) で知らせる。throw はしない。
+ * 成功したら true、失敗したら false を返す (呼び出し元は後片付けを分けられる)。
+ */
+export async function runTrackAction(
+  notify: (message: string) => void,
+  kind: TrackActionKind,
+  action: () => Promise<unknown>,
+  trackName?: string,
+): Promise<boolean> {
+  try {
+    await action();
+    return true;
+  } catch (err) {
+    console.error(`Track action failed (${kind}):`, err);
+    notify(trackActionFailureMessage(kind, err, trackName));
+    return false;
+  }
 }

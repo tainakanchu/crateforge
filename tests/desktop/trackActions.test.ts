@@ -8,7 +8,9 @@ import {
   playQueueFrom,
   playTracks,
   playableIds,
+  runTrackAction,
   setRatingForTracks,
+  trackActionFailureMessage,
 } from "../../src/lib/trackActions.ts";
 
 /** 呼び出しを記録するフェイク API。enqueueTrackNext は実装と同じく「現在曲の直後」へ挿入する。 */
@@ -125,4 +127,85 @@ test("addTracksToPlaylist: 追加数とプレイリスト名を返す", async ()
   assert.equal(addedToPlaylistMessage(r), "「Warm up」に 2 曲を追加しました");
   // 一覧に無いプレイリストは既定の名前
   assert.equal((await addTracksToPlaylist(api, [], 9, [1])).name, "プレイリスト");
+});
+
+// ---- 失敗の通知 (ui-spec §4.4: 曲操作の失敗はトーストで知らせる) ----
+
+test("runTrackAction: 成功したら true を返し、通知しない", async () => {
+  const notes: string[] = [];
+  let ran = false;
+  const ok = await runTrackAction((m) => notes.push(m), "enqueue", async () => {
+    ran = true;
+  });
+  assert.equal(ok, true);
+  assert.equal(ran, true);
+  assert.deepEqual(notes, []);
+});
+
+test("runTrackAction: 失敗したら throw せず false を返し、理由つきで 1 回通知する", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const notes: string[] = [];
+  const ok = await runTrackAction((m) => notes.push(m), "enqueue", async () => {
+    throw new Error("device busy");
+  });
+  assert.equal(ok, false);
+  assert.deepEqual(notes, ["キューへの追加に失敗しました: device busy"]);
+});
+
+test("runTrackAction: Tauri の {message} 形式の失敗も理由を読む ([object Object] にしない)", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const notes: string[] = [];
+  await runTrackAction((m) => notes.push(m), "rating", async () => {
+    throw { code: "db", message: "database is locked" };
+  });
+  assert.deepEqual(notes, ["レーティングを変更できませんでした: database is locked"]);
+});
+
+test("runTrackAction: 実 API の手順と組み合わせると、途中の失敗が通知される", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const api = fakeApi({ failOn: "enqueueTrackNext(2)" });
+  const notes: string[] = [];
+  const ok = await runTrackAction((m) => notes.push(m), "playNext", () =>
+    playNextTracks(api, [1, 2, 3]),
+  );
+  assert.equal(ok, false);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /^「次に再生」への追加に失敗しました: failed: enqueueTrackNext$/);
+});
+
+test("trackActionFailureMessage: どの操作にも文言があり、理由が付く", () => {
+  const kinds = [
+    "play",
+    "enqueue",
+    "playNext",
+    "rating",
+    "addToPlaylist",
+    "removeFromPlaylist",
+    "addTag",
+    "removeTag",
+    "saveGenre",
+    "analyze",
+    "reveal",
+  ] as const;
+  const seen = new Set<string>();
+  for (const kind of kinds) {
+    const msg = trackActionFailureMessage(kind, "理由");
+    assert.match(msg, /^.+: 理由$/, kind);
+    assert.ok(!msg.startsWith("undefined"), kind);
+    seen.add(msg);
+  }
+  assert.equal(seen.size, kinds.length, "操作ごとに文言が違う");
+});
+
+test("trackActionFailureMessage: 再生は曲名が分かれば添える", () => {
+  assert.equal(
+    trackActionFailureMessage("play", new Error("file not found"), "Song A"),
+    "『Song A』を再生できませんでした: file not found",
+  );
+  assert.equal(
+    trackActionFailureMessage("play", new Error("file not found")),
+    "再生に失敗しました: file not found",
+  );
+  // 再生以外は曲名を使わない
+  assert.equal(trackActionFailureMessage("enqueue", "x", "Song A"), "キューへの追加に失敗しました: x");
 });

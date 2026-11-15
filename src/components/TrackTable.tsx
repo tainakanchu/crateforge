@@ -27,6 +27,7 @@ import { formatTrackTime } from "../lib/format";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
 import { AddGenreTagDialog } from "./AddGenreTagDialog";
+import { useTrackActionRunner } from "../hooks/useTrackActionRunner";
 
 // 曲名列の最小幅 (未固定 = flex のとき)。styles.css の .cb-id / .cb-h-id と揃える。
 const NAME_MIN_WIDTH = 180;
@@ -97,6 +98,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   } = useStore();
   // グローバルトースト通知
   const pushToast = useStore((s) => s.pushToast);
+  const run = useTrackActionRunner();
 
   const parentRef = useRef<HTMLDivElement>(null);
   // 範囲選択の起点（Shift の基準）と、矢印移動のカーソル位置。
@@ -467,16 +469,15 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleDoubleClick = useCallback(
     async (track: Track) => {
       if (!track.fileExists) return;
-      try {
-        const ids = tracks.map((t) => t.trackId);
-        const startIndex = ids.indexOf(track.trackId);
-        await trackActions.playQueueFrom(trackApi, ids, Math.max(0, startIndex), track.trackId);
-      } catch (err) {
-        console.error("Failed to play:", err);
-        pushToast("error", `『${track.name || "(unknown)"}』を再生できませんでした: ${err}`);
-      }
+      const ids = tracks.map((t) => t.trackId);
+      const startIndex = ids.indexOf(track.trackId);
+      await run(
+        "play",
+        () => trackActions.playQueueFrom(trackApi, ids, Math.max(0, startIndex), track.trackId),
+        track.name || "(unknown)",
+      );
     },
-    [tracks, pushToast],
+    [tracks, run],
   );
 
   const handleContextMenu = useCallback(
@@ -503,18 +504,16 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleAddToPlaylist = useCallback(
     async (playlistId: number) => {
       const ids = ctxIds();
+      setContextMenu(null);
       if (ids.length === 0) return;
-      try {
+      await run("addToPlaylist", async () => {
         const added = await trackActions.addTracksToPlaylist(trackApi, playlists, playlistId, ids);
         pushRecentPlaylist(playlistId);
         onTracksChanged();
         pushToast("success", trackActions.addedToPlaylistMessage(added));
-      } catch (err) {
-        pushToast("error", `追加に失敗しました: ${err}`);
-      }
-      setContextMenu(null);
+      });
     },
-    [ctxIds, pushRecentPlaylist, onTracksChanged, pushToast, playlists],
+    [ctxIds, pushRecentPlaylist, onTracksChanged, pushToast, playlists, run],
   );
 
   const handleAddSelectionToCrate = useCallback(() => {
@@ -530,28 +529,24 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     const ids = ctxIds();
     setContextMenu(null);
     if (viewMode !== "playlist" || selectedPlaylistId === null || ids.length === 0) return;
-    try {
+    await run("removeFromPlaylist", async () => {
       const removed = await playlistsApi.removeTracksFromPlaylist(selectedPlaylistId, ids);
       // 外した曲は一覧から消えるので、選択も残さない（見えない曲が選択件数に残らないように）。
       setSelectedTrackIds(new Set());
       onTracksChanged();
       if (removed > 1) pushToast("success", `${removed} 曲をプレイリストから外しました`);
-    } catch (err) {
-      pushToast("error", `削除に失敗しました: ${err}`);
-    }
-  }, [ctxIds, viewMode, selectedPlaylistId, setSelectedTrackIds, onTracksChanged, pushToast]);
+    });
+  }, [ctxIds, viewMode, selectedPlaylistId, setSelectedTrackIds, onTracksChanged, pushToast, run]);
 
   const handleSetRating = useCallback(
     async (track: Track, stars: number) => {
       const newRating = starsToRating(stars);
-      try {
+      await run("rating", async () => {
         await trackActions.setRatingForTracks(trackApi, [track.trackId], newRating);
         onTracksChanged();
-      } catch (err) {
-        console.error("Failed to set rating:", err);
-      }
+      });
     },
-    [onTracksChanged],
+    [onTracksChanged, run],
   );
 
   // コンテキストメニュー用: 選択中（または右クリック対象）の全曲へレーティングを適用
@@ -560,39 +555,35 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       const ids = ctxIds();
       if (ids.length === 0) return;
       const newRating = starsToRating(stars);
-      try {
+      const ok = await run("rating", async () => {
         await trackActions.setRatingForTracks(trackApi, ids, newRating);
         onTracksChanged();
-      } catch (err) {
-        console.error("Failed to set rating:", err);
-      }
+      });
+      // 星はメニューを開いたまま付け直せるが、失敗したら (プレビューの星が残らないよう) 閉じる。
+      if (!ok) setContextMenu(null);
     },
-    [ctxIds, onTracksChanged],
+    [ctxIds, onTracksChanged, run],
   );
 
   const handleEnqueue = useCallback(async () => {
-    await trackActions.enqueueTracks(trackApi, ctxIds());
+    const ids = ctxIds();
     setContextMenu(null);
-  }, [ctxIds]);
+    await run("enqueue", () => trackActions.enqueueTracks(trackApi, ids));
+  }, [ctxIds, run]);
 
   // 「次に再生」: 現在曲の直後に選択順で並ぶ (挿入順の反転は playNextTracks 側)。
   const handlePlayNext = useCallback(async () => {
-    await trackActions.playNextTracks(trackApi, ctxIds());
+    const ids = ctxIds();
     setContextMenu(null);
-  }, [ctxIds]);
+    await run("playNext", () => trackActions.playNextTracks(trackApi, ids));
+  }, [ctxIds, run]);
 
   // 選択（or 右クリック対象）の曲を BPM/Key/Energy 解析キューへ投入（手動なので再解析強制）。
   const handleAnalyzeSelection = useCallback(async () => {
     const ids = ctxIds();
-    if (ids.length > 0) {
-      try {
-        await analysisApi.analyzeTracks(ids, true);
-      } catch (err) {
-        console.error("Failed to queue analysis:", err);
-      }
-    }
     setContextMenu(null);
-  }, [ctxIds]);
+    if (ids.length > 0) await run("analyze", () => analysisApi.analyzeTracks(ids, true));
+  }, [ctxIds, run]);
 
   const handleApplyAddTag = useCallback(async () => {
     const tag = newTag.trim();
@@ -600,28 +591,26 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       setShowAddTagDialog(false);
       return;
     }
-    try {
-      await libraryApi.addGenreTag(ctxIds(), tag);
-      onTracksChanged();
-    } catch (err) {
-      pushToast("error", `タグの追加に失敗しました: ${err}`);
-    }
+    const ids = ctxIds();
     setShowAddTagDialog(false);
     setNewTag("");
     setContextMenu(null);
-  }, [newTag, ctxIds, onTracksChanged, pushToast]);
+    await run("addTag", async () => {
+      await libraryApi.addGenreTag(ids, tag);
+      onTracksChanged();
+    });
+  }, [newTag, ctxIds, onTracksChanged, run]);
 
   const handleRemoveGenreTag = useCallback(
     async (tag: string) => {
-      try {
-        await libraryApi.removeGenreTag(ctxIds(), tag);
-        onTracksChanged();
-      } catch (err) {
-        pushToast("error", `タグの削除に失敗しました: ${err}`);
-      }
+      const ids = ctxIds();
       setContextMenu(null);
+      await run("removeTag", async () => {
+        await libraryApi.removeGenreTag(ids, tag);
+        onTracksChanged();
+      });
     },
-    [ctxIds, onTracksChanged, pushToast],
+    [ctxIds, onTracksChanged, run],
   );
 
   const handleGetInfo = useCallback(() => {
@@ -658,13 +647,11 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     if (!genreEdit) return;
     const next = joinGenre(genreEdit.tags);
     setGenreEdit(null);
-    try {
+    await run("saveGenre", async () => {
       await libraryApi.updateTrack(genreEdit.trackId, { genre: next });
       onTracksChanged();
-    } catch (err) {
-      pushToast("error", `ジャンルの保存に失敗しました: ${err}`);
-    }
-  }, [genreEdit, onTracksChanged, pushToast]);
+    });
+  }, [genreEdit, onTracksChanged, run]);
 
   // 右クリックした 1 曲を基準に右レールの Similar タブを開く。
   const handleFindSimilar = useCallback(() => {
@@ -696,13 +683,9 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   // 右クリックした 1 曲を Finder / エクスプローラで表示する。
   const handleReveal = useCallback(async (path: string) => {
-    try {
-      await libraryApi.revealInFileManager(path);
-    } catch (err) {
-      pushToast("error", `ファイルマネージャで表示できませんでした: ${err}`);
-    }
     setContextMenu(null);
-  }, [pushToast]);
+    await run("reveal", () => libraryApi.revealInFileManager(path));
+  }, [run]);
 
   const closeMenu = useCallback(() => setContextMenu(null), []);
 
@@ -793,13 +776,14 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         e.preventDefault();
         const ids = ts.map((t) => t.trackId);
         const startIndex = ids.indexOf(track.trackId);
-        trackActions
-          .playQueueFrom(trackApi, ids, Math.max(0, startIndex), track.trackId)
-          .catch((err) => {
-            console.error("Failed to play:", err);
-            // useStore.getState() 経由でトーストを出す（effect クロージャ内のため）。
-            useStore.getState().pushToast("error", `『${track!.name || "(unknown)"}』を再生できませんでした: ${err}`);
-          });
+        const playId = track.trackId;
+        // useStore.getState() 経由でトーストを出す（effect クロージャ内のため）。
+        void trackActions.runTrackAction(
+          (message) => useStore.getState().pushToast("error", message),
+          "play",
+          () => trackActions.playQueueFrom(trackApi, ids, Math.max(0, startIndex), playId),
+          track.name || "(unknown)",
+        );
         return;
       }
 

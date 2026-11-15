@@ -26,6 +26,7 @@ import { combineQuery } from "../lib/query";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
 import { CovTrackRow } from "./CovTrackRow";
+import { useTrackActionRunner } from "../hooks/useTrackActionRunner";
 
 
 /**
@@ -57,6 +58,7 @@ const artistKeyOf = (a: ArtistRow) => a.name;
 export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   const { playback, crate, addToCrate, sortField, sortOrder } = useStore();
   const pushToast = useStore((s) => s.pushToast);
+  const run = useTrackActionRunner();
   // 検索ボックス + フィルタタグ (D4)。トラック一覧と同じ組み立て (App.tsx の combinedQuery)。
   const searchQuery = useStore((s) => s.searchQuery);
   const filterTags = useStore((s) => s.filterTags);
@@ -242,26 +244,19 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   // ---- 再生 / キュー / クレート ----
 
   const playTracks = useCallback(async (ts: Track[], startId?: number) => {
-    try {
-      await trackActions.playTracks(trackApi, ts, startId);
-    } catch (err) {
-      console.error("Failed to play:", err);
-      pushToast("error", `再生に失敗しました: ${err}`);
-    }
-  }, [pushToast]);
+    await run("play", () => trackActions.playTracks(trackApi, ts, startId));
+  }, [run]);
 
   const enqueueTracks = useCallback(
     async (ts: Track[]) => {
       const ids = trackActions.playableIds(ts);
       if (ids.length === 0) return;
-      try {
+      await run("enqueue", async () => {
         await trackActions.enqueueTracks(trackApi, ids);
         pushToast("success", `${ids.length} 曲をキューに追加しました`);
-      } catch (err) {
-        pushToast("error", `キューへの追加に失敗しました: ${err}`);
-      }
+      });
     },
-    [pushToast],
+    [pushToast, run],
   );
 
   const crateTracks = useCallback(

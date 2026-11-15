@@ -26,6 +26,7 @@ import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
 import { AddGenreTagDialog } from "./AddGenreTagDialog";
+import { useTrackActionRunner } from "../hooks/useTrackActionRunner";
 
 interface CtxMenu {
   x: number;
@@ -57,6 +58,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     setSimilarBase,
   } = useStore();
   const pushToast = useStore((s) => s.pushToast);
+  const run = useTrackActionRunner();
   const analysisByTrack = useStore((s) => s.analysisByTrack);
 
   const { ref: setParentRef, elRef: parentRef, width } = useElementWidth<HTMLDivElement>();
@@ -85,13 +87,13 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     const ids = trackActions.playableIds(tracks);
     if (ids.length === 0) return;
     const start = Math.max(0, ids.indexOf(t.trackId));
-    try {
-      // キューは再生できる曲だけ。鳴らすのはクリックした曲そのもの。
-      await trackActions.playQueueFrom(trackApi, ids, start, t.trackId);
-    } catch (err) {
-      console.error("Failed to play:", err);
-    }
-  }, [tracks]);
+    // キューは再生できる曲だけ。鳴らすのはクリックした曲そのもの。
+    await run(
+      "play",
+      () => trackActions.playQueueFrom(trackApi, ids, start, t.trackId),
+      t.name || "(unknown)",
+    );
+  }, [tracks, run]);
 
   const closeMenu = useCallback(() => setContextMenu(null), []);
 
@@ -104,13 +106,13 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleSetRating = useCallback(async (stars: number) => {
     if (!contextMenu) return;
     const id = contextMenu.track.trackId;
-    try {
+    const ok = await run("rating", async () => {
       await trackActions.setRatingForTracks(trackApi, [id], starsToRating(stars));
       onTracksChanged();
-    } catch (err) {
-      console.error("Failed to set rating:", err);
-    }
-  }, [contextMenu, onTracksChanged]);
+    });
+    // 星はメニューを開いたまま付け直せるが、失敗したら (プレビューの星が残らないよう) 閉じる。
+    if (!ok) closeMenu();
+  }, [contextMenu, onTracksChanged, run, closeMenu]);
 
   const handleAddToCrate = useCallback(() => {
     if (!contextMenu) return;
@@ -120,25 +122,24 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleEnqueue = useCallback(async () => {
     if (!contextMenu) return;
-    await trackActions.enqueueTracks(trackApi, [contextMenu.track.trackId]);
+    const id = contextMenu.track.trackId;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("enqueue", () => trackActions.enqueueTracks(trackApi, [id]));
+  }, [contextMenu, closeMenu, run]);
 
   const handlePlayNext = useCallback(async () => {
     if (!contextMenu) return;
-    await trackActions.playNextTracks(trackApi, [contextMenu.track.trackId]);
+    const id = contextMenu.track.trackId;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("playNext", () => trackActions.playNextTracks(trackApi, [id]));
+  }, [contextMenu, closeMenu, run]);
 
   const handleAnalyze = useCallback(async () => {
     if (!contextMenu) return;
-    try {
-      await analysisApi.analyzeTracks([contextMenu.track.trackId], true);
-    } catch (err) {
-      console.error("Failed to queue analysis:", err);
-    }
+    const id = contextMenu.track.trackId;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("analyze", () => analysisApi.analyzeTracks([id], true));
+  }, [contextMenu, closeMenu, run]);
 
   const handleFindSimilar = useCallback(() => {
     if (!contextMenu) return;
@@ -163,13 +164,9 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleReveal = useCallback(async () => {
     const path = contextMenu?.track.locationPath;
     if (!path) return;
-    try {
-      await libraryApi.revealInFileManager(path);
-    } catch (err) {
-      pushToast("error", `ファイルマネージャで表示できませんでした: ${err}`);
-    }
     closeMenu();
-  }, [contextMenu, closeMenu, pushToast]);
+    await run("reveal", () => libraryApi.revealInFileManager(path));
+  }, [contextMenu, closeMenu, run]);
 
   const handleDelete = useCallback(() => {
     if (!contextMenu) return;
@@ -185,29 +182,25 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleAddToPlaylist = useCallback(async (playlistId: number) => {
     if (!contextMenu) return;
-    try {
-      const added = await trackActions.addTracksToPlaylist(trackApi, playlists, playlistId, [
-        contextMenu.track.trackId,
-      ]);
+    const id = contextMenu.track.trackId;
+    closeMenu();
+    await run("addToPlaylist", async () => {
+      const added = await trackActions.addTracksToPlaylist(trackApi, playlists, playlistId, [id]);
       pushRecentPlaylist(playlistId);
       onTracksChanged();
       pushToast("success", trackActions.addedToPlaylistMessage(added));
-    } catch (err) {
-      pushToast("error", `追加に失敗しました: ${err}`);
-    }
-    closeMenu();
-  }, [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast, playlists]);
+    });
+  }, [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast, playlists, run]);
 
   const handleRemoveFromPlaylist = useCallback(async () => {
     if (!contextMenu || viewMode !== "playlist" || selectedPlaylistId === null) return;
-    try {
-      await playlistsApi.removeTrackFromPlaylist(selectedPlaylistId, contextMenu.track.trackId);
-      onTracksChanged();
-    } catch (err) {
-      pushToast("error", `削除に失敗しました: ${err}`);
-    }
+    const id = contextMenu.track.trackId;
     closeMenu();
-  }, [contextMenu, viewMode, selectedPlaylistId, onTracksChanged, closeMenu, pushToast]);
+    await run("removeFromPlaylist", async () => {
+      await playlistsApi.removeTrackFromPlaylist(selectedPlaylistId, id);
+      onTracksChanged();
+    });
+  }, [contextMenu, viewMode, selectedPlaylistId, onTracksChanged, closeMenu, run]);
 
   const handleApplyAddTag = useCallback(async () => {
     const tag = newTag.trim();
@@ -215,27 +208,25 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       setShowAddTagDialog(false);
       return;
     }
-    try {
-      await libraryApi.addGenreTag([contextMenu.track.trackId], tag);
-      onTracksChanged();
-    } catch (err) {
-      pushToast("error", `タグの追加に失敗しました: ${err}`);
-    }
+    const id = contextMenu.track.trackId;
     setShowAddTagDialog(false);
     setNewTag("");
     closeMenu();
-  }, [newTag, contextMenu, onTracksChanged, closeMenu, pushToast]);
+    await run("addTag", async () => {
+      await libraryApi.addGenreTag([id], tag);
+      onTracksChanged();
+    });
+  }, [newTag, contextMenu, onTracksChanged, closeMenu, run]);
 
   const handleRemoveTag = useCallback(async (tag: string) => {
     if (!contextMenu) return;
-    try {
-      await libraryApi.removeGenreTag([contextMenu.track.trackId], tag);
-      onTracksChanged();
-    } catch (err) {
-      pushToast("error", `タグの削除に失敗しました: ${err}`);
-    }
+    const id = contextMenu.track.trackId;
     closeMenu();
-  }, [contextMenu, onTracksChanged, closeMenu, pushToast]);
+    await run("removeTag", async () => {
+      await libraryApi.removeGenreTag([id], tag);
+      onTracksChanged();
+    });
+  }, [contextMenu, onTracksChanged, closeMenu, run]);
 
   const crateSet = useMemo(() => new Set(crate.map((t) => t.trackId)), [crate]);
 
