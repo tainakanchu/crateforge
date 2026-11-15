@@ -1,6 +1,6 @@
 // 評価・タグの書き込み（UI 非依存）。プレイヤーの星 / 長押しメニュー / Now Playing のクイック操作が
 // 同じ手順を通る: オンラインならデスクトップへ直書き、オフラインなら pending キュー (#125)。
-// 結果の見せ方（トースト・画面内の一言・楽観的更新の巻き戻し）は呼び出し側が決める。
+// 失敗・未対応の知らせ方は feedback.ts（3 経路共通のトースト）。成功時の見せ方は呼び出し側が決める。
 
 import type { QueryClient } from "@tanstack/react-query";
 
@@ -71,9 +71,17 @@ export async function writeRating(edit: RatingEdit): Promise<EditOutcome> {
   return "queued";
 }
 
-/** first-class Tag を付ける。オフラインは tag-add としてキューへ。 */
+/**
+ * first-class Tag を付ける。オフラインは tag-add としてキューへ。
+ * `review:later`（あとで聴く）だけは、どの経路から来ても専用の review-later としてキューに積む
+ * （同期時はどちらも同じ `review:later` タグの追加になる。保留一覧の表示を「あとで」に揃えるため）。
+ */
 export function writeTag(edit: TagEdit): Promise<EditOutcome> {
   return addTagOrQueue(edit.trackId, edit.tag, () => {
+    if (edit.tag === REVIEW_LATER_TAG) {
+      queueReviewLater(edit);
+      return;
+    }
     usePendingEdits.getState().enqueue({
       kind: "tag-add",
       trackId: edit.trackId,
@@ -83,9 +91,9 @@ export function writeTag(edit: TagEdit): Promise<EditOutcome> {
   });
 }
 
-/** 「あとで聴く」(`review:later` タグ) を付ける。オフラインは review-later としてキューへ。 */
+/** 「あとで聴く」(`review:later` タグ) を付ける。writeTag に review:later を渡すのと同じ。 */
 export function writeReviewLater(edit: ReviewLaterEdit): Promise<EditOutcome> {
-  return addTagOrQueue(edit.trackId, REVIEW_LATER_TAG, () => queueReviewLater(edit));
+  return writeTag({ ...edit, tag: REVIEW_LATER_TAG });
 }
 
 /** 「あとで聴く」を端末側のキューにだけ記録する（デスクトップがタグ未対応のときの退避にも使う）。 */

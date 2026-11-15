@@ -95,6 +95,19 @@ describe("writeTag", () => {
   });
 });
 
+describe("writeTag: review:later", () => {
+  it("オフラインは tag-add ではなく review-later としてキューに積む（どの経路でも同じ種別）", async () => {
+    await expect(writeTag({ trackId: 4, tag: "review:later", trackName: "D" })).resolves.toBe("queued");
+    expect(queuedOps()).toEqual([{ kind: "review-later", trackId: 4, trackName: "D" }]);
+  });
+
+  it("オンラインは review:later タグを付ける", async () => {
+    const client = connect();
+    await expect(writeTag({ trackId: 4, tag: "review:later" })).resolves.toBe("applied");
+    expect(client.addTrackTags).toHaveBeenCalledWith([4], "review:later");
+  });
+});
+
 describe("writeReviewLater", () => {
   it("オンラインは review:later タグを付けて applied", async () => {
     const client = connect();

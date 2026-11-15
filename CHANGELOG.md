@@ -20,6 +20,9 @@ Each release is documented in both Japanese and English.
 #### TV
 - **仕様変更: アルバム / アーティストの並び順をモバイルと同じにした**: アルバム一覧はこれまで「アルバムアーティスト → アルバム名」順、アーティスト一覧はデスクトップが返した順のままだった。どちらもモバイルと同じ名前順（数字は数として比べ、大文字小文字を区別しない。「Vol. 2」は「Vol. 10」より前）にし、「不明なアルバム」「不明なアーティスト」は末尾に置く。
 
+#### モバイル
+- **仕様変更: 評価・タグの保存失敗をどこから操作してもトーストで知らせる**: プレイヤー画面の星は失敗しても星が元に戻るだけで、プレイヤー画面のタグ操作は画面内の短い一言だけだった。長押しメニューと同じ文言・理由つきのトーストに揃えた（デスクトップがタグに未対応のときも同じ）。未対応のデスクトップで「あとで聴く」を付けたときは、プレイヤー画面からでも端末側に記録する。未接続のとき「あとで聴く」は、タグメニューから選んでも保留一覧に「あとで」として記録する（同期される内容は同じ）。
+
 ### English
 
 #### Desktop
@@ -29,6 +32,9 @@ Each release is documented in both Japanese and English.
 
 #### TV
 - **Behavior change: albums and artists are ordered the same way as on mobile**: the album list used to be ordered by album artist and then album name, and the artist list was shown in whatever order the desktop returned. Both now use the same name order as mobile (numbers compare as numbers and case is ignored, so "Vol. 2" comes before "Vol. 10"), with "不明なアルバム" (unknown album) and "不明なアーティスト" (unknown artist) at the end.
+
+#### Mobile
+- **Behavior change: a toast reports failed rating / tag changes wherever you make them**: on the player screen a failed rating only reverted the stars, and tag actions showed just a short in-screen note. They now show the same toast, with the reason, as the long-press menu (also when the desktop does not support tags). Adding "あとで聴く" (listen later) against a desktop without tag support is now recorded on the device from the player screen too. While offline, "listen later" is recorded in the pending list as "あとで" even when chosen from the tag menu (what gets synced is unchanged).
 
 ## [v0.20.0] - 2026-11-14
 

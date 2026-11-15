@@ -187,6 +187,21 @@ describe("長押しメニュー: タグ / あとで聴く", () => {
     expect(queuedKinds()).toEqual(["tag-add"]);
   });
 
+  it("タグメニューの「あとで聴く」: オフラインは直下の項目と同じ review-later でキューに積む", async () => {
+    await openTagMenu();
+    await press("あとで聴く");
+    expect(toast().message).toBe("オフライン: 再接続時に「あとで聴く」を同期します");
+    expect(queuedKinds()).toEqual(["review-later"]);
+  });
+
+  it("タグメニューの「あとで聴く」: ホスト未対応なら直下の項目と同じく端末側に退避する", async () => {
+    connect({ addTrackTags: jest.fn(async () => Promise.reject(new ApiError(404, "nope"))) });
+    await openTagMenu();
+    await press("あとで聴く");
+    expect(toast()).toEqual({ message: "デスクトップ未対応のため、端末側のみに記録しました", kind: "info" });
+    expect(queuedKinds()).toEqual(["review-later"]);
+  });
+
   it("あとで聴く: オンラインは review:later タグ", async () => {
     const client = connect();
     showTrackMenu(makeTrack());

@@ -27,7 +27,7 @@ import TrackRow from "@/components/TrackRow";
 import RatingStars from "@/components/RatingStars";
 import { useSetRating } from "@/features/browse/hooks";
 import { COMMON_TRIAGE_TAGS, REVIEW_LATER_TAG } from "@/features/triage/commonTags";
-import { writeReviewLater, writeTag } from "@/features/triage/edits";
+import { addTagWithFeedback, reportRatingFailure } from "@/features/triage/feedback";
 
 // 再生速度の選択肢
 const RATE_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] as const;
@@ -515,7 +515,7 @@ function NowPlaying({
 
 /**
  * 現在曲のレーティング（★×5）をタップで設定するコントロール。
- * - 表示は楽観的ローカル state。タップ即時に星を更新し、サーバ呼び出しが失敗したら元に戻す。
+ * - 表示は楽観的ローカル state。タップ即時に星を更新し、サーバ呼び出しが失敗したら元に戻してトーストで知らせる。
  * - 同じ星を再タップすると 0（未設定）にクリア（RatingStars 側のロジック）。
  * - オフライン時も操作可（pendingEdits に enqueue。features/triage/edits.ts の writeRating が振り分け）。
  * - 成功/失敗後に rating を含むクエリ群を invalidate（useSetRating 内・オンライン時）。
@@ -539,7 +539,11 @@ function RatingControl({ track }: { track: Track }) {
         trackName: track.name,
       },
       {
-        onError: () => setRatingValue(prev), // 失敗したら元に戻す
+        // 失敗したら元に戻し、長押しメニューと同じ文言のトーストで知らせる。
+        onError: (e) => {
+          setRatingValue(prev);
+          reportRatingFailure(e);
+        },
       },
     );
   };
@@ -569,19 +573,14 @@ function TriageQuickActions({ track }: { track: Track }) {
     if (busy) return;
     setBusy(true);
     setShowTagPicker(false);
-    const edit = { trackId: track.id, trackName: track.name };
     try {
-      const outcome =
-        tag === REVIEW_LATER_TAG ? await writeReviewLater(edit) : await writeTag({ ...edit, tag });
-      if (outcome === "unsupported") {
-        flash("ホストがタグ未対応");
-      } else if (outcome === "queued") {
+      // 失敗・デスクトップ未対応は addTagWithFeedback がトーストで知らせる（長押しメニューと共通）。
+      const outcome = await addTagWithFeedback({ trackId: track.id, tag, trackName: track.name });
+      if (outcome === "queued") {
         flash("オフライン: 再接続時に同期");
-      } else {
+      } else if (outcome === "applied") {
         flash(tag === REVIEW_LATER_TAG ? "あとで聴くに追加" : `タグ: ${tag}`);
       }
-    } catch {
-      flash("失敗しました");
     } finally {
       setBusy(false);
     }

@@ -58,6 +58,14 @@ You can do play / pause, previous/next, seek, volume, and shuffle / repeat, and 
 Tapping the playing artist (and album) navigates to that page.
 "Play on desktop…" in the track menu asks for confirmation before replacing the desktop queue when it already has tracks.
 
+## Ratings and tags
+
+- Rate a track (in half-star steps) with the stars on the player screen, or from "評価…" (Rate…) in the menu shown when you long-press a track.
+- From the long-press menu and the player screen you can add the common tags and **"あとで聴く" (listen later)**.
+- When not connected, the change is kept on the device as pending and synced to the desktop on reconnect (pending changes are listed in Settings).
+- If a change cannot be saved, or the desktop does not support tags, a **toast** with the same wording tells you, wherever you made the change
+  (on a desktop without tag support, only "listen later" is recorded on the device).
+
 ## Offline download / browsing / playback
 
 Once you download tracks, you can browse and play them **even when not connected to the server**.
