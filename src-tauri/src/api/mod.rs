@@ -976,7 +976,7 @@ mod tests {
             // (track_id, name, artist, album, genre, year, rating)
             (1, "Sunrise", "Alpha", "Dawn", "House", 2019, 80),
             (2, "Midnight", "Beta", "Night", "Techno", 2020, 100),
-            (3, "Afternoon", "Gamma", "Day", "Deep House", 2018, 60),
+            (3, "Afternoon", "Gamma", "Day", "DeepHouse", 2018, 60),
             (4, "Evening", "Delta", "Dusk", "Trance", 2021, 40),
             (5, "Noon", "Epsilon", "Bright", "Ambient", 2017, 0),
         ];
@@ -1217,7 +1217,7 @@ mod tests {
         let (status, body) = req(app, "GET", "/api/tracks?genre=House", None).await;
         assert_eq!(status, StatusCode::OK);
         let arr = body.as_array().unwrap();
-        // "House" と "Deep House" の 2 件 (部分一致, 大小無視)。
+        // "House" と "DeepHouse" の 2 件 (部分一致, 大小無視)。
         let ids: Vec<i64> = arr.iter().map(|t| t["trackId"].as_i64().unwrap()).collect();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&1));
@@ -1681,7 +1681,7 @@ mod tests {
         let (_dir, app) = setup();
         let (status, body) = req(app, "GET", "/api/genres", None).await;
         assert_eq!(status, StatusCode::OK);
-        // genre は空白区切りタグ集合としてバラされる ("Deep House" → "Deep" + "House")。
+        // genre は空白区切りタグ集合としてバラされる (複数語は "DeepHouse" のように 1 タグで書く規約)。
         let arr = body.as_array().unwrap();
         assert!(!arr.is_empty());
         let tags: Vec<&str> = arr.iter().map(|g| g["tag"].as_str().unwrap()).collect();
@@ -3893,7 +3893,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::Database::open(dir.path()).unwrap();
         seed(&db);
-        // genre に "house" を含む曲 = 1 (House) と 3 (Deep House)。
+        // genre に "house" を含む曲 = 1 (House) と 3 (DeepHouse)。
         let criteria: crate::models::SmartCriteria = serde_json::from_value(json!({
             "matchAll": true,
             "rules": [{ "field": "genre", "op": "contains", "value": "house" }],

@@ -182,7 +182,8 @@ viewMode により切替:
 ### 3.4 TrackEditor (モーダル — "Get Info")
 **フィールド** (`TrackEdit`):
 - Name / Artist / Album Artist / Album / Composer
-- Genre (空白区切りタグ、プレースホルダ: `e.g. House Techno Electronic`)
+- Genre (空白区切りタグ、プレースホルダ: `e.g. House Techno Electronic`)。複数語のジャンルは空白なしで書く (`DeepHouse`)。
+  ジャンルのモデル・編集・検索の規則は `docs/genre/design.md`
 - Year (number) / BPM (number) — 横並び
 - Track # / Of / Disc # / Of — 横並び
 - Rating (★×5 + ✕ クリア)
