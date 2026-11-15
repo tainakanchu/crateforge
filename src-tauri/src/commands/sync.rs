@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::db::sync::{SyncSelectionRecord, SyncSource};
 use crate::commands::library::open_db;
+use crate::db::sync::{SyncSelectionRecord, SyncSource};
 use crate::db::Database;
 use crate::models::Playlist;
 use crate::sync::writeback::{ConflictResolution, WritebackPlan, WritebackSummary};

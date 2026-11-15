@@ -6,7 +6,14 @@
 //!
 //! 行が消えた曲は再生キュー・再生中の曲にも残してはいけない (再生実績を書く先が無く、
 //! UI は存在しない曲を指し続ける)。再生系は `AppHandle` に載っているのでこの層からは触れない。
-//! **返された id で `commands::playback::drop_tracks_from_playback` を呼ぶのはアダプタの責務**。
+//! **`commands::playback::drop_tracks_from_playback` を呼ぶのはアダプタの責務** で、型では
+//! 強制できない (アダプタは `AppHandle` が要るので単体テストも無い)。現状の 2 経路:
+//!
+//! - `commands::library::delete_tracks`: **要求された id 全部** を落とす ([`RemovedTracks`] の
+//!   上位集合。DB に行が無かった id がキューに古いまま残っていても一緒に掃除する。従来どおり)。
+//! - `commands::sync::sync_evict`: `EvictionSummary.removed` (= 実際に消えた id) を落とす。
+//!
+//! トラック行を消す経路を増やすときは、ここに足して同じ後始末を入れること。
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -71,9 +78,8 @@ impl From<rusqlite::Error> for DeleteError {
     }
 }
 
-/// ライブラリから消えた曲。呼び出し元 (アダプタ) はこの id を再生系から落とすこと。
+/// ライブラリから消えた曲。呼び出し元 (アダプタ) は少なくともこの id を再生系から落とすこと。
 #[derive(Debug, Clone, Default)]
-#[must_use = "消えた曲は再生キューからも落とす (commands::playback::drop_tracks_from_playback)"]
 pub struct RemovedTracks {
     /// 実際に DB から消えた曲の track_id (存在しなかった id・重複は含まない)。
     pub track_ids: Vec<i64>,
