@@ -18,6 +18,7 @@ import { errorMessage } from "../lib/errors";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import { useDialogAutoFocus, useFocusTrap } from "../hooks/useFocusTrap";
 import { useRestoreFocus } from "../hooks/useRestoreFocus";
+import { ModalFrame } from "./modal/ModalFrame";
 
 interface SyncWritebackDialogProps {
   source: SyncSource;
@@ -344,288 +345,279 @@ export function SyncWritebackDialog({
   const sourceName = source.name?.trim() || source.baseUrl;
 
   return (
-    <div
-      className="modal-overlay"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !isApplying) onClose();
+    <ModalFrame
+      dialogRef={dialogRef}
+      className="sync-modal writeback-modal"
+      titleId="writeback-dialog-title"
+      title={
+        <>
+          <Icon name="upload" size={16} /> 母艦へ書き戻す
+        </>
+      }
+      onClose={onClose}
+      closeButtonProps={{
+        disabled: isApplying,
+        "aria-label": "閉じる",
+        title: isApplying ? "書き戻し中は閉じられません" : "閉じる (Esc)",
       }}
+      overlayProps={{
+        onMouseDown: (event) => {
+          if (event.target === event.currentTarget && !isApplying) onClose();
+        },
+      }}
+      dialogProps={{ tabIndex: -1, onKeyDownCapture: handleDialogKeyDown }}
     >
-      <div
-        ref={dialogRef}
-        className="modal sync-modal writeback-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="writeback-dialog-title"
-        tabIndex={-1}
-        onKeyDownCapture={handleDialogKeyDown}
-      >
-        <div className="modal-header">
-          <h2 id="writeback-dialog-title">
-            <Icon name="upload" size={16} /> 母艦へ書き戻す
-          </h2>
-          <button
-            className="modal-close"
-            onClick={onClose}
-            disabled={isApplying}
-            aria-label="閉じる"
-            title={isApplying ? "書き戻し中は閉じられません" : "閉じる (Esc)"}
-          >
-            <Icon name="x" size={16} />
-          </button>
-        </div>
-
-        <div className="modal-body sync-body">
-          {step === "loading" && (
-            <section className="sync-progress-view" aria-live="polite">
-              <div className="sync-progress-icon"><Icon name="upload" size={24} /></div>
-              <h3>書き戻す内容を確認しています</h3>
-              <progress
-                max={progress?.total || 1}
-                value={progress?.current ?? 0}
-                aria-label="書き戻し計画の進捗"
-              />
-              <div className="sync-progress-numbers">
-                <span>{progress?.current.toLocaleString() ?? 0} / {progress?.total.toLocaleString() ?? 1}</span>
-                <span>{progressPercent}%</span>
-              </div>
-              <div className="sync-current-track">{sourceName}</div>
-              <p>母艦と手元の変更内容を比較しています。</p>
-            </section>
-          )}
-
-          {step === "confirm" && plan && (
-            <section>
-              {error && (
-                <div className="sync-error" role="status">
-                  {error}
-                </div>
-              )}
-              <div className="sync-playlist-heading">
-                <div>
-                  <h3 className="sync-section-title">書き戻す内容を確認</h3>
-                  <span>{sourceName}</span>
-                </div>
-                <button className="rip-link" type="button" onClick={onBack}>
-                  接続先を変更
-                </button>
-              </div>
-
-              {!hasPlanItems ? (
-                <div className="writeback-empty">
-                  <div className="sync-result-icon success"><Icon name="check" size={24} /></div>
-                  <strong>書き戻す変更はありません</strong>
-                  <span>母艦と手元の内容は同期されています。</span>
-                </div>
-              ) : (
-                <div className="writeback-plan">
-                  {!hasApplicableChanges && (
-                    <div className="writeback-skip-notice" role="status">
-                      <Icon name="warning" size={16} />
-                      <div>
-                        <strong>
-                          反映できる変更はありません（スキップ {skippedNoticeCount.toLocaleString()} 件あり）
-                        </strong>
-                        <span>
-                          母艦側の変更と競合、または母艦から曲が消えているため、以下の内容は今回反映されません。
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
-                  {plan.trackChanges.length > 0 && (
-                    <section className="writeback-section">
-                      <h4>母艦へ反映される変更</h4>
-                      <FieldChanges changes={plan.trackChanges} />
-                    </section>
-                  )}
-
-                  {plan.pulls.length > 0 && (
-                    <section className="writeback-section">
-                      <h4>手元へ取り込まれる変更</h4>
-                      <FieldChanges changes={plan.pulls} />
-                    </section>
-                  )}
-
-                  {plan.playlistOps.length > 0 && (
-                    <section className="writeback-section">
-                      <h4>プレイリスト操作</h4>
-                      <ul className="writeback-playlist-list">
-                        {plan.playlistOps.map((op, index) => (
-                          <PlaylistOperation key={`${op.persistentId}-${op.op}-${index}`} op={op} />
-                        ))}
-                      </ul>
-                    </section>
-                  )}
-
-                  {plan.conflicts.length > 0 && (
-                    <section className="writeback-section writeback-conflicts">
-                      <h4>衝突</h4>
-                      <p>両方で変更された項目です。書き戻し後に残す値を選んでください。</p>
-                      <ul>
-                        {plan.conflicts.map((conflict, index) => {
-                          const key = conflictKey(conflict);
-                          const choice = resolutions[key];
-                          // rating など時計が動かない項目では新旧を判定できない。
-                          // 判定できたときだけ「新しい」と表示する (localNewer は既定の選択)。
-                          const newerKnown = conflict.newerKnown;
-                          return (
-                            <li key={key} className="writeback-conflict">
-                              <div className="writeback-conflict-heading">
-                                <strong>{conflict.trackName || conflict.persistentId}</strong>
-                                <span>{FIELD_LABELS[conflict.field] ?? conflict.field}</span>
-                              </div>
-                              <div className="writeback-choice" role="radiogroup">
-                                <label className={choice === "master" ? "selected" : undefined}>
-                                  <input
-                                    type="radio"
-                                    name={`writeback-conflict-${index}`}
-                                    value="master"
-                                    checked={choice === "master"}
-                                    onChange={() =>
-                                      setResolutions((current) => ({ ...current, [key]: "master" }))
-                                    }
-                                  />
-                                  <span>
-                                    <small>
-                                      母艦の値{newerKnown && !conflict.localNewer ? "（新しい）" : ""}
-                                    </small>
-                                    <strong>{formatValue(conflict.master)}</strong>
-                                  </span>
-                                </label>
-                                <label className={choice === "local" ? "selected" : undefined}>
-                                  <input
-                                    type="radio"
-                                    name={`writeback-conflict-${index}`}
-                                    value="local"
-                                    checked={choice === "local"}
-                                    onChange={() =>
-                                      setResolutions((current) => ({ ...current, [key]: "local" }))
-                                    }
-                                  />
-                                  <span>
-                                    <small>
-                                      持ち出しの値{newerKnown && conflict.localNewer ? "（新しい）" : ""}
-                                    </small>
-                                    <strong>{formatValue(conflict.local)}</strong>
-                                  </span>
-                                </label>
-                              </div>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </section>
-                  )}
-
-                  {plan.skippedTracks.length > 0 && (
-                    <section className="writeback-section writeback-skipped">
-                      <h4>反映されない変更</h4>
-                      <SkippedTracks skipped={plan.skippedTracks} />
-                    </section>
-                  )}
-                </div>
-              )}
-            </section>
-          )}
-
-          {step === "applying" && (
-            <section className="sync-progress-view" aria-live="polite">
-              <div className="sync-progress-icon"><Icon name="upload" size={24} /></div>
-              <h3>母艦へ書き戻しています</h3>
-              <progress
-                max={progress?.total || 1}
-                value={progress?.current ?? 0}
-                aria-label="書き戻しの進捗"
-              />
-              <div className="sync-progress-numbers">
-                <span>{progress?.current.toLocaleString() ?? 0} / {progress?.total.toLocaleString() ?? 0}</span>
-                <span>{progressPercent}%</span>
-              </div>
-              <div className="sync-current-track">
-                {progress?.trackName || "変更を適用しています…"}
-              </div>
-              <p>完了するまで、この画面を閉じずにお待ちください。</p>
-            </section>
-          )}
-
-          {step === "complete" && summary && (
-            <section className="sync-result">
-              <div className={`sync-result-icon${summary.failures.length > 0 ? " warning" : " success"}`}>
-                <Icon name={summary.failures.length > 0 ? "warning" : "check"} size={26} />
-              </div>
-              <h3>
-                {summary.failures.length > 0
-                  ? `書き戻しが完了しました（${summary.failures.length.toLocaleString()} 件の失敗あり）`
-                  : "書き戻しが完了しました"}
-              </h3>
-              <dl className="sync-summary">
-                <div><dt>母艦へ反映</dt><dd>{summary.pushed.toLocaleString()} 曲</dd></div>
-                <div><dt>手元へ取り込み</dt><dd>{summary.pulled.toLocaleString()} 曲</dd></div>
-                <div><dt>プレイリスト操作</dt><dd>{summary.playlistOps.toLocaleString()} 件</dd></div>
-              </dl>
-              {summary.failures.length > 0 && (
-                <details className="sync-failures" open>
-                  <summary>失敗一覧（{summary.failures.length.toLocaleString()} 件）</summary>
-                  <ul>
-                    {summary.failures.map((failure, index) => (
-                      <li key={`${failure.persistentId ?? "failure"}-${index}`}>
-                        <strong>{failure.trackName || failure.persistentId || "不明な項目"}</strong>
-                        <span>{failure.error}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              )}
-            </section>
-          )}
-
-          {step === "failed" && (
-            <section className="sync-result">
-              <div className="sync-result-icon error"><Icon name="x" size={26} /></div>
-              <h3>{plan ? "書き戻しに失敗しました" : "内容を確認できませんでした"}</h3>
-              <div className="sync-error" role="alert">
-                {error || "不明なエラーが発生しました。"}
-              </div>
-            </section>
-          )}
-        </div>
+      <div className="modal-body sync-body">
+        {step === "loading" && (
+          <section className="sync-progress-view" aria-live="polite">
+            <div className="sync-progress-icon"><Icon name="upload" size={24} /></div>
+            <h3>書き戻す内容を確認しています</h3>
+            <progress
+              max={progress?.total || 1}
+              value={progress?.current ?? 0}
+              aria-label="書き戻し計画の進捗"
+            />
+            <div className="sync-progress-numbers">
+              <span>{progress?.current.toLocaleString() ?? 0} / {progress?.total.toLocaleString() ?? 1}</span>
+              <span>{progressPercent}%</span>
+            </div>
+            <div className="sync-current-track">{sourceName}</div>
+            <p>母艦と手元の変更内容を比較しています。</p>
+          </section>
+        )}
 
         {step === "confirm" && plan && (
-          <div className="modal-footer">
-            <button className="toolbar-btn" type="button" onClick={onBack} data-autofocus>
-              戻る
-            </button>
-            {hasApplicableChanges && (
-              <button className="toolbar-btn primary" type="button" onClick={startApply}>
-                <Icon name="upload" size={14} /> この内容で書き戻す
-              </button>
+          <section>
+            {error && (
+              <div className="sync-error" role="status">
+                {error}
+              </div>
             )}
-          </div>
-        )}
-        {step === "complete" && summary && (
-          <div className="modal-footer">
-            <button className="toolbar-btn primary" onClick={onClose} data-autofocus>
-              閉じる
-            </button>
-          </div>
-        )}
-        {step === "failed" && (
-          <div className="modal-footer">
-            <button className="toolbar-btn" onClick={onBack}>
-              接続先に戻る
-            </button>
-            {plan ? (
-              <button className="toolbar-btn primary" onClick={() => setStep("confirm")} data-autofocus>
-                確認画面に戻る
+            <div className="sync-playlist-heading">
+              <div>
+                <h3 className="sync-section-title">書き戻す内容を確認</h3>
+                <span>{sourceName}</span>
+              </div>
+              <button className="rip-link" type="button" onClick={onBack}>
+                接続先を変更
               </button>
+            </div>
+
+            {!hasPlanItems ? (
+              <div className="writeback-empty">
+                <div className="sync-result-icon success"><Icon name="check" size={24} /></div>
+                <strong>書き戻す変更はありません</strong>
+                <span>母艦と手元の内容は同期されています。</span>
+              </div>
             ) : (
-              <button className="toolbar-btn primary" onClick={loadPlan} data-autofocus>
-                再試行
-              </button>
+              <div className="writeback-plan">
+                {!hasApplicableChanges && (
+                  <div className="writeback-skip-notice" role="status">
+                    <Icon name="warning" size={16} />
+                    <div>
+                      <strong>
+                        反映できる変更はありません（スキップ {skippedNoticeCount.toLocaleString()} 件あり）
+                      </strong>
+                      <span>
+                        母艦側の変更と競合、または母艦から曲が消えているため、以下の内容は今回反映されません。
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {plan.trackChanges.length > 0 && (
+                  <section className="writeback-section">
+                    <h4>母艦へ反映される変更</h4>
+                    <FieldChanges changes={plan.trackChanges} />
+                  </section>
+                )}
+
+                {plan.pulls.length > 0 && (
+                  <section className="writeback-section">
+                    <h4>手元へ取り込まれる変更</h4>
+                    <FieldChanges changes={plan.pulls} />
+                  </section>
+                )}
+
+                {plan.playlistOps.length > 0 && (
+                  <section className="writeback-section">
+                    <h4>プレイリスト操作</h4>
+                    <ul className="writeback-playlist-list">
+                      {plan.playlistOps.map((op, index) => (
+                        <PlaylistOperation key={`${op.persistentId}-${op.op}-${index}`} op={op} />
+                      ))}
+                    </ul>
+                  </section>
+                )}
+
+                {plan.conflicts.length > 0 && (
+                  <section className="writeback-section writeback-conflicts">
+                    <h4>衝突</h4>
+                    <p>両方で変更された項目です。書き戻し後に残す値を選んでください。</p>
+                    <ul>
+                      {plan.conflicts.map((conflict, index) => {
+                        const key = conflictKey(conflict);
+                        const choice = resolutions[key];
+                        // rating など時計が動かない項目では新旧を判定できない。
+                        // 判定できたときだけ「新しい」と表示する (localNewer は既定の選択)。
+                        const newerKnown = conflict.newerKnown;
+                        return (
+                          <li key={key} className="writeback-conflict">
+                            <div className="writeback-conflict-heading">
+                              <strong>{conflict.trackName || conflict.persistentId}</strong>
+                              <span>{FIELD_LABELS[conflict.field] ?? conflict.field}</span>
+                            </div>
+                            <div className="writeback-choice" role="radiogroup">
+                              <label className={choice === "master" ? "selected" : undefined}>
+                                <input
+                                  type="radio"
+                                  name={`writeback-conflict-${index}`}
+                                  value="master"
+                                  checked={choice === "master"}
+                                  onChange={() =>
+                                    setResolutions((current) => ({ ...current, [key]: "master" }))
+                                  }
+                                />
+                                <span>
+                                  <small>
+                                    母艦の値{newerKnown && !conflict.localNewer ? "（新しい）" : ""}
+                                  </small>
+                                  <strong>{formatValue(conflict.master)}</strong>
+                                </span>
+                              </label>
+                              <label className={choice === "local" ? "selected" : undefined}>
+                                <input
+                                  type="radio"
+                                  name={`writeback-conflict-${index}`}
+                                  value="local"
+                                  checked={choice === "local"}
+                                  onChange={() =>
+                                    setResolutions((current) => ({ ...current, [key]: "local" }))
+                                  }
+                                />
+                                <span>
+                                  <small>
+                                    持ち出しの値{newerKnown && conflict.localNewer ? "（新しい）" : ""}
+                                  </small>
+                                  <strong>{formatValue(conflict.local)}</strong>
+                                </span>
+                              </label>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </section>
+                )}
+
+                {plan.skippedTracks.length > 0 && (
+                  <section className="writeback-section writeback-skipped">
+                    <h4>反映されない変更</h4>
+                    <SkippedTracks skipped={plan.skippedTracks} />
+                  </section>
+                )}
+              </div>
             )}
-          </div>
+          </section>
+        )}
+
+        {step === "applying" && (
+          <section className="sync-progress-view" aria-live="polite">
+            <div className="sync-progress-icon"><Icon name="upload" size={24} /></div>
+            <h3>母艦へ書き戻しています</h3>
+            <progress
+              max={progress?.total || 1}
+              value={progress?.current ?? 0}
+              aria-label="書き戻しの進捗"
+            />
+            <div className="sync-progress-numbers">
+              <span>{progress?.current.toLocaleString() ?? 0} / {progress?.total.toLocaleString() ?? 0}</span>
+              <span>{progressPercent}%</span>
+            </div>
+            <div className="sync-current-track">
+              {progress?.trackName || "変更を適用しています…"}
+            </div>
+            <p>完了するまで、この画面を閉じずにお待ちください。</p>
+          </section>
+        )}
+
+        {step === "complete" && summary && (
+          <section className="sync-result">
+            <div className={`sync-result-icon${summary.failures.length > 0 ? " warning" : " success"}`}>
+              <Icon name={summary.failures.length > 0 ? "warning" : "check"} size={26} />
+            </div>
+            <h3>
+              {summary.failures.length > 0
+                ? `書き戻しが完了しました（${summary.failures.length.toLocaleString()} 件の失敗あり）`
+                : "書き戻しが完了しました"}
+            </h3>
+            <dl className="sync-summary">
+              <div><dt>母艦へ反映</dt><dd>{summary.pushed.toLocaleString()} 曲</dd></div>
+              <div><dt>手元へ取り込み</dt><dd>{summary.pulled.toLocaleString()} 曲</dd></div>
+              <div><dt>プレイリスト操作</dt><dd>{summary.playlistOps.toLocaleString()} 件</dd></div>
+            </dl>
+            {summary.failures.length > 0 && (
+              <details className="sync-failures" open>
+                <summary>失敗一覧（{summary.failures.length.toLocaleString()} 件）</summary>
+                <ul>
+                  {summary.failures.map((failure, index) => (
+                    <li key={`${failure.persistentId ?? "failure"}-${index}`}>
+                      <strong>{failure.trackName || failure.persistentId || "不明な項目"}</strong>
+                      <span>{failure.error}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </section>
+        )}
+
+        {step === "failed" && (
+          <section className="sync-result">
+            <div className="sync-result-icon error"><Icon name="x" size={26} /></div>
+            <h3>{plan ? "書き戻しに失敗しました" : "内容を確認できませんでした"}</h3>
+            <div className="sync-error" role="alert">
+              {error || "不明なエラーが発生しました。"}
+            </div>
+          </section>
         )}
       </div>
-    </div>
+
+      {step === "confirm" && plan && (
+        <div className="modal-footer">
+          <button className="toolbar-btn" type="button" onClick={onBack} data-autofocus>
+            戻る
+          </button>
+          {hasApplicableChanges && (
+            <button className="toolbar-btn primary" type="button" onClick={startApply}>
+              <Icon name="upload" size={14} /> この内容で書き戻す
+            </button>
+          )}
+        </div>
+      )}
+      {step === "complete" && summary && (
+        <div className="modal-footer">
+          <button className="toolbar-btn primary" onClick={onClose} data-autofocus>
+            閉じる
+          </button>
+        </div>
+      )}
+      {step === "failed" && (
+        <div className="modal-footer">
+          <button className="toolbar-btn" onClick={onBack}>
+            接続先に戻る
+          </button>
+          {plan ? (
+            <button className="toolbar-btn primary" onClick={() => setStep("confirm")} data-autofocus>
+              確認画面に戻る
+            </button>
+          ) : (
+            <button className="toolbar-btn primary" onClick={loadPlan} data-autofocus>
+              再試行
+            </button>
+          )}
+        </div>
+      )}
+    </ModalFrame>
   );
 }

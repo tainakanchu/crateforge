@@ -25,6 +25,7 @@ import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
+import { AddGenreTagDialog } from "./AddGenreTagDialog";
 
 interface CtxMenu {
   x: number;
@@ -419,41 +420,12 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       )}
 
       {showAddTagDialog && (
-        <div className="modal-overlay" onClick={() => setShowAddTagDialog(false)}>
-          <div className="modal" style={{ width: 360 }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>
-                <Icon name="tag" size={16} /> ジャンルタグを追加
-              </h2>
-              <button className="modal-close" onClick={() => setShowAddTagDialog(false)}>
-                <Icon name="x" size={16} />
-              </button>
-            </div>
-            <div className="modal-body" style={{ padding: 16 }}>
-              <input
-                autoFocus
-                type="text"
-                className="rip-input"
-                placeholder="例: Deep House"
-                value={newTag}
-                onChange={(e) => setNewTag(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void handleApplyAddTag();
-                  if (e.key === "Escape") setShowAddTagDialog(false);
-                }}
-                style={{ width: "100%" }}
-              />
-              <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
-                <button className="toolbar-btn" onClick={() => setShowAddTagDialog(false)}>
-                  キャンセル
-                </button>
-                <button className="toolbar-btn primary" onClick={() => void handleApplyAddTag()}>
-                  追加
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <AddGenreTagDialog
+          value={newTag}
+          onChange={setNewTag}
+          onSubmit={() => void handleApplyAddTag()}
+          onClose={() => setShowAddTagDialog(false)}
+        />
       )}
     </div>
   );

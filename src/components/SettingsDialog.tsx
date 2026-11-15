@@ -19,6 +19,7 @@ import { Icon } from "./Icon";
 import { LicenseList } from "./LicenseList";
 import { KEY_NOTATIONS, KEY_NOTATION_LABELS, isKeyNotation } from "../lib/keyNotation";
 import { playRipChime } from "../lib/ripChime";
+import { useEscapeKey } from "../hooks/useEscapeKey";
 
 const REPO_URL = "https://github.com/tainakanchu/crateforge";
 
@@ -310,13 +311,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   }, []);
 
   // Esc で閉じる。
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useEscapeKey(onClose, { preventDefault: false });
 
   // おすすめ接続先の QR コードを生成する。
   const recommendedUrl =

@@ -26,6 +26,7 @@ import { joinGenre, splitGenre } from "../lib/genre";
 import { formatClock } from "../lib/format";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
+import { AddGenreTagDialog } from "./AddGenreTagDialog";
 
 // 曲名列の最小幅 (未固定 = flex のとき)。styles.css の .cb-id / .cb-h-id と揃える。
 const NAME_MIN_WIDTH = 180;
@@ -1326,43 +1327,12 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
       {/* Add genre tag dialog */}
       {showAddTagDialog && (
-        <div className="modal-overlay" onClick={() => setShowAddTagDialog(false)}>
-          <div className="modal" style={{ width: 360 }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>
-                <Icon name="tag" size={16} /> ジャンルタグを追加
-              </h2>
-              <button className="modal-close" onClick={() => setShowAddTagDialog(false)}>
-                <Icon name="x" size={16} />
-              </button>
-            </div>
-            <div className="modal-body" style={{ padding: 16 }}>
-              <input
-                autoFocus
-                type="text"
-                className="rip-input"
-                placeholder="例: Deep House"
-                value={newTag}
-                onChange={(e) => setNewTag(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleApplyAddTag();
-                  if (e.key === "Escape") setShowAddTagDialog(false);
-                }}
-                style={{ width: "100%" }}
-              />
-              <div
-                style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}
-              >
-                <button className="toolbar-btn" onClick={() => setShowAddTagDialog(false)}>
-                  キャンセル
-                </button>
-                <button className="toolbar-btn primary" onClick={handleApplyAddTag}>
-                  追加
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <AddGenreTagDialog
+          value={newTag}
+          onChange={setNewTag}
+          onSubmit={() => void handleApplyAddTag()}
+          onClose={() => setShowAddTagDialog(false)}
+        />
       )}
 
       {/* ライブラリからの削除（確認モーダル） */}

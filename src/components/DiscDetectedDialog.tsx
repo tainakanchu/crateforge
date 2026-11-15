@@ -1,7 +1,7 @@
-import { useEffect } from "react";
 import type { DiscToc } from "../types";
 import { Icon } from "./Icon";
 import { formatClock } from "../lib/format";
+import { useEscapeKey } from "../hooks/useEscapeKey";
 
 interface DiscDetectedDialogProps {
   disc: DiscToc;
@@ -21,16 +21,7 @@ const formatTotal = (sec: number) => formatClock(sec * 1000, { hours: true, roun
 export function DiscDetectedDialog({ disc, onRip, onDismiss }: DiscDetectedDialogProps) {
   const totalSec = disc.trackLengthsSec.reduce((a, b) => a + b, 0);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onDismiss();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onDismiss]);
+  useEscapeKey(onDismiss);
 
   return (
     <div className="modal-overlay" onClick={onDismiss}>
