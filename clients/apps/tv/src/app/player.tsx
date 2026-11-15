@@ -5,18 +5,17 @@
 
 import { useWindowDimensions } from "react-native";
 import { View, Text, StyleSheet } from "react-native";
-import { Image } from "expo-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 
 import {
   nextRepeat,
   usePlayer,
-  useConnection,
   trackTitle,
   trackArtist,
   formatDuration,
 } from "@crateforge/core";
+import { Artwork } from "@/components/Artwork";
 import { Focusable } from "@/components/focus/Focusable";
 import { PALETTE, TV_FONT, FOCUS_RING } from "@/theme/palette";
 
@@ -24,7 +23,6 @@ export default function PlayerScreen() {
   const router = useRouter();
   const { height: screenHeight } = useWindowDimensions();
 
-  const client = useConnection((s) => s.client);
   const current = usePlayer((s) => s.current());
   const isPlaying = usePlayer((s) => s.isPlaying);
   const positionMs = usePlayer((s) => s.positionMs);
@@ -78,17 +76,13 @@ export default function PlayerScreen() {
     <SafeAreaView style={styles.safe}>
       <View style={styles.container}>
         {/* アートワーク */}
-        <View style={[styles.artworkWrapper, { width: artSize, height: artSize }]}>
-          {client ? (
-            <Image
-              source={client.artworkSource(current.trackId)}
-              style={styles.artwork}
-              contentFit="cover"
-            />
-          ) : (
-            <View style={[styles.artwork, styles.artworkPlaceholder]} />
-          )}
-        </View>
+        <Artwork
+          trackId={current.trackId}
+          name={current.album || trackTitle(current)}
+          size={artSize}
+          radius={12}
+          style={styles.artwork}
+        />
 
         {/* タイトル・アーティスト・アルバム */}
         <Text style={styles.trackName} numberOfLines={2}>
@@ -216,17 +210,8 @@ const styles = StyleSheet.create({
     paddingVertical: 24,
     gap: 16,
   },
-  artworkWrapper: {
-    borderRadius: 12,
-    overflow: "hidden",
-    marginBottom: 8,
-  },
   artwork: {
-    width: "100%",
-    height: "100%",
-  },
-  artworkPlaceholder: {
-    backgroundColor: PALETTE.surface,
+    marginBottom: 8,
   },
   trackName: {
     fontSize: TV_FONT.xl,
