@@ -1,6 +1,7 @@
 export * from "./lib/types";
 export * from "./lib/format";
 export * from "./lib/album";
+export * from "./lib/artPlaceholder";
 export * from "./lib/search";
 export * from "./lib/sort";
 export * from "./lib/playlistTree";
