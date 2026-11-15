@@ -10,6 +10,16 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+### 日本語
+
+#### デスクトップ
+- **アルバムアーティストで並べるとコンピレーションが先頭に来る問題を修正**: 曲一覧を文字列の列（アルバムアーティストなど）で並べると、値が空文字や空白だけの曲（API で消したアルバムアーティストなど）が先頭に来ていた。空欄・空白のみの値は、昇順・降順とも末尾に並ぶようにした（アルバム表示と同じ扱い）。スマートプレイリストを列ヘッダで並べ替えたときも同じ。
+
+### English
+
+#### Desktop
+- **Fixed compilations sorting first when sorting by album artist**: when the track list was sorted by a text column (album artist and others), tracks whose value was an empty or whitespace-only string (such as an album artist cleared through the API) came first. Empty and whitespace-only values now sort last in both ascending and descending order (the same as the album view). This also applies when sorting a smart playlist by a column header.
+
 ## [v0.20.0] - 2026-11-14
 
 ### 日本語

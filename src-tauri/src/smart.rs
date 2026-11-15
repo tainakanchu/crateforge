@@ -451,15 +451,41 @@ pub fn compare_by_criteria(
     ord.then_with(|| dir(a.track_id.cmp(&b.track_id), c.sort_desc))
 }
 
-/// マッチ済みトラックを指定フィールドで並び替える (NULL/空は末尾)。
+/// 文字列フィールドの値なし (None・空文字・空白のみ) か。文字列でないフィールドは false。
+/// 一覧の ORDER BY (`db::tracks::build_order_by` の `NULLIF(TRIM(x), '') IS NULL`) と同じ判定。
+fn text_missing(t: &Track, field: &str) -> bool {
+    let v = match field {
+        "name" => &t.name,
+        "artist" => &t.artist,
+        "album" => &t.album,
+        "albumArtist" => &t.album_artist,
+        "genre" => &t.genre,
+        "grouping" => &t.grouping,
+        "composer" => &t.composer,
+        "comments" => &t.comments,
+        "kind" => &t.track_type,
+        "codec" => &t.codec,
+        "dateAdded" => &t.date_added,
+        "dateModified" => &t.date_modified,
+        "lastPlayed" => &t.last_played,
+        _ => return false,
+    };
+    v.as_deref().is_none_or(|s| s.trim().is_empty())
+}
+
+/// マッチ済みトラックを指定フィールドで並び替える (UI のソート指定。一覧の ORDER BY と揃える)。
+/// 文字列フィールドの値なしは方向によらず末尾。
 pub fn sort_tracks(tracks: &mut [Track], field: &str, desc: bool, an: Option<&AnalysisMap>) {
     tracks.sort_by(|a, b| {
-        let ord = compare_tracks(a, b, field, an);
-        if desc {
-            ord.reverse()
-        } else {
-            ord
-        }
+        let missing = text_missing(a, field).cmp(&text_missing(b, field));
+        missing.then_with(|| {
+            let ord = compare_tracks(a, b, field, an);
+            if desc {
+                ord.reverse()
+            } else {
+                ord
+            }
+        })
     });
 }
 
@@ -718,6 +744,33 @@ mod tests {
             v.iter().map(|t| t.track_id).collect::<Vec<_>>(),
             vec![2, 3, 1]
         );
+    }
+
+    /// UI のソート指定: 文字列フィールドの値なし (None・空・空白のみ) は昇順・降順とも末尾
+    /// (一覧の ORDER BY と同じ。コンピレーションの空アルバムアーティストが先頭に来ないこと)。
+    #[test]
+    fn sort_tracks_puts_empty_text_last_both_directions() {
+        let with_aa = |id: i64, aa: Option<&str>| {
+            let mut t = track(id, "A", None, None);
+            t.album_artist = aa.map(str::to_string);
+            t
+        };
+        let make = || {
+            vec![
+                with_aa(1, None),
+                with_aa(2, Some("")),
+                with_aa(3, Some("  ")),
+                with_aa(4, Some("Beta")),
+                with_aa(5, Some("alpha")),
+            ]
+        };
+        let ids = |v: &[Track]| v.iter().map(|t| t.track_id).collect::<Vec<_>>();
+        let mut v = make();
+        sort_tracks(&mut v, "albumArtist", false, None);
+        assert_eq!(ids(&v), vec![5, 4, 1, 2, 3]);
+        let mut v = make();
+        sort_tracks(&mut v, "albumArtist", true, None);
+        assert_eq!(ids(&v), vec![4, 5, 3, 2, 1]);
     }
 
     fn analysis_bpm(id: i64, bpm: f64) -> TrackAnalysis {
