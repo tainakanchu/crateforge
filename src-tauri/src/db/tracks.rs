@@ -9,6 +9,34 @@ use crate::itunes_xml::parser::RawTrack;
 use crate::metadata::tech::TechMeta;
 use crate::models::{AlbumRow, ArtistRow, GenreTagCount, Track, TrackEdit};
 
+/// [`row_to_track`] が読む `tracks` の列 (この順)。Track を返す SELECT はすべてこれを使い、
+/// 列の足し忘れ (row_to_track が `InvalidColumnIndex` で落ちる) を 1 か所で防ぐ。
+macro_rules! track_columns {
+    () => {
+        "id, track_id, persistent_id, name, artist, album_artist, composer, \
+         album, genre, year, rating, play_count, skip_count, total_time_ms, \
+         date_added, date_modified, bpm, comments, location_raw, location_path, \
+         track_type, disabled, compilation, disc_number, disc_count, \
+         track_number, track_count, file_exists, last_played, \
+         bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec, \
+         key_camelot_user, grouping"
+    };
+}
+
+/// `tracks` を別名なしで引くときの列リスト ([`track_columns!`])。
+pub(crate) const TRACK_COLUMNS: &str = track_columns!();
+
+/// `tracks t` と別名付きで JOIN するときの列リスト。[`TRACK_COLUMNS`] の各列に `t.` を付けたもの
+/// (一致はテスト `track_columns_t_is_prefixed_track_columns` で固定)。
+pub(crate) const TRACK_COLUMNS_T: &str =
+    "t.id, t.track_id, t.persistent_id, t.name, t.artist, t.album_artist, t.composer, \
+     t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count, t.total_time_ms, \
+     t.date_added, t.date_modified, t.bpm, t.comments, t.location_raw, t.location_path, \
+     t.track_type, t.disabled, t.compilation, t.disc_number, t.disc_count, \
+     t.track_number, t.track_count, t.file_exists, t.last_played, \
+     t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes, t.codec, \
+     t.key_camelot_user, t.grouping";
+
 /// `/api/albums` で返す、ライブラリ内の distinct なアルバム 1 件分の情報。
 /// `sample_track_id` はアートワーク表示用の代表トラック (アルバム内最小 track_id)。
 #[derive(Debug, Clone, Serialize)]
@@ -54,6 +82,30 @@ pub(crate) const SEARCH_TEXT_EXPR: &str = "COALESCE(fold(name,2),'')||char(10)||
      COALESCE(fold(album_artist,2),'')||char(10)||COALESCE(fold(genre,2),'')||char(10)||\
      COALESCE(fold(comments,2),'')";
 
+/// 「アルバムアーティスト、無ければアーティスト」を表す SQL 断片は、artist 側の空白の扱いが
+/// 3 通りある。**結果が変わるので互いに置き換えない** (統一はしない。docs/refactor/design.md)。
+/// ここでは同じ文字列の書き写しをなくすためだけに名前を付ける。
+///
+/// 1. [`ALBUM_ARTIST_OR_ARTIST_EXPR`]: artist は **trim しない** (空白のみの artist もそのまま返す)。
+///    どちらも NULL なら `''`。アルバム束ね (ALBUM_KEY_EXPR / album_agg_sql) 用。
+macro_rules! album_artist_or_artist_expr {
+    () => {
+        "coalesce(nullif(trim(album_artist),''), artist, '')"
+    };
+}
+/// 2. [`ALBUM_ARTIST_OR_NONBLANK_ARTIST_EXPR`]: artist も空白のみなら無効。どちらも無ければ `''`。
+///    アーティスト表示名 (ARTIST_NAME_EXPR) と legacy `/api/albums` の distinct 数え上げ用。
+macro_rules! album_artist_or_nonblank_artist_expr {
+    () => {
+        "coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''), '')"
+    };
+}
+const ALBUM_ARTIST_OR_ARTIST_EXPR: &str = album_artist_or_artist_expr!();
+const ALBUM_ARTIST_OR_NONBLANK_ARTIST_EXPR: &str = album_artist_or_nonblank_artist_expr!();
+/// 3. 2 と同じだが、どちらも無ければ **NULL** (`MAX` / `COUNT(DISTINCT)` が数えない)。
+const ALBUM_ARTIST_OR_NONBLANK_ARTIST_OR_NULL_EXPR: &str =
+    "coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))";
+
 /// アルバム束ねキーの算出式。get_albums の GROUP BY と get_album_tracks の WHERE で同一に使う。
 /// - album が空/NULL → `unk:` (タグにアルバムが無い曲をまとめた 1 つの「不明なアルバム」)
 /// - compilation=1  → `cmp:<album>` のみ (アーティストが曲ごとに違っても1枚に束ねる)
@@ -61,11 +113,15 @@ pub(crate) const SEARCH_TEXT_EXPR: &str = "COALESCE(fold(name,2),'')||char(10)||
 ///
 /// アーティスト展開 (get_artist_albums) では「そのアーティストの不明なアルバム」を
 /// 区別するため、`unk:` を [`UNKNOWN_ALBUM_OF_ARTIST_PREFIX`]`<アーティスト名>` に読み替えて返す。
-const ALBUM_KEY_EXPR: &str = "CASE \
+const ALBUM_KEY_EXPR: &str = concat!(
+    "CASE \
   WHEN album IS NULL OR trim(album) = '' THEN 'unk:' \
   WHEN compilation = 1 THEN 'cmp:' || lower(trim(album)) \
-  ELSE 'al:' || lower(trim(coalesce(nullif(trim(album_artist),''), artist, ''))) || char(31) || lower(trim(album)) \
-END";
+  ELSE 'al:' || lower(trim(",
+    album_artist_or_artist_expr!(),
+    ")) || char(31) || lower(trim(album)) \
+END"
+);
 
 /// アーティスト表示名の算出式。get_artists の GROUP BY と get_artist_albums の WHERE で
 /// 同一に使うので、ALBUM_KEY_EXPR と同じくコンピレーションを特別扱いする:
@@ -75,10 +131,14 @@ END";
 /// どちらも無い曲は空文字の 1 グループ (= 「不明なアーティスト」。ラベルは表示側で付ける。
 /// 実在の "Unknown Artist" という名前のアーティストと混ざらないよう文字列は埋めない)。
 /// ALBUM_KEY_EXPR の `al:` 分岐と同じ優先順 (album_artist → artist) を保つこと。
-const ARTIST_NAME_EXPR: &str = "CASE \
+const ARTIST_NAME_EXPR: &str = concat!(
+    "CASE \
   WHEN compilation = 1 THEN 'Various Artists' \
-  ELSE coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''), '') \
-END";
+  ELSE ",
+    album_artist_or_nonblank_artist_expr!(),
+    " \
+END"
+);
 
 /// get_artist_albums が返す「そのアーティストの不明なアルバム」の album_key の接頭辞。
 /// 続く文字列はアーティスト名 (get_artists の表示名)。get_album_tracks はこのキーを
@@ -263,13 +323,13 @@ fn album_agg_sql(filter: &str, order_by: &str, tail: &str) -> String {
               CASE WHEN album_key = 'unk:'
                      -- 不明なアルバムは寄せ集めなので Various Artists とは呼ばない
                      -- (アーティストが 1 人ならその名前、複数なら空)。
-                     THEN CASE WHEN COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), artist, '')))) = 1
-                               THEN coalesce(MAX(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))), '')
+                     THEN CASE WHEN COUNT(DISTINCT lower(trim({aa_or_artist}))) = 1
+                               THEN coalesce(MAX({aa_nonblank_or_null}), '')
                                ELSE '' END
                    WHEN MAX(compilation) = 1
-                     OR COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), artist, '')))) > 1
+                     OR COUNT(DISTINCT lower(trim({aa_or_artist}))) > 1
                    THEN 'Various Artists'
-                   ELSE MAX(coalesce(nullif(trim(album_artist),''), artist, '')) END AS album_artist,
+                   ELSE MAX({aa_or_artist}) END AS album_artist,
               MAX(compilation)                                                   AS is_compilation,
               COUNT(*)                                                           AS track_count,
               MAX(CASE WHEN rn=1 THEN track_id END)                              AS cover_track_id,
@@ -290,6 +350,8 @@ fn album_agg_sql(filter: &str, order_by: &str, tail: &str) -> String {
             {tail}",
         key = ALBUM_KEY_EXPR,
         artist = artist_key_expr(),
+        aa_or_artist = ALBUM_ARTIST_OR_ARTIST_EXPR,
+        aa_nonblank_or_null = ALBUM_ARTIST_OR_NONBLANK_ARTIST_OR_NULL_EXPR,
     )
 }
 
@@ -1244,13 +1306,7 @@ impl Database {
     ) -> Result<Vec<Track>> {
         let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NATSORT ASC");
         let sql = format!(
-            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
+            "SELECT {TRACK_COLUMNS}
              FROM tracks ORDER BY {} LIMIT ?1 OFFSET ?2",
             order_by
         );
@@ -1297,13 +1353,7 @@ impl Database {
         bind.push(Value::Integer(offset));
 
         let sql = format!(
-            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
+            "SELECT {TRACK_COLUMNS}
              FROM tracks
              WHERE {}
              ORDER BY {} LIMIT ? OFFSET ?",
@@ -1370,16 +1420,10 @@ impl Database {
     /// 指定した persistent_id 群を、入力順を保って Track へ解決する。
     /// 見つからない ID はスキップする。テーブルは小さいため prepared statement を再利用する。
     pub fn get_tracks_by_persistent_ids(&self, persistent_ids: &[String]) -> Result<Vec<Track>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
-             FROM tracks WHERE persistent_id = ?1",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS}
+             FROM tracks WHERE persistent_id = ?1"
+        ))?;
         let mut out = Vec::with_capacity(persistent_ids.len());
         for persistent_id in persistent_ids {
             if let Some(track) = stmt
@@ -1393,16 +1437,10 @@ impl Database {
     }
 
     pub fn get_all_tracks(&self) -> Result<Vec<Track>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
-             FROM tracks ORDER BY track_id ASC",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS}
+             FROM tracks ORDER BY track_id ASC"
+        ))?;
         let rows = stmt.query_map([], row_to_track)?;
         rows.collect()
     }
@@ -1776,7 +1814,7 @@ impl Database {
     /// `/api/tracks?album=&albumExact=true` で引ける。
     /// `sample_track_id` はアルバム内最小 track_id (代表曲)。
     pub fn get_albums_legacy(&self) -> Result<Vec<AlbumInfo>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             // 代表アーティスト: album_artist (空なら artist) が曲ごとに複数ある / コンピなら
             // "Various Artists" (MAX だとコンピが特定アーティストのアルバムに見えた: E5)。
             // 不明なアルバムは寄せ集めなので、複数アーティストなら Various Artists ではなく NULL。
@@ -1784,17 +1822,19 @@ impl Database {
             // '' に寄せる)。数えないと「タグ無し + Aoi Tanaka」が Aoi Tanaka のアルバムに見える。
             "SELECT coalesce(nullif(trim(album),''), '') AS album_name,
                     CASE WHEN coalesce(nullif(trim(album),''), '') = '' THEN
-                           CASE WHEN COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''), '')))) > 1
+                           CASE WHEN COUNT(DISTINCT lower(trim({aa_nonblank}))) > 1
                                 THEN NULL
-                                ELSE MAX(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))) END
+                                ELSE MAX({aa_nonblank_or_null}) END
                          WHEN MAX(compilation) = 1
-                           OR COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))))) > 1
+                           OR COUNT(DISTINCT lower(trim({aa_nonblank_or_null}))) > 1
                          THEN 'Various Artists'
-                         ELSE MAX(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))) END,
+                         ELSE MAX({aa_nonblank_or_null}) END,
                     COUNT(*), MIN(track_id) FROM tracks
              GROUP BY CASE WHEN coalesce(nullif(trim(album),''), '') = '' THEN '' ELSE album END
              ORDER BY (album_name = ''), album_name COLLATE NOCASE",
-        )?;
+            aa_nonblank = ALBUM_ARTIST_OR_NONBLANK_ARTIST_EXPR,
+            aa_nonblank_or_null = ALBUM_ARTIST_OR_NONBLANK_ARTIST_OR_NULL_EXPR,
+        ))?;
         let rows = stmt.query_map([], |r| {
             Ok(AlbumInfo {
                 album: r.get(0)?,
@@ -1858,13 +1898,7 @@ impl Database {
     pub fn get_album_tracks(&self, album_key: &str) -> Result<Vec<Track>> {
         if let Some(artist) = album_key.strip_prefix(UNKNOWN_ALBUM_OF_ARTIST_PREFIX) {
             let sql = format!(
-                "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                        album, genre, year, rating, play_count, skip_count, total_time_ms,
-                        date_added, date_modified, bpm, comments, location_raw, location_path,
-                        track_type, disabled, compilation, disc_number, disc_count,
-                        track_number, track_count, file_exists, last_played,
-                        bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                        key_camelot_user, grouping
+                "SELECT {TRACK_COLUMNS}
                  FROM (
                    SELECT *, ({key}) AS album_key, ({artist_key}) AS artist_key FROM tracks
                  ) WHERE album_key = 'unk:' AND artist_key = lower(trim(?1))
@@ -1878,13 +1912,7 @@ impl Database {
             return rows.collect();
         }
         let sql = format!(
-            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
+            "SELECT {TRACK_COLUMNS}
              FROM (
                SELECT *, ({key}) AS album_key FROM tracks
              ) WHERE album_key = ?1
@@ -2073,20 +2101,13 @@ impl Database {
     }
 
     pub fn get_recent_tracks(&self, limit: i64) -> Result<Vec<Track>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT t.id, t.track_id, t.persistent_id, t.name, t.artist, t.album_artist, t.composer,
-                    t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count, t.total_time_ms,
-                    t.date_added, t.date_modified, t.bpm, t.comments, t.location_raw, t.location_path,
-                    t.track_type, t.disabled, t.compilation, t.disc_number, t.disc_count,
-                    t.track_number, t.track_count, t.file_exists, t.last_played,
-                    t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes,
-                    t.codec,
-                    t.key_camelot_user, t.grouping
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS_T}
              FROM tracks t
              INNER JOIN recent_tracks rt ON t.track_id = rt.track_id
              ORDER BY rt.played_at DESC
-             LIMIT ?1",
-        )?;
+             LIMIT ?1"
+        ))?;
 
         let rows = stmt.query_map(params![limit], row_to_track)?;
         rows.collect()
@@ -2278,15 +2299,11 @@ pub fn delete_track_cascade(conn: &Connection, track_id: i64) -> Result<bool> {
 }
 
 /// `get_track_by_track_id` / `get_tracks_by_ids` が共有する単曲取得 SQL。
-const TRACK_BY_TRACK_ID_SQL: &str =
-    "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
-             FROM tracks WHERE track_id = ?1";
+const TRACK_BY_TRACK_ID_SQL: &str = concat!(
+    "SELECT ",
+    track_columns!(),
+    " FROM tracks WHERE track_id = ?1"
+);
 
 pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
     Ok(Track {
@@ -2344,6 +2361,17 @@ mod tests {
         remove_tag, split_genre_tags,
     };
     use crate::db::Database;
+
+    /// 別名付きの列リストは、別名なしの各列に `t.` を付けたものと一致すること。
+    #[test]
+    fn track_columns_t_is_prefixed_track_columns() {
+        let prefixed: Vec<String> = super::TRACK_COLUMNS
+            .split(',')
+            .map(|c| format!("t.{}", c.trim()))
+            .collect();
+        let aliased: Vec<&str> = super::TRACK_COLUMNS_T.split(',').map(str::trim).collect();
+        assert_eq!(prefixed, aliased);
+    }
 
     /// album_order_by は全分岐で `album_key ASC` を最終タイブレークに持つこと
     /// (LIMIT/OFFSET のページ間で並びが揺れないため)。
