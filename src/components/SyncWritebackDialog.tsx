@@ -16,6 +16,8 @@ import type {
 import { Icon } from "./Icon";
 import { errorMessage } from "../lib/errors";
 import { useTauriEvent } from "../hooks/useTauriEvent";
+import { useDialogAutoFocus, useFocusTrap } from "../hooks/useFocusTrap";
+import { useRestoreFocus } from "../hooks/useRestoreFocus";
 
 interface SyncWritebackDialogProps {
   source: SyncSource;
@@ -175,7 +177,7 @@ export function SyncWritebackDialog({
   const [error, setError] = useState<string | null>(null);
 
   const dialogRef = useRef<HTMLDivElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const trapTab = useFocusTrap(dialogRef);
   const completeHandledRef = useRef(false);
   const isApplying = step === "applying";
 
@@ -192,18 +194,9 @@ export function SyncWritebackDialog({
     [onLibraryChanged],
   );
 
-  useEffect(() => {
-    previousFocusRef.current = document.activeElement as HTMLElement | null;
-    return () => previousFocusRef.current?.focus();
-  }, []);
+  useRestoreFocus();
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const target = dialogRef.current?.querySelector<HTMLElement>("[data-autofocus]");
-      (target ?? dialogRef.current)?.focus();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [step]);
+  useDialogAutoFocus(dialogRef, [step]);
 
   useTauriEvent(
     () =>
@@ -262,28 +255,9 @@ export function SyncWritebackDialog({
         }
         return;
       }
-      if (event.key !== "Tab") return;
-      const focusable = Array.from(
-        dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
-        ) ?? [],
-      );
-      if (focusable.length === 0) {
-        event.preventDefault();
-        dialogRef.current?.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapTab(event);
     },
-    [isApplying, onClose],
+    [isApplying, onClose, trapTab],
   );
 
   const startApply = useCallback(async () => {

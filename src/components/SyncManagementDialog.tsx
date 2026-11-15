@@ -15,6 +15,8 @@ import { Icon } from "./Icon";
 import { errorMessage } from "../lib/errors";
 import { formatBytes } from "../lib/format";
 import { useTauriEvent } from "../hooks/useTauriEvent";
+import { useDialogAutoFocus, useFocusTrap } from "../hooks/useFocusTrap";
+import { useRestoreFocus } from "../hooks/useRestoreFocus";
 
 interface SyncManagementDialogProps {
   source: SyncSource;
@@ -75,7 +77,7 @@ export function SyncManagementDialog({
   const [error, setError] = useState<string | null>(null);
 
   const dialogRef = useRef<HTMLDivElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const trapTab = useFocusTrap(dialogRef);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const resyncHandledRef = useRef(false);
   const isBusy = step === "resyncing" || step === "evicting";
@@ -96,19 +98,12 @@ export function SyncManagementDialog({
     }
   }, [source.id]);
 
+  useRestoreFocus();
   useEffect(() => {
-    previousFocusRef.current = document.activeElement as HTMLElement | null;
     void loadManagement();
-    return () => previousFocusRef.current?.focus();
   }, [loadManagement]);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const target = dialogRef.current?.querySelector<HTMLElement>("[data-autofocus]");
-      (target ?? dialogRef.current)?.focus();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [step]);
+  useDialogAutoFocus(dialogRef, [step]);
 
   const finishResync = useCallback((summary: ResyncSummary) => {
     if (resyncHandledRef.current) return;
@@ -145,27 +140,8 @@ export function SyncManagementDialog({
       }
       return;
     }
-    if (event.key !== "Tab") return;
-    const focusable = Array.from(
-      dialogRef.current?.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
-      ) ?? [],
-    );
-    if (focusable.length === 0) {
-      event.preventDefault();
-      dialogRef.current?.focus();
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }, [isBusy, onClose]);
+    trapTab(event);
+  }, [isBusy, onClose, trapTab]);
 
   const changePolicy = useCallback(async (
     selection: SyncSelection,

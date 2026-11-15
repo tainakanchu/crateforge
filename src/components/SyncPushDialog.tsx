@@ -11,6 +11,8 @@ import { Icon } from "./Icon";
 import { errorMessage } from "../lib/errors";
 import { formatBytes } from "../lib/format";
 import { useTauriEvent } from "../hooks/useTauriEvent";
+import { useDialogAutoFocus, useFocusTrap } from "../hooks/useFocusTrap";
+import { useRestoreFocus } from "../hooks/useRestoreFocus";
 
 interface SyncPushDialogProps {
   source: SyncSource;
@@ -36,7 +38,7 @@ export function SyncPushDialog({
   const [loadSucceeded, setLoadSucceeded] = useState(false);
 
   const dialogRef = useRef<HTMLDivElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const trapTab = useFocusTrap(dialogRef);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const completeHandledRef = useRef(false);
   const isPushing = step === "pushing";
@@ -74,18 +76,9 @@ export function SyncPushDialog({
     }
   }, [source.id]);
 
-  useEffect(() => {
-    previousFocusRef.current = document.activeElement as HTMLElement | null;
-    return () => previousFocusRef.current?.focus();
-  }, []);
+  useRestoreFocus();
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const target = dialogRef.current?.querySelector<HTMLElement>("[data-autofocus]");
-      (target ?? dialogRef.current)?.focus();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [step]);
+  useDialogAutoFocus(dialogRef, [step]);
 
   useTauriEvent(
     () =>
@@ -167,28 +160,9 @@ export function SyncPushDialog({
         }
         return;
       }
-      if (event.key !== "Tab") return;
-      const focusable = Array.from(
-        dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
-        ) ?? [],
-      );
-      if (focusable.length === 0) {
-        event.preventDefault();
-        dialogRef.current?.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapTab(event);
     },
-    [isPushing, onClose],
+    [isPushing, onClose, trapTab],
   );
 
   const progressPercent = progress?.total
