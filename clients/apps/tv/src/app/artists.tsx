@@ -9,12 +9,14 @@
 // データ取得は core の閲覧フック（useArtists / useArtistTracks。mobile と共通）。
 // 再生開始は songs.tsx と同じ usePlayer.setQueue → /player パターン。
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "expo-router";
 import { View, Text, StyleSheet } from "react-native";
 
 import {
+  type Artist,
   artistLabel,
+  compareNamesUnknownLast,
   useArtistTracks,
   useArtists,
   usePlayer,
@@ -25,6 +27,9 @@ import { TrackRow } from "@/components/library/TrackRow";
 import { LibraryList } from "@/components/library/LibraryList";
 import { Focusable } from "@/components/focus";
 import { PALETTE, TV_FONT, TV_LAYOUT, FOCUS_RING } from "@/theme/palette";
+
+/** アーティスト一覧の並び順: mobile と同じ名前の自然順。不明なアーティスト（artist: ""）は末尾。 */
+const byArtistName = compareNamesUnknownLast((a: Artist) => a.artist);
 
 export default function ArtistsScreen() {
   const router = useRouter();
@@ -37,8 +42,12 @@ export default function ArtistsScreen() {
   const [selected, setSelected] = useState<string | null>(null);
 
   // アーティスト一覧（サーバ側 /api/artists で集計）。
+  // 並びは mobile と同じ名前の自然順。不明なアーティストは末尾。
   const artistsQuery = useArtists({ grouping });
-  const artists = artistsQuery.data ?? [];
+  const artists = useMemo(
+    () => [...(artistsQuery.data ?? [])].sort(byArtistName),
+    [artistsQuery.data],
+  );
 
   // フォーカス未確定でも先頭アーティストを既定選択にして詳細ペインを埋める。
   const activeArtist = selected ?? artists[0]?.artist ?? null;

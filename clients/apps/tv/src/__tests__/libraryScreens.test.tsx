@@ -74,7 +74,7 @@ afterEach(() => {
 });
 
 describe("TV アルバム一覧の並び順", () => {
-  test("アルバムアーティスト（無ければアルバム名）→ アルバム名の順。不明なアルバムは末尾", async () => {
+  test("名前の自然順（mobile と同じ）。不明なアルバムは末尾", async () => {
     mockApi({
       "/api/albums": [
         album("Zeta", "Alpha", 1),
@@ -90,24 +90,24 @@ describe("TV アルバム一覧の並び順", () => {
     await waitFor(() => expect(screen.getByText("Zeta")).toBeTruthy());
     expect(rowNames(screen)).toEqual([
       "Alpha LP",
-      "Zeta",
       "Beta",
       "Middle",
-      "Track 10",
       "track 2",
+      "Track 10",
+      "Zeta",
       "不明なアルバム",
     ]);
   });
 });
 
 describe("TV アーティスト一覧の並び順", () => {
-  test("API が返した順のまま（並べ替えない）", async () => {
+  test("名前の自然順（mobile と同じ）。不明なアーティストは末尾", async () => {
     mockApi({
       "/api/artists": [artist("Zed", 1), artist("", 2), artist("abba", 3), artist("Artist 10", 4), artist("Artist 2", 5)],
     });
     const screen = await renderScreen(<ArtistsScreen />);
     await waitFor(() => expect(screen.getByText("Zed")).toBeTruthy());
-    expect(rowNames(screen)).toEqual(["Zed", "不明なアーティスト", "abba", "Artist 10", "Artist 2"]);
+    expect(rowNames(screen)).toEqual(["abba", "Artist 2", "Artist 10", "Zed", "不明なアーティスト"]);
   });
 });
 

@@ -13,7 +13,7 @@ import { View, Text, StyleSheet } from "react-native";
 import {
   type Album,
   albumLabel,
-  compareAlbums,
+  compareNamesUnknownLast,
   useAlbumTracks,
   useAlbums,
   usePlayer,
@@ -24,18 +24,12 @@ import { LibraryList } from "@/components/library/LibraryList";
 import { Focusable } from "@/components/focus";
 import { PALETTE, TV_FONT, TV_LAYOUT, FOCUS_RING } from "@/theme/palette";
 
-/**
- * TV のアルバム並び順。不明なアルバム（album: ""）は常に末尾、それ以外は core の compareAlbums
- * （アルバムアーティスト（無ければアルバム名）→ アルバム名）。/api/albums は year を返さないので年順は効かない。
- */
-function compareAlbumsUnknownLast(a: Album, b: Album): number {
-  if (!a.album.trim() !== !b.album.trim()) return a.album.trim() ? -1 : 1;
-  return compareAlbums(a, b);
-}
+/** アルバム一覧の並び順: mobile と同じ名前の自然順（"Vol. 2" < "Vol. 10"）。不明なアルバムは末尾。 */
+const byAlbumName = compareNamesUnknownLast((a: Album) => a.album);
 
 /** useAlbums の select（参照を固定して、再描画のたびに並べ替え直さない）。 */
 function sortAlbumsForTv(albums: Album[]): Album[] {
-  return [...albums].sort(compareAlbumsUnknownLast);
+  return [...albums].sort(byAlbumName);
 }
 
 export default function AlbumsScreen() {
@@ -45,7 +39,7 @@ export default function AlbumsScreen() {
   // 選択中アルバム（null=一覧表示 / 非null=詳細表示）。
   const [selected, setSelected] = useState<Album | null>(null);
 
-  // アルバム一覧（distinct）。並びは TV の順（不明なアルバム末尾）。
+  // アルバム一覧（distinct）。並びは mobile と同じ名前順（不明なアルバム末尾）。
   const albumsQuery = useAlbums({ select: sortAlbumsForTv });
   const albums = albumsQuery.data ?? [];
 
