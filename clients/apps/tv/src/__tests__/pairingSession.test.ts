@@ -34,7 +34,7 @@ function makeClient(polls: Array<PairPollResponse | Error>) {
       session: "sess-1",
       code: "123456",
     })),
-    pairPoll: jest.fn(async (_session: string): Promise<PairPollResponse> => {
+    pairPoll: jest.fn(async (_session: string, _signal?: AbortSignal): Promise<PairPollResponse> => {
       const next = polls[Math.min(i, polls.length - 1)];
       i++;
       if (next instanceof Error) throw next;
@@ -87,7 +87,7 @@ describe("startPairingSession", () => {
     jest.advanceTimersByTime(1);
     await flush();
     expect(client.pairPoll).toHaveBeenCalledTimes(1);
-    expect(client.pairPoll).toHaveBeenCalledWith("sess-1");
+    expect(client.pairPoll).toHaveBeenCalledWith("sess-1", expect.anything());
 
     jest.advanceTimersByTime(2000);
     await flush();
@@ -233,13 +233,14 @@ describe("startPairingSession", () => {
     expect(events).toEqual([{ type: "code", code: "123456" }]);
   });
 
-  it("前回の確認が返るまで次の確認を投げず、approved は 1 回だけ通知する", async () => {
+  it("前回の確認が返るまで（タイムアウトまで）は次の確認を投げず、approved は 1 回だけ通知する", async () => {
     const client = makeClient([{ status: "approved", token: "second" }]);
     const d = deferred<PairPollResponse>();
     client.pairPoll.mockReturnValueOnce(d.promise);
     const { events } = start(client);
     await flush();
 
+    // 2 秒目に確認開始。4 秒目・6 秒目の間隔は、まだ返っていないので投げない。
     jest.advanceTimersByTime(6000);
     await flush();
     expect(client.pairPoll).toHaveBeenCalledTimes(1);
@@ -254,6 +255,74 @@ describe("startPairingSession", () => {
       { type: "approved", token: "first" },
     ]);
     expect(client.pairPoll).toHaveBeenCalledTimes(1);
+  });
+
+  it("確認が固まってもタイムアウトで中断し、次の確認で承認を拾う", async () => {
+    const client = makeClient([{ status: "approved", token: "tok-after-hang" }]);
+    let hungSignal: AbortSignal | undefined;
+    // 1 回目は永久に返らない（abort しても reject しない最悪ケース）。
+    client.pairPoll.mockImplementationOnce((_session: string, signal?: AbortSignal) => {
+      hungSignal = signal;
+      return new Promise<PairPollResponse>(() => {});
+    });
+    const { events } = start(client);
+    await flush();
+
+    // 2 秒目に確認開始 → 6 秒（既定のタイムアウト）固まる。
+    jest.advanceTimersByTime(2000);
+    await flush();
+    jest.advanceTimersByTime(5999);
+    await flush();
+    expect(client.pairPoll).toHaveBeenCalledTimes(1);
+    expect(hungSignal?.aborted).toBe(false);
+
+    // タイムアウト: リクエストを中断し、エラーにはせず承認待ちのまま。
+    jest.advanceTimersByTime(1);
+    await flush();
+    expect(hungSignal?.aborted).toBe(true);
+    expect(events).toEqual([{ type: "code", code: "123456" }]);
+
+    // 次の間隔で確認し直して approved。
+    jest.advanceTimersByTime(2000);
+    await flush();
+    expect(client.pairPoll).toHaveBeenCalledTimes(2);
+    expect(events).toEqual([
+      { type: "code", code: "123456" },
+      { type: "approved", token: "tok-after-hang" },
+    ]);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("タイムアウト後に遅れて届いた応答は捨てる", async () => {
+    const client = makeClient([{ status: "pending" }]);
+    const d = deferred<PairPollResponse>();
+    client.pairPoll.mockReturnValueOnce(d.promise);
+    const { events } = start(client, undefined);
+    await flush();
+
+    jest.advanceTimersByTime(2000 + 6000);
+    await flush();
+    d.resolve({ status: "approved", token: "too-late" });
+    await flush();
+
+    expect(events).toEqual([{ type: "code", code: "123456" }]);
+  });
+
+  it("cancel は進行中の確認を中断し、タイマーを残さない", async () => {
+    const client = makeClient([{ status: "pending" }]);
+    let signal: AbortSignal | undefined;
+    client.pairPoll.mockImplementationOnce((_session: string, s?: AbortSignal) => {
+      signal = s;
+      return new Promise<PairPollResponse>(() => {});
+    });
+    const { session } = start(client);
+    await flush();
+    jest.advanceTimersByTime(2000);
+    await flush();
+
+    session.cancel();
+    expect(signal?.aborted).toBe(true);
+    expect(jest.getTimerCount()).toBe(0);
   });
 });
 

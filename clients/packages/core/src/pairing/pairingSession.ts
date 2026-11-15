@@ -9,6 +9,9 @@ import type { PairPollResponse, PairStartResponse } from "../lib/types";
 /** ペアリング承認の確認間隔（ms）。 */
 export const PAIRING_POLL_INTERVAL_MS = 2000;
 
+/** 承認確認 1 回のタイムアウト（ms）。接続の疎通確認（PROBE_TIMEOUT_MS）と同じ長さ。 */
+export const PAIRING_POLL_TIMEOUT_MS = 6000;
+
 /** デスクトップ側でコードを入力する場所（案内文用）。 */
 export const DESKTOP_PAIR_APPROVE_PATH = `${DESKTOP_API_SETTINGS_PATH} → 端末を承認`;
 
@@ -18,7 +21,7 @@ export const PAIRING_EXPIRED_MESSAGE = "コードが期限切れになりまし�
 /** ペアリングに必要な API だけを切り出した形（ApiClient が満たす）。 */
 export interface PairingClient {
   pairStart(deviceName?: string, platform?: string): Promise<PairStartResponse>;
-  pairPoll(session: string): Promise<PairPollResponse>;
+  pairPoll(session: string, signal?: AbortSignal): Promise<PairPollResponse>;
 }
 
 /**
@@ -41,6 +44,8 @@ export interface PairingSessionOptions {
   platform: string;
   /** 承認確認の間隔。既定は PAIRING_POLL_INTERVAL_MS。 */
   intervalMs?: number;
+  /** 承認確認 1 回のタイムアウト。既定は PAIRING_POLL_TIMEOUT_MS。 */
+  pollTimeoutMs?: number;
   onEvent: (event: PairingEvent) => void;
 }
 
@@ -55,14 +60,19 @@ export interface PairingSession {
  *   ポーリングは始まらない）。
  * - 前回の確認がまだ返っていない間は次の確認を投げない（応答の追い越しで二重に
  *   approved を通知しないため）。
+ * - 確認が pollTimeoutMs 返らなければ中断して「まだ承認待ち」と扱い、次の間隔でまた確認する
+ *   （1 回固まっただけでポーリングが止まったままにならないように）。
  */
 export function startPairingSession(options: PairingSessionOptions): PairingSession {
   const { client, deviceName, platform, onEvent } = options;
   const intervalMs = options.intervalMs ?? PAIRING_POLL_INTERVAL_MS;
+  const pollTimeoutMs = options.pollTimeoutMs ?? PAIRING_POLL_TIMEOUT_MS;
 
   let done = false;
   let timer: ReturnType<typeof setInterval> | null = null;
   let polling = false;
+  /** 進行中の確認を止める（タイムアウトの解除 + リクエストの中断）。 */
+  let abortPoll: (() => void) | null = null;
 
   const stop = () => {
     done = true;
@@ -70,7 +80,38 @@ export function startPairingSession(options: PairingSessionOptions): PairingSess
       clearInterval(timer);
       timer = null;
     }
+    abortPoll?.();
   };
+
+  /** タイムアウト付きの確認。時間内に返らなければ null（= まだ承認待ち扱い）。 */
+  const pollOnce = (session: string): Promise<PairPollResponse | null> =>
+    new Promise((resolve, reject) => {
+      const controller = new AbortController();
+      let settled = false;
+      const giveUp = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        controller.abort();
+        resolve(null);
+      };
+      const timeout = setTimeout(giveUp, pollTimeoutMs);
+      abortPoll = giveUp;
+      client.pairPoll(session, controller.signal).then(
+        (res) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resolve(res);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          reject(error);
+        },
+      );
+    });
 
   const finish = (event: PairingEvent) => {
     if (done) return;
@@ -82,7 +123,8 @@ export function startPairingSession(options: PairingSessionOptions): PairingSess
     if (done || polling) return;
     polling = true;
     try {
-      const res = await client.pairPoll(session);
+      const res = await pollOnce(session);
+      if (res == null) return; // タイムアウト: 次の間隔でまた確認する。
       if (res.status === "approved" && res.token != null) {
         finish({ type: "approved", token: res.token });
       } else if (res.status === "expired") {
@@ -93,6 +135,7 @@ export function startPairingSession(options: PairingSessionOptions): PairingSess
       finish({ type: "error", stage: "poll", error });
     } finally {
       polling = false;
+      abortPoll = null;
     }
   };
 
