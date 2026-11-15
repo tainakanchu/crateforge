@@ -818,6 +818,15 @@ impl Database {
             .optional()
     }
 
+    /// 曲のファイルが無くなったことを記録する (`file_exists = 0`)。行は残す。
+    pub fn mark_track_file_missing(&self, persistent_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tracks SET file_exists = 0 WHERE persistent_id = ?1",
+            [persistent_id],
+        )?;
+        Ok(())
+    }
+
     /// IMMEDIATE transaction 内で所有・全 playlist 参照・metadata dirty を再確認して削除する。
     /// 削除したらその曲の track_id を返す (呼び出し元が再生キューから落とすため)。
     /// 対象外 (同期所有でない / プレイリストから参照されている / ローカル変更あり) なら `None`。

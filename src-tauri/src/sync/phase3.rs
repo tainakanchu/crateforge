@@ -746,11 +746,13 @@ pub async fn evict(
                 continue;
             }
         };
+        let mut file_removed = false;
         if let ValidatedLandedFile::Present { path, bytes, .. } = validated {
             match std::fs::remove_file(&path) {
                 Ok(()) => {
                     summary.files_deleted += 1;
                     summary.freed_bytes += bytes;
+                    file_removed = true;
                 }
                 Err(error) => {
                     summary.failures.push(failure(
@@ -765,6 +767,7 @@ pub async fn evict(
         let track_id = match db.delete_synced_track_if_eligible(persistent_id) {
             Ok(Some(track_id)) => track_id,
             Ok(None) => {
+                mark_missing_after_file_removal(db, persistent_id, file_removed);
                 summary.failures.push(failure(
                     Some(persistent_id.clone()),
                     None,
@@ -773,6 +776,7 @@ pub async fn evict(
                 continue;
             }
             Err(error) => {
+                mark_missing_after_file_removal(db, persistent_id, file_removed);
                 summary.failures.push(failure(
                     Some(persistent_id.clone()),
                     None,
@@ -785,6 +789,19 @@ pub async fn evict(
         summary.removed.track_ids.push(track_id);
     }
     Ok(summary)
+}
+
+/// 退避でファイルは消したのに tracks 行を消せなかった曲 (直前の再検証で対象外になった /
+/// DB エラー) を、ファイルなし (`file_exists = 0`) にする。行だけ「再生できる曲」として残ると、
+/// 一覧では普通の曲に見えて再生だけ失敗するため。ここでの失敗は握りつぶす (もともと失敗の後始末で、
+/// 次回のファイル確認でも同じ状態に直る)。
+fn mark_missing_after_file_removal(db: &Database, persistent_id: &str, file_removed: bool) {
+    if !file_removed {
+        return;
+    }
+    if let Err(error) = db.mark_track_file_missing(persistent_id) {
+        eprintln!("failed to mark evicted file as missing for {persistent_id}: {error}");
+    }
 }
 
 pub fn storage_usage(db: &Database, source_id: i64) -> Result<StorageUsage, SyncError> {
@@ -1233,8 +1250,11 @@ mod tests {
             Some("EEEEEEEEEEEEEE02")
         );
         assert!(summary.failures[0].error.contains("delete refused"));
-        // 失敗した曲の行はロールバックされて残っている。
-        assert!(db.get_track_by_track_id(ids[1]).unwrap().is_some());
+        // 失敗した曲の行はロールバックされて残っている。ファイルは先に消えているので、
+        // 「再生できる曲」に見えないよう file_exists = 0 になっている。
+        let leftover = db.get_track_by_track_id(ids[1]).unwrap().unwrap();
+        assert!(!leftover.file_exists);
+        assert!(!dir.path().join("EEEEEEEEEEEEEE02.mp3").exists());
         assert!(db.get_track_by_track_id(ids[0]).unwrap().is_none());
     }
 
