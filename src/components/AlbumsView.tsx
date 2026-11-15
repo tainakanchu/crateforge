@@ -1,7 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
-import * as playbackApi from "../api/playback";
-import * as audition from "../lib/audition";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
@@ -29,6 +27,8 @@ import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
 import { formatClock } from "../lib/format";
 import { combineQuery } from "../lib/query";
+import * as trackActions from "../lib/trackActions";
+import { trackApi } from "../lib/trackActionsApi";
 
 const SORT_LINE_H = 15; // ソートキー表示行 (.cov-meta .ls) のおよその高さ
 
@@ -396,13 +396,8 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   // 解決済みトラックを頭から (または指定トラックから) 再生。
   const playTracks = useCallback(async (ts: Track[], startId?: number) => {
-    const ids = ts.filter((t) => t.fileExists).map((t) => t.trackId);
-    if (ids.length === 0) return;
-    const start = startId != null ? Math.max(0, ids.indexOf(startId)) : 0;
     try {
-      await audition.ensureNormalPlay();
-      await playbackApi.setQueue(ids, start);
-      await playbackApi.playTrack(ids[start]);
+      await trackActions.playTracks(trackApi, ts, startId);
     } catch (err) {
       console.error("Failed to play:", err);
     }
@@ -473,7 +468,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     async (trackIds: number[], stars: number) => {
       const rating = starsToRating(stars);
       try {
-        for (const id of trackIds) await libraryApi.setTrackRating(id, rating);
+        await trackActions.setRatingForTracks(trackApi, trackIds, rating);
       } catch (err) {
         console.error("Failed to set rating:", err);
         return;
@@ -518,17 +513,14 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleEnqueue = useCallback(async () => {
     if (!contextMenu) return;
-    for (const id of contextMenu.trackIds) await playbackApi.enqueueTrack(id);
+    await trackActions.enqueueTracks(trackApi, contextMenu.trackIds);
     closeMenu();
   }, [contextMenu, closeMenu]);
 
-  // 「次に再生」: enqueueTrackNext は現在曲の直後へ1曲ずつ挿入するため、
-  // 反転してから入れると最終的な並びが選択順どおりになる。
+  // 「次に再生」: 現在曲の直後に選択順で並ぶ (挿入順の反転は playNextTracks 側)。
   const handlePlayNext = useCallback(async () => {
     if (!contextMenu) return;
-    for (const id of [...contextMenu.trackIds].reverse()) {
-      await playbackApi.enqueueTrackNext(id);
-    }
+    await trackActions.playNextTracks(trackApi, contextMenu.trackIds);
     closeMenu();
   }, [contextMenu, closeMenu]);
 
@@ -592,11 +584,15 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     async (playlistId: number) => {
       if (!contextMenu) return;
       try {
-        const added = await playlistsApi.addTracksToPlaylist(playlistId, contextMenu.trackIds);
+        const added = await trackActions.addTracksToPlaylist(
+          trackApi,
+          playlists,
+          playlistId,
+          contextMenu.trackIds,
+        );
         pushRecentPlaylist(playlistId);
         onTracksChanged();
-        const name = playlists.find((p) => p.playlistId === playlistId)?.name ?? "プレイリスト";
-        pushToast("success", `「${name}」に ${added} 曲を追加しました`);
+        pushToast("success", trackActions.addedToPlaylistMessage(added));
       } catch (err) {
         pushToast("error", `追加に失敗しました: ${err}`);
       }

@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useStore } from "../store/useStore";
-import * as playbackApi from "../api/playback";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
-import * as audition from "../lib/audition";
 import { Icon, Stars } from "./Icon";
 import { ratingToStars, starsToRating } from "../lib/rating";
 import { Cover } from "./Cover";
@@ -26,6 +24,8 @@ import { describeKey, effectiveKeyCamelot, formatKey, isKeyOverridden } from "..
 import { EmptyState } from "./EmptyState";
 import { joinGenre, splitGenre } from "../lib/genre";
 import { formatClock } from "../lib/format";
+import * as trackActions from "../lib/trackActions";
+import { trackApi } from "../lib/trackActionsApi";
 
 // 曲名列の最小幅 (未固定 = flex のとき)。styles.css の .cb-id / .cb-h-id と揃える。
 const NAME_MIN_WIDTH = 180;
@@ -470,9 +470,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       try {
         const ids = tracks.map((t) => t.trackId);
         const startIndex = ids.indexOf(track.trackId);
-        await audition.ensureNormalPlay();
-        await playbackApi.setQueue(ids, Math.max(0, startIndex));
-        await playbackApi.playTrack(track.trackId);
+        await trackActions.playQueueFrom(trackApi, ids, Math.max(0, startIndex), track.trackId);
       } catch (err) {
         console.error("Failed to play:", err);
         pushToast("error", `『${track.name || "(unknown)"}』を再生できませんでした: ${err}`);
@@ -507,11 +505,10 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       const ids = ctxIds();
       if (ids.length === 0) return;
       try {
-        const added = await playlistsApi.addTracksToPlaylist(playlistId, ids);
+        const added = await trackActions.addTracksToPlaylist(trackApi, playlists, playlistId, ids);
         pushRecentPlaylist(playlistId);
         onTracksChanged();
-        const name = playlists.find((p) => p.playlistId === playlistId)?.name ?? "プレイリスト";
-        pushToast("success", `「${name}」に ${added} 曲を追加しました`);
+        pushToast("success", trackActions.addedToPlaylistMessage(added));
       } catch (err) {
         pushToast("error", `追加に失敗しました: ${err}`);
       }
@@ -548,7 +545,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     async (track: Track, stars: number) => {
       const newRating = starsToRating(stars);
       try {
-        await libraryApi.setTrackRating(track.trackId, newRating);
+        await trackActions.setRatingForTracks(trackApi, [track.trackId], newRating);
         onTracksChanged();
       } catch (err) {
         console.error("Failed to set rating:", err);
@@ -564,7 +561,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       if (ids.length === 0) return;
       const newRating = starsToRating(stars);
       try {
-        for (const id of ids) await libraryApi.setTrackRating(id, newRating);
+        await trackActions.setRatingForTracks(trackApi, ids, newRating);
         onTracksChanged();
       } catch (err) {
         console.error("Failed to set rating:", err);
@@ -574,16 +571,13 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   );
 
   const handleEnqueue = useCallback(async () => {
-    for (const id of ctxIds()) await playbackApi.enqueueTrack(id);
+    await trackActions.enqueueTracks(trackApi, ctxIds());
     setContextMenu(null);
   }, [ctxIds]);
 
-  // 「次に再生」: 各曲を現在曲の直後へ割り込ませる。enqueueTrackNext は一曲ずつ
-  // 現在曲の直後に挿入するため、選択順のまま回すと後の曲ほど前へ来て逆順になる。
-  // ids を反転してから入れると、最終的な並びが選択順どおりになる。
+  // 「次に再生」: 現在曲の直後に選択順で並ぶ (挿入順の反転は playNextTracks 側)。
   const handlePlayNext = useCallback(async () => {
-    const ids = ctxIds();
-    for (const id of [...ids].reverse()) await playbackApi.enqueueTrackNext(id);
+    await trackActions.playNextTracks(trackApi, ctxIds());
     setContextMenu(null);
   }, [ctxIds]);
 
@@ -799,10 +793,8 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         e.preventDefault();
         const ids = ts.map((t) => t.trackId);
         const startIndex = ids.indexOf(track.trackId);
-        audition
-          .ensureNormalPlay()
-          .then(() => playbackApi.setQueue(ids, Math.max(0, startIndex)))
-          .then(() => playbackApi.playTrack(track!.trackId))
+        trackActions
+          .playQueueFrom(trackApi, ids, Math.max(0, startIndex), track.trackId)
           .catch((err) => {
             console.error("Failed to play:", err);
             // useStore.getState() 経由でトーストを出す（effect クロージャ内のため）。

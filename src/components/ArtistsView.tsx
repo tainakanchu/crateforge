@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { useStore } from "../store/useStore";
 import * as libraryApi from "../api/library";
-import * as playbackApi from "../api/playback";
-import * as audition from "../lib/audition";
 import { Icon } from "./Icon";
 import { ArtworkImg } from "./Cover";
 import { artGradient, leadingGlyph } from "../lib/art";
@@ -24,6 +22,8 @@ import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
 import { formatClock } from "../lib/format";
 import { isTauri } from "../lib/env";
 import { combineQuery } from "../lib/query";
+import * as trackActions from "../lib/trackActions";
+import { trackApi } from "../lib/trackActionsApi";
 
 
 /**
@@ -242,13 +242,8 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   // ---- 再生 / キュー / クレート ----
 
   const playTracks = useCallback(async (ts: Track[], startId?: number) => {
-    const ids = ts.filter((t) => t.fileExists).map((t) => t.trackId);
-    if (ids.length === 0) return;
-    const start = startId != null ? Math.max(0, ids.indexOf(startId)) : 0;
     try {
-      await audition.ensureNormalPlay();
-      await playbackApi.setQueue(ids, start);
-      await playbackApi.playTrack(ids[start]);
+      await trackActions.playTracks(trackApi, ts, startId);
     } catch (err) {
       console.error("Failed to play:", err);
       pushToast("error", `再生に失敗しました: ${err}`);
@@ -257,10 +252,10 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
 
   const enqueueTracks = useCallback(
     async (ts: Track[]) => {
-      const ids = ts.filter((t) => t.fileExists).map((t) => t.trackId);
+      const ids = trackActions.playableIds(ts);
       if (ids.length === 0) return;
       try {
-        for (const id of ids) await playbackApi.enqueueTrack(id);
+        await trackActions.enqueueTracks(trackApi, ids);
         pushToast("success", `${ids.length} 曲をキューに追加しました`);
       } catch (err) {
         pushToast("error", `キューへの追加に失敗しました: ${err}`);
