@@ -2,11 +2,21 @@ name: Mobile CI
 
 # clients/ (モバイル / TV / 共有パッケージ) 用の PR・main push チェック。
 # ci.yml は desktop 専用のまま。ここでは次を確認する。
+#   changes : 変更ファイルから Android ネイティブビルドが要るかを判定する（下記「実行ルール」）
 #   js      : core / mobile / tv の型チェックとテスト、Android Auto 用 Expo モジュール・config plugin・
 #             スクリプトの node テスト、iOS prebuild の回帰（UIBackgroundModes=audio が保たれる）、
 #             TV の Android prebuild の回帰（expo-audio のサービスが従来どおり残る）
+#             + mobile / tv の `expo export --platform android`（Metro の bundle 検査。JS だけの PR で
+#             assembleRelease が拾っていたバンドルエラーをここで拾う）
 #   android : android-apk.yml を signed: false で呼び、prebuild x2 + Kotlin ユニットテスト +
-#             assembleRelease (arm64-v8a) + APK 検査
+#             assembleRelease (arm64-v8a) + APK 検査（20〜30 分）
+#
+# 実行ルール（android ジョブ）:
+#   - pull_request : ネイティブに影響するファイルが変わったときだけ実行する。JS / TS のソースだけの PR では
+#                    スキップ（判定は .github/scripts/native-changed.sh。パターンはそこに集約）。
+#   - push (main) / workflow_dispatch : 常に実行する（main は保守的にフルビルド）。
+#   スキップされたジョブは GitHub 上で skipped と表示され、required check としては成功扱いになる。
+#   release.yml (tag v*) はこのワークフローを使わず常にフルビルドする。
 #
 # 秘密情報: pull_request イベントでは fork のコードにも secrets は渡らず、本ワークフローは
 # そもそも secrets を一切参照しない。署名付きビルドは release.yml（tag v*）だけが行う。
@@ -34,6 +44,41 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      native: ${{ steps.detect.outputs.native }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # 判定パターン自体の回帰テスト（パターンを足したときの取りこぼし・誤検出を防ぐ）。
+      - name: Self-test native change detection
+        run: bash .github/scripts/native-changed.sh --self-test
+
+      # PR 以外 (main push / 手動実行) は常に native=true。PR は base...head（merge-base からの差分）で判定する。
+      - name: Detect native-affecting changes
+        id: detect
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "native=true" >> "$GITHUB_OUTPUT"
+            echo "event=$EVENT: always build native"
+            exit 0
+          fi
+          git diff --name-only "$BASE_SHA...$HEAD_SHA" | tee "$RUNNER_TEMP/changed.txt"
+          native="$(.github/scripts/native-changed.sh < "$RUNNER_TEMP/changed.txt")"
+          echo "native=$native" >> "$GITHUB_OUTPUT"
+          echo "native=$native"
+
   js:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -161,7 +206,21 @@ jobs:
           fi
           echo "TV prebuild OK"
 
+      # Metro の bundle 検査（オフライン・無認証で動く。EAS / Sentry へは通信しない。各 30〜40 秒）。
+      # android ジョブが PR ではスキップされ得るため、JS の解決・変換エラーはここで拾う。
+      # 出力は捨てる（RUNNER_TEMP）。prebuild と違い package.json は書き換えない。
+      - name: Bundle check (mobile, expo export)
+        working-directory: clients/apps/mobile
+        run: pnpm exec expo export --platform android --output-dir "$RUNNER_TEMP/export-mobile"
+
+      - name: Bundle check (tv, expo export)
+        working-directory: clients/apps/tv
+        run: pnpm exec expo export --platform android --output-dir "$RUNNER_TEMP/export-tv"
+
   android:
+    # PR では native=true のときだけ実行（上記ルール）。スキップ時は skipped 表示で、required check では成功扱い。
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     # fork の PR を含め secrets は渡さない (signed: false)。
     permissions:
       contents: read

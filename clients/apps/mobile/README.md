@@ -153,10 +153,16 @@ Car App Library（独自テンプレート）のアプリには使えない設�
 
 | ファイル | いつ | 内容 |
 |---|---|---|
-| `.github/workflows/mobile.yml` | PR / main push（`clients/**` 等に変更があるとき） | core / mobile / TV の型チェックとテスト、config plugin・スクリプトの node テスト、iOS / TV の prebuild 回帰、`android-apk.yml` を未署名で実行 |
+| `.github/workflows/mobile.yml` | PR / main push（`clients/**` 等に変更があるとき） | core / mobile / TV の型チェックとテスト、config plugin・スクリプトの node テスト、iOS / TV の prebuild 回帰、`expo export`（Metro bundle 検査）、`android-apk.yml` を未署名で実行。ただし PR では、ネイティブに影響するファイルが変わったときだけ Android ビルドを行う（下記） |
 | `.github/workflows/android-apk.yml` | 再利用（`workflow_call`） | pnpm install → `prebuild --clean` ×2（再現性）→ `package.json` 復元 → Kotlin 単体テスト → `assembleRelease` → `verify-apk.sh` → artifact |
 | `.github/workflows/release.yml` | tag `v*` / 手動 | 既存の desktop ジョブ → `release`（desktop Release）。並行して `build-android`（署名付き APK）→ 両方成功後に `release-android` が APK と SHA-256 を同じ Release に添付 |
 
+- **PR で Android ビルドが走る条件**: `mobile.yml` の `changes` ジョブが `.github/scripts/native-changed.sh` で変更ファイルを判定します
+  （`app.config.ts` / `eas.json` / config plugin / `package.json` と lockfile / 自前ネイティブモジュールの `android`・`ios`・`plugin` /
+  アイコン・スプラッシュ画像 / `android-apk.yml` など。一覧とルールはスクリプト先頭を参照）。JS / TS のソースだけの PR では
+  `android` ジョブは skipped（required check では成功扱い）になり、bundle の破損は `js` ジョブの `expo export` が拾います。
+  main への push と手動実行は常にフルビルドです。新しくネイティブに効くファイルを足したら、スクリプトのパターンにも追記してください
+  （`.github/scripts/native-changed.sh --self-test` で確認）。
 - desktop の `release` ジョブは Android に依存せず、`crateforge-*` の artifact だけを取得します。APK のビルドが失敗しても desktop Release は従来どおり公開されます。
 - `release-android` は、APK 添付の途中で失敗・キャンセルされた場合に **APK と `.sha256` を両方削除**し（Release 本文の Android 節も外す）、「APK 同梱」と誤認される半端な状態を残しません。
   失敗したらワークフロー実行画面の **Re-run failed jobs** で再実行します（成功済みの desktop ジョブは再実行されません）。
