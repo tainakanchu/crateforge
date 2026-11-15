@@ -43,8 +43,10 @@
   `hooks/useElementWidth.ts` (callback ref)、`hooks/useCardGridVirtualizer.ts`
   (安定キー、開閉では `measure()` しない、幅/列変更時のみ再計測)。AlbumsView / ArtistsView / TracksView に適用。
   **ArtistsView の展開行の重なりはここで直る (バグ修正)**。
+  TracksView の「空状態でマウントするとカードが 2 列に引き伸ばされる」も callback ref 化で直る (Albums / Artists と同じ原因。意図したバグ修正)。
 - `lib/format.ts`: `formatClock`, `formatBytes`, `formatYmd`。`lib/errors.ts`: `errorMessage`。
   `lib/env.ts`: `isTauri`。`lib/query.ts`: `combineQuery`。重複定義を置き換える (表示は変えない)。
+  `errorMessage` は `{ message }` 形式の失敗を優先して読み、Sync 系ダイアログの「[object Object]」表示が直る (意図したバグ修正)。
 - `lib/tauriEvents.ts` `subscribeDisposable` + `hooks/useTauriEvent.ts`。App.tsx と
   PairingApprovalDialog の「cleanup が先に走ると購読が残る」形を置き換える (バグ修正)。
 - `hooks/useFocusTrap.ts` / `useRestoreFocus.ts` / `useEscapeKey.ts`、`components/modal/ModalFrame.tsx`、
