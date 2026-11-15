@@ -7,9 +7,14 @@
 
 type Ms = number | null | undefined;
 
-/** `m:ss` (1 時間未満) / `h:mm:ss` (1 時間以上)。0 以下・NaN・null は 0 として整形する。 */
+/** 整形できる長さか (正の有限値)。null / 0 以下 / NaN / Infinity は「値なし」。 */
+function hasDuration(ms: Ms): ms is number {
+  return ms != null && Number.isFinite(ms) && ms > 0;
+}
+
+/** `m:ss` (1 時間未満) / `h:mm:ss` (1 時間以上)。値なしは 0 として整形する。 */
 function clock(ms: Ms): string {
-  const value = ms != null && ms > 0 ? ms : 0;
+  const value = hasDuration(ms) ? ms : 0;
   const total = Math.floor(value / 1000);
   const sec = (total % 60).toString().padStart(2, "0");
   if (total >= 3600) {
@@ -21,11 +26,11 @@ function clock(ms: Ms): string {
 }
 
 /**
- * 曲 1 曲の長さ。長さが分からない (null / 0 以下 / NaN) ときは空文字。
+ * 曲 1 曲の長さ。長さが分からない (null / 0 以下 / NaN / Infinity) ときは空文字。
  * ラベル付きの欄で「—」などを出したい画面は `formatTrackTime(ms) || "—"` とする。
  */
 export function formatTrackTime(ms: Ms): string {
-  return ms != null && ms > 0 ? clock(ms) : "";
+  return hasDuration(ms) ? clock(ms) : "";
 }
 
 /**

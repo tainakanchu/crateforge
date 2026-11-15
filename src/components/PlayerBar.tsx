@@ -247,6 +247,12 @@ export function PlayerBar() {
     [playback.durationMs],
   );
 
+  // 1 時間以上の曲は再生位置が 59:59 → 1:00:00 で 2 文字増える。時間表示の幅を先に確保して、
+  // その瞬間に波形の幅が変わらないようにする (等幅フォントなので ch で足りる)。
+  const longTrack = playback.durationMs >= 3_600_000;
+  const timeMinWidth = longTrack ? "7ch" : undefined; // 1:15:03
+  const remainMinWidth = longTrack ? "8ch" : undefined; // -1:15:03
+
   return (
     <div
       ref={playerRef}
@@ -370,7 +376,9 @@ export function PlayerBar() {
           )}
         </div>
         <div className="cb-seek">
-          <span>{formatPlaybackTime(playback.positionMs)}</span>
+          <span style={{ minWidth: timeMinWidth, textAlign: "right" }}>
+            {formatPlaybackTime(playback.positionMs)}
+          </span>
           {/* ドラッグシーク対応: pointerDown/Move/Up + setPointerCapture でドラッグを捕捉 */}
           <div
             ref={waveRef}
@@ -418,7 +426,7 @@ export function PlayerBar() {
           {/* クリックで経過時間 ↔ 残り時間をトグル */}
           <span
             onClick={toggleRemainingTime}
-            style={{ cursor: "pointer", userSelect: "none" }}
+            style={{ cursor: "pointer", userSelect: "none", minWidth: remainMinWidth }}
             title="クリックで残り時間/経過時間を切替"
           >
             {showRemainingTime

@@ -78,6 +78,16 @@ test("formatRemainingTime: 先頭に - ・1 時間以上は -h:mm:ss・切り捨
   assert.equal(formatRemainingTime(0, Number.NaN), "-0:00");
 });
 
+test("時間表示: Infinity は値なしとして扱う (NaN:NaN などを出さない)", () => {
+  for (const bad of [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    assert.equal(formatTrackTime(bad), "");
+    assert.equal(formatTotalTime(bad), "0:00");
+    assert.equal(formatPlaybackTime(bad), "0:00");
+    assert.equal(formatRemainingTime(0, bad), "-0:00");
+    assert.equal(formatRemainingTime(bad, 60_000), "-0:00");
+  }
+});
+
 test("時間表示: 同じ長さは用途によらず同じ書式になる", () => {
   for (const ms of [1_000, 61_000, ALMOST_HOUR, 3_600_000, HOUR]) {
     assert.equal(formatTrackTime(ms), formatTotalTime(ms));

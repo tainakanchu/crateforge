@@ -1253,8 +1253,9 @@ select optgroup {
   font-size: 12px;
   color: var(--mut);
   flex-shrink: 0;
-  /* 通常は 38px。1 時間を超える曲 (1:15:03) はその行だけ広がる。 */
-  min-width: 38px;
+  /* 1 時間を超える曲の `1:15:03` (等幅 7 文字) が入る固定幅。行ごとに幅を変えると
+     左隣の BPM・星の列が行によってずれる。 */
+  width: 52px;
   white-space: nowrap;
   text-align: right;
 }
