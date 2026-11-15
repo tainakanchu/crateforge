@@ -1037,7 +1037,21 @@ mod tests {
     /// 1 リクエストを Router に流し、(status, body の JSON) を返す。
     /// body が空 (204 等) のときは `Value::Null` を返す。
     async fn req(app: Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+        req_with_headers(app, method, uri, &[], body).await
+    }
+
+    /// `req` に任意のリクエストヘッダー (例: `If-Match`) を足した版。
+    async fn req_with_headers(
+        app: Router,
+        method: &str,
+        uri: &str,
+        headers: &[(&str, &str)],
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
         let request = match body {
             Some(b) => {
                 builder = builder.header("content-type", "application/json");
@@ -2417,6 +2431,398 @@ mod tests {
         // name は seed の "Midnight"、トラック番号なし。
         assert!(root.join("Artist").join("Album").join("Midnight.mp3").exists());
         assert!(!src2.exists());
+    }
+
+    // ===== trackId 取り違え防止 =====
+
+    /// seed に加え、行 id (`tracks.id`) と trackId が食い違う曲 (trackId 900) を足した app を返す。
+    /// 返り値の 3 つ目はその曲の行 id。
+    fn setup_aliased() -> (tempfile::TempDir, Router, i64) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, persistent_id, name, artist, album, file_exists)
+                 VALUES (900, '0000000000000384', 'Aliased', 'Zeta', 'Far', 1)",
+                [],
+            )
+            .unwrap();
+        let row_id: i64 = db
+            .conn
+            .query_row("SELECT id FROM tracks WHERE track_id = 900", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_ne!(row_id, 900, "fixture: 行 id と trackId は異なる");
+        let app = router(ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens: crate::devices::ValidTokens::default(),
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
+        });
+        (dir, app, row_id)
+    }
+
+    /// JSON の `id` は行 id ではなく trackId の別名 (非推奨) として出る。
+    #[tokio::test]
+    async fn case_track_json_id_is_track_id_alias() {
+        let (_dir, app, row_id) = setup_aliased();
+
+        let (status, body) = req(app.clone(), "GET", "/api/tracks", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().unwrap();
+        assert!(arr.iter().any(|t| t["trackId"] == 900));
+        for t in arr {
+            assert_eq!(t["id"], t["trackId"], "GET /api/tracks: id == trackId");
+        }
+
+        let (status, t) = req(app.clone(), "GET", "/api/tracks/900", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(t["trackId"], 900);
+        assert_eq!(t["id"], 900);
+        assert_ne!(t["id"], row_id);
+
+        let (status, body) = req(
+            app,
+            "POST",
+            "/api/tracks/by-ids",
+            Some(json!({ "trackIds": [900, 1] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["id"], 900);
+        assert_eq!(arr[1]["id"], 1);
+    }
+
+    /// `If-Match: <persistentId>`: 一致 (引用符あり・小文字でも) なら 200、不一致なら 409 で無変更。
+    #[tokio::test]
+    async fn case_patch_if_match_guard() {
+        let (_dir, app, _) = setup_aliased();
+
+        // 不一致 → 409。実際の曲情報を返し、DB は変わらない。
+        let (status, body) = req_with_headers(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/900",
+            &[("If-Match", "0000000000000001")],
+            Some(json!({ "genre": "Wrong" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"].as_str().unwrap().contains("If-Match"));
+        assert_eq!(body["track"]["trackId"], 900);
+        assert_eq!(body["track"]["persistentId"], "0000000000000384");
+        assert_eq!(body["track"]["name"], "Aliased");
+        assert_eq!(body["track"]["artist"], "Zeta");
+        assert_eq!(body["track"]["album"], "Far");
+        let (_, t) = req(app.clone(), "GET", "/api/tracks/900", None).await;
+        assert_eq!(t["genre"], Value::Null, "409 では書き込まない");
+
+        // 一致 → 200。
+        let (status, body) = req_with_headers(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/900",
+            &[("If-Match", "0000000000000384")],
+            Some(json!({ "genre": "House" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["track"]["genre"], "House");
+
+        // 引用符つき・小文字 hex も一致として扱う。
+        let (status, body) = req_with_headers(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/900",
+            &[("If-Match", "\"0000000000000384\"")],
+            Some(json!({ "genre": "Disco" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["track"]["genre"], "Disco");
+        let (status, _) = req_with_headers(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1",
+            &[("If-Match", "\"000000000000000a\"")],
+            Some(json!({ "genre": "X" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = req_with_headers(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/10",
+            &[("If-Match", "000000000000000a")],
+            Some(json!({ "genre": "X" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "trackId 10 は存在しない");
+
+        // 空の If-Match (空白・引用符だけ) は 400。persistentId の無い曲に黙って一致させない。
+        for empty in ["\"\"", "  ", "\" \""] {
+            let (status, body) = req_with_headers(
+                app.clone(),
+                "PATCH",
+                "/api/tracks/1",
+                &[("If-Match", empty)],
+                Some(json!({ "genre": "X" })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "If-Match: {empty:?}");
+            assert_eq!(body["error"], "invalid If-Match header");
+        }
+        let (_, t) = req(app, "GET", "/api/tracks/1", None).await;
+        assert_eq!(t["genre"], "House");
+    }
+
+    /// ボディの `expect`: 一致なら 200、不一致なら 409 で無変更。`expect` 自体はフィールドとして
+    /// 書かれず、平置きの double_option (`"year": null` でクリア) も従来どおり効く。
+    #[tokio::test]
+    async fn case_patch_expect_guard() {
+        let (dir, app, _) = setup_aliased();
+
+        // name 不一致 → 409、無変更。
+        let (status, body) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "genre": "Wrong", "year": null, "expect": { "name": "Midnight" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"].as_str().unwrap().contains("expect.name"));
+        assert_eq!(body["track"]["trackId"], 1);
+        assert_eq!(body["track"]["name"], "Sunrise");
+        let (_, t) = req(app.clone(), "GET", "/api/tracks/1", None).await;
+        assert_eq!(t["genre"], "House");
+        assert_eq!(t["year"], 2019);
+
+        // persistentId / artist / album の不一致も 409。null の album は "" として比較する。
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "genre": "Wrong", "expect": { "persistentId": "0000000000000002" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "genre": "Wrong", "expect": { "name": "Sunrise", "artist": "Beta" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        // 空の expect.persistentId は 400。
+        let (status, body) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "genre": "Wrong", "expect": { "persistentId": "" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "invalid expect.persistentId");
+        let (_, t) = req(app.clone(), "GET", "/api/tracks/1", None).await;
+        assert_eq!(t["genre"], "House");
+
+        // expect.persistentId は大文字小文字を区別しない (If-Match と同じ)。
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/900",
+            Some(json!({ "comments": "pid", "expect": { "persistentId": "0000000000000384" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        {
+            let db = crate::db::Database::open(dir.path()).unwrap();
+            db.conn
+                .execute(
+                    "UPDATE tracks SET persistent_id = '00000000000003AB' WHERE track_id = 900",
+                    [],
+                )
+                .unwrap();
+        }
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/900",
+            Some(json!({ "comments": "lower", "expect": { "persistentId": "00000000000003ab" } })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "小文字の expect.persistentId でも一致"
+        );
+
+        // 一致 → 200。year: null は平置きのままクリアとして効き、expect は書かれない。
+        let (status, body) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({
+                "genre": "Disco",
+                "year": null,
+                "expect": {
+                    "persistentId": "0000000000000001",
+                    "name": "Sunrise",
+                    "artist": "Alpha",
+                    "album": "Dawn"
+                }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["track"]["genre"], "Disco");
+        assert_eq!(body["track"]["year"], Value::Null);
+        assert!(body["track"].get("expect").is_none());
+        let (_, t) = req(app.clone(), "GET", "/api/tracks/1", None).await;
+        assert_eq!(t["genre"], "Disco");
+        assert_eq!(t["year"], Value::Null);
+        assert_eq!(t["name"], "Sunrise", "expect.name が name として書かれない");
+
+        // album が NULL の曲は expect.album = "" で一致し、元の値では一致しない。
+        {
+            let db = crate::db::Database::open(dir.path()).unwrap();
+            db.conn
+                .execute("UPDATE tracks SET album = NULL WHERE track_id = 1", [])
+                .unwrap();
+        }
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "comments": "ng", "expect": { "album": "Dawn" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, body) = req(
+            app,
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "comments": "ok", "expect": { "album": "" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["track"]["comments"], "ok");
+    }
+
+    /// PUT / DELETE artwork も `If-Match` が食い違えば 409 で、ファイルに触れない。
+    #[tokio::test]
+    async fn case_artwork_if_match_guard() {
+        let (dir, app, _) = setup_aliased();
+        let file = dir.path().join("aliased.mp3");
+        std::fs::write(&file, b"not really audio").unwrap();
+        {
+            let db = crate::db::Database::open(dir.path()).unwrap();
+            let p = file.to_string_lossy().to_string();
+            let url = crate::itunes_xml::writer::path_to_file_url(&p);
+            db.set_track_location(900, &p, &url).unwrap();
+        }
+
+        let request = Request::builder()
+            .method("PUT")
+            .uri("/api/tracks/900/artwork")
+            .header("content-type", "image/png")
+            .header("If-Match", "0000000000000001")
+            .body(Body::from(vec![0x89u8, b'P', b'N', b'G']))
+            .unwrap();
+        let resp = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["track"]["trackId"], 900);
+        assert_eq!(body["track"]["persistentId"], "0000000000000384");
+
+        let (status, body) = req_with_headers(
+            app,
+            "DELETE",
+            "/api/tracks/900/artwork",
+            &[("If-Match", "\"0000000000000001\"")],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["track"]["name"], "Aliased");
+
+        assert_eq!(std::fs::read(&file).unwrap(), b"not really audio");
+    }
+
+    /// 一括 PATCH は `persistentIds` でも対象を指定できる。未知の PID は notFound (文字列)。
+    /// `trackIds` と `persistentIds` は両方・どちらも無しなら 400。
+    #[tokio::test]
+    async fn case_bulk_patch_by_persistent_ids() {
+        let (_dir, app, _) = setup_aliased();
+        let (status, body) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks",
+            Some(json!({
+                "persistentIds": ["0000000000000384", "0000000000000002", "FFFFFFFFFFFFFFFF"],
+                "edit": { "genre": "Bulk" }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["updated"], 2);
+        assert_eq!(body["notFound"], json!(["FFFFFFFFFFFFFFFF"]));
+        assert_eq!(body["fileWriteFailed"], json!([]));
+        assert_eq!(body["relocateFailed"], json!([]));
+        for tid in [900, 2] {
+            let (_, t) = req(app.clone(), "GET", &format!("/api/tracks/{tid}"), None).await;
+            assert_eq!(t["genre"], "Bulk", "trackId {tid}");
+        }
+        // 指定していない曲は変わらない。
+        let (_, t) = req(app.clone(), "GET", "/api/tracks/1", None).await;
+        assert_eq!(t["genre"], "House");
+
+        // 従来の trackIds も引き続き使える (notFound は数値)。
+        let (status, body) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks",
+            Some(json!({ "trackIds": [3, 999], "edit": { "genre": "Ids" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["updated"], 1);
+        assert_eq!(body["notFound"], json!([999]));
+
+        // 両方 / どちらも無し → 400。
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks",
+            Some(json!({
+                "trackIds": [1],
+                "persistentIds": ["0000000000000001"],
+                "edit": { "genre": "X" }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks",
+            Some(json!({ "edit": { "genre": "X" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, t) = req(app, "GET", "/api/tracks/1", None).await;
+        assert_eq!(t["genre"], "House");
     }
 
     // ===== メタデータ書き込み: PATCH で rating 置換 (#39-7) =====

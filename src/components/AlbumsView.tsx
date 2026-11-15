@@ -965,7 +965,7 @@ function AlbumExpansion({
           const stars = ratingToStars(t.rating);
           return (
             <CovTrackRow
-              key={`${t.id}-${i}`}
+              key={`${t.trackId}-${i}`}
               track={t}
               index={i}
               isCurrent={isCurrent}

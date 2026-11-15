@@ -633,7 +633,7 @@ function ArtistExpansion({
                           return (
                             // 列は番号 / 曲名 / 長さ / +Crate のみ (ui-spec 3.2)。extra は渡さない。
                             <CovTrackRow
-                              key={`${t.id}-${i}`}
+                              key={`${t.trackId}-${i}`}
                               track={t}
                               index={i}
                               isCurrent={isCurrent}

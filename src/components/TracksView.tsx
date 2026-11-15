@@ -290,8 +290,8 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                   const inCrate = crateSet.has(t.trackId);
                   const isCurrent = playback.currentTrackId === t.trackId;
                   return (
-                    // プレイリストに同じ曲が複数あると t.id が重複するため位置込みの key にする。
-                    <div key={`${t.id}-${j}`} className="cb-cardwrap">
+                    // プレイリストに同じ曲が複数あると t.trackId が重複するため位置込みの key にする。
+                    <div key={`${t.trackId}-${j}`} className="cb-cardwrap">
                       <div
                         className={"cb-card" + (inCrate ? " incrate" : "") + (isCurrent ? " playing" : "")}
                         style={{ background: artGradient(t.album || t.name || ""), height: cardW }}

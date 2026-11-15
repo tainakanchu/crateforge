@@ -41,16 +41,19 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 
 - `GET /api/health` — サーバーの素性 + 現在の曲数
 - `GET /api/tracks`（`?q` 検索、`?album` 部分一致、`?genre` ジャンルタグの完全一致、offset/limit）。`?albumExact=true` を付けると `album` を完全一致で絞ります
-- `GET /api/tracks/{id}` / `POST /api/tracks/by-ids`（ID 列 → 曲。読み取り専用なので LAN からもトークン付きで使えます）
-- `GET /api/tracks/{id}/stream` — 音源の配信（`?native=true` 端末で再生できる形式は無変換 / `?original=true` 原本 / `?fmt=aac&br=192` AAC 変換）
-- `GET /api/tracks/{id}/analysis` — 解析結果（未解析なら null）
-- `GET /api/tracks/{id}/similar` — 類似曲
+- `GET /api/tracks/{trackId}` / `POST /api/tracks/by-ids`（ID 列 → 曲。読み取り専用なので LAN からもトークン付きで使えます）
+- `GET /api/tracks/{trackId}/stream` — 音源の配信（`?native=true` 端末で再生できる形式は無変換 / `?original=true` 原本 / `?fmt=aac&br=192` AAC 変換）
+- `GET /api/tracks/{trackId}/analysis` — 解析結果（未解析なら null）
+- `GET /api/tracks/{trackId}/similar` — 類似曲
 - `GET /api/stats` / `GET /api/genres` / `GET /api/albums`
 - `GET /api/playlists` / `GET /api/playlists/{id}`（スマート条件 `smartCriteria` を含む） / `GET /api/playlists/{id}/tracks`
   （スマートプレイリストの `trackCount` は条件のライブ評価の件数です）
 
+曲の指定は常に **`trackId`** です（パス・ボディとも）。曲 JSON の `id` は `trackId` の**非推奨の別名**（値は同じ）です。
+以前のバージョンは `id` に内部の行番号を返しており、`trackId` とは別の値でした。新しく書くクライアントは `id` を使わないでください。
+
 曲を返す API（`/api/tracks` 系・`/api/tracks/by-ids`・`/api/tracks/lookup`・`/similar`・`/api/playlists/{id}/tracks`・
-`PATCH /api/tracks/{id}` の応答）の `bpm` は、常に **実効 BPM**（タグの BPM、無ければ解析 BPM）です。
+`PATCH /api/tracks/{trackId}` の応答）の `bpm` は、常に **実効 BPM**（タグの BPM、無ければ解析 BPM）です。
 タグの値そのものが要るときは `?effectiveBpm=false` を付けて明示してください（sync ロールのトークンも常にタグの値）。
 同期（取り寄せ・書き戻し）は解析値をタグとして保存しないよう、必ず `?effectiveBpm=false` を付けて要求します。
 
@@ -64,11 +67,18 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 
 ### 書き込み（メタデータ）
 
-- `PATCH /api/tracks/{id}` — name / artist / album / genre / year / bpm / rating / composer / comments などを部分更新。
+- `PATCH /api/tracks/{trackId}` — name / artist / album / genre / year / bpm / rating / composer / comments などを部分更新。
   name / artist / album / genre / year / composer / comments などは実ファイルのタグへ書き戻し、`rating` / `disabled` / `playCount` / `skipCount` は DB のみ。
   `rating` は 0〜100 で、範囲外は `400`（何も更新されません）。`rating` だけの更新では `dateModified` は進みません。
-- `PATCH /api/tracks`（`{trackIds, edit}`） — 複数曲の一括更新。
+- `PATCH /api/tracks`（`{trackIds, edit}` または `{persistentIds, edit}`） — 複数曲の一括更新。`trackIds` と `persistentIds` はどちらか一方だけ指定します（両方・どちらも無しは `400`）。
+  見つからない曲は `notFound` に指定した値（trackId / persistentId）で返ります。
 - `POST /api/tracks/genre-tags/add` / `/remove` — ジャンルタグを末尾に一括で増減。
+
+**取り違え防止（任意）**: `PATCH /api/tracks/{trackId}` はヘッダー `If-Match: <persistentId>`、
+またはボディの `expect: { persistentId?, name?, artist?, album? }` を受け付けます。対象曲と食い違うと**何も書かずに `409`** を返し、
+本文の `track`（`trackId` / `persistentId` / `name` / `artist` / `album`）で実際に指していた曲を知らせます。
+`PUT` / `DELETE /api/tracks/{trackId}/artwork` も `If-Match` を受け付けます。
+スクリプトで多数の曲を書き換えるときは、`persistentIds` による一括更新か、`If-Match` / `expect` 付きの単体更新を推奨します。
 
 メタデータの書き込みは DB 更新に加えて **実ファイルの ID3 / Vorbis / MP4 タグへ書き戻し**、
 GUI に即時反映します。書き戻しの処理はデスクトップ GUI の編集と共通です。

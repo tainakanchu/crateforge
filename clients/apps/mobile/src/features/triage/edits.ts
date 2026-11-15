@@ -19,7 +19,7 @@ import { REVIEW_LATER_TAG } from "./commonTags";
 export type EditOutcome = "applied" | "queued" | "unsupported";
 
 export interface RatingEdit {
-  /** DB の track id（Track.id）。 */
+  /** 曲の trackId（Track.trackId。Track.id は非推奨の別名）。 */
   trackId: number;
   /** 0..100。ApiClient.setRating が clamp する。 */
   rating: number;
@@ -29,7 +29,7 @@ export interface RatingEdit {
 }
 
 export interface TagEdit {
-  /** DB の track id（Track.id）。 */
+  /** 曲の trackId（Track.trackId。Track.id は非推奨の別名）。 */
   trackId: number;
   tag: string;
   trackName?: string | null;

@@ -114,7 +114,7 @@ function showTagMenu(track: Track): void {
 // ここでは成功・オフラインで積んだときのトーストだけ出す。
 async function applyRating(track: Track, rating: number): Promise<void> {
   const outcome = await rateWithFeedback({
-    trackId: track.id,
+    trackId: track.trackId,
     rating,
     baseRating: track.rating ?? null,
     trackName: track.name,
@@ -132,7 +132,7 @@ async function applyRating(track: Track, rating: number): Promise<void> {
 /** タグを付ける。`review:later`（あとで聴く）は、タグメニューから選んでも直下の項目と同じ扱い。 */
 async function applyTagAdd(track: Track, tag: string): Promise<void> {
   const reviewLater = tag === REVIEW_LATER_TAG;
-  const outcome = await addTagWithFeedback({ trackId: track.id, tag, trackName: track.name });
+  const outcome = await addTagWithFeedback({ trackId: track.trackId, tag, trackName: track.name });
   if (outcome === "queued") {
     showToast(
       reviewLater

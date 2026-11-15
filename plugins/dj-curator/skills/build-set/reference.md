@@ -12,7 +12,7 @@ GET/DELETE では `<path>` の後ろに `key=value` を並べると `curl -G --d
 - **ループバック（`127.0.0.1` / `::1`）からのリクエストはトークン不要で全エンドポイント利用可**。このスキルの既定（`http://127.0.0.1:8787`）はこれに当たる。
 - ループバック**以外**から（アプリで LAN 公開を有効にしていて、WSL2 非ミラー構成で `CRATEFORGE_API=http://<ホストIP>:8787` を使う場合など）は:
   - トークン必須: クエリ `token=<トークン>` またはヘッダ `X-API-Token: <トークン>`。無い/無効なら `401`（アプリ側にトークンが 1 つも無ければ `403`）。
-  - 書き込みは大きく制限される。許可されるのは `GET` 全般・`POST /api/tracks/lookup`・`POST /api/analysis/lookup`・`/api/remote/*`・`POST /api/tracks/{id}/rating`・`POST /api/tracks/tags/{add,remove}`・`PUT`/`DELETE /api/tracks/{id}/artwork` のみ。**プレイリスト作成/編集・`PATCH /api/tracks*`・genre-tags は `403`**（ペアリングで sync 役割を与えられたデバイスのトークンを除く）。**解析の投入 `POST /api/tracks/analyze` は sync 役割でも `403`**（ループバック専用。進捗 `GET /api/analysis/status` は読める）。
+  - 書き込みは大きく制限される。許可されるのは `GET` 全般・`POST /api/tracks/lookup`・`POST /api/analysis/lookup`・`/api/remote/*`・`POST /api/tracks/{trackId}/rating`・`POST /api/tracks/tags/{add,remove}`・`PUT`/`DELETE /api/tracks/{trackId}/artwork` のみ。**プレイリスト作成/編集・`PATCH /api/tracks*`・genre-tags は `403`**（ペアリングで sync 役割を与えられたデバイスのトークンを除く）。**解析の投入 `POST /api/tracks/analyze` は sync 役割でも `403`**（ループバック専用。進捗 `GET /api/analysis/status` は読める）。
   - この `401`/`403` は認証ミドルウェアが返すため `{ "error": ... }` ボディは付かない。
   - `crate-api.sh` はトークンを付与しない（GET なら `token=...` を `key=value` で渡せるが、書き込みは上記制限で通らない）。プレイリスト作成まで行うならループバックで届く構成にする。
 
@@ -60,6 +60,7 @@ crate-api.sh GET /api/tracks q=有你的世界 genre=House limit=200
 crate-api.sh GET /api/tracks q="key:compat:8A rating:>=3" limit=200
 ```
 返り値: `Track[]`。`Track` の主なフィールド: `trackId, persistentId, name, artist, albumArtist, composer, album, genre, year, rating(0-100), playCount, bpm, comments, totalTimeMs, dateAdded, lastPlayed, keyCamelotUser, locationPath, fileExists` ほか（`bitrateKbps` `sampleRateHz` `codec` などの技術メタデータも含む）。
+**曲の指定は常に `trackId`**（パス・ボディとも）。`Track.id` は **`trackId` の非推奨の別名**（値は trackId と同じ）で、以前のサーバーは内部の行 id を返していた（`trackId` とは別の値。API に渡すと無関係な曲を指す）。新しく書くクライアントは `id` を読まないこと。
 
 ### `GET /api/tracks/{trackId}`
 1 曲取得。無ければ 404。
@@ -79,7 +80,7 @@ crate-api.sh GET /api/tracks q="key:compat:8A rating:>=3" limit=200
 ボディ `{ "persistentIds": [String,...], "includePeaks"?: bool }` → 解析済みの曲だけを入力順で返す配列（未解析・不明な ID はスキップ）
 `{ persistentId, trackId, version, analyzedAt, bpm, keyCamelot, keyName, energy, loudnessLufs, replaygainDb, vector, peaks? }[]`（`peaks` は `includePeaks=true` のときのみ）。
 複数曲の解析値を 1 リクエストでまとめて取れる（`persistentId` は `Track.persistentId`）。DB を変更しない読み取り API。
-注意: こちらの `keyCamelot` / `keyName` は**解析値そのまま**（手動上書きは反映されない。実効キーが要るなら `GET /api/tracks/{id}/analysis` か `Track.keyCamelotUser` を併用）。
+注意: こちらの `keyCamelot` / `keyName` は**解析値そのまま**（手動上書きは反映されない。実効キーが要るなら `GET /api/tracks/{trackId}/analysis` か `Track.keyCamelotUser` を併用）。
 
 ### `GET /api/tracks/{trackId}/similar`
 クエリ: `limit`(既定25), `bpmTol`（基準 BPM に対する**割合**の許容差）, `keyCompatible`(bool, 既定 false。Camelot 互換キーのみ), `energyTol`（0..1 の絶対差）。
@@ -213,25 +214,37 @@ crate-api.sh POST /api/tracks/genre-tags/add '{"trackIds":[12,7],"tag":"台語"}
 - 真偽: `compilation` / `disabled`。
 - `keyCamelotUser` — Key の手動上書き（Camelot 表記, 例 `"8A"`）。`null` で解除（解析値に戻る）。Camelot として解釈できない値は `400`（そのリクエストでは何も更新されない。一括 `PATCH /api/tracks` も同じ）。
 - ファイルタグへ書き戻すのは、更新後の 曲名・artist・albumArtist・composer・album・genre・comments・year・トラック/ディスク番号と総数・compilation・BPM（曲の BPM、未設定なら解析 BPM）・Key（実効キーを `Am` 等の音楽表記で）。**`rating` / `disabled` / `playCount` / `skipCount` はファイルには書かれない**（DB のみ）。
-→ `{ "track": Track, "fileWriteFailed": bool, "relocateFailed": bool }`（更新後の全フィールド。移動した場合 `locationPath` は新パス）。存在しない id は `404`。
+→ `{ "track": Track, "fileWriteFailed": bool, "relocateFailed": bool }`（更新後の全フィールド。移動した場合 `locationPath` は新パス）。存在しない trackId は `404`。
 ```
 # genre をまるごと置換 + ★5 を付ける
 crate-api.sh PATCH /api/tracks/12 '{"genre":"Disco Funk","rating":100}'
 ```
 
+**取り違え防止の前提条件（任意・推奨）**: 書き込む前に「その trackId が本当に狙った曲か」を確かめられる。不一致なら**何も書かずに `409`** を返す。
+- ヘッダー `If-Match: <persistentId>` — 対象曲の `persistentId` と一致したときだけ書く（`"…"` で囲んでも可、hex の大文字小文字は区別しない）。
+- ボディの `expect: { "persistentId"?, "name"?, "artist"?, "album"? }` — 指定した項目がすべて現在値と完全一致したときだけ書く（DB が null の項目は `""` として比較）。`expect` 自体はフィールドとして書かれない。
+- `409` の本文: `{ "error": "precondition failed (...)", "track": { trackId, persistentId, name, artist, album } }`（実際に指していた曲）。
+```
+# persistentId で曲を固定してから書く
+crate-api.sh PATCH /api/tracks/12 '{"genre":"Disco Funk","expect":{"persistentId":"0A1B2C3D4E5F6071","name":"有你的世界"}}'
+```
+
 ### `PATCH /api/tracks`（一括）
-ボディ `{ "trackIds": [i64,...], "edit": { ...PATCH /api/tracks/{id} と同じフィールド } }` → 各曲に同じ編集を適用（処理内容は単体 PATCH と同一）。
-→ `{ "updated": n, "fileWriteFailed": [trackId,...], "relocateFailed": [trackId,...], "notFound": [trackId,...] }`。
+ボディ `{ "trackIds": [i64,...], "edit": { ...PATCH /api/tracks/{trackId} と同じフィールド } }` → 各曲に同じ編集を適用（処理内容は単体 PATCH と同一）。
+`trackIds` の代わりに `persistentIds: [String,...]` でも指定できる（**どちらか一方だけ**。両方・どちらも無しは `400`）。
+→ `{ "updated": n, "fileWriteFailed": [trackId,...], "relocateFailed": [trackId,...], "notFound": [...] }`。`notFound` は指定に使った値（trackId の数値 / persistentId の文字列）、`fileWriteFailed` / `relocateFailed` は常に trackId。
 ```
 crate-api.sh PATCH /api/tracks '{"trackIds":[12,7,30],"edit":{"rating":80}}'
+crate-api.sh PATCH /api/tracks '{"persistentIds":["0A1B2C3D4E5F6071","0A1B2C3D4E5F6072"],"edit":{"genre":"Taiwan Pop"}}'
 ```
+**スクリプトで多数の曲を書き換えるとき**（ジャンルの一括付け直し等）は、`GET` で取った `persistentId` をそのまま使う一括 PATCH（`persistentIds`）か、単体 PATCH に `If-Match` / `expect` を付けて送ること。`id` を trackId と取り違えると、`trackId` だけの指定では無関係な曲を黙って上書きしてしまう。
 
 ### `POST /api/tracks/{trackId}/rating`
 ボディ `{ "rating": i64 }`（0–100。範囲外はクランプ）→ `204`。**rating だけを DB に書く最小権限の書き込み**（ファイルタグ・整理には触れない）。
 
 ## first-class Tag（DB のみ・ファイルに触れない）
 
-Genre とは独立したタグ。`namespace:value`（例 `mood:dreamy`。最初の `:` で分割）か、`:` 無しの free tag（例 `bridge`）。**DB のみで実ファイルには書き戻さない**。`GET /api/tags` で一覧、`GET /api/tracks/{id}/tags` で曲ごと、`q=tag:...` で検索できる。
+Genre とは独立したタグ。`namespace:value`（例 `mood:dreamy`。最初の `:` で分割）か、`:` 無しの free tag（例 `bridge`）。**DB のみで実ファイルには書き戻さない**。`GET /api/tags` で一覧、`GET /api/tracks/{trackId}/tags` で曲ごと、`q=tag:...` で検索できる。
 
 ### `POST /api/tracks/tags/add`
 ボディ `{ "trackIds": [i64,...], "tag": String }` → `{ "updated": n }`（新たに付与された件数。既に付いていた曲は数えない）。`tag` が空白のみなら `400`。
@@ -260,7 +273,7 @@ crate-api.sh POST /api/tracks/tags/add '{"trackIds":[12,7],"tag":"mood:dreamy"}'
 - `POST /api/remote/{play,pause,resume,stop,next,prev,seek,set-queue,volume,shuffle,repeat}` — アプリ本体の再生リモート操作。`prev` はデスクトップの ⏮ と同じ 3 秒ルール（今の曲を 3 秒を超えて再生していればその曲を頭から再生し直し、そうでなければキューの前の曲へ。返り値 `{ "trackId": 再生した曲 | null }`。デスクトップが試聴（Preview）中なら、⏮ と同じく試聴のまま再生する）。
 - `GET /api/tracks/{trackId}/stream` — 音源ストリーミング（トランスコード対応）。
 - `GET /api/tracks/{trackId}/artwork` — アートワーク配信（`size` / `format` でリサイズ）。
-- `PUT` / `DELETE /api/tracks/{trackId}/artwork` — 埋め込みアートワークの設定/削除（実ファイルを書き換える）。
+- `PUT` / `DELETE /api/tracks/{trackId}/artwork` — 埋め込みアートワークの設定/削除（実ファイルを書き換える）。単体 PATCH と同じく `If-Match: <persistentId>` を付けられ、不一致ならファイルに触れず `409`。
 - `POST /api/tracks/upload` / `PUT /api/tracks/upload/{uploadId}` — サーバー間同期用の音源アップロード。
 - `POST /api/analysis` — サーバー間同期用の解析結果アップロード（条件付き upsert）。**解析の実行ではない**（実行は `POST /api/tracks/analyze`）。
 - `GET /api/playlists/{playlistId}/size-estimate` — 転送前のプレイリスト容量見積もり（`{ trackCount, totalBytes, missingFiles }`）。

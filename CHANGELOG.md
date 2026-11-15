@@ -30,6 +30,7 @@ Each release is documented in both Japanese and English.
 
 #### モバイル
 - **仕様変更: 評価・タグの保存失敗をどこから操作してもトーストで知らせる**: プレイヤー画面の星は失敗しても星が元に戻るだけで、プレイヤー画面のタグ操作は画面内の短い一言だけだった。長押しメニューと同じ文言・理由つきのトーストに揃えた（デスクトップがタグに未対応のときも同じ）。未対応のデスクトップで「あとで聴く」を付けたときは、プレイヤー画面からでも端末に保留する（次の同期で送り直し、そのときも未対応なら破棄される）。未接続のとき「あとで聴く」は、タグメニューから選んでも保留一覧に「あとで」として記録する（同期される内容は同じ）。
+- **評価・タグが別の曲に付く問題を修正**: 曲メニューと再生画面の評価（★）・タグ・「あとで聴く」が、曲の `trackId` ではなくデスクトップの内部の行 id を送っていたため、別の曲に書き込まれることがあった（オフライン中にためた編集も同じ）。`trackId` を送るようにした。デスクトップを更新すると、更新前のモバイルからの操作も正しい曲に付く。
 
 #### API
 - **仕様変更: `GET /api/tracks` の `genre` と `q` の `genre:` はジャンルタグの完全一致**: 部分一致ではなく、そのタグを持つ曲だけを返す（`genre=House` は `DeepHouse` だけの曲を返さない）。値に空白を含めると全タグ必須。大文字小文字・全角半角は無視する。空（または空白のみ）の `genre=` は「指定なし」として扱い、絞り込まない（これまでは、ジャンルが入っている曲だけを返していた）。`GET /api/genres` が返すタグと同じ単位になる。
@@ -39,6 +40,9 @@ Each release is documented in both Japanese and English.
 - **仕様変更: `PATCH /api/tracks*` で `rating` だけを変えても `dateModified` を進めない**: デスクトップの星クリック・`POST /api/tracks/{trackId}/rating` と同じ規則にした。
 - **仕様変更: `PATCH /api/tracks/{trackId}`・`PATCH /api/tracks` の不正な `keyCamelotUser` は `400`**: Camelot として解釈できない値を送ると、これまでは `500` が返っていた。入力の誤りなので `400`（`invalid Camelot key: <値>`）を返す。そのリクエストでは何も更新されない（一括で `trackIds` が空でも `400`、曲が存在しない場合も `404` より先に `400`）。Key の上書きとほかの項目の更新は 1 つのトランザクションで確定する。
 - **仕様変更: `POST /api/playlists/{playlistId}/tracks` は負の `trackId` を追加しない**: ライブラリ外の一時再生曲（負の `trackId`）を送ると、これまでは曲一覧に出ない行としてプレイリストに入り、`trackCount` とレスポンスの `added` だけが増えていた。デスクトップと同じく追加せず、`added` は実際に追加した件数を返す。
+- **仕様変更: 曲 JSON の `id` を `trackId` の別名にした**: API・デスクトップ内部とも、曲 JSON の `id` には以前は内部の行 id（`tracks.id`）を出していたが、`trackId` と同じ値を出すようにした（`id` は非推奨の別名として残す）。API の曲の指定はすべて `trackId` なのに、両者は同じ数値の範囲にあるため、`id` を trackId と取り違えたクライアントが 200 のまま無関係な曲を上書きする事故が起きていた。`id` を送っていた既存のクライアントも、この版からは正しい曲を指す。新しく書くクライアントは `trackId` を使うこと。
+- **書き込みの取り違え防止（任意）**: `PATCH /api/tracks/{trackId}` がヘッダー `If-Match: <persistentId>` とボディの `expect: { persistentId?, name?, artist?, album? }` を受け付ける。対象曲と食い違うと何も書かずに `409` を返し、実際に指していた曲（`trackId` / `persistentId` / `name` / `artist` / `album`）を本文の `track` で返す。`PUT` / `DELETE /api/tracks/{trackId}/artwork` も `If-Match` を受け付ける。
+- **一括更新を persistentId で指定できるように**: `PATCH /api/tracks` が `trackIds` の代わりに `persistentIds` を受け付ける（どちらか一方だけ。両方・どちらも無しは `400`）。見つからない persistentId は `notFound` に文字列で返す。
 
 ### English
 
@@ -60,6 +64,7 @@ Each release is documented in both Japanese and English.
 
 #### Mobile
 - **Behavior change: a toast reports failed rating / tag changes wherever you make them**: on the player screen a failed rating only reverted the stars, and tag actions showed just a short in-screen note. They now show the same toast, with the reason, as the long-press menu (also when the desktop does not support tags). Adding "あとで聴く" (listen later) against a desktop without tag support is now kept on the device as pending from the player screen too (it is sent again at the next sync and discarded if the desktop still does not support tags). While offline, "listen later" is recorded in the pending list as "あとで" even when chosen from the tag menu (what gets synced is unchanged).
+- **Fixed ratings and tags landing on a different track**: ratings (stars), tags and "あとで聴く" (listen later) from the track menu and the player screen sent the desktop's internal row id instead of the track's `trackId`, so they could be written to a different track (edits queued while offline too). They now send `trackId`. Once the desktop is updated, actions from not-yet-updated mobile builds also land on the right track.
 
 #### API
 - **Behavior change: `genre` in `GET /api/tracks` and `genre:` in `q` are exact matches on a genre tag**: instead of a partial match, only tracks that have that tag are returned (`genre=House` no longer returns tracks tagged only `DeepHouse`). A value containing spaces requires all of the tags. Case and full-/half-width differences are ignored. An empty (or whitespace-only) `genre=` is treated as not specified and does not filter (it used to return only the tracks that have a genre). This is the same unit as the tags returned by `GET /api/genres`.
@@ -69,6 +74,9 @@ Each release is documented in both Japanese and English.
 - **Behavior change: `PATCH /api/tracks*` no longer advances `dateModified` when only `rating` changes**: the same rule as clicking the stars in the desktop app and `POST /api/tracks/{trackId}/rating`.
 - **Behavior change: an invalid `keyCamelotUser` in `PATCH /api/tracks/{trackId}` / `PATCH /api/tracks` is now `400`**: sending a value that cannot be read as a Camelot key used to return `500`. Since it is an input error it now returns `400` (`invalid Camelot key: <value>`), and nothing is updated by that request (also `400` for a bulk request with an empty `trackIds`, and `400` takes precedence over `404` when the track does not exist). The key override and the other fields are now committed in a single transaction.
 - **Behavior change: `POST /api/playlists/{playlistId}/tracks` no longer adds negative `trackId`s**: sending a temporary track that is not in the library (a negative `trackId`) used to insert a row that never shows up in the track list, while `trackCount` and the response's `added` still went up. As in the desktop app it is no longer added, and `added` is the number of tracks actually added.
+- **Behavior change: `id` in track JSON is now an alias of `trackId`**: the `id` field of track JSON (in the API and inside the desktop app) used to carry the internal row id (`tracks.id`); it now carries the same value as `trackId` (`id` is kept as a deprecated alias). Every API addresses tracks by `trackId`, but the two values share the same numeric range, so a client that mistook `id` for the trackId got a 200 and silently overwrote an unrelated track. Existing clients that send `id` now hit the right track. New clients should use `trackId`.
+- **Optional guards against writing to the wrong track**: `PATCH /api/tracks/{trackId}` accepts an `If-Match: <persistentId>` header and an `expect: { persistentId?, name?, artist?, album? }` body field. If they do not match the target track, nothing is written and `409` is returned with the track actually addressed (`trackId` / `persistentId` / `name` / `artist` / `album`) in `track`. `PUT` / `DELETE /api/tracks/{trackId}/artwork` also honor `If-Match`.
+- **Bulk updates can address tracks by persistentId**: `PATCH /api/tracks` accepts `persistentIds` instead of `trackIds` (exactly one of them; both or neither → `400`). Unknown persistentIds are returned in `notFound` as strings.
 
 ## [v0.20.0] - 2026-11-14
 

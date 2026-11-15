@@ -1242,7 +1242,7 @@ export function RightRail({
             );
             return (
               <div
-                key={t.id}
+                key={t.trackId}
                 className={
                   "cb-cnode" +
                   (overIdx === i ? " dragover" : "") +
@@ -1792,7 +1792,7 @@ export function RightRail({
             );
             return (
               <div
-                key={t.id}
+                key={t.trackId}
                 className="cb-cnode"
                 draggable
                 onDragStart={(e) => onSimilarDragStart(e, t.trackId)}
@@ -2111,7 +2111,7 @@ export function RightRail({
           ) : (
             queueTracks.map(({ track: t, orderIndex }, i) => (
               <div
-                key={`${orderIndex}-${t.id}`}
+                key={`${orderIndex}-${t.trackId}`}
                 className={
                   "cb-cnode cb-qrow" +
                   (qOverIdx === i ? " dragover" : "") +

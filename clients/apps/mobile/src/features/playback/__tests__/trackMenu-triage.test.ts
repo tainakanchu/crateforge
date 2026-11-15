@@ -57,7 +57,7 @@ describe("長押しメニュー: 評価", () => {
     const client = connect();
     showRateMenu(makeTrack());
     await press("★★★½");
-    expect(client.setRating).toHaveBeenCalledWith(11, 70);
+    expect(client.setRating).toHaveBeenCalledWith(1011, 70);
     expect(toast()).toEqual({ message: "評価を保存しました（★★★½）", kind: "info" });
   });
 
@@ -65,7 +65,7 @@ describe("長押しメニュー: 評価", () => {
     const client = connect();
     showRateMenu(makeTrack());
     await press("クリア");
-    expect(client.setRating).toHaveBeenCalledWith(11, 0);
+    expect(client.setRating).toHaveBeenCalledWith(1011, 0);
     expect(toast().message).toBe("評価をクリアしました");
   });
 
@@ -84,7 +84,7 @@ describe("長押しメニュー: 評価", () => {
     expect(toast()).toEqual({ message: "オフライン: 再接続時に評価を同期します", kind: "info" });
     expect(usePendingEdits.getState().ops[0]).toMatchObject({
       kind: "rating",
-      trackId: 11,
+      trackId: 1011,
       rating: 80,
       baseRating: 40,
       trackName: "Song A",
@@ -157,7 +157,7 @@ describe("長押しメニュー: タグ / あとで聴く", () => {
     const client = connect();
     await openTagMenu();
     await press("mood:chill");
-    expect(client.addTrackTags).toHaveBeenCalledWith([11], "mood:chill");
+    expect(client.addTrackTags).toHaveBeenCalledWith([1011], "mood:chill");
     expect(toast()).toEqual({ message: "タグを付けました", kind: "info" });
   });
 
@@ -206,7 +206,7 @@ describe("長押しメニュー: タグ / あとで聴く", () => {
     const client = connect();
     showTrackMenu(makeTrack());
     await press("あとで聴く");
-    expect(client.addTrackTags).toHaveBeenCalledWith([11], "review:later");
+    expect(client.addTrackTags).toHaveBeenCalledWith([1011], "review:later");
     expect(toast().message).toBe("「あとで聴く」に追加しました");
   });
 
