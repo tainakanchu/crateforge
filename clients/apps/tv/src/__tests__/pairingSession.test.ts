@@ -3,6 +3,7 @@
 // ApiClient の pairStart / pairPoll 自体（URL・ヘッダ）は pairClient.test.ts で見ている。
 
 import {
+  ApiError,
   type PairingClient,
   type PairingEvent,
   type PairPollResponse,
@@ -141,6 +142,73 @@ describe("startPairingSession", () => {
     jest.advanceTimersByTime(10_000);
     await flush();
     expect(client.pairPoll).toHaveBeenCalledTimes(1);
+  });
+
+  it("期限切れのセッションへの確認が 404 で失敗したら、error ではなく expired", async () => {
+    // デスクトップは期限切れのセッションに 404 + {"status":"expired"} を返し、ApiClient は 404 を投げる。
+    const client = makeClient([new ApiError(404, "HTTP 404")]);
+    const { events } = start(client);
+    await flush();
+
+    jest.advanceTimersByTime(2000);
+    await flush();
+    expect(events).toEqual([{ type: "code", code: "123456" }, { type: "expired" }]);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("404 以外の失敗は従来どおり stage: poll のエラー", async () => {
+    const boom = new ApiError(500, "HTTP 500");
+    const client = makeClient([boom]);
+    const { events } = start(client);
+    await flush();
+
+    jest.advanceTimersByTime(2000);
+    await flush();
+    expect(events[1]).toEqual({ type: "error", stage: "poll", error: boom });
+  });
+
+  it("コードの有効期間（10 分）を過ぎたら、応答が無くても expired で終了する", async () => {
+    // すべての確認が固まる（タイムアウトが続く）最悪ケース。
+    const client = makeClient([{ status: "pending" }]);
+    client.pairPoll.mockImplementation(() => new Promise<PairPollResponse>(() => {}));
+    const { events } = start(client);
+    await flush();
+
+    // 10 分の直前までは承認待ちのまま（確認はタイムアウトしては投げ直している）。
+    for (let elapsed = 0; elapsed < 10 * 60 * 1000 - 1000; elapsed += 1000) {
+      jest.advanceTimersByTime(1000);
+      await flush();
+    }
+    expect(events).toEqual([{ type: "code", code: "123456" }]);
+    expect(client.pairPoll.mock.calls.length).toBeGreaterThan(10);
+
+    jest.advanceTimersByTime(1000);
+    await flush();
+    expect(events).toEqual([{ type: "code", code: "123456" }, { type: "expired" }]);
+
+    const calls = client.pairPoll.mock.calls.length;
+    jest.advanceTimersByTime(60_000);
+    await flush();
+    expect(client.pairPoll).toHaveBeenCalledTimes(calls);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("lifetimeMs で有効期間を変えられる。pending が続いても期限で終了する", async () => {
+    const client = makeClient([{ status: "pending" }]);
+    const events: PairingEvent[] = [];
+    startPairingSession({
+      client,
+      deviceName: "TV",
+      platform: "android-tv",
+      lifetimeMs: 5000,
+      onEvent: (e) => events.push(e),
+    });
+    await flush();
+    for (let i = 0; i < 5; i++) {
+      jest.advanceTimersByTime(1000);
+      await flush();
+    }
+    expect(events).toEqual([{ type: "code", code: "123456" }, { type: "expired" }]);
   });
 
   it("pairStart の失敗は stage: start のエラーで、ポーリングしない", async () => {

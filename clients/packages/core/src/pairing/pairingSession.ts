@@ -3,6 +3,7 @@
 // 画面は onEvent を受けて表示を切り替え、approved のときに useConnection.connect を呼ぶ。
 // mDNS の探索そのもの（ネイティブモジュール）はアプリ側。ここには発見結果の重複排除だけ置く。
 
+import { ApiError } from "../lib/api/client";
 import { DESKTOP_API_SETTINGS_PATH } from "../lib/api/errors";
 import type { PairPollResponse, PairStartResponse } from "../lib/types";
 
@@ -11,6 +12,12 @@ export const PAIRING_POLL_INTERVAL_MS = 2000;
 
 /** 承認確認 1 回のタイムアウト（ms）。接続の疎通確認（PROBE_TIMEOUT_MS）と同じ長さ。 */
 export const PAIRING_POLL_TIMEOUT_MS = 6000;
+
+/**
+ * コードの有効期間（ms）。デスクトップ側（src-tauri/src/pairing.rs の EXPIRY = 600 秒）と同じ。
+ * これを過ぎたら、応答が無くても（タイムアウトが続いていても）期限切れとして終了する。
+ */
+export const PAIRING_CODE_LIFETIME_MS = 10 * 60 * 1000;
 
 /** デスクトップ側でコードを入力する場所（案内文用）。 */
 export const DESKTOP_PAIR_APPROVE_PATH = `${DESKTOP_API_SETTINGS_PATH} → 端末を承認`;
@@ -46,6 +53,8 @@ export interface PairingSessionOptions {
   intervalMs?: number;
   /** 承認確認 1 回のタイムアウト。既定は PAIRING_POLL_TIMEOUT_MS。 */
   pollTimeoutMs?: number;
+  /** コードの有効期間。既定は PAIRING_CODE_LIFETIME_MS。 */
+  lifetimeMs?: number;
   onEvent: (event: PairingEvent) => void;
 }
 
@@ -62,14 +71,19 @@ export interface PairingSession {
  *   approved を通知しないため）。
  * - 確認が pollTimeoutMs 返らなければ中断して「まだ承認待ち」と扱い、次の間隔でまた確認する
  *   （1 回固まっただけでポーリングが止まったままにならないように）。
+ * - コードを受け取ってから lifetimeMs 経ったら expired で終了する（タイムアウトが続いて
+ *   いつまでも承認待ちのままにならないように）。デスクトップは期限切れのセッションに
+ *   404 を返すので、確認が 404 で失敗したときも error ではなく expired として扱う。
  */
 export function startPairingSession(options: PairingSessionOptions): PairingSession {
   const { client, deviceName, platform, onEvent } = options;
   const intervalMs = options.intervalMs ?? PAIRING_POLL_INTERVAL_MS;
   const pollTimeoutMs = options.pollTimeoutMs ?? PAIRING_POLL_TIMEOUT_MS;
+  const lifetimeMs = options.lifetimeMs ?? PAIRING_CODE_LIFETIME_MS;
 
   let done = false;
   let timer: ReturnType<typeof setInterval> | null = null;
+  let lifetimeTimer: ReturnType<typeof setTimeout> | null = null;
   let polling = false;
   /** 進行中の確認を止める（タイムアウトの解除 + リクエストの中断）。 */
   let abortPoll: (() => void) | null = null;
@@ -79,6 +93,10 @@ export function startPairingSession(options: PairingSessionOptions): PairingSess
     if (timer != null) {
       clearInterval(timer);
       timer = null;
+    }
+    if (lifetimeTimer != null) {
+      clearTimeout(lifetimeTimer);
+      lifetimeTimer = null;
     }
     abortPoll?.();
   };
@@ -132,7 +150,12 @@ export function startPairingSession(options: PairingSessionOptions): PairingSess
       }
       // pending（および token 無しの approved）は次の確認を待つ。
     } catch (error) {
-      finish({ type: "error", stage: "poll", error });
+      // 期限切れ（またはデスクトップ再起動で消えた）セッションは 404 で返る。
+      if (error instanceof ApiError && error.status === 404) {
+        finish({ type: "expired" });
+      } else {
+        finish({ type: "error", stage: "poll", error });
+      }
     } finally {
       polling = false;
       abortPoll = null;
@@ -154,6 +177,7 @@ export function startPairingSession(options: PairingSessionOptions): PairingSess
     timer = setInterval(() => {
       void poll(started.session);
     }, intervalMs);
+    lifetimeTimer = setTimeout(() => finish({ type: "expired" }), lifetimeMs);
   })();
 
   return { cancel: stop };
