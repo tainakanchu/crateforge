@@ -56,6 +56,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # 判定パターン自体の回帰テスト（パターンを足したときの取りこぼし・誤検出を防ぐ）。
+      - name: Self-test native change detection
+        run: bash .github/scripts/native-changed.sh --self-test
+
       # PR 以外 (main push / 手動実行) は常に native=true。PR は base...head（merge-base からの差分）で判定する。
       - name: Detect native-affecting changes
         id: detect
