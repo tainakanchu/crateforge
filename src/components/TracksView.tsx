@@ -17,7 +17,7 @@ import {
   GRID_GAP as GAP,
   GRID_META_H as META_H,
   GRID_PAD_X as PAD_X,
-  buildGridRows,
+  gridLayout,
   gridMetrics,
   isNearBottom,
 } from "../lib/gridRows";
@@ -71,11 +71,10 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const [newTag, setNewTag] = useState("");
 
   const { cols, cardW } = gridMetrics(width);
-  const rows = useMemo(() => buildGridRows(tracks, cols), [tracks, cols]);
+  const layout = useMemo(() => gridLayout(tracks.length, cols), [tracks.length, cols]);
   const rowVirtualizer = useCardGridVirtualizer({
-    rows,
+    layout,
     scrollRef: parentRef,
-    cols,
     gridRowHeight: cardW + META_H + GAP,
   });
 
@@ -264,7 +263,8 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     <div className="cb-grid-wrap" ref={setParentRef} onScroll={handleScroll} onClick={closeMenu}>
       <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
         {items.map((vRow) => {
-          const row = rows[vRow.index];
+          const row = layout.rowAt(vRow.index);
+          if (row.type !== "grid") return null;
           return (
             <div
               key={vRow.key}
@@ -286,7 +286,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                   padding: `0 ${PAD_X}px ${GAP}px`,
                 }}
               >
-                {row.items.map((t, j) => {
+                {tracks.slice(row.start, row.end).map((t, j) => {
                   const inCrate = crateSet.has(t.trackId);
                   const isCurrent = playback.currentTrackId === t.trackId;
                   return (

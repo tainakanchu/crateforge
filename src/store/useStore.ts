@@ -3,7 +3,6 @@ import { LOCAL_CAST_STATUS, type CastDevice, type CastStatus } from "../api/cast
 import { persist, createJSONStorage } from "zustand/middleware";
 import type {
   Track,
-  AlbumRow,
   Playlist,
   PlaybackState,
   ViewMode,
@@ -267,8 +266,6 @@ interface AppState extends PersistedSettings {
   selectedTrackIds: Set<number>;
   isLoading: boolean;
   hasMore: boolean;
-  albums: AlbumRow[];
-  albumsHasMore: boolean;
 
   // Playback
   playback: PlaybackState;
@@ -328,9 +325,6 @@ interface AppState extends PersistedSettings {
   /** 選択を保ったまま表示中の tracks を差し替える（プレイリストの手動並べ替え用）。 */
   setTracksKeepSelection: (tracks: Track[]) => void;
   appendTracks: (tracks: Track[]) => void;
-  setAlbums: (albums: AlbumRow[]) => void;
-  appendAlbums: (albums: AlbumRow[]) => void;
-  setAlbumsHasMore: (hasMore: boolean) => void;
   setPlaylists: (playlists: Playlist[]) => void;
   setIsLoading: (loading: boolean) => void;
   setHasMore: (hasMore: boolean) => void;
@@ -665,8 +659,6 @@ export const useStore = create<AppState>()(
       selectedTrackIds: new Set(),
       isLoading: false,
       hasMore: true,
-      albums: [],
-      albumsHasMore: true,
       playback: {
         isPlaying: false,
         currentTrackId: null,
@@ -762,10 +754,6 @@ export const useStore = create<AppState>()(
       setTracksKeepSelection: (tracks) => set({ tracks }),
       appendTracks: (tracks) =>
         set((state) => ({ tracks: [...state.tracks, ...tracks] })),
-      setAlbums: (albums) => set({ albums }),
-      appendAlbums: (albums) =>
-        set((state) => ({ albums: [...state.albums, ...albums] })),
-      setAlbumsHasMore: (albumsHasMore) => set({ albumsHasMore }),
       // playlists のロード完了で初めて選択中プレイリストの isSmart/isFolder が分かるので、
       // 起動直後の永続復元 (#160) では playlists がまだ空のまま resyncSort していた
       // ミラーをここで補正する（通常プレイリストなら手動順へ）。

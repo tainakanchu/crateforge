@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+### 日本語
+
+#### デスクトップ
+- **アルバム表示・アーティスト表示でスクロールバーの長さが変わり、一番下までスクロールできない問題を修正（仕様変更）**: これまでは 500 件ずつ読み込み、末尾に近づくと追加で読み込んでいたため、スクロールバーを下まで引くたびに一覧が伸びてつまみが上へ戻り、アーティストやアルバムが多いライブラリでは一番下へ行けなかった。「末尾で追加読み込み」の仕様をやめ、最初から全件ぶんの長さでスクロールできるようにした。スクロールバーのつまみの大きさは読み込みで変わらず、一番下まで引くと最後のカードに着く。データは見えている範囲だけを読み込み（全件はメモリに載せない）、まだ読み込んでいない位置は同じ大きさの空のカードで表示する。スクロールバーを速く引いても、通過した位置は読み込まない。ライブラリを編集しても、スクロール位置と展開したカードはそのまま残る（これまでアーティスト表示は展開が閉じていた）。
+- **仕様変更: プレイリスト・検索結果のアルバム表示は、その範囲の曲だけでアルバムをまとめる**: アルバムの一覧をライブラリ全体と同じ仕組み（SQLite 側の集約）で作るようにした。これまでは読み込み済みの曲だけを画面側でまとめていたため、スクロールして曲が追加で読み込まれるたびにアルバムの並びと曲数が変わっていた。カードの曲数・カバー・合計時間と、展開した曲一覧は、プレイリスト（検索結果）に入っている曲だけで数える。プレイリストに同じ曲が複数回入っていても 1 曲として数える。
+
+### English
+
+#### Desktop
+- **Fixed the scrollbar changing length and never reaching the bottom in the Albums and Artists views (spec change)**: these views used to load 500 items at a time and load more when you got near the end, so every time you dragged the scrollbar to the bottom the list grew and the thumb jumped back up; in a library with many artists or albums you could not reach the bottom. The "load more at the end" behavior is gone: the views are scrollable over their full length from the start. The scrollbar thumb no longer changes size as data loads, and dragging it to the bottom lands on the last card. Only the visible range is loaded (the whole list is never held in memory), and positions that are not loaded yet show empty cards of the same size. Dragging the scrollbar quickly does not load the positions you pass. After you edit the library, the scroll position and the expanded card are kept (the Artists view used to collapse the expanded artist).
+- **Spec change: the Albums view inside a playlist or search results builds albums only from the tracks in that scope**: the album list is now built the same way as for the whole library (aggregated in SQLite). It used to be grouped on screen from the tracks loaded so far, so the album order and track counts changed every time more tracks were loaded while scrolling. The track count, cover and total time on a card, and the expanded track list, count only the tracks that are in the playlist (or match the search). A track that appears more than once in a playlist counts once.
+
 ## [v0.21.0] - 2026-11-15
 
 ### 日本語

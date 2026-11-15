@@ -106,15 +106,11 @@ export default function App() {
     filterTags,
     setTracks,
     appendTracks,
-    setAlbums,
-    appendAlbums,
-    setAlbumsHasMore,
     setPlaylists,
     setIsLoading,
     setHasMore,
     setPlayback,
     tracks,
-    albums,
     playback,
     selectedTrackIds,
     setSearchQuery,
@@ -404,42 +400,6 @@ export default function App() {
   useEffect(() => {
     void refreshInboxCount();
   }, [reloadCount, refreshInboxCount]);
-
-  // Albums 表示モード用ローダ。ライブラリ全体 (検索なし) のときだけサーバ集約を使う。
-  // スコープ外 (プレイリスト/検索/最近) は AlbumsView が tracks をクライアント束ねする。
-  const loadAlbums = useCallback(
-    async (reset = true) => {
-      if (!isTauri) {
-        setAlbums([]);
-        setAlbumsHasMore(false);
-        return;
-      }
-      const combinedQuery = combineQuery(searchQuery, filterTags);
-      const isLibraryScope = viewMode === "library" && !combinedQuery;
-      if (!isLibraryScope) return;
-      setIsLoading(true);
-      try {
-        const offset = reset ? 0 : albums.length;
-        // Albums は手動順を持たないので、念のため通常ソートへ倒す。
-        const albumSort: SortField = sortField === "playlistOrder" ? "albumArtist" : sortField;
-        const result = await libraryApi.getAlbums(albumSort, sortOrder, PAGE_SIZE, offset);
-        if (reset) setAlbums(result);
-        else appendAlbums(result);
-        setAlbumsHasMore(result.length === PAGE_SIZE);
-      } catch (err) {
-        console.error("Failed to load albums:", err);
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [viewMode, searchQuery, filterTags, sortField, sortOrder, albums.length, setAlbums, appendAlbums, setAlbumsHasMore, setIsLoading],
-  );
-
-  useEffect(() => {
-    if (displayMode !== "albums") return;
-    loadAlbums(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayMode, viewMode, searchQuery, filterTags, sortField, sortOrder, reloadCount]);
 
   useEffect(() => {
     reloadPlaylists();
@@ -1052,16 +1012,8 @@ export default function App() {
   }, [runAutoExport]);
 
   const handleLoadMore = useCallback(() => {
-    if (displayMode === "albums") {
-      const combinedQuery = combineQuery(searchQuery, filterTags);
-      const isLibraryScope = viewMode === "library" && !combinedQuery;
-      if (isLibraryScope) {
-        loadAlbums(false);
-        return;
-      }
-    }
     loadTracks(false);
-  }, [displayMode, viewMode, searchQuery, filterTags, loadAlbums, loadTracks]);
+  }, [loadTracks]);
 
   // Keyboard shortcuts (issue #1).
   useEffect(() => {
@@ -1422,7 +1374,7 @@ export default function App() {
           <ArtistsView reloadKey={reloadCount} />
         ) : displayMode === "albums" ? (
           <AlbumsView
-            onLoadMore={handleLoadMore}
+            reloadKey={reloadCount}
             onTracksChanged={triggerReload}
             onEditTrack={(ts) => setEditorTracks(ts)}
             onConvert={(ids, mode) => setConvertReq({ ids, mode: mode ?? "export" })}

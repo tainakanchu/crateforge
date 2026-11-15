@@ -916,6 +916,28 @@ select optgroup {
   flex-shrink: 0;
 }
 
+/* 未取得の行・カード (ウィンドウ取得のプレースホルダ)。高さは実データの行・カードと同じ。 */
+.cb-row.ph {
+  pointer-events: none;
+}
+.cb-row.ph .cb-ph-bar {
+  height: 9px;
+  border-radius: 5px;
+  background: var(--bg3);
+  opacity: 0.6;
+}
+.cb-cardwrap.ph {
+  cursor: default;
+  pointer-events: none;
+}
+.cb-cardwrap.ph .cb-card {
+  background: var(--bg2);
+  box-shadow: none;
+}
+.cb-cardwrap.ph .cov-meta {
+  cursor: default;
+}
+
 .cb-loading {
   padding: 16px;
   text-align: center;
@@ -1072,7 +1094,11 @@ select optgroup {
   min-width: 0;
   overflow: hidden;
 }
+/* ラベル行の高さは固定する (フォントや文字種で変わらないように)。グリッドの行の高さの見積もり
+   (lib/gridRows.ts の GRID_META_H = 7 + 18 + 1 + 16) と一致させ、未取得のカード (空のラベル) と
+   実データのカードで行の高さが変わらないようにする。 */
 .cov-meta .cj {
+  line-height: 18px;
   font-size: 13px;
   font-weight: 680;
   color: var(--tx);
@@ -1081,6 +1107,7 @@ select optgroup {
   white-space: nowrap;
 }
 .cov-meta .la {
+  line-height: 16px;
   font-size: 11.5px;
   color: var(--mut);
   font-weight: 600;
@@ -1092,6 +1119,7 @@ select optgroup {
 /* アクティブなソートキー (year/dateAdded/rating/playCount) の値を示す補助行。
    色は .cb-dim を併用するのでここではサイズ・省略だけ。 */
 .cov-meta .ls {
+  line-height: 14px;
   font-size: 11px;
   font-weight: 600;
   overflow: hidden;

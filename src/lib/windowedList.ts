@@ -10,9 +10,6 @@ export const WINDOW_MAX_PAGES = 20;
 export const WINDOW_PREFETCH_PAGES = 1;
 /** 離れた位置へ跳んだとき、取得を始めるまでスクロールの停止を待つ時間 (ms)。 */
 export const WINDOW_SETTLE_MS = 100;
-/** 「すぐ取る」ときに同時に走らせてよい取得の数。 */
-export const WINDOW_MAX_EAGER_FETCHES = 2;
-
 /** 表示中の項目の範囲 (通し番号。両端を含む)。 */
 export interface IndexRange {
   start: number;
@@ -56,19 +53,22 @@ export type FetchTiming = "now" | "settle";
 /**
  * 足りないページをすぐ取るか、スクロールが止まるのを待つか。
  *
- * 足りないページのどれかが「手元にある (キャッシュ済み・取得中) ページの隣」で、取得中が
- * maxEager 件未満なら、表示が連続して動いている (普通のスクロール) とみなしてすぐ取る。
- * それ以外は離れた位置へのジャンプ (スクロールバーを引いている) なので、止まるまで待つ。
- * こうすると、スクロールバーを速く引いても通過したページを 1 つずつ取りに行かない。
+ * すぐ取るのは「普通のスクロール」のときだけ:
+ * - 表示中のページ (visible) がすべて手元にある (キャッシュ済み)。足りないのは先読みぶんだけで、
+ *   先読みが追いついている。
+ * - かつ、直前の表示範囲からの移動 (moved 件) が 1 ページの 1/4 未満。
+ *
+ * どちらかを外れるのは、スクロールバーを引いた・離れた位置へ跳んだときなので、止まるまで待つ。
+ * こうすると、スクロールバーを引いているあいだ、通過したページを 1 つずつ取りに行かない。
  */
 export function fetchTiming(
-  missing: readonly number[],
+  visible: readonly number[],
   isKnown: (page: number) => boolean,
-  inflightCount: number,
-  maxEager: number = WINDOW_MAX_EAGER_FETCHES,
+  moved: number,
+  pageSize: number,
 ): FetchTiming {
-  if (inflightCount >= maxEager) return "settle";
-  return missing.some((p) => isKnown(p - 1) || isKnown(p + 1)) ? "now" : "settle";
+  if (Math.abs(moved) >= pageSize / 4) return "settle";
+  return visible.every(isKnown) ? "now" : "settle";
 }
 
 interface CachedPage<T> {
@@ -323,23 +323,26 @@ export class WindowLoader<T> {
   /** 表示中の項目の範囲 (通し番号。両端を含む) を伝える。 */
   setVisibleRange(start: number, end: number): void {
     if (this.range && this.range.start === start && this.range.end === end) return;
+    const moved = this.range ? start - this.range.start : 0;
     this.range = { start, end };
-    this.schedule();
+    this.schedule(moved);
   }
 
-  /** 表示範囲に足りないページを、すぐ / スクロールが止まってから取得する。 */
-  schedule(): void {
+  /**
+   * 表示範囲に足りないページを、すぐ / スクロールが止まってから取得する。
+   * moved は直前の表示範囲からの移動量 (件数)。
+   */
+  schedule(moved: number = 0): void {
     const wanted = this.wantedPages();
     this.cache.touch(wanted);
     const missing = wanted.filter((p) => !this.cache.isFresh(p) && !this.inflight.has(p));
     if (missing.length === 0) return;
+    const visible = this.range
+      ? pagesForRange(this.range, this.target.count, this.pageSize, 0)
+      : [];
     const timing = this.eager
       ? "now"
-      : fetchTiming(
-          missing,
-          (p) => this.cache.has(p) || this.inflight.has(p),
-          this.inflight.size,
-        );
+      : fetchTiming(visible, (p) => this.cache.has(p), moved, this.pageSize);
     clearTimeout(this.timer);
     if (timing === "now") {
       this.eager = false;
@@ -386,6 +389,8 @@ export class WindowLoader<T> {
           this.cache.set(page, items, this.wantedPages());
           this.cache.truncate(this.target.count);
           this.opts.onChange();
+          // 表示中のページが届いたら、その先読みを続ける。
+          this.schedule();
         },
         (err) => {
           if (generation !== this.generation) return;

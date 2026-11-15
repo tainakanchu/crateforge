@@ -590,7 +590,7 @@ export function Toolbar({
   const subCount = isSearching
     ? viewMode === "artists"
       ? artistsResult.count != null
-        ? `${artistsResult.count.toLocaleString()}${artistsResult.hasMore ? "+" : ""} アーティスト`
+        ? `${artistsResult.count.toLocaleString()} アーティスト`
         : "…"
       : `${tracks.length.toLocaleString()} 曲`
     : activePlaylist

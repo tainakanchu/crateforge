@@ -261,19 +261,39 @@ export async function getOrganizeActive(): Promise<boolean> {
   return invoke("organize_active");
 }
 
-/// ライブラリ全体をアルバム単位に集約して取得 (コンピは1枚に束ね済み)。
+/** アルバム表示の対象範囲。どちらも省略するとライブラリ全体。 */
+export interface AlbumScopeArgs {
+  /** 検索クエリ (検索ボックス + フィルタタグ)。一致する曲だけでアルバムを束ねる。 */
+  query?: string;
+  /** このプレイリスト (スマート含む) の曲だけでアルバムを束ねる。 */
+  playlistId?: number | null;
+}
+
+const albumScopeArgs = (scope?: AlbumScopeArgs) => ({
+  query: scope?.query || null,
+  playlistId: scope?.playlistId ?? null,
+});
+
+/// アルバム単位に集約して取得 (コンピは1枚に束ね済み)。scope があればその範囲の曲だけで束ねる。
 export async function getAlbums(
   sortField?: SortField,
   sortOrder?: SortOrder,
   limit?: number,
   offset?: number,
+  scope?: AlbumScopeArgs,
 ): Promise<AlbumRow[]> {
-  return invoke("get_albums", { sortField, sortOrder, limit, offset });
+  return invoke("get_albums", { sortField, sortOrder, limit, offset, ...albumScopeArgs(scope) });
 }
 
-/// 指定アルバムの曲を disc→track 順で取得。
-export async function getAlbumTracks(albumKey: string): Promise<Track[]> {
-  return invoke("get_album_tracks", { albumKey });
+/// getAlbums と同じ範囲のアルバム数 (全ページぶん)。
+export async function countAlbums(scope?: AlbumScopeArgs): Promise<number> {
+  return invoke("count_albums", albumScopeArgs(scope));
+}
+
+/// 指定アルバムの曲を disc→track 順で取得。scope があればその範囲の曲だけ
+/// (getAlbums が数えた曲数と一致する)。
+export async function getAlbumTracks(albumKey: string, scope?: AlbumScopeArgs): Promise<Track[]> {
+  return invoke("get_album_tracks", { albumKey, ...albumScopeArgs(scope) });
 }
 
 /// ライブラリ全体をアーティスト単位に集約して取得 (コンピは Various Artists に巻き上げ)。
@@ -287,6 +307,11 @@ export async function getArtists(
   query?: string,
 ): Promise<ArtistRow[]> {
   return invoke("get_artists", { sortField, sortOrder, limit, offset, query: query || null });
+}
+
+/// getArtists と同じ検索条件のアーティスト数 (全ページぶん)。
+export async function countArtists(query?: string): Promise<number> {
+  return invoke("count_artists", { query: query || null });
 }
 
 /// 指定アーティストのアルバム一覧 (年→アルバム名順)。name は getArtists が返した表示名。

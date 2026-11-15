@@ -49,23 +49,26 @@ test("pagesForRange: 件数 0・空の範囲・件数を超えた範囲", () => 
 
 // ---- 取得タイミング ----
 
-test("fetchTiming: 手元のページの隣ならすぐ取る (普通のスクロール)", () => {
+test("fetchTiming: 表示中のページが手元にあり、少ししか動いていなければすぐ取る (普通のスクロール)", () => {
   const known = new Set([3, 4]);
-  assert.equal(fetchTiming([5], (p) => known.has(p), 0), "now");
-  assert.equal(fetchTiming([2], (p) => known.has(p), 1), "now");
+  assert.equal(fetchTiming([3], (p) => known.has(p), 0, 200), "now");
+  assert.equal(fetchTiming([3, 4], (p) => known.has(p), 30, 200), "now");
+  assert.equal(fetchTiming([3, 4], (p) => known.has(p), -49, 200), "now");
 });
 
-test("fetchTiming: 離れたページへ跳んだら止まるまで待つ (スクロールバーのドラッグ)", () => {
+test("fetchTiming: 表示中のページが手元に無ければ止まるまで待つ (先読みを追い越した)", () => {
   const known = new Set([0, 1]);
-  assert.equal(fetchTiming([90, 91], (p) => known.has(p), 0), "settle");
+  assert.equal(fetchTiming([90, 91], (p) => known.has(p), 0, 200), "settle");
+  // 表示範囲の一部だけ手元にあるときも待つ。
+  assert.equal(fetchTiming([1, 2], (p) => known.has(p), 10, 200), "settle");
   // 何も持っていないとき (呼び出し側が初回を eager にしない場合) も待つ。
-  assert.equal(fetchTiming([0], () => false, 0), "settle");
+  assert.equal(fetchTiming([0], () => false, 0, 200), "settle");
 });
 
-test("fetchTiming: 取得中が上限に達していたら、隣のページでも待つ", () => {
+test("fetchTiming: 1 回で 1/4 ページ以上動いたら、手元にあるページの中でも待つ (スクロールバーのドラッグ)", () => {
   const known = new Set([3, 4]);
-  assert.equal(fetchTiming([5], (p) => known.has(p), 2), "settle");
-  assert.equal(fetchTiming([5], (p) => known.has(p), 1, 1), "settle");
+  assert.equal(fetchTiming([3, 4], (p) => known.has(p), 50, 200), "settle");
+  assert.equal(fetchTiming([3], (p) => known.has(p), -5000, 200), "settle");
 });
 
 // ---- キャッシュ ----
@@ -273,8 +276,9 @@ test("WindowLoader: スクロールバーを速く引いても通過したペー
   for (const c of src.calls) c.resolve();
   await flush();
   src.calls.length = 0;
-  // 離れた位置を次々に通過する (各イベントの間隔は停止待ちより短い)。
-  for (const start of [1000, 2500, 4000, 6000, 9000]) {
+  // 先読みを追い越す速さで通過する (隣のページへ 1 つずつ進む場合も含む。
+  // 各イベントの間隔は停止待ちより短い)。
+  for (const start of [25, 35, 45, 1000, 2500, 4000, 6000, 9000]) {
     loader.setVisibleRange(start, start + 7);
     await wait(2);
   }
@@ -283,14 +287,16 @@ test("WindowLoader: スクロールバーを速く引いても通過したペー
   assert.deepEqual(src.offsets(), [9000, 9010, 8990], "止まった位置だけを取る");
 });
 
-test("WindowLoader: 普通のスクロール (隣のページ) は待たずに取る", async () => {
+test("WindowLoader: 普通のスクロール (表示中のページは手元にある) は先読みを待たずに取る", async () => {
   const { loader, src } = makeLoader(10_000, 1000);
   loader.sync({ key: "a", revision: 0, count: 10_000 });
   loader.setVisibleRange(0, 7);
   for (const c of src.calls) c.resolve();
   await flush();
   src.calls.length = 0;
-  loader.setVisibleRange(8, 15); // ページ 1 に入る → 先読みのページ 2 が足りない
+  loader.setVisibleRange(2, 9);
+  assert.deepEqual(src.offsets(), [], "ページ 0 の中 (ページ 1 は先読み済み)");
+  loader.setVisibleRange(4, 11); // ページ 1 に入る → 先読みのページ 2 が足りない
   assert.deepEqual(src.offsets(), [20]);
 });
 

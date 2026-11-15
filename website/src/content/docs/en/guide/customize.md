@@ -32,11 +32,15 @@ Truncated cells (track name / album / album artist) show the full text as a tool
 
 - **Albums** — cards are sorted by the toolbar's Sort in every scope: the whole library, search results, and inside a playlist.
   Below each card, the value of the current sort key (Year / Date Added / Rating / Plays) is shown as a secondary line.
+  Inside a playlist or search results, albums are built only from the tracks in that scope (the track count on the card
+  and the expanded track list cover only those tracks; a track that appears more than once in a playlist counts once).
 - **Artists** — the artist list is aggregated on the server side (SQLite) and rendered virtualized.
   Compilations roll up into **Various Artists**; tracks with an empty album artist fall back to the artist name,
   and to "Unknown Artist" when neither is present. Track and album counts match the Albums view.
   Sort in the Artists view offers **"アーティスト名" / "曲数" / "アルバム数"** (artist / tracks / albums).
   The search box and genre filters also apply to the Artists view: only artists with matching tracks are shown (counted by the matching tracks).
+- **Scrolling** — the Albums / Artists grids are scrollable over their full length from the start. Dragging the scrollbar
+  to the bottom lands on the last card. Positions that are not loaded yet show empty cards until loading finishes.
 
 ## Toolbar
 

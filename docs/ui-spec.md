@@ -99,6 +99,13 @@ viewMode により切替:
 (List / Albums / Tracks) から切り替える。したがって library / playlist / recent の
 どのコレクションでもアルバム表示にできる。
 
+アルバムの一覧は、ライブラリ・プレイリスト (スマート含む)・検索結果のどれでもサーバ集約
+(`get_albums(sortField, sortOrder, limit, offset, query?, playlistId?)`、件数は `count_albums`)。
+プレイリスト / 検索のときは **その範囲の曲だけ** でアルバムを束ねる: カードの曲数・カバー・合計時間は
+範囲内の曲で数え、展開したときの曲 (`get_album_tracks(albumKey, query?, playlistId?)`) も範囲内の曲だけ。
+プレイリストに同じ曲が複数回入っていても 1 曲として数える。Inbox / 最近再生した曲は件数に上限のある
+メモリ上の一覧なので、クライアントで束ねる。スクロールとデータ取得の規則は 3.9。
+
 ### 2.6 PlayerBar (下部固定)
 4 つの領域:
 1. **再生コントロール**: ⏮ ⏸/▶ ⏹ ⏭ 🔀 (Shuffle toggle) 🔁/🔂 (Repeat: off / all / one)
@@ -158,8 +165,9 @@ viewMode により切替:
 
 ### 3.2 ArtistsView (viewMode = `artists`)
 **データ取得**: すべてサーバ集約 + 遅延取得で、全曲をメモリに載せない。
-- 一覧: `get_artists(sortField, sortOrder, limit, offset)` → `{ name, albumCount, trackCount, artworkTrackId, artworkLocationPath }`。
-  500 件ずつページング (スクロール末尾で追加取得)。コンピレーション (`compilation=1`) の曲は
+- 一覧: `get_artists(sortField, sortOrder, limit, offset, query?)` → `{ name, albumCount, trackCount, artworkTrackId, artworkLocationPath }`。
+  件数は `count_artists(query?)`。スクロール範囲は最初から全件ぶんで、見えている範囲だけを取得する (3.9)。
+  コンピレーション (`compilation=1`) の曲は
   曲ごとのアーティストではなく **Various Artists** に巻き上がる (Albums 表示モードと同じ束ね方)。
 - 展開時: `get_artist_albums(name)` でそのアーティストのアルバム (年→アルバム名順)。
 - さらにアルバムを開くと `get_album_tracks(albumKey)` で曲 (disc→track 順)。取得結果はキャッシュする。
@@ -176,6 +184,9 @@ viewMode により切替:
 **ソート**: ツールバーの Sort は Artists ビューでは `Artist` (name) / `Tracks` (trackCount) /
 `Albums` (albumCount) の 3 つに絞られ、サーバ側 (`artist_order_by`) が同じ語彙で並べる。
 同値時は name → 束ねキーで安定させるので、ページ間で重複・取りこぼしが起きない。
+
+ライブラリが変わったとき (編集・取り込みなど) は、スクロール位置と展開を保ったまま取り直す
+(展開中のアーティストが一覧から無くなったら閉じる)。並び順・検索を変えたときは先頭へ戻り、展開を閉じる。
 
 ### 3.3 PlayerBar の状態
 - `playback.isPlaying` で ▶/⏸ アイコン切替
@@ -266,6 +277,22 @@ viewMode により切替:
 - ツールバーのライブラリ統計 (`12h 34m`) は別書式のまま。
 
 ---
+
+### 3.9 一覧のスクロールとデータ取得 (AlbumsView / ArtistsView)
+
+詳細は `docs/library-list/design.md`。
+
+- **スクロール範囲は最初から全件ぶん。** 一覧を開いたら件数を取り、その件数ぶんの行を確保する
+  (グリッドは `ceil(件数 / 列数)` 行)。スクロールバーのつまみの大きさは読み込みで変わらず、
+  一番下まで引くと最後の項目に着く。**末尾に近づいたら追加で読み込む方式 (v0.21.0 まで) は廃止した。**
+- **データは見えている範囲だけ取る。** 200 件のページ単位で、表示範囲と重なるページ + 前後 1 ページ。
+  キャッシュは 20 ページまで (LRU。表示中のページは捨てない) で、全件をメモリに載せない。
+- **未取得のカードはプレースホルダ** (実データと同じ高さ。届いても位置がずれない)。プレースホルダは操作できない。
+- スクロールバーを引いているあいだは通過した位置のページを取らず、止まった位置 (100 ms) のページだけを取る。
+  普通のスクロール (先読みが追いついている) は待たずに取る。
+- 並び順・検索・スコープを変えたら先頭へ戻る。ライブラリの変更では、スクロール位置を保ったまま
+  件数と表示中のページを取り直す (届くまで古い内容を表示し続ける)。
+- 展開行は、読み込み済みで展開中の項目の行の直後に 1 行だけ入る。
 
 ## 4. 操作モデル / ユーザーフロー
 
