@@ -15,13 +15,12 @@ import {
   GRID_PAD_X as PAD_X,
   gridLayout,
   gridMetrics,
-  relocateExpanded,
 } from "../lib/gridRows";
-import type { GridExpanded } from "../lib/gridRows";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
 import { useWindowedList } from "../hooks/useWindowedList";
-import { useListCount } from "../hooks/useListCount";
+import { useGridExpansion } from "../hooks/useGridExpansion";
+import { useKeyedCache } from "../hooks/useKeyedCache";
 import { PlaceholderCard } from "./PlaceholderCard";
 import { formatTotalTime, formatTrackTime } from "../lib/format";
 import { isTauri } from "../lib/env";
@@ -46,8 +45,7 @@ interface ArtistsViewProps {
 
 const ARTIST_SORT_SET = new Set<string>(ARTIST_SORT_FIELDS);
 
-/** 展開中のアーティスト。位置 (通し番号) と、展開行を描くためのアーティスト本体を覚える。 */
-type ExpandedArtist = GridExpanded & { artist: ArtistRow };
+const artistKeyOf = (a: ArtistRow) => a.name;
 
 /// アーティスト単位のブラウズビュー (viewMode = "artists")。
 /// 集約はサーバ (`get_artists`) が行い、全曲をメモリに載せない。スクロール範囲は最初から
@@ -69,21 +67,16 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   // グリッドのスクロール要素。初回描画は空状態 (データ到着前) で要素が無いので、
   // 付いた時点で幅計測を始められるよう callback ref で持つ (useElementWidth)。AlbumsView と同じ。
   const { ref: setParentRef, elRef: parentRef, width } = useElementWidth<HTMLDivElement>();
-  // 展開中のアーティスト / その中で開いているアルバム (albumKey)。
-  const [expanded, setExpanded] = useState<ExpandedArtist | null>(null);
-  const [openAlbumKey, setOpenAlbumKey] = useState<string | null>(null);
-
-  // 遅延取得キャッシュ。描画に使うが更新の粒度が細かいので ref + epoch で再描画する
-  // (Map を state に持つと取得のたびに全体コピーが必要になるため)。
-  const albumCache = useRef(new Map<string, AlbumRow[]>());
-  const trackCache = useRef(new Map<string, Track[]>());
-  const [cacheEpoch, setCacheEpoch] = useState(0);
-  const bumpCache = useCallback(() => setCacheEpoch((e) => e + 1), []);
+  // 展開中のアーティストの中で開いているアルバム。どのアーティストの中で開いたかも一緒に覚え、
+  // 展開が閉じた・別のアーティストに変わったら (一覧の取り直しで閉じた場合も含む) 無効にする。
+  const [openAlbum, setOpenAlbum] = useState<{ artist: string; albumKey: string } | null>(null);
 
   // ツールバーのソートはアーティスト粒度の語彙だけ通す (他は name に倒す)。
   // store 側でもビュー切替時に正規化しているので、ここは保険。
   const artistSort: SortField = ARTIST_SORT_SET.has(sortField) ? sortField : "name";
-  const listKey = JSON.stringify(["artists", artistSort, sortOrder, combinedQuery]);
+  // group: 並び順を除いた同一性 (アーティストの数はこれで決まる)。key: 並び順まで含めた同一性。
+  const listGroup = JSON.stringify(["artists", combinedQuery]);
+  const listKey = JSON.stringify([listGroup, artistSort, sortOrder]);
 
   const reportLoadError = useCallback(
     (err: unknown) => {
@@ -92,13 +85,6 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
     },
     [pushToast],
   );
-  const count = useListCount(
-    listKey,
-    reloadKey,
-    // ブラウザでの開発表示 (Tauri なし) は空の一覧として扱う。
-    () => (isTauri ? libraryApi.countArtists(combinedQuery || undefined) : Promise.resolve(0)),
-    reportLoadError,
-  );
   const fetchPage = useCallback(
     (offset: number, limit: number) =>
       libraryApi.getArtists(artistSort, sortOrder, limit, offset, combinedQuery || undefined),
@@ -106,12 +92,21 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   );
   const list = useWindowedList<ArtistRow>({
     key: listKey,
+    group: listGroup,
     revision: reloadKey,
-    count: count ?? 0,
+    // ブラウザでの開発表示 (Tauri なし) は空の一覧として扱う。
+    count: () =>
+      isTauri ? libraryApi.countArtists(combinedQuery || undefined) : Promise.resolve(0),
     fetchPage,
     onError: reportLoadError,
   });
-  const isLoading = count === null;
+  const isLoading = list.loading;
+  const count = isLoading ? null : list.count;
+  const { expanded, toggle: toggleExpanded, close: closeExpanded } = useGridExpansion(
+    list,
+    artistKeyOf,
+  );
+  const openAlbumKey = expanded && openAlbum?.artist === expanded.key ? openAlbum.albumKey : null;
 
   // 見出しの件数 (検索結果のアーティスト数) を Toolbar へ渡す。
   useEffect(() => {
@@ -119,56 +114,30 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   }, [count]);
   useEffect(() => () => useArtistsResult.setState({ count: null }), []);
 
-  // 一覧が切り替わったら (並び順・検索の変更) 先頭へ戻し、展開を閉じる。
+  // 一覧が切り替わったら (並び順・検索の変更) 先頭へ戻す (展開は useGridExpansion が閉じる)。
   useEffect(() => {
-    setExpanded(null);
-    setOpenAlbumKey(null);
     if (parentRef.current) parentRef.current.scrollTop = 0;
   }, [listKey, parentRef]);
 
-  // 取得に失敗したキー (アーティスト名 / albumKey)。展開行が「Loading…」のまま止まらないよう、
-  // 失敗を表示して再試行できるようにする。キャッシュと同じく ref + epoch で再描画する。
-  const failedAlbums = useRef(new Set<string>());
-  const failedTracks = useRef(new Set<string>());
+  // 展開行の遅延取得キャッシュ (アーティスト名 → アルバム、albumKey → 曲)。一覧が切り替わったら
+  // 捨て、ライブラリが変わったら次に使うときに取り直す。取得の失敗もキャッシュが覚える
+  // (展開行が「Loading…」のまま止まらないよう、失敗を表示して再試行できるようにする)。
+  const { cache: albumCache, epoch: albumEpoch } = useKeyedCache<AlbumRow[]>(listKey, reloadKey);
+  const { cache: trackCache, epoch: trackEpoch } = useKeyedCache<Track[]>(listKey, reloadKey);
+  const cacheEpoch = albumEpoch + trackEpoch;
 
   /// アーティストのアルバム一覧を取得してキャッシュする。失敗は throw する (通知は呼び出し側)。
   const fetchAlbums = useCallback(
-    async (name: string): Promise<AlbumRow[]> => {
-      const hit = albumCache.current.get(name);
-      if (hit) return hit;
-      if (failedAlbums.current.delete(name)) bumpCache(); // 再試行中は Loading… に戻す
-      try {
-        const rows = await libraryApi.getArtistAlbums(name);
-        albumCache.current.set(name, rows);
-        return rows;
-      } catch (err) {
-        failedAlbums.current.add(name);
-        throw err;
-      } finally {
-        bumpCache();
-      }
-    },
-    [bumpCache],
+    (name: string): Promise<AlbumRow[]> =>
+      albumCache.load(name, () => libraryApi.getArtistAlbums(name)),
+    [albumCache],
   );
 
   /// アルバムの曲を取得してキャッシュする。失敗は throw する (通知は呼び出し側)。
   const fetchTracks = useCallback(
-    async (albumKey: string): Promise<Track[]> => {
-      const hit = trackCache.current.get(albumKey);
-      if (hit) return hit;
-      if (failedTracks.current.delete(albumKey)) bumpCache();
-      try {
-        const ts = await libraryApi.getAlbumTracks(albumKey);
-        trackCache.current.set(albumKey, ts);
-        return ts;
-      } catch (err) {
-        failedTracks.current.add(albumKey);
-        throw err;
-      } finally {
-        bumpCache();
-      }
-    },
-    [bumpCache],
+    (albumKey: string): Promise<Track[]> =>
+      trackCache.load(albumKey, () => libraryApi.getAlbumTracks(albumKey)),
+    [trackCache],
   );
 
   // 単発の取得: 失敗したらトーストで知らせて空を返す (再生・キュー・Crate が黙って何もしない、を避ける)。
@@ -212,45 +181,17 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
     [ensureAlbums, fetchTracks, pushToast],
   );
 
-  // 一覧の切り替え・ライブラリの変更で、展開用のキャッシュを捨てる。展開中のアーティスト
-  // (と開いているアルバム) はすぐ取り直す。
-  const expandedRef = useRef(expanded);
-  expandedRef.current = expanded;
-  const openAlbumKeyRef = useRef(openAlbumKey);
-  openAlbumKeyRef.current = openAlbumKey;
+  // ライブラリが変わったら、展開中のアーティスト (と開いているアルバム) はすぐ取り直す
+  // (ほかは次に使うとき。キャッシュは useKeyedCache が取り直し待ちにしている)。
   const refetchOpenRef = useRef<() => void>(() => {});
   refetchOpenRef.current = () => {
-    const open = expandedRef.current;
-    if (!open) return;
-    void ensureAlbums(open.key);
-    if (openAlbumKeyRef.current) void ensureTracks(openAlbumKeyRef.current);
+    if (!expanded) return;
+    void ensureAlbums(expanded.key);
+    if (openAlbumKey) void ensureTracks(openAlbumKey);
   };
-  const cacheKeyRef = useRef(listKey);
   useEffect(() => {
-    albumCache.current = new Map();
-    trackCache.current = new Map();
-    failedAlbums.current = new Set();
-    failedTracks.current = new Set();
-    bumpCache();
-    // 一覧が切り替わったときは展開を閉じるので、取り直すものは無い。
-    const sameList = cacheKeyRef.current === listKey;
-    cacheKeyRef.current = listKey;
-    if (sameList) refetchOpenRef.current();
-  }, [listKey, reloadKey, bumpCache]);
-
-  // 一覧を取り直したら、展開中のアーティストの位置を合わせ直す (無くなっていれば閉じる)。
-  useEffect(() => {
-    setExpanded((prev) => {
-      if (!prev) return prev;
-      const loadedKeys = (function* (): IterableIterator<[number, string]> {
-        for (const [i, a] of list.loaded()) yield [i, a.name];
-      })();
-      const next = relocateExpanded(prev, list.count, (i) => list.get(i)?.name, loadedKeys);
-      if (!next) return null;
-      const artist = list.get(next.index) ?? prev.artist;
-      return next === prev && artist === prev.artist ? prev : { ...next, artist };
-    });
-  }, [list]);
+    refetchOpenRef.current();
+  }, [reloadKey]);
 
   const { cols, cardW } = gridMetrics(width);
 
@@ -270,21 +211,20 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   // index はカードの通し番号 (展開行を差し込む位置を決める)。
   const toggleArtist = useCallback(
     (a: ArtistRow, index: number) => {
-      const willOpen = expanded?.key !== a.name;
-      setExpanded(willOpen ? { key: a.name, index, artist: a } : null);
-      setOpenAlbumKey(null);
-      if (willOpen) void ensureAlbums(a.name);
+      setOpenAlbum(null);
+      if (toggleExpanded(a, index)) void ensureAlbums(a.name);
     },
-    [expanded, ensureAlbums],
+    [toggleExpanded, ensureAlbums],
   );
 
   const toggleAlbum = useCallback(
     (al: AlbumRow) => {
+      if (!expanded) return;
       const willOpen = openAlbumKey !== al.albumKey;
-      setOpenAlbumKey(willOpen ? al.albumKey : null);
+      setOpenAlbum(willOpen ? { artist: expanded.key, albumKey: al.albumKey } : null);
       if (willOpen) void ensureTracks(al.albumKey);
     },
-    [openAlbumKey, ensureTracks],
+    [expanded, openAlbumKey, ensureTracks],
   );
 
   // ---- 再生 / キュー / クレート ----
@@ -317,11 +257,11 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   /// キャッシュ済みの曲だけ (未取得なら null)。カードの「クレート済み」「再生中」表示に使う。
   const knownArtistTracks = useCallback(
     (a: ArtistRow): Track[] | null => {
-      const albums = albumCache.current.get(a.name);
+      const albums = albumCache.get(a.name);
       if (!albums) return null;
       const out: Track[] = [];
       for (const al of albums) {
-        const ts = trackCache.current.get(al.albumKey);
+        const ts = trackCache.get(al.albumKey);
         if (!ts) return null;
         out.push(...ts);
       }
@@ -453,20 +393,20 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
               ) : (
                 expanded && (
                   <ArtistExpansion
-                    artist={expanded.artist}
-                    albums={albumCache.current.get(expanded.key) ?? null}
+                    artist={expanded.item}
+                    albums={albumCache.get(expanded.key) ?? null}
                     openAlbumKey={openAlbumKey}
-                    tracksOf={(key) => trackCache.current.get(key) ?? null}
-                    albumsFailed={failedAlbums.current.has(expanded.key)}
-                    tracksFailed={(key) => failedTracks.current.has(key)}
+                    tracksOf={(key) => trackCache.get(key) ?? null}
+                    albumsFailed={albumCache.isFailed(expanded.key)}
+                    tracksFailed={(key) => trackCache.isFailed(key)}
                     onRetryAlbums={() => void ensureAlbums(expanded.key)}
                     onRetryTracks={(al) => void ensureTracks(al.albumKey)}
                     crateSet={crateSet}
                     currentTrackId={playback.currentTrackId}
                     onToggleAlbum={toggleAlbum}
-                    onPlayArtist={() => artistTracks(expanded.artist).then((ts) => playTracks(ts))}
-                    onQueueArtist={() => artistTracks(expanded.artist).then(enqueueTracks)}
-                    onCrateArtist={() => artistTracks(expanded.artist).then(crateTracks)}
+                    onPlayArtist={() => artistTracks(expanded.item).then((ts) => playTracks(ts))}
+                    onQueueArtist={() => artistTracks(expanded.item).then(enqueueTracks)}
+                    onCrateArtist={() => artistTracks(expanded.item).then(crateTracks)}
                     onPlayAlbum={(al, startId) =>
                       ensureTracks(al.albumKey).then((ts) => playTracks(ts, startId))
                     }
@@ -474,8 +414,8 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                     onCrateAlbum={(al) => ensureTracks(al.albumKey).then(crateTracks)}
                     onCrateTrack={addToCrate}
                     onClose={() => {
-                        setExpanded(null);
-                        setOpenAlbumKey(null);
+                        closeExpanded();
+                        setOpenAlbum(null);
                       }}
                   />
                 )
@@ -485,6 +425,11 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
         })}
       </div>
       {isLoading && <div className="cb-loading">Loading…</div>}
+      {list.failed && (
+        <div className="cb-list-retry">
+          <LoadRetry message="一覧の一部を取得できませんでした" onRetry={list.retry} />
+        </div>
+      )}
     </div>
   );
 }

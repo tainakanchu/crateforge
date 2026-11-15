@@ -1,15 +1,22 @@
 import { useCallback, useMemo, useRef } from "react";
 import { useStore } from "../store/useStore";
 import * as libraryApi from "../api/library";
-import { fetchTrackIds, fetchTrackPage, isServerTrackList } from "../api/trackList";
-import { resolveTrackListQuery, trackListKey } from "../lib/trackListQuery";
+import {
+  fetchTrackCount,
+  fetchTrackIds,
+  fetchTrackPage,
+  isServerTrackList,
+} from "../api/trackList";
+import { resolveTrackListQuery, trackListGroupKey, trackListKey } from "../lib/trackListQuery";
 import type { TrackListQuery } from "../lib/trackListQuery";
+import { isTauri } from "../lib/env";
 import { useWindowedList } from "./useWindowedList";
 import type { WindowedList } from "./useWindowedList";
+import { useListCount } from "./useListCount";
 import type { Track } from "../types";
 
-/** 表示中の曲の一覧 (どの一覧か) とそのキー。ストアの状態から決まる。 */
-export function useTrackListQuery(): { query: TrackListQuery; key: string } {
+/** 表示中の曲の一覧 (どの一覧か) と、そのキー (key: 並び順を含む / group: 含まない)。 */
+export function useTrackListQuery(): { query: TrackListQuery; key: string; group: string } {
   const viewMode = useStore((s) => s.viewMode);
   const selectedPlaylistId = useStore((s) => s.selectedPlaylistId);
   const playlistIsSmart = useStore(
@@ -31,7 +38,7 @@ export function useTrackListQuery(): { query: TrackListQuery; key: string } {
       sortField,
       sortOrder,
     });
-    return { query, key: trackListKey(query) };
+    return { query, key: trackListKey(query), group: trackListGroupKey(query) };
   }, [
     viewMode,
     selectedPlaylistId,
@@ -44,12 +51,28 @@ export function useTrackListQuery(): { query: TrackListQuery; key: string } {
   ]);
 }
 
+/** ブラウザでの開発表示 (Tauri なし) は空の一覧として扱う。 */
+const countOf = (q: Parameters<typeof fetchTrackCount>[0]) =>
+  isTauri ? fetchTrackCount(q) : Promise.resolve(0);
+
+/**
+ * 表示中の曲の一覧の全件数 (ツールバーの「N 曲」用)。未確定のあいだは null。
+ * 一覧そのものを持たない場所から、件数だけを同じ条件で取る。
+ */
+export function useTrackListCount(): number | null {
+  const { query, group } = useTrackListQuery();
+  const memoryCount = useStore((s) => s.tracks.length);
+  const libraryRevision = useStore((s) => s.libraryRevision);
+  const server = isServerTrackList(query) ? query : null;
+  const fetched = useListCount(group, libraryRevision, server ? () => countOf(server) : null);
+  if (server) return fetched;
+  return query.kind === "memory" ? memoryCount : 0;
+}
+
 export interface TrackList extends WindowedList<Track> {
   query: TrackListQuery;
-  /** 一覧の同一性。変わったら先頭へ戻す。 */
-  key: string;
-  /** 件数がまだ確定していない (一覧を開いた直後)。 */
-  loading: boolean;
+  /** 並び順を除いた同一性 (スコープ + 検索語)。 */
+  group: string;
   /** 一覧の全 trackId (表示順)。初回に取得し、一覧が取り直されるまで使い回す。 */
   getIds: () => Promise<number[]>;
   /** 取得済みなら全 trackId (表示順)。未取得なら null (同期で要るドラッグ開始用)。 */
@@ -62,6 +85,11 @@ export interface TrackList extends WindowedList<Track> {
   resolveTracks: (ids: readonly number[]) => Promise<Track[]>;
   /** trackId 列を一覧の表示順に並べ直す (重複は除く。一覧に無い ID は末尾)。 */
   orderByList: (ids: readonly number[]) => Promise<number[]>;
+  /**
+   * 一覧の並びを ids に差し替えて見せる (プレイリストの手動並べ替えの先行表示)。
+   * 取得済みの行を並べ替え、ID 列も差し替える。DB への書き込みは呼び出し側が行う。
+   */
+  applyOrder: (ids: readonly number[]) => void;
 }
 
 /**
@@ -70,25 +98,16 @@ export interface TrackList extends WindowedList<Track> {
  * - ライブラリ / 検索 / プレイリストは、件数ぶんの行を確保して見えているページだけ取得する。
  * - Inbox / 最近再生した曲はストアの `tracks` (件数に上限のあるメモリ上の一覧) を同じ形で見せる。
  *
- * 件数は App が取ってストアの `listCount` に置く (ツールバーの件数表示と共有する)。
  * 読み込んでいない行をまたぐ操作 (全選択・範囲選択・ここから再生) は `getIds` の ID 列を使う。
  */
 export function useTrackList(): TrackList {
-  const { query, key } = useTrackListQuery();
+  const { query, key, group } = useTrackListQuery();
   const memoryTracks = useStore((s) => s.tracks);
   const memoryLoading = useStore((s) => s.isLoading);
-  const listCount = useStore((s) => s.listCount);
   const libraryRevision = useStore((s) => s.libraryRevision);
   const pushToast = useStore((s) => s.pushToast);
 
   const server = isServerTrackList(query) ? query : null;
-  const count = server
-    ? listCount !== null && listCount.key === key
-      ? listCount.count
-      : null
-    : query.kind === "memory"
-      ? memoryTracks.length
-      : 0;
   const revision: unknown = server ? libraryRevision : memoryTracks;
 
   const fetchPage = useCallback(
@@ -103,7 +122,14 @@ export function useTrackList(): TrackList {
     },
     [pushToast],
   );
-  const list = useWindowedList<Track>({ key, revision, count: count ?? 0, fetchPage, onError });
+  const list = useWindowedList<Track>({
+    key,
+    group,
+    revision,
+    count: server ? () => countOf(server) : query.kind === "memory" ? memoryTracks.length : 0,
+    fetchPage,
+    onError,
+  });
 
   // 全 trackId は一覧 (key + revision) ごとに 1 回だけ取る。
   const idsRef = useRef<{
@@ -153,9 +179,7 @@ export function useTrackList(): TrackList {
       if (!map.has(track.trackId)) map.set(track.trackId, { index, track });
     }
     return map;
-    // key: 一覧が切り替わって件数が同じまま (ページ未着) でも作り直す。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [list, key]);
+  }, [list]);
 
   const loadedTrack = useCallback((id: number) => loadedById.get(id)?.track, [loadedById]);
   const loadedIndexOf = useCallback((id: number) => loadedById.get(id)?.index, [loadedById]);
@@ -190,19 +214,38 @@ export function useTrackList(): TrackList {
     [getIds],
   );
 
+  const applyOrder = useCallback(
+    (ids: readonly number[]) => {
+      const now = current.current;
+      const next = [...ids];
+      idsRef.current = {
+        key: now.key,
+        revision: now.revision,
+        promise: Promise.resolve(next),
+        ids: next,
+      };
+      list.remap((index) => {
+        const id = next[index];
+        return id === undefined ? undefined : loadedById.get(id)?.track;
+      });
+    },
+    [list, loadedById],
+  );
+
   return useMemo(
     () => ({
       ...list,
+      loading: list.loading || (query.kind === "memory" && memoryLoading),
       query,
-      key,
-      loading: count === null || (query.kind === "memory" && memoryLoading),
+      group,
       getIds,
       peekIds,
       loadedTrack,
       loadedIndexOf,
       resolveTracks,
       orderByList,
+      applyOrder,
     }),
-    [list, query, key, count, memoryLoading, getIds, peekIds, loadedTrack, loadedIndexOf, resolveTracks, orderByList],
+    [list, query, group, memoryLoading, getIds, peekIds, loadedTrack, loadedIndexOf, resolveTracks, orderByList, applyOrder],
   );
 }

@@ -938,6 +938,16 @@ select optgroup {
   cursor: default;
 }
 
+/* 一覧の一部を取得できなかったときの案内 (再試行)。スクロールしても下端に見え続ける。 */
+.cb-list-retry {
+  position: sticky;
+  bottom: 0;
+  left: 0;
+  z-index: 3;
+  background: var(--bg2);
+  border-top: 1px solid var(--bd);
+}
+
 .cb-loading {
   padding: 16px;
   text-align: center;

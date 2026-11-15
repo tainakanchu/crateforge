@@ -24,6 +24,7 @@ import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
 import { useTrackList } from "../hooks/useTrackList";
 import { PlaceholderCard } from "./PlaceholderCard";
+import { LoadRetry } from "./LoadRetry";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
 import { AddGenreTagDialog } from "./AddGenreTagDialog";
@@ -68,7 +69,7 @@ export function TracksView({ onTracksChanged, onEditTrack, onConvert }: TracksVi
   // contextMenu が null になるので、対象は開くときにここへ控えておく。
   const [addTagTargetIds, setAddTagTargetIds] = useState<number[] | null>(null);
   // 削除確認モーダルの対象曲（null で非表示）。
-  const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
+  const [deleteTargets, setDeleteTargets] = useState<number[] | null>(null);
   const [newTag, setNewTag] = useState("");
 
   const { cols, cardW } = gridMetrics(width);
@@ -183,7 +184,7 @@ export function TracksView({ onTracksChanged, onEditTrack, onConvert }: TracksVi
 
   const handleDelete = useCallback(() => {
     if (!contextMenu) return;
-    setDeleteTargets([contextMenu.track]);
+    setDeleteTargets([contextMenu.track.trackId]);
     closeMenu();
   }, [contextMenu, closeMenu]);
 
@@ -381,6 +382,11 @@ export function TracksView({ onTracksChanged, onEditTrack, onConvert }: TracksVi
         })}
       </div>
       {list.loading && <div className="cb-loading">Loading…</div>}
+      {list.failed && (
+        <div className="cb-list-retry">
+          <LoadRetry message="一覧の一部を取得できませんでした" onRetry={list.retry} />
+        </div>
+      )}
 
       {contextMenu && ctxTrack && (
         <TrackContextMenu
@@ -420,7 +426,7 @@ export function TracksView({ onTracksChanged, onEditTrack, onConvert }: TracksVi
 
       {deleteTargets && (
         <DeleteTracksDialog
-          tracks={deleteTargets}
+          trackIds={deleteTargets}
           onClose={() => setDeleteTargets(null)}
           onDeleted={onTracksChanged}
         />

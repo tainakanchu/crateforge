@@ -92,6 +92,22 @@ export function trackListKey(q: TrackListQuery): string {
   }
 }
 
+/**
+ * 並び順を除いた同一性 (スコープ + 検索語)。件数と「どの曲が入っているか」はこれで決まる。
+ * 並び順だけを変えたときは変わらないので、件数や選択を保てる。
+ */
+export function trackListGroupKey(q: TrackListQuery): string {
+  switch (q.kind) {
+    case "none":
+    case "memory":
+      return trackListKey(q);
+    case "library":
+      return JSON.stringify(["library", q.query]);
+    case "playlist":
+      return JSON.stringify(["playlist", q.playlistId, q.smart, q.query]);
+  }
+}
+
 /** アルバム表示の対象範囲 (サーバ集約に渡す検索語とプレイリスト)。 */
 export interface AlbumScope {
   query: string;

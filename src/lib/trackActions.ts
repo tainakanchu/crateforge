@@ -17,13 +17,18 @@ export interface PlayApi {
   playTrack: (trackId: number) => Promise<unknown>;
 }
 
+// 複数曲の操作は 1 回の呼び出しで渡す。全選択 (数万曲) でも IPC は 1 往復で済み、
+// レーティングは 1 トランザクションで全部変わるか何も変わらないかになる。
 export interface QueueApi {
-  enqueueTrack: (trackId: number) => Promise<unknown>;
-  enqueueTrackNext: (trackId: number) => Promise<unknown>;
+  /** trackIds をキューの末尾へ、渡した順で追加する。 */
+  enqueueTracks: (trackIds: number[]) => Promise<unknown>;
+  /** trackIds を現在曲の直後へ、渡した順で並ぶように割り込ませる。 */
+  enqueueTracksNext: (trackIds: number[]) => Promise<unknown>;
 }
 
 export interface RatingApi {
-  setTrackRating: (trackId: number, rating: number) => Promise<unknown>;
+  /** trackIds の全曲に同じ rating を付ける (1 トランザクション)。 */
+  setTracksRating: (trackIds: number[], rating: number) => Promise<unknown>;
 }
 
 export interface PlaylistApi {
@@ -71,28 +76,26 @@ export async function playTracks(
   return true;
 }
 
-/** ids をキューの末尾へ順に追加する。 */
+/** ids をキューの末尾へ順に追加する (1 回の呼び出し)。 */
 export async function enqueueTracks(api: QueueApi, ids: readonly number[]): Promise<void> {
-  for (const id of ids) await api.enqueueTrack(id);
+  if (ids.length > 0) await api.enqueueTracks([...ids]);
+}
+
+/** ids を「次に再生」へ入れる (現在曲の直後に、ids の順で並ぶ。1 回の呼び出し)。 */
+export async function playNextTracks(api: QueueApi, ids: readonly number[]): Promise<void> {
+  if (ids.length > 0) await api.enqueueTracksNext([...ids]);
 }
 
 /**
- * ids を「次に再生」へ入れる (現在曲の直後に、ids の順で並ぶ)。
- *
- * enqueueTrackNext は 1 曲ずつ現在曲の直後へ挿入するので、そのままの順で回すと後の曲ほど
- * 前に来て逆順になる。反転してから入れると最終的な並びが ids の順になる。
+ * ids の全曲に同じ rating (0〜100) を付ける (1 回の呼び出し・1 トランザクション)。
+ * 失敗したらどの曲も変わらない。
  */
-export async function playNextTracks(api: QueueApi, ids: readonly number[]): Promise<void> {
-  for (const id of [...ids].reverse()) await api.enqueueTrackNext(id);
-}
-
-/** ids の全曲に同じ rating (0〜100) を付ける。途中で失敗したらそこで止めて throw する。 */
 export async function setRatingForTracks(
   api: RatingApi,
   ids: readonly number[],
   rating: number,
 ): Promise<void> {
-  for (const id of ids) await api.setTrackRating(id, rating);
+  if (ids.length > 0) await api.setTracksRating([...ids], rating);
 }
 
 /**

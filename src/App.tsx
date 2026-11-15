@@ -29,9 +29,8 @@ import { TriagePanel } from "./components/TriagePanel";
 import { SetHistoryView } from "./components/SetHistoryView";
 import { useStore, markSetWorkspaceHydrationDone } from "./store/useStore";
 import { useTrackListQuery } from "./hooks/useTrackList";
-import { useListCount } from "./hooks/useListCount";
 import { useCurrentTrack } from "./hooks/useCurrentTrack";
-import { fetchTrackCount, isServerTrackList } from "./api/trackList";
+import { selectionTooLargeMessage } from "./lib/selectionLimit";
 import { useDiscWatcher } from "./hooks/useDiscWatcher";
 import { useUsbExportEvents } from "./hooks/useUsbExportEvents";
 import * as libraryApi from "./api/library";
@@ -104,7 +103,6 @@ export default function App() {
     viewMode,
     selectedPlaylistId,
     setTracks,
-    setListCount,
     setSelectedTrackIds,
     bumpLibraryRevision,
     setPlaylists,
@@ -203,32 +201,15 @@ export default function App() {
     }
   }, [setPlaylists, setViewMode, setSelectedPlaylistId]);
 
-  // 表示中の曲の一覧。ライブラリ / 検索 / プレイリストは各ビューが見えている範囲だけを取得する
-  // (docs/library-list/design.md)。ここでは件数と、メモリ上の一覧 (Inbox / 最近) だけを扱う。
-  const { query: listQuery, key: listKey } = useTrackListQuery();
-  const serverListQuery = isServerTrackList(listQuery) ? listQuery : null;
-  const serverListCount = useListCount(
-    listKey,
-    reloadCount,
-    serverListQuery && isTauri ? () => fetchTrackCount(serverListQuery) : null,
-    (err) => {
-      console.error("Failed to count tracks:", err);
-      pushToast("error", `曲の取得に失敗しました: ${err}`);
-    },
-  );
-  // 件数はツールバーの表示と各ビューのスクロール範囲で共有する。
-  useEffect(() => {
-    const count = serverListQuery ? (isTauri ? serverListCount : 0) : tracks.length;
-    setListCount(count === null ? null : { key: listKey, count });
-  }, [serverListQuery, serverListCount, tracks.length, listKey, setListCount]);
+  // 表示中の曲の一覧。ライブラリ / 検索 / プレイリストは各ビューが件数と見えている範囲を取得する
+  // (docs/library-list/design.md)。ここではメモリ上の一覧 (Inbox / 最近) だけを扱う。
+  const { query: listQuery, group: listGroup } = useTrackListQuery();
 
-  // 一覧を取り直すたびに選択を解除する (並べ替えの直後だけ、動かした曲の選択を戻す)。
-  const keepSelectionRef = useRef<number[] | null>(null);
+  // 見ている一覧 (スコープ・検索) が変わったら選択を解除する。並び順の変更や一覧の取り直しでは
+  // 残す (選択は trackId で持つ。一覧から消えた曲は TrackTable が取り直しのあとで外す)。
   useEffect(() => {
-    const keep = keepSelectionRef.current;
-    keepSelectionRef.current = null;
-    setSelectedTrackIds(new Set(keep ?? []));
-  }, [listKey, reloadCount, setSelectedTrackIds]);
+    setSelectedTrackIds(new Set());
+  }, [listGroup, setSelectedTrackIds]);
 
   // メモリ上の一覧 (Inbox / 最近再生した曲) を組み立ててストアの tracks に置く。
   const memorySource = listQuery.kind === "memory" ? listQuery.source : null;
@@ -827,14 +808,6 @@ export default function App() {
     reloadPlaylists();
   }, [reloadPlaylists, scheduleAutoExport, bumpLibraryRevision]);
 
-  // プレイリスト内の並べ替えの直後: 取り直しても、動かした曲の選択を残す。
-  const reloadKeepingSelection = useCallback(
-    (trackIds: number[]) => {
-      keepSelectionRef.current = trackIds;
-      triggerReload();
-    },
-    [triggerReload],
-  );
 
   // 取り寄せ / 送信の完了後は、曲一覧に加えて解析結果 (BPM/Key/Energy) も読み直す
   // (取り寄せた解析値がリロードするまで一覧に出なかった: E3)。
@@ -942,8 +915,14 @@ export default function App() {
       }
       if (cmd && e.key.toLowerCase() === "i") {
         e.preventDefault();
-        // 選択中の曲は一覧に読み込まれているとは限らないので、ID で取り直す。
+        // 選択中の曲は一覧に読み込まれているとは限らないので、ID で取り直す
+        // (曲の情報を読み込むので、選択が大きすぎるときは行わない)。
         if (selectedTrackIds.size === 0) return;
+        const tooLarge = selectionTooLargeMessage(selectedTrackIds.size, "編集");
+        if (tooLarge) {
+          pushToast("error", tooLarge);
+          return;
+        }
         libraryApi
           .getTracksByIds(Array.from(selectedTrackIds))
           .then((sel) => {
@@ -991,6 +970,11 @@ export default function App() {
         e.preventDefault();
         if (selectedTrackIds.size === 0) return;
         // 選択中の曲は一覧に読み込まれているとは限らないので、ID で取り直す (選択した順)。
+        const tooLarge = selectionTooLargeMessage(selectedTrackIds.size, " Crate に追加");
+        if (tooLarge) {
+          pushToast("error", tooLarge);
+          return;
+        }
         libraryApi
           .getTracksByIds(Array.from(selectedTrackIds))
           .then((selected) => addTracksToCrate(selected))
@@ -1293,7 +1277,6 @@ export default function App() {
         ) : (
           <TrackTable
             onTracksChanged={triggerReload}
-            onReordered={reloadKeepingSelection}
             onEditTrack={(ts) => setEditorTracks(ts)}
             onConvert={(ids, mode) => setConvertReq({ ids, mode: mode ?? "export" })}
           />

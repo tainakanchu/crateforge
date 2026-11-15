@@ -31,7 +31,9 @@ Truncated cells (track name / album / album artist) show the full text as a tool
 The track list and the Albums, Tracks and Artists views are all scrollable over their full length from the start.
 Dragging the scrollbar to the bottom lands on the last track (card). Only the visible range is loaded, so positions
 that are not loaded yet show empty rows (cards) until loading finishes. Select all, range selection and
-double-click-to-play cover every track in the list, including the ones that are not loaded.
+double-click-to-play cover every track in the list, including the ones that are not loaded. The selection is kept
+when you change the sort order or edit the library (it is cleared when you search or switch to another list).
+Get Info / Edit and adding to the Crate take up to 1,000 tracks at a time.
 
 ### Albums / Artists views
 
@@ -161,8 +163,8 @@ Press `?` (or the `?` button in the toolbar) to show the shortcut list overlay.
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Move the selection up / down |
-| `PageUp` / `PageDown` | Move the selection up / down by one screen |
-| `Home` / `End` | Select the first / last track of the list |
+| `PageUp` / `PageDown` | Move the selection up / down by one screen (when focus or the pointer is on the track list) |
+| `Home` / `End` | Select the first / last track of the list (same condition) |
 | `Shift` + `↑` / `↓` / `PageUp` / `PageDown` / `Home` / `End` | Extend the selection |
 | `Ctrl` + `A` | Select all (every track in the list) |
 | `Ctrl` + `I` | Edit the selected track ("情報を見る / 編集" — Get Info / Edit) |

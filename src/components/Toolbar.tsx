@@ -3,6 +3,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import * as libraryApi from "../api/library";
 import * as playlistsApi from "../api/playlists";
 import { useStore } from "../store/useStore";
+import { useTrackListCount } from "../hooks/useTrackList";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { Icon } from "./Icon";
 import { ColumnPicker } from "./ColumnPicker";
@@ -153,7 +154,6 @@ export function Toolbar({
     fields,
     selectedPlaylistId,
     playlists,
-    listCount,
     libraryRevision,
     selectedTrackIds,
     analysisActive,
@@ -163,6 +163,8 @@ export function Toolbar({
     rightRailVisible,
     toggleRightRail,
   } = useStore();
+  // 表示中の曲の一覧の全件数 (一覧と同じ条件で数える。未確定のあいだは null)。
+  const listCount = useTrackListCount();
 
   const [importing, setImporting] = useState(false);
   // iTunes XML からスマートプレイリストを復元するダイアログ。
@@ -303,7 +305,7 @@ export function Toolbar({
   // 曲数だけでなくプレイリストの増減 (作成・削除) でも統計を取り直す。
   useEffect(() => {
     refreshStats();
-  }, [refreshStats, libraryRevision, listCount?.count, playlists.length]);
+  }, [refreshStats, libraryRevision, listCount, playlists.length]);
 
   useEffect(() => {
     libraryApi
@@ -589,7 +591,7 @@ export function Toolbar({
       : (activePlaylist?.trackCount ?? null);
   const artistsResult = useArtistsResult();
   // 表示中の曲の一覧の全件数 (読み込み済みの行数ではない)。未確定のあいだは "…"。
-  const listCountLabel = listCount ? `${listCount.count.toLocaleString()} 曲` : "…";
+  const listCountLabel = listCount !== null ? `${listCount.toLocaleString()} 曲` : "…";
   const subCount = isSearching
     ? viewMode === "artists"
       ? artistsResult.count != null

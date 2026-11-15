@@ -168,6 +168,11 @@ export async function updateTrack(trackId: number, edits: TrackEdit): Promise<vo
   return invoke("update_track", { trackId, edits });
 }
 
+/// trackIds の全曲に同じ rating を付ける (1 トランザクション。失敗したらどの曲も変わらない)。
+export async function setTracksRating(trackIds: number[], rating: number): Promise<void> {
+  return invoke("set_tracks_rating", { trackIds, rating });
+}
+
 export async function setTrackRating(trackId: number, rating: number): Promise<void> {
   return invoke("set_track_rating", { trackId, rating });
 }
@@ -370,6 +375,24 @@ export async function deleteTracks(
 }
 
 /// OS のファイルマネージャ (Finder / エクスプローラ) でファイルを表示する。
+/** 削除の確認に出す内容。 */
+export interface DeleteTracksPreview {
+  /** ライブラリにある対象曲の数 (重複・存在しない ID を除く)。 */
+  count: number;
+  /** 先頭の数曲 (曲名の表示用)。 */
+  sample: Track[];
+  /** 実ファイルがあり、root の外にある曲の数 (root が無ければ 0)。 */
+  outsideRoot: number;
+}
+
+/// 削除の確認用の集計。対象の曲を全部読み込まずに、件数・先頭の数曲・ルート外の数だけを取る。
+export async function previewDeleteTracks(
+  trackIds: number[],
+  root: string | null,
+): Promise<DeleteTracksPreview> {
+  return invoke("preview_delete_tracks", { trackIds, root });
+}
+
 export async function revealInFileManager(path: string): Promise<void> {
   return invoke("reveal_in_file_manager", { path });
 }

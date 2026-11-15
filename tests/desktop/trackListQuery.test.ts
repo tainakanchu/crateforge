@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   albumScopeOf,
   resolveTrackListQuery,
+  trackListGroupKey,
   trackListKey,
 } from "../../src/lib/trackListQuery.ts";
 import type { TrackListState } from "../../src/lib/trackListQuery.ts";
@@ -130,4 +131,21 @@ test("albumScopeOf: 曲の一覧と同じ範囲。メモリ上の一覧と一覧
   assert.equal(albumScopeOf(q({ viewMode: "recent" })), null);
   assert.equal(albumScopeOf(q({ viewMode: "inbox" })), null);
   assert.equal(albumScopeOf(q({ viewMode: "history" })), null);
+});
+
+test("trackListGroupKey: 並び順だけが違う一覧は同じ、スコープ・検索語が違えば違う", () => {
+  const group = (over: Partial<TrackListState>) => trackListGroupKey(q(over));
+  assert.equal(group({}), group({ sortField: "bpm", sortOrder: "desc" }));
+  const pl = { viewMode: "playlist" as const, selectedPlaylistId: 1 };
+  assert.equal(group({ ...pl, sortField: "playlistOrder" }), group({ ...pl, sortField: "name" }));
+  const groups = [
+    group({}),
+    group({ searchQuery: "a" }),
+    group(pl),
+    group({ ...pl, selectedPlaylistId: 2 }),
+    group({ ...pl, searchQuery: "a" }),
+    group({ viewMode: "inbox" }),
+    group({ viewMode: "recent" }),
+  ];
+  assert.equal(new Set(groups).size, groups.length);
 });

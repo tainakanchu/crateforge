@@ -271,11 +271,6 @@ interface AppState extends PersistedSettings {
   selectedTrackIds: Set<number>;
   /** メモリ上の一覧 (tracks) を読み込み中か。 */
   isLoading: boolean;
-  /**
-   * 表示中の曲の一覧の全件数。key はどの一覧の件数か (lib/trackListQuery の trackListKey)。
-   * 未確定のあいだは null。
-   */
-  listCount: { key: string; count: number } | null;
   /** ライブラリが変わるたびに増える値 (編集・取り込み・削除など)。一覧はこれを見て取り直す。 */
   libraryRevision: number;
 
@@ -334,7 +329,6 @@ interface AppState extends PersistedSettings {
   removeFilterTag: (tag: string) => void;
   clearFilterTags: () => void;
   setTracks: (tracks: Track[]) => void;
-  setListCount: (listCount: { key: string; count: number } | null) => void;
   bumpLibraryRevision: () => void;
   setPlaylists: (playlists: Playlist[]) => void;
   setIsLoading: (loading: boolean) => void;
@@ -668,7 +662,6 @@ export const useStore = create<AppState>()(
       playlists: [],
       selectedTrackIds: new Set(),
       isLoading: false,
-      listCount: null,
       libraryRevision: 0,
       playback: {
         isPlaying: false,
@@ -761,8 +754,8 @@ export const useStore = create<AppState>()(
       removeFilterTag: (tag) =>
         set((state) => ({ filterTags: state.filterTags.filter((t) => t !== tag) })),
       clearFilterTags: () => set({ filterTags: [] }),
-      setTracks: (tracks) => set({ tracks, selectedTrackIds: new Set() }),
-      setListCount: (listCount) => set({ listCount }),
+      // 選択の解除は「見ている一覧が変わったとき」に App が行う (取り直しでは選択を残す)。
+      setTracks: (tracks) => set({ tracks }),
       bumpLibraryRevision: () => set((state) => ({ libraryRevision: state.libraryRevision + 1 })),
       // playlists のロード完了で初めて選択中プレイリストの isSmart/isFolder が分かるので、
       // 起動直後の永続復元 (#160) では playlists がまだ空のまま resyncSort していた
