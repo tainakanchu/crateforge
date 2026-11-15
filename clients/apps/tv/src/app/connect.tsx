@@ -2,7 +2,7 @@
 // TV にはカメラがないため QR ではなく数字コード入力でペアリングする。
 // 1. デスクトップの IP:port を入力
 // 2. "ペアリング開始" → POST /api/pair/start → コードを大きく表示
-// 3. ユーザーがデスクトップ側「設定→API→端末を承認」にコードを入力
+// 3. ユーザーがデスクトップ側「設定 → モバイル / API → 端末を承認」にコードを入力
 // 4. GET /api/pair/poll をポーリングして approved になったら接続完了
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -27,9 +27,11 @@ import {
 
 import {
   ApiClient,
+  DESKTOP_PAIR_APPROVE_PATH,
   PAIRING_EXPIRED_MESSAGE,
   type PairingSession,
   dedupeDiscovered,
+  describeApiError,
   discoveredKey,
   startPairingSession,
   useConnection,
@@ -110,7 +112,7 @@ export default function ConnectScreen() {
       try {
         client = new ApiClient({ baseUrl: trimmed, token: null });
       } catch (e) {
-        fail(e instanceof Error ? e.message : "接続できませんでした");
+        fail(describeApiError(e, { action: "接続" }));
         return;
       }
       pairingRef.current = startPairingSession({
@@ -125,10 +127,9 @@ export default function ConnectScreen() {
             void useConnection.getState().connect(trimmed, ev.token);
           } else if (ev.type === "expired") {
             fail(PAIRING_EXPIRED_MESSAGE);
-          } else if (ev.stage === "start") {
-            fail(ev.error instanceof Error ? ev.error.message : "接続できませんでした");
           } else {
-            fail(ev.error instanceof Error ? ev.error.message : "ポーリングエラー");
+            // 文言は mobile と同じ describeApiError（原因と対処を添える）。
+            fail(describeApiError(ev.error, { action: ev.stage === "start" ? "接続" : "承認の確認" }));
           }
         },
       });
@@ -220,15 +221,24 @@ export default function ConnectScreen() {
           </>
         )}
 
-        {phase === "polling" && code && (
+        {phase === "polling" && (
           <View style={styles.codeBox}>
-            <Text style={styles.codeLabel}>デスクトップで承認してください</Text>
-            <Text style={styles.code}>{code}</Text>
-            <Text style={styles.codeInstructions}>
-              デスクトップの{"\n"}「設定 → API → 端末を承認」に{"\n"}このコードを入力してください
+            <Text style={styles.codeLabel}>
+              {code ? "デスクトップで承認してください" : "接続中…"}
             </Text>
-            <ActivityIndicator color={PALETTE.teal} size="large" style={{ marginTop: 32 }} />
-            <Text style={styles.polling}>承認待ち中…</Text>
+            {code ? (
+              <>
+                <Text style={styles.code}>{code}</Text>
+                <Text style={styles.codeInstructions}>
+                  デスクトップの{"\n"}「{DESKTOP_PAIR_APPROVE_PATH}」に{"\n"}このコードを入力してください
+                </Text>
+                <ActivityIndicator color={PALETTE.teal} size="large" style={{ marginTop: 32 }} />
+                <Text style={styles.polling}>承認待ち中…</Text>
+              </>
+            ) : (
+              // コードが届くまで（pairStart の応答待ち）は空白にせずスピナーを出す（mobile と同じ）。
+              <ActivityIndicator color={PALETTE.teal} size="large" style={{ marginVertical: 32 }} />
+            )}
             <Pressable style={[styles.button, styles.secondaryButton]} onPress={handleRetry}>
               <Text style={styles.buttonText}>やり直す</Text>
             </Pressable>
