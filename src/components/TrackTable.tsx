@@ -25,6 +25,7 @@ import type { ConvertMode, Track, FieldKey, Playlist } from "../types";
 import { describeKey, effectiveKeyCamelot, formatKey, isKeyOverridden } from "../lib/keyNotation";
 import { EmptyState } from "./EmptyState";
 import { joinGenre, splitGenre } from "../lib/genre";
+import { formatClock } from "../lib/format";
 
 // 曲名列の最小幅 (未固定 = flex のとき)。styles.css の .cb-id / .cb-h-id と揃える。
 const NAME_MIN_WIDTH = 180;
@@ -32,13 +33,7 @@ const NAME_MIN_WIDTH = 180;
 const ROW_SIDE_PADDING = 18;
 const ADD_CELL_WIDTH = 40;
 
-function formatTime(ms: number | null): string {
-  if (!ms) return "";
-  const totalSec = Math.floor(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `${min}:${sec.toString().padStart(2, "0")}`;
-}
+const formatTime = (ms: number | null) => formatClock(ms, { empty: "" });
 
 
 /// 並べ替えコミット時に「プレイリストの全曲順」を取り直すときの上限。

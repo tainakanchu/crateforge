@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import * as libraryApi from "../api/library";
 import { useStore } from "../store/useStore";
 import type { Track } from "../types";
+import { isTauri } from "../lib/env";
 
-const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 /**
  * 再生中の曲。表示中の一覧 (tracks) にあればそれを使い、無いとき (起動時に復元した曲 #159 /

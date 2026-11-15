@@ -12,25 +12,17 @@ import { useElementWidth } from "../hooks/useElementWidth";
 import { bpmColor } from "../lib/art";
 import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import * as audition from "../lib/audition";
+import { formatClock } from "../lib/format";
+import { isTauri } from "../lib/env";
 
 // 残り時間を "-mm:ss" 形式でフォーマット。
 function formatRemainingTime(positionMs: number, durationMs: number): string {
-  const remaining = Math.max(0, durationMs - positionMs);
-  const totalSec = Math.floor(remaining / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `-${min}:${sec.toString().padStart(2, "0")}`;
+  return `-${formatClock(Math.max(0, durationMs - positionMs))}`;
 }
 
-function formatTime(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `${min}:${sec.toString().padStart(2, "0")}`;
-}
+const formatTime = (ms: number) => formatClock(ms);
 
 // ブラウザ (vite dev) では IPC が使えないので、ストア更新のみで動かす。
-const isTauri = "__TAURI_INTERNALS__" in window;
 
 const WAVE_N = 64;
 

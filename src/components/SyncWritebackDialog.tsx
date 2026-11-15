@@ -14,6 +14,7 @@ import type {
   WritebackValue,
 } from "../api/sync";
 import { Icon } from "./Icon";
+import { errorMessage } from "../lib/errors";
 
 interface SyncWritebackDialogProps {
   source: SyncSource;
@@ -43,17 +44,6 @@ const FIELD_LABELS: Record<string, string> = {
   compilation: "コンピレーション",
 };
 
-function errorMessage(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof error.message === "string"
-  ) {
-    return error.message;
-  }
-  return error instanceof Error ? error.message : String(error);
-}
 
 function isStalePlanError(error: unknown): boolean {
   return (

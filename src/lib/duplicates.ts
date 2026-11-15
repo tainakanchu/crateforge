@@ -1,4 +1,5 @@
 import type { DuplicateHit, ItemAction } from "../types";
+import { formatClock } from "./format";
 
 /**
  * 取り込み済み検出 (iTunes の「すでにライブラリにあります」相当) の表示と既定動作。
@@ -62,11 +63,7 @@ export function kindHint(h: DuplicateHit): string | null {
   }
 }
 
-function fmtTime(ms: number | null): string {
-  if (!ms || ms <= 0) return "--:--";
-  const s = Math.round(ms / 1000);
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
-}
+const fmtTime = (ms: number | null) => formatClock(ms, { empty: "--:--", round: "round" });
 
 /** ツールチップ用: 一致した既存曲 (アーティスト / アルバム / 長さ / パス)。 */
 export function hitTooltip(hits: DuplicateHit[]): string {

@@ -21,8 +21,10 @@ import {
 } from "../lib/gridRows";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
+import { formatClock } from "../lib/format";
+import { isTauri } from "../lib/env";
+import { combineQuery } from "../lib/query";
 
-const isTauri = "__TAURI_INTERNALS__" in window;
 
 /**
  * 表示中のアーティスト数 (検索中の見出しの件数用。Toolbar が読む)。
@@ -41,16 +43,8 @@ interface ArtistsViewProps {
   reloadKey: number;
 }
 
-function formatTime(ms: number | null): string {
-  if (!ms) return "";
-  const total = Math.floor(ms / 1000);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  return h > 0
-    ? `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`
-    : `${m}:${s.toString().padStart(2, "0")}`;
-}
+// 現行の表示を保つ (1 時間以上は h:mm:ss・切り捨て・値なしは空)。統一はフェーズ 2 (A2)。
+const formatTime = (ms: number | null) => formatClock(ms, { hours: true, empty: "" });
 
 const ARTIST_SORT_SET = new Set<string>(ARTIST_SORT_FIELDS);
 
@@ -67,7 +61,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   const searchQuery = useStore((s) => s.searchQuery);
   const filterTags = useStore((s) => s.filterTags);
   const combinedQuery = useMemo(
-    () => [searchQuery.trim(), ...filterTags].filter(Boolean).join(" "),
+    () => combineQuery(searchQuery, filterTags),
     [searchQuery, filterTags],
   );
 

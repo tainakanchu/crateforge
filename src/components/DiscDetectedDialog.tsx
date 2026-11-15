@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import type { DiscToc } from "../types";
 import { Icon } from "./Icon";
+import { formatClock } from "../lib/format";
 
 interface DiscDetectedDialogProps {
   disc: DiscToc;
@@ -8,13 +9,7 @@ interface DiscDetectedDialogProps {
   onDismiss: () => void;
 }
 
-function formatTotal(sec: number): string {
-  const total = Math.round(sec);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = String(total % 60).padStart(2, "0");
-  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
-}
+const formatTotal = (sec: number) => formatClock(sec * 1000, { hours: true, round: "round" });
 
 /**
  * CD 挿入を検出したときの確認ダイアログ（issue #219）。

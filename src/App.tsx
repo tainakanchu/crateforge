@@ -48,11 +48,12 @@ import {
 } from "./lib/triage";
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
 import type { ConvertMode, DiscToc, PlaybackState, RepeatMode, SortField, SortOrder, Track } from "./types";
+import { isTauri } from "./lib/env";
+import { combineQuery } from "./lib/query";
 
 // 窓の幅がこれ未満なら右ペインを自動で畳む (最小 1024px でも曲名列が潰れないように)。
 const RAIL_AUTO_HIDE_WIDTH = 1200;
 
-const isTauri = "__TAURI_INTERNALS__" in window;
 
 /// Rust プレイヤー側の「フロントのストアと二重管理になっている値」。
 type RemotePlayerState = { shuffle: boolean; repeat: RepeatMode; volume: number };
@@ -240,9 +241,7 @@ export default function App() {
         const effectiveSort: SortField = manualOrder ? "name" : sortField;
         const effectiveOrder: SortOrder = manualOrder ? "asc" : sortOrder;
         // フリーテキスト検索 + ジャンル等の絞り込みチップを空白区切りで AND 結合。
-        const combinedQuery = [searchQuery.trim(), ...filterTags]
-          .filter(Boolean)
-          .join(" ");
+        const combinedQuery = combineQuery(searchQuery, filterTags);
         let result;
 
         if (viewMode === "history") {
@@ -414,7 +413,7 @@ export default function App() {
         setAlbumsHasMore(false);
         return;
       }
-      const combinedQuery = [searchQuery.trim(), ...filterTags].filter(Boolean).join(" ");
+      const combinedQuery = combineQuery(searchQuery, filterTags);
       const isLibraryScope = viewMode === "library" && !combinedQuery;
       if (!isLibraryScope) return;
       setIsLoading(true);
@@ -1095,7 +1094,7 @@ export default function App() {
 
   const handleLoadMore = useCallback(() => {
     if (displayMode === "albums") {
-      const combinedQuery = [searchQuery.trim(), ...filterTags].filter(Boolean).join(" ");
+      const combinedQuery = combineQuery(searchQuery, filterTags);
       const isLibraryScope = viewMode === "library" && !combinedQuery;
       if (isLibraryScope) {
         loadAlbums(false);

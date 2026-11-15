@@ -5,8 +5,8 @@ import type { PairingRequest } from "../api/server";
 import type { DeviceRole } from "../api/server";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
+import { isTauri } from "../lib/env";
 
-const isTauri = "__TAURI_INTERNALS__" in window;
 
 /**
  * iTunes/AirPlay 風のプッシュ承認ダイアログ。

@@ -8,6 +8,8 @@ import type {
   SyncSource,
 } from "../api/sync";
 import { Icon } from "./Icon";
+import { errorMessage } from "../lib/errors";
+import { formatBytes } from "../lib/format";
 
 interface SyncPushDialogProps {
   source: SyncSource;
@@ -17,19 +19,6 @@ interface SyncPushDialogProps {
 }
 
 type Step = "loading" | "select" | "pushing" | "complete" | "failed";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / 1024 ** power;
-  const digits = value >= 100 || power === 0 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} ${units[power]}`;
-}
 
 export function SyncPushDialog({
   source,

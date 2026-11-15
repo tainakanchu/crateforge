@@ -13,17 +13,10 @@ import type { Track, TrackEdit } from "../types";
 import { formatTagStr } from "../types";
 import { ALL_CAMELOT_KEYS, describeKey, formatKey } from "../lib/keyNotation";
 import { joinGenre, splitGenre } from "../lib/genre";
+import { formatClock } from "../lib/format";
 
-function formatDuration(ms: number | null | undefined): string {
-  if (!ms || ms <= 0) return "—";
-  const totalSec = Math.round(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  return h > 0
-    ? `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`
-    : `${m}:${s.toString().padStart(2, "0")}`;
-}
+const formatDuration = (ms: number | null | undefined) =>
+  formatClock(ms, { hours: true, empty: "—", round: "round" });
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";

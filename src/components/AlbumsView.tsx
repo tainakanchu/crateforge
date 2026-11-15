@@ -27,6 +27,8 @@ import {
 } from "../lib/gridRows";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
+import { formatClock } from "../lib/format";
+import { combineQuery } from "../lib/query";
 
 const SORT_LINE_H = 15; // ソートキー表示行 (.cov-meta .ls) のおよその高さ
 
@@ -72,13 +74,8 @@ interface CoversCtxMenu {
 }
 
 
-function formatTime(ms: number | null): string {
-  if (!ms) return "";
-  const total = Math.floor(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
+// 現行の表示を保つ (m:ss・切り捨て・値なしは空)。統一はフェーズ 2 (A2)。
+const formatTime = (ms: number | null) => formatClock(ms, { empty: "" });
 
 // サーバ集約の AlbumRow を描画用 AlbumVM へ。曲は展開時に遅延取得するので tracks=null。
 function albumRowToVM(r: AlbumRow): AlbumVM {
@@ -320,7 +317,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const [trackCache, setTrackCache] = useState<Map<string, Track[]>>(new Map());
 
   // スコープ判定: 検索なしのライブラリ全体ならサーバ集約 (store.albums) を使う。
-  const combinedQuery = [searchQuery.trim(), ...filterTags].filter(Boolean).join(" ");
+  const combinedQuery = combineQuery(searchQuery, filterTags);
   const isLibraryScope = viewMode === "library" && !combinedQuery;
 
   // ライブラリスコープはサーバ ORDER BY 済み。スコープ外は同じ規則でクライアントソートする。

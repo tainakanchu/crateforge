@@ -14,6 +14,8 @@ import { Icon } from "./Icon";
 import { SyncWritebackDialog } from "./SyncWritebackDialog";
 import { SyncManagementDialog } from "./SyncManagementDialog";
 import { SyncPushDialog } from "./SyncPushDialog";
+import { errorMessage } from "../lib/errors";
+import { formatBytes } from "../lib/format";
 
 interface SyncProvisionDialogProps {
   onClose: () => void;
@@ -39,19 +41,6 @@ const PHASE_LABELS: Record<string, string> = {
   playlists: "プレイリスト作成中",
   complete: "完了",
 };
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / 1024 ** power;
-  const digits = value >= 100 || power === 0 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} ${units[power]}`;
-}
 
 function formatLastSync(value: string | null): string {
   if (!value) return "未同期";

@@ -4,6 +4,7 @@ import { DuplicateActionSelect, DuplicateBadge, countActions } from "./Duplicate
 import { planDefaultDecision, useImportDuplicates } from "../lib/importFlow";
 import { replaceTargetOf, type DuplicateDecision } from "../lib/duplicates";
 import type { ImportPlanItem, ItemAction } from "../types";
+import { formatClock } from "../lib/format";
 
 function baseName(p: string): string {
   return p.split(/[\\/]/).pop() ?? p;
@@ -31,11 +32,7 @@ function formatOf(p: string): string {
   return m ? m[1].toUpperCase() : "?";
 }
 
-function fmtLength(ms: number | null): string {
-  if (!ms || ms <= 0) return "--:--";
-  const s = Math.round(ms / 1000);
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
-}
+const fmtLength = (ms: number | null) => formatClock(ms, { empty: "--:--", round: "round" });
 
 /**
  * ファイル取り込みで「すでにライブラリにある曲」が見つかったときの確認ダイアログ

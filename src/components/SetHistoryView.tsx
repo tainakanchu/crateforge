@@ -23,6 +23,7 @@ import { matchImportItemsAgainstLibrary } from "../lib/setHistoryMatch";
 import type { SetHistoryEntry, SetHistorySource } from "../types/setHistory";
 import type { Track } from "../types";
 import type { GigSnapshot } from "../types/gig";
+import { formatYmd } from "../lib/format";
 
 const SOURCE_LABEL: Record<SetHistorySource, string> = {
   manual: "Manual",
@@ -38,13 +39,11 @@ function fmtDate(iso: string): string {
     if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso;
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
+    const ymd = formatYmd(d);
     const hh = String(d.getHours()).padStart(2, "0");
     const mm = String(d.getMinutes()).padStart(2, "0");
-    if (hh === "00" && mm === "00" && iso.length <= 10) return `${y}-${m}-${day}`;
-    return `${y}-${m}-${day} ${hh}:${mm}`;
+    if (hh === "00" && mm === "00" && iso.length <= 10) return ymd;
+    return `${ymd} ${hh}:${mm}`;
   } catch {
     return iso;
   }
@@ -55,10 +54,7 @@ function performedAtInputValue(iso: string): string {
   try {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
+    return formatYmd(d);
   } catch {
     return iso.slice(0, 10);
   }

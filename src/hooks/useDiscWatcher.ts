@@ -3,8 +3,8 @@ import { detectDisc, discPresent, listCdDrives } from "../api/ripper";
 import type { DiscToc } from "../types";
 import { defaultDevice } from "../lib/disc";
 import { useStore } from "../store/useStore";
+import { isTauri } from "../lib/env";
 
-const isTauri = "__TAURI_INTERNALS__" in window;
 
 const POLL_INTERVAL_MS = 5000;
 // ドライブ一覧 (listCdDrives) のキャッシュ有効期間。USB ドライブの抜き差しに追従する。
