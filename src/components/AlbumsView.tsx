@@ -1,5 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useCallback, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import * as audition from "../lib/audition";
@@ -18,11 +17,17 @@ import { EmptyState } from "./EmptyState";
 import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import { splitGenre } from "../lib/genre";
 import { albumLabel } from "../lib/unknownLabels";
+import {
+  GRID_GAP as GAP,
+  GRID_META_H as META_H,
+  GRID_PAD_X as PAD_X,
+  buildGridRows,
+  gridMetrics,
+  isNearBottom,
+} from "../lib/gridRows";
+import { useElementWidth } from "../hooks/useElementWidth";
+import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
 
-const GAP = 18;
-const PAD_X = 20;
-const MIN_CARD = 150;
-const META_H = 46; // カード下のアルバム名・曲数ラベルのおよその高さ
 const SORT_LINE_H = 15; // ソートキー表示行 (.cov-meta .ls) のおよその高さ
 
 interface AlbumsViewProps {
@@ -272,7 +277,7 @@ function sortKeyLabel(vm: AlbumVM, sortField: SortField): string | null {
   }
 }
 
-type Row = { type: "grid"; albums: AlbumVM[] } | { type: "expand"; album: AlbumVM };
+const albumKeyOf = (vm: AlbumVM) => vm.key;
 
 /// アート前面のブラウズビュー。アルバム単位でまとめ、クリックで曲一覧を展開する。
 /// 入力は2系統:
@@ -302,15 +307,9 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   } = useStore();
   // グローバルトースト通知
   const pushToast = useStore((s) => s.pushToast);
-  const parentRef = useRef<HTMLDivElement | null>(null);
   // グリッドのスクロール要素。初回描画が空状態 (データ到着前) だと要素が無いので、
-  // 付いた時点で幅計測を始められるよう state でも持つ (callback ref)。
-  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
-  const setParentRef = useCallback((el: HTMLDivElement | null) => {
-    parentRef.current = el;
-    setScrollEl(el);
-  }, []);
-  const [width, setWidth] = useState(0);
+  // 付いた時点で幅計測を始められるよう callback ref で持つ (useElementWidth)。
+  const { ref: setParentRef, elRef: parentRef, width } = useElementWidth<HTMLDivElement>();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<CoversCtxMenu | null>(null);
   const [showAddTagDialog, setShowAddTagDialog] = useState(false);
@@ -323,19 +322,6 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   // スコープ判定: 検索なしのライブラリ全体ならサーバ集約 (store.albums) を使う。
   const combinedQuery = [searchQuery.trim(), ...filterTags].filter(Boolean).join(" ");
   const isLibraryScope = viewMode === "library" && !combinedQuery;
-
-  // 依存を [] にすると、空状態でマウント → 後からグリッドが出たケースで計測が始まらず、
-  // width=0 → cols=2 (下限) でタイルが倍幅になっていた。要素の付け替えに追従する。
-  useLayoutEffect(() => {
-    const el = scrollEl;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setWidth(e.contentRect.width);
-    });
-    ro.observe(el);
-    setWidth(el.clientWidth);
-    return () => ro.disconnect();
-  }, [scrollEl]);
 
   // ライブラリスコープはサーバ ORDER BY 済み。スコープ外は同じ規則でクライアントソートする。
   const albums = useMemo<AlbumVM[]>(
@@ -379,55 +365,26 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     [trackCache],
   );
 
-  const inner = Math.max(0, width - PAD_X * 2);
-  const cols = Math.max(2, Math.floor((inner + GAP) / (MIN_CARD + GAP)) || 2);
-  const cardW = Math.max(60, inner > 0 ? (inner - GAP * (cols - 1)) / cols : MIN_CARD);
+  const { cols, cardW } = gridMetrics(width);
 
   // グリッド行 (cols 枚ずつ) に、展開中アルバムの曲一覧行を差し込んだ仮想行リスト。
-  const rows = useMemo<Row[]>(() => {
-    const out: Row[] = [];
-    for (let i = 0; i < albums.length; i += cols) {
-      const chunk = albums.slice(i, i + cols);
-      out.push({ type: "grid", albums: chunk });
-      for (const al of chunk) {
-        if (expanded === al.key) out.push({ type: "expand", album: al });
-      }
-    }
-    return out;
-  }, [albums, cols, expanded]);
+  const rows = useMemo(
+    () => buildGridRows(albums, cols, albumKeyOf, expanded),
+    [albums, cols, expanded],
+  );
 
-  const rowVirtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: (i) =>
-      rows[i].type === "grid" ? cardW + META_H + (showSortLine ? SORT_LINE_H : 0) + GAP : 260,
-    // 行番号ではなくアルバム単位の安定キーにする。index キーだと展開行の挿入/除去で
-    // 後続行の番号がずれ、実測サイズのキャッシュが別の行 (グリッド⇔展開) に付け替わる。
-    getItemKey: (i) => {
-      const r = rows[i];
-      return r.type === "grid" ? `g:${cols}:${r.albums[0]?.key ?? i}` : `x:${r.album.key}`;
-    },
-    overscan: 6,
-    paddingStart: 18,
-    paddingEnd: 18,
+  // 行キーの安定化と再計測の規則は useCardGridVirtualizer 側 (展開の開閉では measure() しない)。
+  const rowVirtualizer = useCardGridVirtualizer({
+    rows,
+    scrollRef: parentRef,
+    cols,
+    gridRowHeight: cardW + META_H + (showSortLine ? SORT_LINE_H : 0) + GAP,
   });
-
-  // カード幅/列数が変わるとグリッド行の高さが変わるので実測キャッシュを捨てる。
-  // measure() はキャッシュを消すだけで再計測しないため、表示中の行はその場で測り直す
-  // (しないと展開行が estimateSize=260 のまま残り、次の行が重なって描画される)。
-  // 展開の開閉では呼ばない: 安定キーなので不要で、呼ぶと上記の重なりが起きる。
-  useLayoutEffect(() => {
-    rowVirtualizer.measure();
-    parentRef.current
-      ?.querySelectorAll<HTMLElement>(":scope > div > [data-index]")
-      .forEach((el) => rowVirtualizer.measureElement(el));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardW, cols, showSortLine]);
 
   const handleScroll = useCallback(() => {
     const el = parentRef.current;
     if (!el || isLoading || !moreAvailable) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 400) onLoadMore();
+    if (isNearBottom(el)) onLoadMore();
   }, [isLoading, moreAvailable, onLoadMore]);
 
   const toggleExpand = useCallback(
@@ -751,7 +708,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                     padding: `0 ${PAD_X}px ${GAP}px`,
                   }}
                 >
-                  {row.albums.map((al) => {
+                  {row.items.map((al) => {
                     const kt = knownTracks(al);
                     const allIn = kt ? kt.length > 0 && kt.every((t) => crateSet.has(t.trackId)) : false;
                     const isCurrent = kt ? kt.some((t) => playback.currentTrackId === t.trackId) : false;
@@ -833,17 +790,17 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 </div>
               ) : (
                 <AlbumExpansion
-                  vm={row.album}
-                  tracks={knownTracks(row.album)}
+                  vm={row.item}
+                  tracks={knownTracks(row.item)}
                   crateSet={crateSet}
                   currentTrackId={playback.currentTrackId}
-                  onPlayTrack={(id) => playAlbum(row.album, id)}
+                  onPlayTrack={(id) => playAlbum(row.item, id)}
                   onAddTrack={addToCrate}
                   onSetRating={(t, stars) => void applyRating([t.trackId], stars)}
                   onTrackContextMenu={(e, t) =>
-                    openTrackMenu(e, knownTracks(row.album) ?? [], row.album.key, t)
+                    openTrackMenu(e, knownTracks(row.item) ?? [], row.item.key, t)
                   }
-                  onClose={() => toggleExpand(row.album)}
+                  onClose={() => toggleExpand(row.item)}
                 />
               )}
             </div>

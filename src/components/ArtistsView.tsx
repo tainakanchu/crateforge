@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { useStore } from "../store/useStore";
 import * as libraryApi from "../api/library";
@@ -12,6 +11,16 @@ import { ARTIST_SORT_FIELDS } from "../types";
 import type { AlbumRow, ArtistRow, SortField, Track } from "../types";
 import { EmptyState } from "./EmptyState";
 import { albumLabel, artistLabel } from "../lib/unknownLabels";
+import {
+  GRID_GAP as GAP,
+  GRID_META_H as META_H,
+  GRID_PAD_X as PAD_X,
+  buildGridRows,
+  gridMetrics,
+  isNearBottom,
+} from "../lib/gridRows";
+import { useElementWidth } from "../hooks/useElementWidth";
+import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -24,10 +33,6 @@ export const useArtistsResult = create<{ count: number | null; hasMore: boolean 
   hasMore: false,
 }));
 
-const GAP = 18;
-const PAD_X = 20;
-const MIN_CARD = 150;
-const META_H = 46; // カード下のアーティスト名・件数ラベルのおよその高さ
 /// サーバ集約を 1 ページずつ取る件数 (App.tsx のトラック取得と同じ粒度)。
 const PAGE_SIZE = 500;
 
@@ -49,7 +54,7 @@ function formatTime(ms: number | null): string {
 
 const ARTIST_SORT_SET = new Set<string>(ARTIST_SORT_FIELDS);
 
-type Row = { type: "grid"; artists: ArtistRow[] } | { type: "expand"; artist: ArtistRow };
+const artistKeyOf = (a: ArtistRow) => a.name;
 
 /// アーティスト単位のブラウズビュー (viewMode = "artists")。
 /// 集約はサーバ (`get_artists`) が行い、全曲をメモリに載せない。カードは仮想化し、
@@ -66,15 +71,9 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
     [searchQuery, filterTags],
   );
 
-  const parentRef = useRef<HTMLDivElement | null>(null);
   // グリッドのスクロール要素。初回描画は空状態 (データ到着前) で要素が無いので、
-  // 付いた時点で幅計測を始められるよう state でも持つ (callback ref)。AlbumsView と同じ。
-  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
-  const setParentRef = useCallback((el: HTMLDivElement | null) => {
-    parentRef.current = el;
-    setScrollEl(el);
-  }, []);
-  const [width, setWidth] = useState(0);
+  // 付いた時点で幅計測を始められるよう callback ref で持つ (useElementWidth)。AlbumsView と同じ。
+  const { ref: setParentRef, elRef: parentRef, width } = useElementWidth<HTMLDivElement>();
   const [artists, setArtists] = useState<ArtistRow[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -107,19 +106,6 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   // ツールバーのソートはアーティスト粒度の語彙だけ通す (他は name に倒す)。
   // store 側でもビュー切替時に正規化しているので、ここは保険。
   const artistSort: SortField = ARTIST_SORT_SET.has(sortField) ? sortField : "name";
-
-  // 依存を [] にすると、空状態でマウント → 後からグリッドが出たケースで計測が始まらず、
-  // width=0 → cols=2 (下限) でカードが横長に引き伸ばされていた。要素の付け替えに追従する。
-  useLayoutEffect(() => {
-    const el = scrollEl;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setWidth(e.contentRect.width);
-    });
-    ro.observe(el);
-    setWidth(el.clientWidth);
-    return () => ro.disconnect();
-  }, [scrollEl]);
 
   const load = useCallback(
     async (reset: boolean) => {
@@ -216,41 +202,28 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
     [ensureAlbums, ensureTracks],
   );
 
-  const inner = Math.max(0, width - PAD_X * 2);
-  const cols = Math.max(2, Math.floor((inner + GAP) / (MIN_CARD + GAP)) || 2);
-  const cardW = Math.max(60, inner > 0 ? (inner - GAP * (cols - 1)) / cols : MIN_CARD);
+  const { cols, cardW } = gridMetrics(width);
 
   // グリッド行 (cols 枚ずつ) に、展開中アーティストの行を差し込んだ仮想行リスト。
-  const rows = useMemo<Row[]>(() => {
-    const out: Row[] = [];
-    for (let i = 0; i < artists.length; i += cols) {
-      const chunk = artists.slice(i, i + cols);
-      out.push({ type: "grid", artists: chunk });
-      for (const a of chunk) {
-        if (expanded === a.name) out.push({ type: "expand", artist: a });
-      }
-    }
-    return out;
-  }, [artists, cols, expanded]);
+  const rows = useMemo(
+    () => buildGridRows(artists, cols, artistKeyOf, expanded),
+    [artists, cols, expanded],
+  );
 
-  const rowVirtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: (i) => (rows[i].type === "grid" ? cardW + META_H + GAP : 260),
-    overscan: 6,
-    paddingStart: 18,
-    paddingEnd: 18,
+  // 行キーの安定化と再計測の規則は useCardGridVirtualizer 側。展開の開閉・アルバムの開閉・
+  // 遅延取得の完了では measure() しない (実測キャッシュが消えて展開行が見積もり高さに戻り、
+  // 次の行が重なる)。高さの変化は各行の ResizeObserver (measureElement) が拾う。
+  const rowVirtualizer = useCardGridVirtualizer({
+    rows,
+    scrollRef: parentRef,
+    cols,
+    gridRowHeight: cardW + META_H + GAP,
   });
-
-  useEffect(() => {
-    rowVirtualizer.measure();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardW, cols, expanded, openAlbumKey, cacheEpoch, rows.length]);
 
   const handleScroll = useCallback(() => {
     const el = parentRef.current;
     if (!el || isLoading || !hasMore) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 400) void load(false);
+    if (isNearBottom(el)) void load(false);
   }, [isLoading, hasMore, load]);
 
   const toggleArtist = useCallback(
@@ -367,7 +340,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                     padding: `0 ${PAD_X}px ${GAP}px`,
                   }}
                 >
-                  {row.artists.map((a) => {
+                  {row.items.map((a) => {
                     const kt = knownArtistTracks(a);
                     const allIn = kt ? kt.length > 0 && kt.every((t) => crateSet.has(t.trackId)) : false;
                     const isCurrent = kt
@@ -445,23 +418,23 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                 </div>
               ) : (
                 <ArtistExpansion
-                  artist={row.artist}
-                  albums={albumCache.current.get(row.artist.name) ?? null}
+                  artist={row.item}
+                  albums={albumCache.current.get(row.item.name) ?? null}
                   openAlbumKey={openAlbumKey}
                   tracksOf={(key) => trackCache.current.get(key) ?? null}
                   crateSet={crateSet}
                   currentTrackId={playback.currentTrackId}
                   onToggleAlbum={toggleAlbum}
-                  onPlayArtist={() => artistTracks(row.artist).then((ts) => playTracks(ts))}
-                  onQueueArtist={() => artistTracks(row.artist).then(enqueueTracks)}
-                  onCrateArtist={() => artistTracks(row.artist).then(crateTracks)}
+                  onPlayArtist={() => artistTracks(row.item).then((ts) => playTracks(ts))}
+                  onQueueArtist={() => artistTracks(row.item).then(enqueueTracks)}
+                  onCrateArtist={() => artistTracks(row.item).then(crateTracks)}
                   onPlayAlbum={(al, startId) =>
                     ensureTracks(al.albumKey).then((ts) => playTracks(ts, startId))
                   }
                   onQueueAlbum={(al) => ensureTracks(al.albumKey).then(enqueueTracks)}
                   onCrateAlbum={(al) => ensureTracks(al.albumKey).then(crateTracks)}
                   onCrateTrack={addToCrate}
-                  onClose={() => toggleArtist(row.artist)}
+                  onClose={() => toggleArtist(row.item)}
                 />
               )}
             </div>

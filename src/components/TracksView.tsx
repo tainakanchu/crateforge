@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useCallback, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
 import * as playbackApi from "../api/playback";
 import * as audition from "../lib/audition";
@@ -16,8 +15,16 @@ import type { ConvertMode, Track, Playlist } from "../types";
 import { EmptyState } from "./EmptyState";
 import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import { splitGenre } from "../lib/genre";
-
-type Row = { tracks: Track[] };
+import {
+  GRID_GAP as GAP,
+  GRID_META_H as META_H,
+  GRID_PAD_X as PAD_X,
+  buildGridRows,
+  gridMetrics,
+  isNearBottom,
+} from "../lib/gridRows";
+import { useElementWidth } from "../hooks/useElementWidth";
+import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
 
 interface CtxMenu {
   x: number;
@@ -32,10 +39,8 @@ interface TracksViewProps {
   onConvert: (trackIds: number[], mode?: ConvertMode) => void;
 }
 
-const GAP = 18;
-const PAD_X = 20;
-const MIN_CARD = 150;
-const META_H = 46;
+// 行キーはグリッド行の通し番号で決まるので項目キーは使われない (展開行が無い)。
+const trackKey = (t: Track) => String(t.id);
 
 export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert }: TracksViewProps) {
   const {
@@ -55,55 +60,26 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const pushToast = useStore((s) => s.pushToast);
   const analysisByTrack = useStore((s) => s.analysisByTrack);
 
-  const parentRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
+  const { ref: setParentRef, elRef: parentRef, width } = useElementWidth<HTMLDivElement>();
   const [contextMenu, setContextMenu] = useState<CtxMenu | null>(null);
   const [showAddTagDialog, setShowAddTagDialog] = useState(false);
   // 削除確認モーダルの対象曲（null で非表示）。
   const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
   const [newTag, setNewTag] = useState("");
 
-  useLayoutEffect(() => {
-    const el = parentRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setWidth(e.contentRect.width);
-    });
-    ro.observe(el);
-    setWidth(el.clientWidth);
-    return () => ro.disconnect();
-  }, []);
-
-  const inner = Math.max(0, width - PAD_X * 2);
-  const cols = Math.max(2, Math.floor((inner + GAP) / (MIN_CARD + GAP)) || 2);
-  const cardW = Math.max(60, inner > 0 ? (inner - GAP * (cols - 1)) / cols : MIN_CARD);
-
-  const rows = useMemo<Row[]>(() => {
-    const out: Row[] = [];
-    for (let i = 0; i < tracks.length; i += cols) {
-      out.push({ tracks: tracks.slice(i, i + cols) });
-    }
-    return out;
-  }, [tracks, cols]);
-
-  const rowVirtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => cardW + META_H + GAP,
-    overscan: 6,
-    paddingStart: 18,
-    paddingEnd: 18,
+  const { cols, cardW } = gridMetrics(width);
+  const rows = useMemo(() => buildGridRows(tracks, cols, trackKey), [tracks, cols]);
+  const rowVirtualizer = useCardGridVirtualizer({
+    rows,
+    scrollRef: parentRef,
+    cols,
+    gridRowHeight: cardW + META_H + GAP,
   });
-
-  useEffect(() => {
-    rowVirtualizer.measure();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardW, cols, rows.length]);
 
   const handleScroll = useCallback(() => {
     const el = parentRef.current;
     if (!el || isLoading || !hasMore) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 400) onLoadMore();
+    if (isNearBottom(el)) onLoadMore();
   }, [isLoading, hasMore, onLoadMore]);
 
   const playTrack = useCallback(async (t: Track) => {
@@ -288,10 +264,11 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const items = rowVirtualizer.getVirtualItems();
 
   return (
-    <div className="cb-grid-wrap" ref={parentRef} onScroll={handleScroll} onClick={closeMenu}>
+    <div className="cb-grid-wrap" ref={setParentRef} onScroll={handleScroll} onClick={closeMenu}>
       <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
         {items.map((vRow) => {
           const row = rows[vRow.index];
+          if (row.type !== "grid") return null;
           return (
             <div
               key={vRow.key}
@@ -313,7 +290,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                   padding: `0 ${PAD_X}px ${GAP}px`,
                 }}
               >
-                {row.tracks.map((t, j) => {
+                {row.items.map((t, j) => {
                   const inCrate = crateSet.has(t.trackId);
                   const isCurrent = playback.currentTrackId === t.trackId;
                   return (
