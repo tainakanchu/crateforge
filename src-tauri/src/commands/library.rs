@@ -221,12 +221,16 @@ pub fn count_tracks(app: AppHandle, query: Option<String>) -> Result<i64, String
 
 /// ライブラリ / 検索の一覧の track_id を表示順で全件返す (曲の情報は返さない)。
 /// 全選択・範囲選択・「ここから再生」が読み込んでいない行をまたいで動くためのもの。
+///
+/// `only` を渡すと、そのうち一覧に入っている ID だけを表示順で返す。選択中の曲が一覧に
+/// 残っているかの確認と、選択を表示順に並べるのに使う (数曲のために全件を送らない)。
 #[tauri::command(async)]
 pub fn get_track_ids(
     app: AppHandle,
     query: Option<String>,
     sort_field: Option<String>,
     sort_order: Option<String>,
+    only: Option<Vec<i64>>,
 ) -> Result<Vec<i64>, String> {
     let db = open_db(&app)?;
     db.get_track_ids(
@@ -234,7 +238,17 @@ pub fn get_track_ids(
         sort_field.as_deref(),
         sort_order.as_deref(),
     )
+    .map(|ids| only_ids(ids, only))
     .map_err(|e| e.to_string())
+}
+
+/// `ids` (表示順) のうち `only` に含まれるものだけを、表示順のまま返す。`only` が無ければ全部。
+pub(crate) fn only_ids(ids: Vec<i64>, only: Option<Vec<i64>>) -> Vec<i64> {
+    let Some(only) = only else {
+        return ids;
+    };
+    let wanted: HashSet<i64> = only.into_iter().collect();
+    ids.into_iter().filter(|id| wanted.contains(id)).collect()
 }
 
 /// track_id 列を入力順のまま Track へ解決する。見つからない ID はスキップ。
@@ -355,7 +369,7 @@ pub fn set_track_rating(app: AppHandle, track_id: i64, rating: i64) -> Result<()
 }
 
 /// 複数曲に同じ rating を付ける (全選択でも 1 回の呼び出し・1 トランザクション)。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_tracks_rating(app: AppHandle, track_ids: Vec<i64>, rating: i64) -> Result<(), String> {
     let db = open_db(&app)?;
     db.set_rating_many(&track_ids, rating)

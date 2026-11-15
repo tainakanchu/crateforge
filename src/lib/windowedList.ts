@@ -317,6 +317,8 @@ export class WindowLoader<T> {
   private readonly retryTimers = new Map<number, ReturnType<typeof setTimeout>>();
   /** 再試行しても取れなかったページ。 */
   private readonly failed = new Set<number>();
+  /** ページの結果 (届いた・再試行しても取れなかった・一覧が切り替わった) を待っている呼び出し。 */
+  private readonly waiters = new Map<number, (() => void)[]>();
 
   constructor(opts: WindowLoaderOptions<T>) {
     this.opts = opts;
@@ -455,10 +457,23 @@ export class WindowLoader<T> {
       this.failed.delete(page);
       this.cancelRetry(page);
       this.request([page]);
-      await this.inflight.get(page);
+      // 最初の失敗では返さず、自動の再試行の結果 (届いた / あきらめた) まで待つ。
+      await new Promise<void>((resolve) => {
+        const list = this.waiters.get(page) ?? [];
+        list.push(resolve);
+        this.waiters.set(page, list);
+      });
       if (generation !== this.generation) return undefined;
     }
     return this.cache.itemAt(index);
+  }
+
+  /** page の結果が出た (または待つ意味が無くなった) ことを、待っている呼び出しへ知らせる。 */
+  private settle(page: number): void {
+    const list = this.waiters.get(page);
+    if (!list) return;
+    this.waiters.delete(page);
+    for (const resolve of list) resolve();
   }
 
   /** 取りに行くべきページか (新しい内容が無く、取得中・再試行待ち・失敗済みでもない)。 */
@@ -490,6 +505,7 @@ export class WindowLoader<T> {
     this.retryTimers.clear();
     this.attempts.clear();
     this.failed.clear();
+    for (const page of [...this.waiters.keys()]) this.settle(page);
   }
 
   private request(pages: readonly number[]): void {
@@ -504,6 +520,7 @@ export class WindowLoader<T> {
           // 件数より先にページが届くことがある (取り直しで件数が増えたとき) ので、ここでは
           // いまの件数で切り詰めない。範囲外は get が件数で隠し、件数が減れば sync が捨てる。
           this.cache.set(page, items, this.wantedPages());
+          this.settle(page);
           this.opts.onChange();
           // 表示中のページが届いたら、その先読みを続ける。
           this.schedule();
@@ -527,6 +544,7 @@ export class WindowLoader<T> {
           }
           // 再試行してもだめ: 失敗として覚え、表示側に案内を出させる。
           this.failed.add(page);
+          this.settle(page);
           this.opts.onChange();
           if (this.errorReported) return;
           this.errorReported = true;

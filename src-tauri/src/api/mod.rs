@@ -45,9 +45,12 @@ pub struct ApiState {
 impl ApiState {
     /// このリクエストのために DB を開く。失敗は 500 にマップする。
     fn db(&self) -> Result<crate::db::Database, ApiError> {
-        crate::db::Database::open(&self.app_data_dir).map_err(|e| {
-            ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        })
+        // 外部クライアントの問い合わせで、デスクトップの一覧の ID 列キャッシュを追い出さない。
+        crate::db::Database::open(&self.app_data_dir)
+            .map(crate::db::Database::bypass_list_cache)
+            .map_err(|e| {
+                ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            })
     }
 
     /// 書き込み後に WebView へ「ライブラリが変わった」と通知する。

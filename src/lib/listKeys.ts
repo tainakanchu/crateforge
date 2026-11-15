@@ -3,39 +3,31 @@
 
 /** キーイベントが起きた状況 (DOM から読み取った結果)。 */
 export interface ListKeyContext {
-  /** イベントの対象要素のタグ名 (大文字)。 */
+  /** イベントの対象要素 (フォーカスのある要素) のタグ名 (大文字)。 */
   targetTag: string | null;
   /** 対象が contentEditable か。 */
   targetEditable: boolean;
   /** モーダルが開いている。 */
   modalOpen: boolean;
-  /** フォーカスがどこにも無い (document.body) か、一覧の中にある。 */
-  focusOnListOrNowhere: boolean;
-  /** ポインタが一覧の上にある。 */
-  pointerOverList: boolean;
-}
-
-/** 一覧のスクロール位置を大きく動かすキー (ブラウザ標準ではスクロールに使う)。 */
-function isPagingKey(key: string): boolean {
-  return key === "PageUp" || key === "PageDown" || key === "Home" || key === "End";
 }
 
 /**
- * このキーイベントを曲の一覧の操作として扱ってよいか。
+ * このキーイベントを曲の一覧の操作として扱ってよいか。どのキーも同じ規則:
  *
- * - モーダルが開いているとき、入力欄・セレクト・編集中の要素にフォーカスがあるときは扱わない
- *   (文字入力や選択肢の移動を奪わない)。
- * - PageUp / PageDown / Home / End は、ほかの場所ではその場所のスクロールに使うキーなので、
- *   「フォーカスがどこにも無いか一覧の中にある」か「ポインタが一覧の上にある」ときだけ扱う
- *   (サイドバーや右ペインを操作しているときのスクロールを奪わない)。
- * - それ以外のキー (↑ ↓ / Ctrl+A / Enter / Delete など) は従来どおり、上の除外に当たらなければ扱う。
+ * - モーダルが開いているときは扱わない。
+ * - 入力欄・セレクト・編集中の要素にフォーカスがあるときは扱わない
+ *   (文字入力・カーソル移動・選択肢の移動を奪わない)。
+ * - それ以外 (フォーカスが無い、一覧の中、サイドバーやツールバーのボタンなど) では扱う。
+ *
+ * ↑ ↓ と PageUp / PageDown / Home / End で条件を変えない。ボタンにフォーカスが残っているだけで
+ * 「↓ は効くのに PageDown は効かない」とならないようにするため。
  */
-export function isListKeyEvent(key: string, ctx: ListKeyContext): boolean {
+export function isListKeyEvent(ctx: ListKeyContext): boolean {
   if (ctx.modalOpen) return false;
   if (ctx.targetEditable) return false;
-  if (ctx.targetTag === "INPUT" || ctx.targetTag === "TEXTAREA" || ctx.targetTag === "SELECT") {
-    return false;
-  }
-  if (isPagingKey(key)) return ctx.focusOnListOrNowhere || ctx.pointerOverList;
-  return true;
+  return !(
+    ctx.targetTag === "INPUT" ||
+    ctx.targetTag === "TEXTAREA" ||
+    ctx.targetTag === "SELECT"
+  );
 }

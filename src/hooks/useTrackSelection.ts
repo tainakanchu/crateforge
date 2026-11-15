@@ -224,22 +224,21 @@ export function useTrackSelection({ list, run, scrollToIndex, visibleRows }: Tra
     focusRef.current = null;
   }, [list.key]);
 
-  // 一覧を取り直したら (ライブラリの変更)、一覧から消えた曲を選択から外す。残っている曲の選択は保つ。
-  const firstRevision = useRef(true);
+  // 一覧から消えた曲を選択から外す (残っている曲の選択は保つ)。一覧を取り直したとき
+  // (ライブラリの変更) と、この一覧を開き直したとき (別の表示にいるあいだに曲が消えたかもしれない)。
+  // 確かめるのは選択中の ID だけで、全曲の ID 列は取らない。
   useEffect(() => {
-    if (firstRevision.current) {
-      firstRevision.current = false;
-      return;
-    }
-    if (useStore.getState().selectedTrackIds.size === 0) return;
+    const before = useStore.getState().selectedTrackIds;
+    if (before.size === 0) return;
     const l = listRef.current;
     const key = l.key;
-    l.getIds().then(
-      (ids) => {
+    l.idsInList([...before]).then(
+      (inList) => {
         if (listRef.current.key !== key) return;
-        const inList = new Set(ids);
+        const stillThere = new Set(inList);
+        // 待っているあいだに選択が変わっていても、消えた曲だけを外す。
         const selected = useStore.getState().selectedTrackIds;
-        const kept = new Set([...selected].filter((id) => inList.has(id)));
+        const kept = new Set([...selected].filter((id) => !before.has(id) || stillThere.has(id)));
         if (kept.size !== selected.size) setSelectedTrackIds(kept);
       },
       () => {},

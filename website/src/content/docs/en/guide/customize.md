@@ -163,8 +163,8 @@ Press `?` (or the `?` button in the toolbar) to show the shortcut list overlay.
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Move the selection up / down |
-| `PageUp` / `PageDown` | Move the selection up / down by one screen (when focus or the pointer is on the track list) |
-| `Home` / `End` | Select the first / last track of the list (same condition) |
+| `PageUp` / `PageDown` | Move the selection up / down by one screen |
+| `Home` / `End` | Select the first / last track of the list |
 | `Shift` + `↑` / `↓` / `PageUp` / `PageDown` / `Home` / `End` | Extend the selection |
 | `Ctrl` + `A` | Select all (every track in the list) |
 | `Ctrl` + `I` | Edit the selected track ("情報を見る / 編集" — Get Info / Edit) |

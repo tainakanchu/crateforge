@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import type { RefObject } from "react";
 import { useStore } from "../store/useStore";
 import { isCursorKey } from "../lib/windowedList";
 import { isListKeyEvent } from "../lib/listKeys";
@@ -7,8 +6,6 @@ import type { TrackSelection } from "./useTrackSelection";
 import type { PlaylistReorder } from "./usePlaylistReorder";
 
 interface TrackListKeysOptions {
-  /** 一覧のスクロール要素 (フォーカス・ポインタが一覧にあるかの判定に使う)。 */
-  rootRef: RefObject<HTMLElement | null>;
   /** 一覧の件数 (0 のあいだは何もしない)。 */
   count: number;
   selection: TrackSelection;
@@ -27,46 +24,21 @@ interface TrackListKeysOptions {
  * - Ctrl・Cmd+A: 全選択 / Enter: カーソルの行から再生
  * - Delete: 削除確認 / アプリケーションキー・Shift+F10: コンテキストメニュー
  *
- * どのイベントを受けるかは lib/listKeys.ts の `isListKeyEvent` (入力欄・セレクト・モーダルを除く。
- * PageUp / PageDown / Home / End は、フォーカスかポインタが一覧にあるときだけ)。
+ * どのイベントを受けるかは lib/listKeys.ts の `isListKeyEvent` (入力欄・セレクト・編集中の要素・
+ * モーダルを除く。どのキーも同じ条件)。
  */
 export function useTrackListKeys(options: TrackListKeysOptions) {
   const latest = useRef(options);
   latest.current = options;
 
-  // ポインタが一覧の上にあるか。
-  const pointerOverRef = useRef(false);
-  const { rootRef } = options;
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    const enter = () => {
-      pointerOverRef.current = true;
-    };
-    const leave = () => {
-      pointerOverRef.current = false;
-    };
-    root.addEventListener("pointerenter", enter);
-    root.addEventListener("pointerleave", leave);
-    return () => {
-      root.removeEventListener("pointerenter", enter);
-      root.removeEventListener("pointerleave", leave);
-    };
-  }, [rootRef]);
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const { rootRef, count, selection, reorder, onDelete, onMenuKey } = latest.current;
+      const { count, selection, reorder, onDelete, onMenuKey } = latest.current;
       const target = e.target as HTMLElement | null;
-      const active = document.activeElement;
-      const root = rootRef.current;
-      const handled = isListKeyEvent(e.key, {
+      const handled = isListKeyEvent({
         targetTag: target?.tagName ?? null,
         targetEditable: target?.isContentEditable === true,
         modalOpen: document.querySelector(".modal-overlay") !== null,
-        focusOnListOrNowhere:
-          active === null || active === document.body || (root !== null && root.contains(active)),
-        pointerOverList: pointerOverRef.current,
       });
       if (!handled) return;
 

@@ -113,15 +113,6 @@ pub fn backup_library(app: AppHandle, dest: Option<String>) -> Result<String, St
 /// だけでは反映されない箇所がある。安全側に倒して常に再起動を促す)。
 #[tauri::command]
 pub fn restore_library(app: AppHandle, src: String) -> Result<bool, String> {
-    // DB ファイルを差し替えるので、終わったら (成功・失敗によらず) 一覧の ID 列キャッシュを捨てる。
-    // ファイルの差し替えはコミットを経ないので、commit hook では拾えない。
-    struct InvalidateListCache;
-    impl Drop for InvalidateListCache {
-        fn drop(&mut self) {
-            crate::db::list_cache::invalidate();
-        }
-    }
-    let _invalidate = InvalidateListCache;
     let src_path = PathBuf::from(&src);
     if !src_path.is_file() {
         return Err("バックアップファイルが見つかりません".to_string());
@@ -143,6 +134,19 @@ pub fn restore_library(app: AppHandle, src: String) -> Result<bool, String> {
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     std::fs::create_dir_all(&app_dir).map_err(|e| e.to_string())?;
     let live_path = app_dir.join("library.db");
+
+    // DB ファイルを差し替えるので、一覧の ID 列キャッシュを捨て、監視用コネクションを閉じる
+    // (開いたままだと Windows でファイルを置き換えられない)。ファイルの差し替えはコミットを
+    // 経ないので、終わったあと (成功・失敗によらず) もう一度捨てる。
+    struct ReleaseListCache(String);
+    impl Drop for ReleaseListCache {
+        fn drop(&mut self) {
+            crate::db::list_cache::release(&self.0);
+        }
+    }
+    let scope = live_path.to_string_lossy().to_string();
+    crate::db::list_cache::release(&scope);
+    let _release = ReleaseListCache(scope);
 
     // 2. 生きている DB への接続は各コマンドが都度 open/close する設計で、常時
     //    保持されたコネクションは無い。念のため WAL を本体ファイルへ畳んでから

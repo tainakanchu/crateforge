@@ -88,15 +88,34 @@ pub fn remove_tracks(
     Ok(db.remove_tracks_from_playlist(playlist_id, track_ids)?)
 }
 
-/// 曲目を `ordered_track_ids` の順に並べ替える (GUI のドラッグ並べ替え)。
-/// プレイリスト・曲の存在は確かめない ([`replace_tracks`] との違い)。
-pub fn reorder_tracks(
+/// [`reorder_tracks_from`] の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReorderOutcome {
+    /// 並べ替えた。
+    Reordered,
+    /// 並べ替えを始めたあとにプレイリストの曲順が変わっていたので、何も書かなかった。
+    Changed,
+}
+
+/// GUI の手動並べ替え (行のドラッグ / Alt+↑↓)。プレイリスト・曲の存在は確かめない
+/// ([`replace_tracks`] との違い)。`base` は並べ替えを始めたときの全曲順で、いまの DB の曲順と同じときだけ
+/// `ordered_track_ids` で全置換する (照合と書き込みは 1 トランザクション)。違っていれば
+/// [`ReorderOutcome::Changed`] を返し、何も書かない (あとから入った変更を上書きしない)。
+pub fn reorder_tracks_from(
     db: &Database,
     playlist_id: i64,
+    base: &[i64],
     ordered_track_ids: &[i64],
-) -> Result<(), PlaylistEditError> {
+) -> Result<ReorderOutcome, PlaylistEditError> {
     ensure_tracks_editable(db, playlist_id)?;
-    Ok(db.reorder_playlist_tracks(playlist_id, ordered_track_ids)?)
+    Ok(
+        if db.reorder_playlist_tracks_if_unchanged(playlist_id, base, ordered_track_ids)? {
+            ReorderOutcome::Reordered
+        } else {
+            ReorderOutcome::Changed
+        },
+    )
 }
 
 /// 曲目を入力順どおりに全置換する (`PUT /api/playlists/:id/tracks`)。
@@ -186,7 +205,7 @@ mod tests {
             add_tracks(&db, smart, &[1]).map(|_| ()),
             remove_track(&db, smart, 1),
             remove_tracks(&db, smart, &[1]).map(|_| ()),
-            reorder_tracks(&db, smart, &[2, 1]),
+            reorder_tracks_from(&db, smart, &[], &[2, 1]).map(|_| ()),
             replace_tracks(&db, smart, &[2, 1]),
         ];
         for r in rejected {
@@ -208,8 +227,30 @@ mod tests {
         assert_eq!(remove_tracks(&db, pl, &[2, 99]).unwrap(), 1);
         assert_eq!(member_ids(&db, pl), vec![3, 1]);
 
-        reorder_tracks(&db, pl, &[1, 3]).unwrap();
+        assert_eq!(
+            reorder_tracks_from(&db, pl, &[3, 1], &[1, 3]).unwrap(),
+            ReorderOutcome::Reordered
+        );
         assert_eq!(member_ids(&db, pl), vec![1, 3]);
+
+        // 照合つき: 始めたときの曲順 (base) と DB が同じなら書く。違えば書かない。
+        let before = db.get_static_playlist_track_ids(pl).unwrap();
+        assert_eq!(
+            reorder_tracks_from(&db, pl, &before, &[3, 1]).unwrap(),
+            ReorderOutcome::Reordered
+        );
+        assert_eq!(db.get_static_playlist_track_ids(pl).unwrap(), vec![3, 1]);
+        // 並べ替えの途中で、別の場所から曲が足された。
+        db.add_tracks_to_playlist(pl, &[2]).unwrap();
+        assert_eq!(
+            reorder_tracks_from(&db, pl, &[3, 1], &[1, 3]).unwrap(),
+            ReorderOutcome::Changed
+        );
+        assert_eq!(
+            db.get_static_playlist_track_ids(pl).unwrap(),
+            vec![3, 1, 2],
+            "足された曲を消さない"
+        );
     }
 
     /// 一時再生曲 (負の ID) は追加しない。GUI・API のどちらから来ても同じ。

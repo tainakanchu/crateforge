@@ -1377,7 +1377,12 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<std::sync::Arc<Vec<i64>>> {
-        let list = format!("library\u{1f}{query}\u{1f}{genre_tags:?}\u{1f}{sort_field:?}\u{1f}{sort_order:?}");
+        // 検索の字体ゆれ吸収レベルは app_state にある (その書き込みではキャッシュを捨てない) ので、
+        // 一覧のキーに含める。
+        let list = format!(
+            "library\u{1f}{query}\u{1f}{genre_tags:?}\u{1f}{sort_field:?}\u{1f}{sort_order:?}\u{1f}{}",
+            self.search_fold_level().as_str()
+        );
         self.cached_list_ids(&list, || {
             let order_by = build_order_by(sort_field, sort_order, "", LIBRARY_DEFAULT_ORDER);
             let (where_sql, bind) = self.search_where(query, genre_tags);
@@ -1477,19 +1482,23 @@ impl Database {
     /// 見つからない ID はスキップする (Up Next・再生中の曲・選択中の曲など、フロントの
     /// 一覧が持っていない曲を解決するためのもの)。
     ///
-    /// 1 件ずつ `prepare` し直すと ID 数だけ SQL のパースが走るため、
-    /// `prepare_cached` で 1 つの statement を使い回す (結果は `get_track_by_track_id`
-    /// を ID ごとに呼ぶのと同一)。
+    /// ID 列を JSON 配列 1 個で渡し、1 回の問い合わせで引く (`json_each` の `key` = 配列の位置で
+    /// 並べるので入力順のまま。同じ ID が複数回あればその回数ぶん返す)。ID ごとに問い合わせると、
+    /// 一覧の 1 ページ (200 件) や API の全件取得で、件数ぶんの往復になる。
     pub fn get_tracks_by_ids(&self, track_ids: &[i64]) -> Result<Vec<Track>> {
-        let mut stmt = self.conn.prepare_cached(TRACK_BY_TRACK_ID_SQL)?;
-        let mut out = Vec::with_capacity(track_ids.len());
-        for &tid in track_ids {
-            let mut rows = stmt.query_map(params![tid], row_to_track)?;
-            if let Some(row) = rows.next() {
-                out.push(row?);
-            }
+        if track_ids.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(out)
+        let json = serde_json::to_string(track_ids)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let sql = format!(
+            "SELECT {TRACK_COLUMNS_T}
+             FROM json_each(?1) AS j INNER JOIN tracks t ON t.track_id = j.value
+             ORDER BY j.key"
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(params![json], row_to_track)?;
+        rows.collect()
     }
 
     /// 指定した persistent_id 群を、入力順を保って Track へ解決する。

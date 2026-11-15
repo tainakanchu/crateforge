@@ -499,7 +499,6 @@ export function TrackTable({ onTracksChanged, onEditTrack, onConvert }: TrackTab
   }, [list, selection, selectedTrackIds, run]);
 
   useTrackListKeys({
-    rootRef: parentRef,
     count: list.count,
     selection,
     reorder,

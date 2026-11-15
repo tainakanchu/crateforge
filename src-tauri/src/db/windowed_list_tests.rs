@@ -415,12 +415,14 @@ fn windowed_list_ties_are_ordered_deterministically() {
     );
 }
 
-/// ID 列のキャッシュ: 読み取りだけなら覚えた列を使い回し、書き込みがあれば捨てる。
+/// ID 列のキャッシュ: 読み取りと、一覧に関係しない書き込み (再生位置の保存など) では覚えた列を
+/// 使い回し、一覧に関係する書き込みがあれば捨てる。
 /// (SQLite の commit hook は読み取りでは呼ばれず、書き込みトランザクションのコミットで呼ばれる。)
 #[test]
 fn windowed_list_id_cache_survives_reads_and_drops_on_write() {
     use std::cell::Cell;
     let db = db();
+    db.settle_list_cache();
     let computes = Cell::new(0);
     let probe = || {
         db.cached_list_ids("probe", || {
@@ -429,29 +431,29 @@ fn windowed_list_id_cache_survives_reads_and_drops_on_write() {
         })
         .unwrap()
     };
-    // ほかのテスト (別スレッド) の書き込みでも無効になるので、成立するまで何度か試す。
-    let mut reused = false;
-    for _ in 0..50 {
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        computes.set(0);
-        probe();
-        // 読み取り (件数・ページ・ID 列・スマートプレイリストの評価) ではキャッシュを捨てない。
-        db.count_tracks(Some("house")).unwrap();
-        db.get_tracks(PAGE, 0, Some("name"), Some("asc")).unwrap();
-        db.get_playlist_track_ids_filtered(30, None, None, None).unwrap();
-        probe();
-        if computes.get() == 1 {
-            reused = true;
-            break;
-        }
-    }
-    assert!(reused, "読み取りだけなのにキャッシュが使い回されなかった");
+    probe();
+    // 読み取り (件数・ページ・ID 列・スマートプレイリストの評価) ではキャッシュを捨てない。
+    db.count_tracks(Some("house")).unwrap();
+    db.get_tracks(PAGE, 0, Some("name"), Some("asc")).unwrap();
+    db.get_playlist_track_ids_filtered(30, None, None, None).unwrap();
+    probe();
+    assert_eq!(computes.get(), 1, "読み取りだけならキャッシュを使い回す");
 
-    // 書き込みのあとは、一覧が新しい内容になる (古い ID 列を返さない)。
+    // 一覧に関係しないテーブルへの書き込み (設定・再生キュー・再生履歴) でも捨てない。
+    db.set_state("playback_position", "12345").unwrap();
+    db.conn
+        .execute("INSERT INTO recent_tracks (track_id, played_at) VALUES (1, 'now')", [])
+        .unwrap();
+    probe();
+    assert_eq!(computes.get(), 1, "一覧に関係しない書き込みでは捨てない");
+
+    // 一覧に関係する書き込みのあとは、一覧が新しい内容になる (古い ID 列を返さない)。
     let before = db.get_track_ids(None, Some("name"), Some("asc")).unwrap();
     db.conn
         .execute("UPDATE tracks SET name = 'Aaa' WHERE track_id = 14", [])
         .unwrap();
+    probe();
+    assert_eq!(computes.get(), 2, "一覧に関係する書き込みで捨てる");
     let after = db.get_track_ids(None, Some("name"), Some("asc")).unwrap();
     assert_ne!(before, after);
     assert_eq!(after[0], 14);
@@ -461,6 +463,116 @@ fn windowed_list_id_cache_survives_reads_and_drops_on_write() {
         .execute("UPDATE tracks SET genre = 'Ambient' WHERE track_id = 1", [])
         .unwrap();
     assert_eq!(db.count_playlist_tracks_filtered(30, None).unwrap(), 7);
+    // WHERE なしの DELETE は行ごとの通知が出ない。何を触ったか分からないので捨てる。
+    db.settle_list_cache();
+    probe();
+    let n = computes.get();
+    db.conn.execute("DELETE FROM playlist_tracks", []).unwrap();
+    probe();
+    assert_eq!(computes.get(), n + 1);
+    // 検索の字体ゆれ吸収レベルは app_state にあるが、一覧のキーに含めているので結果が変わる。
+    db.settle_list_cache();
+    db.get_track_ids(Some("house"), None, None).unwrap();
+    db.set_state("search_fold_level", "off").unwrap();
+    assert_eq!(
+        db.get_track_ids(Some("house"), None, None).unwrap().len() as i64,
+        db.count_tracks(Some("house")).unwrap()
+    );
+}
+
+/// ファイルの DB: キャッシュはコネクションをまたいで共有し、ほかのコネクション・別プロセスの
+/// 書き込みは data_version (監視用コネクション) で検知する。
+#[test]
+fn windowed_list_id_cache_across_connections_uses_data_version() {
+    use std::cell::Cell;
+    let dir = tempfile::tempdir().unwrap();
+    let a = Database::open(dir.path()).unwrap();
+    let b = Database::open(dir.path()).unwrap();
+    a.settle_list_cache();
+    let computes = Cell::new(0);
+    let probe = |db: &Database| {
+        db.cached_list_ids("probe", || {
+            computes.set(computes.get() + 1);
+            Ok(vec![1])
+        })
+        .unwrap()
+    };
+    probe(&a);
+    probe(&b);
+    assert_eq!(computes.get(), 1, "別のコネクション (別のコマンド) からも同じ列を使う");
+
+    // 別のコネクションが一覧に関係しない書き込みをしても使い回す (再生位置の保存)。
+    b.set_state("playback_position", "1").unwrap();
+    probe(&a);
+    assert_eq!(computes.get(), 1);
+
+    // 別のコネクションが曲を書き換えたら捨てる。
+    b.conn
+        .execute("INSERT INTO tracks (track_id, name, file_exists) VALUES (1, 'x', 1)", [])
+        .unwrap();
+    probe(&a);
+    assert_eq!(computes.get(), 2);
+
+    // このプロセスの hook を通らない書き込み (別プロセス相当) も、data_version で気づく。
+    a.settle_list_cache();
+    probe(&a);
+    let n = computes.get();
+    let outside = rusqlite::Connection::open(dir.path().join("library.db")).unwrap();
+    outside
+        .execute("UPDATE tracks SET name = 'y' WHERE track_id = 1", [])
+        .unwrap();
+    probe(&a);
+    assert_eq!(computes.get(), n + 1, "別プロセスの書き込みで捨てる");
+
+    // API 用のコネクションはキャッシュを使わず、覚えもしない。
+    let api = Database::open(dir.path()).unwrap().bypass_list_cache();
+    let n = computes.get();
+    probe(&api);
+    probe(&api);
+    assert_eq!(computes.get(), n + 2);
+}
+
+/// スマートプレイリストは、件数・並び順の違うページ・ID 列・アルバムの範囲で評価を 1 回だけ行う。
+#[test]
+fn windowed_list_smart_playlist_is_evaluated_once_for_count_and_pages() {
+    let db = db();
+    db.settle_list_cache();
+    // 評価 (smart-matched) を覚えさせ、その後の呼び出しが評価し直さないことを、
+    // 「評価結果を差し替えても、覚えた列から答える」ことで確かめる。
+    assert_eq!(db.count_playlist_tracks_filtered(30, None).unwrap(), 8);
+    // commit hook を通さずに条件を変えることはできないので、キャッシュのキーで確かめる:
+    // 評価のエントリが、並び順つきのページの計算で再利用される。
+    let by_name: Vec<i64> = db
+        .get_playlist_track_ids_filtered(30, None, Some("name"), Some("asc"))
+        .unwrap();
+    let by_bpm: Vec<i64> = db
+        .get_playlist_track_ids_filtered(30, None, Some("bpm"), Some("desc"))
+        .unwrap();
+    let mut a = by_name.clone();
+    let mut b = by_bpm.clone();
+    a.sort_unstable();
+    b.sort_unstable();
+    assert_eq!(a, b, "並び順が違っても同じ曲");
+    assert_eq!(by_name.len(), 8);
+    // 評価結果のエントリを直接見る: もう一度求めても compute は呼ばれない。
+    let again = db
+        .cached_list_ids("smart-matched\u{1f}30", || panic!("評価し直している"))
+        .unwrap();
+    assert_eq!(again.len(), 8);
+}
+
+/// get_tracks_by_ids は入力順のまま返し、重複はその回数ぶん、存在しない ID は飛ばす。
+#[test]
+fn get_tracks_by_ids_keeps_input_order_in_one_query() {
+    let db = db();
+    let got: Vec<i64> = db
+        .get_tracks_by_ids(&[9, 3, 999, 3, 14, 1])
+        .unwrap()
+        .into_iter()
+        .map(|t| t.track_id)
+        .collect();
+    assert_eq!(got, vec![9, 3, 3, 14, 1]);
+    assert!(db.get_tracks_by_ids(&[]).unwrap().is_empty());
 }
 
 /// 複数曲のレーティングは 1 回で全部変わる (全選択でも 1 トランザクション)。値は 0〜100 に収める。
@@ -533,11 +645,11 @@ fn windowed_list_bench_deep_offset_page() {
         });
         // 書き込みの直後 (ID 列を並べ替え直す = 一覧を開いた最初の 1 回)。
         time(&format!("ID 先行・最初の 1 回 (並べ替え) sort={field:?} offset={offset}"), &|| {
-            super::list_cache::invalidate();
+            db.drop_list_cache();
             db.get_tracks(200, offset, field, Some("asc")).unwrap().len()
         });
         // 2 ページ目以降 (覚えた ID 列から切り出して行を引くだけ)。
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        db.settle_list_cache();
         db.get_tracks(200, 0, field, Some("asc")).unwrap();
         time(&format!("ID 先行・2 ページ目以降       sort={field:?} offset={offset}"), &|| {
             db.get_tracks(200, offset, field, Some("asc")).unwrap().len()

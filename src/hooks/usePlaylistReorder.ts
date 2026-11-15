@@ -20,7 +20,7 @@ interface PlaylistReorderOptions {
 
 interface Pending {
   playlistId: number;
-  /** 操作を始めたときの全曲順 (書き込みの直前に、DB がこの並びのままか確かめる)。 */
+  /** 操作を始めたときの全曲順 (書き込むとき、DB がこの並びのままかをバックエンドが確かめる)。 */
   base: readonly number[];
   /** いま画面に見せている並び (これを書き込む)。 */
   order: number[];
@@ -36,8 +36,11 @@ const sameOrder = (a: readonly number[], b: readonly number[]) =>
  * - **すぐ見せる**: 操作のたびに、画面の並びを先に入れ替える (取得済みの行を並べ替えるだけ)。
  * - **まとめて書く**: 連続した操作は最後の操作から少し待って 1 回で書き込む。
  *   `reorder_playlist_tracks` は渡した ID 列で全置換するので、必ず全曲順を渡す。
- * - **上書きしない**: 書き込みの直前に DB の全曲順を取り直し、操作を始めたときと違っていたら
- *   (別の場所で曲が足された・外されたなど) 書き込まずに取り直す。
+ * - **上書きしない**: 操作を始めたときの全曲順を一緒に渡し、DB の曲順がそれと違っていたら
+ *   (別の場所で曲が足された・外されたなど) バックエンドは書き込まない。照合と書き込みは
+ *   1 トランザクション。
+ * - 書き込みが終わるまで、一覧のページは見せている並びから作り、ライブラリの変更による取り直しも
+ *   保留する (`TrackList.applyOrder` / `clearOrder`)。
  *
  * 手動順の一覧は検索・並べ替えなしなので、表示中の行番号がそのまま全曲順の位置になる。
  */
@@ -67,11 +70,11 @@ export function usePlaylistReorder({
     clearTimeout(p.timer);
     writesRef.current = writesRef.current
       .then(async () => {
-        const current = await playlistsApi.getPlaylistTrackIds(p.playlistId);
-        if (!sameOrder(current, p.base)) {
+        // 照合 (DB の曲順が操作を始めたときと同じか) と書き込みは、バックエンドの 1 トランザクション。
+        const outcome = await playlistsApi.reorderPlaylistTracks(p.playlistId, p.base, p.order);
+        if (outcome === "changed") {
           throw new Error("並べ替えの途中でプレイリストの曲が変わりました。もう一度やり直してください");
         }
-        await playlistsApi.reorderPlaylistTracks(p.playlistId, p.order);
       })
       .catch((err) => {
         useStore.getState().pushToast("error", `並べ替えに失敗しました: ${err}`);
@@ -79,7 +82,9 @@ export function usePlaylistReorder({
       .then(() => {
         // 続きの操作がたまっていれば、その書き込みのあとでまとめて取り直す
         // (途中で取り直すと、まだ書いていない並びが画面から消える)。
-        if (!pendingRef.current) onWrittenRef.current();
+        if (pendingRef.current) return;
+        listRef.current.clearOrder();
+        onWrittenRef.current();
       });
   }, []);
 
@@ -159,6 +164,11 @@ export function usePlaylistReorder({
 
   // 別のプレイリストへ移る・並べ替えできない表示に変わる・画面を離れるときは、待たずに書き込む。
   useEffect(() => flush, [flush, enabled, playlistId]);
+  // アプリを閉じる・リロードするときも、たまっている並びを書き込みに出す。
+  useEffect(() => {
+    window.addEventListener("beforeunload", flush);
+    return () => window.removeEventListener("beforeunload", flush);
+  }, [flush]);
 
   // === 行のドラッグ ===
   // ドラッグ中の状態は ref で持ち、再描画は「挿入線の位置が変わったとき」だけに絞る。

@@ -614,3 +614,36 @@ test("PageCache.remap: 新しい並びで埋められないページは捨てる
   assert.equal(c.itemAt(1), "a");
   assert.equal(c.has(1), false);
 });
+
+test("WindowLoader.ensure: 最初の失敗では返さず、自動の再試行の結果まで待つ", async () => {
+  const { loader, src } = makeLoader(1000);
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  const p = loader.ensure(505);
+  let settled = false;
+  void p.then(() => {
+    settled = true;
+  });
+  src.calls[0].reject(new Error("locked"));
+  await flush();
+  assert.equal(settled, false, "再試行を待っている");
+  await wait(20);
+  const retry = src.calls.filter((c) => c.offset === 500);
+  assert.equal(retry.length, 2);
+  retry[1].resolve();
+  assert.equal(await p, "505");
+});
+
+test("WindowLoader.ensure: 再試行しても取れなければ undefined。一覧が切り替わっても待ち続けない", async () => {
+  const { loader, src } = makeLoader(1000);
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  const p = loader.ensure(505);
+  for (let i = 0; i < 3; i++) {
+    src.calls.filter((c) => c.offset === 500)[i].reject(new Error("boom"));
+    await wait(25);
+  }
+  assert.equal(await p, undefined);
+
+  const q = loader.ensure(700);
+  loader.sync({ key: "b", revision: 0, count: 1000 });
+  assert.equal(await q, undefined);
+});

@@ -34,9 +34,37 @@ export function fetchTrackCount(q: ServerTrackListQuery): Promise<number> {
     : libraryApi.countTracks(q.query);
 }
 
-/** 一覧の trackId を表示順で全件。 */
-export function fetchTrackIds(q: ServerTrackListQuery): Promise<number[]> {
+/**
+ * 一覧の trackId を表示順で返す。only を渡すと、そのうち一覧に入っている ID だけ
+ * (選択中の曲が一覧に残っているかの確認・選択を表示順に並べる用。数曲のために全件を取らない)。
+ */
+export function fetchTrackIds(
+  q: ServerTrackListQuery,
+  only?: readonly number[],
+): Promise<number[]> {
   return q.kind === "playlist"
-    ? playlistsApi.getPlaylistTrackIds(q.playlistId, q.query, q.sortField, q.sortOrder)
-    : libraryApi.getTrackIds(q.query, q.sortField, q.sortOrder);
+    ? playlistsApi.getPlaylistTrackIds(q.playlistId, q.query, q.sortField, q.sortOrder, only)
+    : libraryApi.getTrackIds(q.query, q.sortField, q.sortOrder, only);
+}
+
+/**
+ * trackId 列を一覧 q の表示順に並べ、曲に解決する (一覧に無い ID は末尾)。
+ * 一覧を持たない場所 (ショートカット) から、選択中の曲を右クリックメニューと同じ順で扱うためのもの。
+ * memoryTracks はメモリ上の一覧 (Inbox / 最近) の曲。
+ */
+export async function tracksInListOrder(
+  q: TrackListQuery,
+  memoryTracks: readonly Track[],
+  ids: readonly number[],
+): Promise<Track[]> {
+  let inList: number[];
+  if (isServerTrackList(q)) {
+    inList = ids.length > 1 ? await fetchTrackIds(q, ids) : [...ids];
+  } else {
+    const wanted = new Set(ids);
+    inList = memoryTracks.map((t) => t.trackId).filter((id) => wanted.delete(id));
+  }
+  const rest = new Set(ids);
+  for (const id of inList) rest.delete(id);
+  return libraryApi.getTracksByIds([...inList, ...rest]);
 }

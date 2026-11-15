@@ -31,6 +31,7 @@ import { useStore, markSetWorkspaceHydrationDone } from "./store/useStore";
 import { useTrackListQuery } from "./hooks/useTrackList";
 import { useCurrentTrack } from "./hooks/useCurrentTrack";
 import { selectionTooLargeMessage } from "./lib/selectionLimit";
+import { tracksInListOrder } from "./api/trackList";
 import { useDiscWatcher } from "./hooks/useDiscWatcher";
 import { useUsbExportEvents } from "./hooks/useUsbExportEvents";
 import * as libraryApi from "./api/library";
@@ -915,16 +916,15 @@ export default function App() {
       }
       if (cmd && e.key.toLowerCase() === "i") {
         e.preventDefault();
-        // 選択中の曲は一覧に読み込まれているとは限らないので、ID で取り直す
-        // (曲の情報を読み込むので、選択が大きすぎるときは行わない)。
+        // 選択中の曲は一覧に読み込まれているとは限らないので、ID で取り直す (一覧の表示順)。
+        // 曲の情報を読み込むので、選択が大きすぎるときは行わない。
         if (selectedTrackIds.size === 0) return;
         const tooLarge = selectionTooLargeMessage(selectedTrackIds.size, "編集");
         if (tooLarge) {
           pushToast("error", tooLarge);
           return;
         }
-        libraryApi
-          .getTracksByIds(Array.from(selectedTrackIds))
+        tracksInListOrder(listQuery, tracks, Array.from(selectedTrackIds))
           .then((sel) => {
             if (sel.length > 0) setEditorTracks(sel);
           })
@@ -969,14 +969,14 @@ export default function App() {
       if (cmd && e.shiftKey && e.key.toLowerCase() === "c") {
         e.preventDefault();
         if (selectedTrackIds.size === 0) return;
-        // 選択中の曲は一覧に読み込まれているとは限らないので、ID で取り直す (選択した順)。
+        // 選択中の曲は一覧に読み込まれているとは限らないので、ID で取り直す
+        // (右クリックの「Crate に追加」と同じ、一覧の表示順)。
         const tooLarge = selectionTooLargeMessage(selectedTrackIds.size, " Crate に追加");
         if (tooLarge) {
           pushToast("error", tooLarge);
           return;
         }
-        libraryApi
-          .getTracksByIds(Array.from(selectedTrackIds))
+        tracksInListOrder(listQuery, tracks, Array.from(selectedTrackIds))
           .then((selected) => addTracksToCrate(selected))
           .catch((err) => pushToast("error", `曲を取得できませんでした: ${err}`));
         setRightRailVisible(true);
@@ -1137,6 +1137,7 @@ export default function App() {
     playback.currentTrackId,
     selectedTrackIds,
     tracks,
+    listQuery,
     shuffle,
     repeat,
     volume,

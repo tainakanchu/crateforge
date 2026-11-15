@@ -147,12 +147,14 @@ export async function countTracks(query?: string): Promise<number> {
 }
 
 /// ライブラリ / 検索の一覧の trackId を表示順で全件取得する (曲の情報は返さない)。
+/// only を渡すと、そのうち一覧に入っている ID だけを表示順で返す (選択中の曲の確認・並べ直し用)。
 export async function getTrackIds(
   query?: string,
   sortField?: SortField,
   sortOrder?: SortOrder,
+  only?: readonly number[],
 ): Promise<number[]> {
-  return invoke("get_track_ids", { query: query || null, sortField, sortOrder });
+  return invoke("get_track_ids", { query: query || null, sortField, sortOrder, only: only ?? null });
 }
 
 export async function getLibraryStats(): Promise<LibraryStats> {

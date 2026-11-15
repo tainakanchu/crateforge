@@ -344,7 +344,8 @@ impl Database {
     ) -> Result<std::sync::Arc<Vec<i64>>> {
         let query = query.map(str::trim).filter(|q| !q.is_empty());
         let list = format!(
-            "playlist\u{1f}{playlist_id}\u{1f}{query:?}\u{1f}{sort_field:?}\u{1f}{sort_order:?}"
+            "playlist\u{1f}{playlist_id}\u{1f}{query:?}\u{1f}{sort_field:?}\u{1f}{sort_order:?}\u{1f}{}",
+            self.search_fold_level().as_str()
         );
         self.cached_list_ids(&list, || {
             let order_by = super::tracks::build_order_by(
@@ -774,6 +775,7 @@ impl Database {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn reorder_playlist_tracks(
         &self,
         playlist_id: i64,
@@ -792,6 +794,49 @@ impl Database {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// [`Self::reorder_playlist_tracks`] の照合つき版 (GUI の手動並べ替え用)。
+    ///
+    /// 同じトランザクションの中で、いまの曲順が `base` (並べ替えを始めたときの曲順) と同じかを
+    /// 確かめてから全置換する。違っていたら (別の場所で曲が足された・外された・並べ替えられた)
+    /// 何も書かずに false を返す。照合と書き込みのあいだに他の書き込みが入らないよう、
+    /// 最初から書き込みロックを取る (BEGIN IMMEDIATE)。
+    pub fn reorder_playlist_tracks_if_unchanged(
+        &self,
+        playlist_id: i64,
+        base: &[i64],
+        ordered_track_ids: &[i64],
+    ) -> Result<bool> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let current: Vec<i64> = {
+            let mut stmt = tx.prepare(
+                "SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1
+                 ORDER BY sort_index ASC, rowid ASC",
+            )?;
+            let rows = stmt.query_map(params![playlist_id], |r| r.get(0))?;
+            rows.collect::<Result<_>>()?
+        };
+        if current != base {
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+            params![playlist_id],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES (?1, ?2, ?3)",
+            )?;
+            for (i, tid) in ordered_track_ids.iter().enumerate() {
+                stmt.execute(params![playlist_id, tid, i as i64])?;
+            }
+        }
+        tx.commit()?;
+        Ok(true)
     }
 
     /// プレイリストの所属曲を入力順どおりに全置換する。
@@ -924,8 +969,9 @@ impl Database {
     /// プレイリスト内検索)。criteria が無ければ None (呼び出し側は静的メンバーへ落とす)。
     ///
     /// ページ取得・件数・ID 列・アルバムの範囲はすべてここを通す (`docs/library-list/design.md` §3)。
-    /// 評価はライブラリ全体を走査するので、結果は書き込みがあるまでプロセス内で使い回す
-    /// (件数 + 各ページ + 範囲指定のたびに評価し直さない)。
+    /// 高くつくのは評価 (ライブラリ全体の走査) なので、**評価結果** ([`Self::smart_playlist_matched_ids`])
+    /// を覚えておき、並び順・検索語ごとの列はそこから作る。件数 (並び順なし) とページ (並び順あり) で
+    /// キーが違っても、評価は 1 回で済む。
     fn smart_playlist_ordered_ids(
         &self,
         playlist_id: i64,
@@ -933,45 +979,72 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Option<std::sync::Arc<Vec<i64>>>> {
-        // スマートかどうかの判定は安いので毎回行う (通常プレイリストを None で返すため)。
-        if self.get_smart_criteria(playlist_id)?.is_none() {
+        let Some(matched) = self.smart_playlist_matched_ids(playlist_id)? else {
             return Ok(None);
-        }
+        };
         let query = query.map(str::trim).filter(|q| !q.is_empty());
+        // "playlistOrder" は criteria の並びのまま。
+        let sort_field = sort_field.filter(|f| *f != "playlistOrder");
+        if query.is_none() && sort_field.is_none() {
+            return Ok(Some(matched));
+        }
         let list = format!(
-            "smart\u{1f}{playlist_id}\u{1f}{query:?}\u{1f}{sort_field:?}\u{1f}{sort_order:?}"
+            "smart\u{1f}{playlist_id}\u{1f}{query:?}\u{1f}{sort_field:?}\u{1f}{sort_order:?}\u{1f}{}",
+            self.search_fold_level().as_str()
         );
-        let mut is_smart = true;
-        let ids = self.cached_list_ids(&list, || {
-            let mut resolver = self.playlist_resolver()?;
-            let Some(mut matched) = resolver.smart_tracks(playlist_id)? else {
-                // criteria はあるがフォルダ: スマートとして評価しない。
-                is_smart = false;
-                return Ok(Vec::new());
-            };
-
-            // UI のソート指定があれば表示順だけ並べ替える ("playlistOrder" は criteria の並びのまま)。
-            if let Some(field) = sort_field.filter(|f| *f != "playlistOrder") {
-                let analysis = resolver.analysis()?;
+        self.cached_list_ids(&list, || {
+            let mut ids: Vec<i64> = matched.to_vec();
+            // UI のソート指定があれば表示順だけ並べ替える (どの曲が選ばれるかは変えない)。
+            if let Some(field) = sort_field {
+                let mut tracks = self.get_tracks_by_ids(&ids)?;
+                let analysis: crate::smart::AnalysisMap = self
+                    .get_all_analysis()?
+                    .into_iter()
+                    .map(|a| (a.track_id, a))
+                    .collect();
                 crate::smart::sort_tracks(
-                    &mut matched,
+                    &mut tracks,
                     field,
                     matches!(sort_order, Some("desc")),
-                    Some(analysis),
+                    Some(&analysis),
                 );
+                ids = tracks.into_iter().map(|t| t.track_id).collect();
             }
-
             // プレイリスト内検索: 同じ DSL の結果 (track_id 集合) と積を取る。
             if let Some(q) = query {
                 let hits = self.search_track_ids(q)?;
-                matched.retain(|t| hits.contains(&t.track_id));
+                ids.retain(|id| hits.contains(id));
             }
-            Ok(matched.into_iter().map(|t| t.track_id).collect())
+            Ok(ids)
+        })
+        .map(Some)
+    }
+
+    /// スマートプレイリストの評価結果 (criteria の並び + limit を適用した track_id 列)。
+    /// スマートでなければ None。結果はライブラリが書き換わるまで使い回す。
+    fn smart_playlist_matched_ids(
+        &self,
+        playlist_id: i64,
+    ) -> Result<Option<std::sync::Arc<Vec<i64>>>> {
+        // スマートかどうかの判定は安いので毎回行う (通常プレイリスト・フォルダを None で返すため)。
+        if self.get_smart_criteria(playlist_id)?.is_none() {
+            return Ok(None);
+        }
+        let mut is_smart = true;
+        let ids = self.cached_list_ids(&format!("smart-matched\u{1f}{playlist_id}"), || {
+            let mut resolver = self.playlist_resolver()?;
+            if !resolver.is_smart(playlist_id) {
+                // criteria はあるがフォルダ: スマートとして評価しない。
+                is_smart = false;
+                return Ok(Vec::new());
+            }
+            resolver.track_ids(playlist_id)
         })?;
         if !is_smart {
             return Ok(None);
         }
-        // キャッシュから返ったときは compute を通らないので、フォルダかどうかを確かめ直す。
+        // キャッシュから返ったときは compute を通らないので、フォルダかどうかを確かめ直す
+        // (空のときだけ。フォルダは上で空の列を覚えている)。
         if ids.is_empty() && !self.playlist_resolver()?.is_smart(playlist_id) {
             return Ok(None);
         }
