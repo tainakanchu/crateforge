@@ -32,6 +32,7 @@ import { albumScopeOf } from "../lib/trackListQuery";
 import { useTrackListQuery } from "../hooks/useTrackList";
 import { PlaceholderCard } from "./PlaceholderCard";
 import { formatTotalTime, formatTrackTime } from "../lib/format";
+import { isTauri } from "../lib/env";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
 import { AddGenreTagDialog } from "./AddGenreTagDialog";
@@ -359,7 +360,8 @@ export function AlbumsView({ reloadKey, onTracksChanged, onEditTrack, onConvert 
   const serverCount = useListCount(
     listKey,
     reloadKey,
-    scope ? () => libraryApi.countAlbums(scope) : null,
+    // ブラウザでの開発表示 (Tauri なし) は空の一覧として扱う。
+    scope ? () => (isTauri ? libraryApi.countAlbums(scope) : Promise.resolve(0)) : null,
     reportLoadError,
   );
   const count = memoryAlbums ? memoryAlbums.length : serverCount;
@@ -1008,7 +1010,7 @@ function AlbumExpansion({
   onClose,
 }: AlbumExpansionProps) {
   const analysisByTrack = useStore((s) => s.analysisByTrack);
-  // ライブラリスコープでは曲を遅延取得中の場合がある。
+  // サーバ集約のアルバムは曲を遅延取得中の場合がある。
   if (!tracks) {
     return (
       <div style={{ padding: `0 ${PAD_X}px ${GAP}px` }}>

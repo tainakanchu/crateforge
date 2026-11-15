@@ -24,6 +24,7 @@ import { useWindowedList } from "../hooks/useWindowedList";
 import { useListCount } from "../hooks/useListCount";
 import { PlaceholderCard } from "./PlaceholderCard";
 import { formatTotalTime, formatTrackTime } from "../lib/format";
+import { isTauri } from "../lib/env";
 import { combineQuery } from "../lib/query";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
@@ -94,7 +95,8 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   const count = useListCount(
     listKey,
     reloadKey,
-    () => libraryApi.countArtists(combinedQuery || undefined),
+    // ブラウザでの開発表示 (Tauri なし) は空の一覧として扱う。
+    () => (isTauri ? libraryApi.countArtists(combinedQuery || undefined) : Promise.resolve(0)),
     reportLoadError,
   );
   const fetchPage = useCallback(

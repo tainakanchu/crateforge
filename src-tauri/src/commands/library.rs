@@ -238,7 +238,8 @@ pub fn get_track_ids(
 }
 
 /// track_id 列を入力順のまま Track へ解決する。見つからない ID はスキップ。
-/// Up Next がフロントのロード済みページ (500件) を超える曲も表示できるようにするためのもの。
+/// フロントの一覧は見えている範囲の曲しか持たないので、一覧の外の曲 (Up Next・再生中の曲・
+/// 選択中の曲) はこのコマンドで解決する。
 #[tauri::command(async)]
 pub fn get_tracks_by_ids(app: AppHandle, track_ids: Vec<i64>) -> Result<Vec<Track>, String> {
     // ライブラリ外の一時再生曲 (負の ID) はレジストリから引く。PlayerBar / Up Next が

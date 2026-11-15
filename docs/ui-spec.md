@@ -634,9 +634,17 @@ src/
 │   ├── ColumnPicker.tsx          # モーダル: カラム選択
 │   ├── ripper/RipDialog.tsx      # モーダル: CD リッピング
 │   └── rules/RulesPanel.tsx      # モーダル: YAML ルール
+├── hooks/
+│   ├── useWindowedList.ts        # 一覧のウィンドウ取得 (全ビュー共通。3.9)
+│   ├── useTrackList.ts           # 表示中の曲の一覧 (TrackTable / TracksView)
+│   └── useCardGridVirtualizer.ts # カードグリッドの行仮想化
+├── lib/
+│   ├── windowedList.ts           # ページ計算・LRU キャッシュ・取得の制御 (純粋な部分)
+│   ├── trackListQuery.ts         # ストアの状態 → どの一覧か
+│   └── gridRows.ts               # グリッドの行の並び (件数 + 展開行)
 ├── store/useStore.ts             # Zustand store (永続化付き)
 ├── types/                        # TS 型定義 (track / playlist / playback / ...)
-└── api/                          # Tauri command の薄ラッパ
+└── api/                          # Tauri command の薄ラッパ (trackList.ts: 一覧のページ / 件数 / ID 列)
 ```
 
 ---

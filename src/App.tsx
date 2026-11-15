@@ -232,13 +232,13 @@ export default function App() {
 
   // メモリ上の一覧 (Inbox / 最近再生した曲) を組み立ててストアの tracks に置く。
   const memorySource = listQuery.kind === "memory" ? listQuery.source : null;
-  const loadTracksGenRef = useRef(0);
+  const memoryLoadGenRef = useRef(0);
   const loadMemoryTracks = useCallback(async () => {
     // 一覧系コマンドはメインスレッド外で並行実行されるため (#213)、応答順が
     // 呼び出し順と一致しない。古い呼び出しの結果で新しい表示を上書きしないよう、
     // 最新の呼び出し以外の結果は捨てる。
-    const gen = ++loadTracksGenRef.current;
-    const stale = () => gen !== loadTracksGenRef.current;
+    const gen = ++memoryLoadGenRef.current;
+    const stale = () => gen !== memoryLoadGenRef.current;
 
     if (!isTauri || memorySource === null) {
       // ライブラリ / プレイリスト / 検索 / Set History は tracks を使わない。
