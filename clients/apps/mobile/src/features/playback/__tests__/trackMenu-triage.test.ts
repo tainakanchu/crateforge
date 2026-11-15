@@ -5,6 +5,7 @@ import { ApiClient, ApiError, type Track, useConnection } from "@crateforge/core
 
 import { useActionSheet } from "@/components/ActionSheet";
 import { useToast } from "@/components/Toast";
+import { queryClient } from "@/lib/queryClient";
 import { usePendingEdits } from "@/store/pendingEdits";
 import { showRateMenu, showTrackMenu } from "../trackMenu";
 
@@ -88,6 +89,61 @@ describe("長押しメニュー: 評価", () => {
       baseRating: 40,
       trackName: "Song A",
     });
+  });
+});
+
+describe("長押しメニュー: 評価後の一覧の取り直し", () => {
+  // プレイヤーの星（useSetRating）と同じキーを、アプリの QueryClient で無効化する。
+  const RATING_KEYS = [["tracks"], ["artist-tracks"], ["album-tracks"], ["playlist-tracks"], ["similar"]];
+  let spy: jest.SpyInstance;
+
+  beforeEach(() => {
+    spy = jest.spyOn(queryClient, "invalidateQueries");
+  });
+  afterEach(() => {
+    spy.mockRestore();
+    queryClient.clear();
+  });
+
+  const invalidatedKeys = () => spy.mock.calls.map(([filters]) => filters?.queryKey);
+
+  it("保存に成功したら rating を含む一覧を無効化する", async () => {
+    connect();
+    showRateMenu(makeTrack());
+    await press("★★★½");
+    expect(invalidatedKeys()).toEqual(RATING_KEYS);
+  });
+
+  it("キャッシュ済みの一覧が stale になる（開いている画面は取り直される）", async () => {
+    connect();
+    queryClient.setQueryData(["album-tracks", "Album"], [makeTrack()]);
+    queryClient.setQueryData(["albums"], []);
+    showRateMenu(makeTrack());
+    await press("★★★★★");
+    expect(queryClient.getQueryState(["album-tracks", "Album"])?.isInvalidated).toBe(true);
+    // rating を含まない一覧は触らない。
+    expect(queryClient.getQueryState(["albums"])?.isInvalidated).toBe(false);
+  });
+
+  it("保存に失敗しても無効化する（useSetRating の onSettled と同じ）", async () => {
+    connect({ setRating: jest.fn(async () => Promise.reject(new ApiError(500, "HTTP 500"))) });
+    showRateMenu(makeTrack());
+    await press("★★★★★");
+    expect(invalidatedKeys()).toEqual(RATING_KEYS);
+  });
+
+  it("オフラインでキューに積んだときも無効化する（useSetRating と同じ）", async () => {
+    showRateMenu(makeTrack());
+    await press("★★★★");
+    expect(invalidatedKeys()).toEqual(RATING_KEYS);
+  });
+
+  it("タグ付けでは無効化しない", async () => {
+    connect();
+    showTrackMenu(makeTrack());
+    await press("タグを付ける…");
+    await press("mood:chill");
+    expect(spy).not.toHaveBeenCalled();
   });
 });
 

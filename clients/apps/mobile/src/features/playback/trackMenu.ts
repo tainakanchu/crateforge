@@ -23,7 +23,14 @@ import { showToast } from "@/components/Toast";
 import { albumHref, artistHref } from "@/lib/albumHref";
 
 import { COMMON_TRIAGE_TAGS } from "@/features/triage/commonTags";
-import { queueReviewLater, writeRating, writeReviewLater, writeTag } from "@/features/triage/edits";
+import {
+  invalidateRatingQueries,
+  queueReviewLater,
+  writeRating,
+  writeReviewLater,
+  writeTag,
+} from "@/features/triage/edits";
+import { queryClient } from "@/lib/queryClient";
 import { startRadio } from "./radio";
 import { playTrackOnDesktop } from "./desktopPlay";
 
@@ -124,6 +131,10 @@ async function applyRating(track: Track, rating: number): Promise<void> {
     }
   } catch (e) {
     showToast(`評価を保存できませんでした（${errorMessage(e)}）`, "error");
+  } finally {
+    // プレイヤーの星（useSetRating）と同じく、成功/失敗どちらでも rating を含む一覧を取り直す
+    // （しないと、開いている一覧の星や評価順が古いまま残る）。
+    void invalidateRatingQueries(queryClient);
   }
 }
 
