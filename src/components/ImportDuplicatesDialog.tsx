@@ -4,7 +4,7 @@ import { DuplicateActionSelect, DuplicateBadge, countActions } from "./Duplicate
 import { planDefaultDecision, useImportDuplicates } from "../lib/importFlow";
 import { replaceTargetOf, type DuplicateDecision } from "../lib/duplicates";
 import type { ImportPlanItem, ItemAction } from "../types";
-import { formatDuplicateLength } from "../lib/format";
+import { formatTrackTime } from "../lib/format";
 
 function baseName(p: string): string {
   return p.split(/[\\/]/).pop() ?? p;
@@ -163,7 +163,7 @@ function ImportDuplicatesDialogBody({
                     </span>
                     <span className="dup-row-meta">
                       <span className="dup-row-fmt">{formatOf(i.path)}</span>
-                      <span className="rip-track-len">{formatDuplicateLength(i.durationMs)}</span>
+                      <span className="rip-track-len">{formatTrackTime(i.durationMs)}</span>
                       {/* 長いパスは先頭側を省略し、ファイル名は必ず見せる (D6)。 */}
                       <span className="dup-row-path">
                         <span className="dup-row-dir">{"\u200e" + dirName(i.path) + "\u200e"}</span>

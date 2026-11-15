@@ -10,6 +10,16 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+### 日本語
+
+#### デスクトップ
+- **仕様変更: 時間表示の書式を全画面でそろえた**: 合計時間（アルバム、アーティスト表示のアルバム、Crate、次に再生、Gig Readiness のセット、CD）は 1 時間以上になると `1:15:03` の形式で表示する（これまでアルバム・Crate・次に再生は `75:03` だった）。秒未満はどの画面でも切り捨てる（Get Info・取り込みやリップの重複確認・CD の合計は四捨五入だったため、画面によって 1 秒ずれることがあった）。曲 1 曲の長さは `m:ss` にそろえ、1 時間を超える曲はアーティスト表示と Get Info でも `75:03` と表示する。長さが分からない曲は空欄（Get Info とトリアージは `—`）にし、重複確認の `--:--` はやめた。
+
+### English
+
+#### Desktop
+- **Behavior change: time formats are now consistent across screens**: total times (albums, albums in the Artists view, the Crate, Up Next, the Gig Readiness set, CDs) are shown as `1:15:03` once they reach an hour (albums, the Crate and Up Next used to show `75:03`). Fractions of a second are always rounded down (Get Info, the duplicate check for imports and rips, and the CD total used to round to nearest, so the same track could differ by a second between screens). A single track's length is always `m:ss`, so tracks longer than an hour now read `75:03` in the Artists view and Get Info as well. Tracks with unknown length show an empty cell (`—` in Get Info and Triage); the duplicate check no longer shows `--:--`.
+
 ## [v0.20.0] - 2026-11-14
 
 ### 日本語

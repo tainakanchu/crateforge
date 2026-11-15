@@ -36,7 +36,7 @@ import {
   SECTION_TEMPLATES,
   type AnchorKind,
 } from "../types";
-import { formatListTotal } from "../lib/format";
+import { formatTotalTime } from "../lib/format";
 
 
 interface RightRailProps {
@@ -70,7 +70,7 @@ function applyRailWidthCss(width: number) {
 
 
 function fmtTotal(tracks: Track[]): string {
-  return formatListTotal(tracks.reduce((s, t) => s + (t.totalTimeMs ?? 0), 0));
+  return formatTotalTime(tracks.reduce((s, t) => s + (t.totalTimeMs ?? 0), 0));
 }
 
 function crateTotalMin(tracks: Track[]): number {

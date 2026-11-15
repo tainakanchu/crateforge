@@ -20,7 +20,7 @@ import {
 } from "../lib/gridRows";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
-import { formatArtistViewTime } from "../lib/format";
+import { formatTotalTime, formatTrackTime } from "../lib/format";
 import { isTauri } from "../lib/env";
 import { combineQuery } from "../lib/query";
 import * as trackActions from "../lib/trackActions";
@@ -520,7 +520,7 @@ function ArtistExpansion({
                       <div className="s">
                         {al.year != null ? `${al.year} · ` : ""}
                         {al.trackCount} 曲
-                        {al.totalTimeMs > 0 ? ` · ${formatArtistViewTime(al.totalTimeMs)}` : ""}
+                        {al.totalTimeMs > 0 ? ` · ${formatTotalTime(al.totalTimeMs)}` : ""}
                       </div>
                     </div>
                     <button
@@ -575,7 +575,7 @@ function ArtistExpansion({
                               isCurrent={isCurrent}
                               inCrate={isIn}
                               showArtist={showArtist}
-                              time={formatArtistViewTime(t.totalTimeMs)}
+                              time={formatTrackTime(t.totalTimeMs)}
                               onPlay={() => onPlayAlbum(al, t.trackId)}
                               onAddToCrate={() => onCrateTrack(t)}
                             />

@@ -10,7 +10,7 @@ import type { Track } from "../types";
 import { Cover } from "./Cover";
 import { Icon, Stars } from "./Icon";
 import { ratingToStars, starsToRating } from "../lib/rating";
-import { formatTriageDuration } from "../lib/format";
+import { formatTrackTime } from "../lib/format";
 import { isTauri } from "../lib/env";
 
 
@@ -315,7 +315,7 @@ export function TriagePanel({
           <div className="triage-artist">{track.artist || "—"}</div>
           <div className="triage-album">{track.album || "—"}</div>
           <div className="triage-sub">
-            <span>{formatTriageDuration(track.totalTimeMs)}</span>
+            <span>{formatTrackTime(track.totalTimeMs) || "—"}</span>
             {track.genre && (
               <>
                 <span className="triage-dot">·</span>

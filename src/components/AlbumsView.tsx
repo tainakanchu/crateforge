@@ -25,7 +25,7 @@ import {
 } from "../lib/gridRows";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
-import { formatAlbumTotal, formatTrackTime } from "../lib/format";
+import { formatTotalTime, formatTrackTime } from "../lib/format";
 import { combineQuery } from "../lib/query";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
@@ -917,7 +917,7 @@ function AlbumExpansion({
         <div className="cov-exp-title">
           <span className="t">{albumLabel(vm.album)}</span>
           <span className="s">
-            {[vm.albumArtist, `${tracks.length} tracks`, formatAlbumTotal(totalMs)]
+            {[vm.albumArtist, `${tracks.length} tracks`, totalMs > 0 ? formatTotalTime(totalMs) : ""]
               .filter(Boolean)
               .join(" · ")}
           </span>

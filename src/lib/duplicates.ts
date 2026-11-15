@@ -1,5 +1,5 @@
 import type { DuplicateHit, ItemAction } from "../types";
-import { formatDuplicateLength } from "./format";
+import { formatTrackTime } from "./format";
 
 /**
  * 取り込み済み検出 (iTunes の「すでにライブラリにあります」相当) の表示と既定動作。
@@ -72,7 +72,7 @@ export function hitTooltip(hits: DuplicateHit[]): string {
         h.kind === "exact" ? "一致" : h.kind === "probable" ? "ほぼ一致 (アルバム違い)" : "確証なし (長さで確認できず)";
       return [
         `${h.name || "(no title)"} — ${h.artist || "(no artist)"}`,
-        `アルバム: ${h.album || "-"}  長さ: ${formatDuplicateLength(h.totalTimeMs)}  [${kind}]`,
+        `アルバム: ${h.album || "-"}  長さ: ${formatTrackTime(h.totalTimeMs) || "-"}  [${kind}]`,
         `${h.locationPath ?? "(パスなし)"}`,
       ].join("\n");
     })

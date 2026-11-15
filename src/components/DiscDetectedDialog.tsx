@@ -1,6 +1,6 @@
 import type { DiscToc } from "../types";
 import { Icon } from "./Icon";
-import { formatDiscTotal } from "../lib/format";
+import { formatTotalTime } from "../lib/format";
 import { useEscapeKey } from "../hooks/useEscapeKey";
 
 interface DiscDetectedDialogProps {
@@ -47,7 +47,7 @@ export function DiscDetectedDialog({ disc, onRip, onDismiss }: DiscDetectedDialo
           <div>このディスクを取り込みますか？</div>
           <div style={{ fontSize: 12, color: "var(--mut)" }}>
             {disc.trackCount} トラック
-            {totalSec > 0 && ` / ${formatDiscTotal(totalSec)}`}
+            {totalSec > 0 && ` / ${formatTotalTime(totalSec * 1000)}`}
             {" · "}
             {disc.device}
           </div>

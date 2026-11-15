@@ -16,7 +16,7 @@ import {
 import type { GigCheckItem, GigReadinessResult, GigSnapshot } from "../types/gig";
 import type { Track } from "../types";
 import { Icon } from "./Icon";
-import { formatSetDuration } from "../lib/format";
+import { formatTotalTime } from "../lib/format";
 
 type SourceMode = "crate" | "playlist";
 type DialogTab = "check" | "snapshots";
@@ -442,7 +442,7 @@ export function GigReadinessDialog({
                         <strong>{badge.text}</strong>
                         <span>
                           {sourceName} · {result.summary.total} tracks ·{" "}
-                          {formatSetDuration(result.summary.durationMs)}
+                          {formatTotalTime(result.summary.durationMs)}
                           {result.summary.missing > 0 &&
                             ` · missing ${result.summary.missing}`}
                           {result.summary.unanalyzed > 0 &&
@@ -569,7 +569,7 @@ export function GigReadinessDialog({
                     </div>
                     <div>
                       <dt>Duration</dt>
-                      <dd>{formatSetDuration(viewSnapshot.summary.durationMs)}</dd>
+                      <dd>{formatTotalTime(viewSnapshot.summary.durationMs)}</dd>
                     </div>
                     <div>
                       <dt>Missing @ save</dt>

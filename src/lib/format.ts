@@ -1,32 +1,19 @@
 // 表示用フォーマッタ (純関数。tests/desktop/format.test.ts で固定)。
 
-export interface ClockOptions {
-  /** true なら 1 時間以上を `h:mm:ss` にする。false (既定) は分を繰り上げない (`75:03`)。 */
-  hours?: boolean;
-  /**
-   * 値が無い (null / undefined / 0 以下 / NaN) ときに返す文字列。
-   * 省略時は 0 として整形する (`0:00`)。
-   */
-  empty?: string;
-  /** 秒への丸め。既定は切り捨て。 */
-  round?: "floor" | "round";
-}
+// 時間表示の規則 (docs/ui-spec.md §3.8):
+// - 秒未満は常に切り捨て。
+// - 曲 1 曲の長さと再生位置は `m:ss` (1 時間を超えても分を繰り上げない)。
+// - 合計時間は 1 時間以上で `h:mm:ss`。
+// 画面からは用途別の 4 関数だけを使う。
 
-/**
- * ミリ秒を `m:ss` / `h:mm:ss` に整形する。
- *
- * 整形の中核。画面からは下の用途別の関数 (formatTrackTime など) を使う。
- */
-export function formatClock(ms: number | null | undefined, opts: ClockOptions = {}): string {
-  const { hours = false, empty, round = "floor" } = opts;
-  let value = ms ?? 0;
-  if (!(value > 0)) {
-    if (empty !== undefined) return empty;
-    value = 0;
-  }
-  const total = round === "round" ? Math.round(value / 1000) : Math.floor(value / 1000);
+type Ms = number | null | undefined;
+
+/** `m:ss` / `h:mm:ss`。0 以下・NaN・null は 0 として整形する。 */
+function clock(ms: Ms, withHours: boolean): string {
+  const value = ms != null && ms > 0 ? ms : 0;
+  const total = Math.floor(value / 1000);
   const sec = (total % 60).toString().padStart(2, "0");
-  if (hours && total >= 3600) {
+  if (withHours && total >= 3600) {
     const h = Math.floor(total / 3600);
     const m = Math.floor((total % 3600) / 60);
     return `${h}:${m.toString().padStart(2, "0")}:${sec}`;
@@ -34,54 +21,31 @@ export function formatClock(ms: number | null | undefined, opts: ClockOptions = 
   return `${Math.floor(total / 60)}:${sec}`;
 }
 
-// ---- 用途別の時間表示 ----
-// 丸め・時の有無・値なしの表示が用途ごとに違うのは現状どおり (tests/desktop/format.test.ts で固定)。
-// 揃えるのはフェーズ 2 (A2)。呼び出し元は formatClock を直接使わず、ここの関数を使う。
-
-type Ms = number | null | undefined;
-
-/** 曲の長さ (TrackTable の Time 列・AlbumsView の曲行): `m:ss`、切り捨て、値なしは空。 */
-export const formatTrackTime = (ms: Ms): string => formatClock(ms, { empty: "" });
-
-/** アルバムの合計時間 (AlbumsView の展開ヘッダー): `m:ss` (時を付けない)、切り捨て、値なしは空。 */
-export const formatAlbumTotal = (ms: Ms): string => formatClock(ms, { empty: "" });
+/**
+ * 曲 1 曲の長さ: `m:ss`。長さが分からない (null / 0 以下 / NaN) ときは空文字。
+ * ラベル付きの欄で「—」などを出したい画面は `formatTrackTime(ms) || "—"` とする。
+ */
+export function formatTrackTime(ms: Ms): string {
+  return ms != null && ms > 0 ? clock(ms, false) : "";
+}
 
 /**
- * ArtistsView のアルバム合計時間と曲の長さ: 1 時間以上は `h:mm:ss`、切り捨て、値なしは空。
+ * 合計時間 (アルバム・アーティストのアルバム・Crate・キュー・セット・CD):
+ * 1 時間未満は `m:ss`、以上は `h:mm:ss`。値が無いときは `0:00`。
  */
-export const formatArtistViewTime = (ms: Ms): string =>
-  formatClock(ms, { hours: true, empty: "" });
+export function formatTotalTime(ms: Ms): string {
+  return clock(ms, true);
+}
 
-/** プレイヤーバーの再生位置・曲長: `m:ss`、切り捨て、値なしは `0:00`。 */
-export const formatPlaybackTime = (ms: Ms): string => formatClock(ms);
+/** 再生位置・再生中の曲の長さ (プレイヤーバー): `m:ss`。値が無いときは `0:00`。 */
+export function formatPlaybackTime(ms: Ms): string {
+  return clock(ms, false);
+}
 
-/** プレイヤーバーの残り時間: `-m:ss` (曲長を超えた位置は `-0:00`)。 */
-export const formatRemainingTime = (positionMs: number, durationMs: number): string =>
-  `-${formatClock(Math.max(0, durationMs - positionMs))}`;
-
-/** Crate / キューの合計時間 (RightRail): `m:ss` (時を付けない)、切り捨て、空なら `0:00`。 */
-export const formatListTotal = (ms: Ms): string => formatClock(ms);
-
-/** トリアージパネルの曲長: `m:ss`、切り捨て、値なしは `—`。 */
-export const formatTriageDuration = (ms: Ms): string => formatClock(ms, { empty: "—" });
-
-/** 重複確認 (取り込み・リップ) の曲長: `m:ss`、四捨五入、値なしは `--:--`。 */
-export const formatDuplicateLength = (ms: Ms): string =>
-  formatClock(ms, { empty: "--:--", round: "round" });
-
-/** Get Info の「長さ」: 1 時間以上は `h:mm:ss`、四捨五入、値なしは `—`。 */
-export const formatInfoDuration = (ms: Ms): string =>
-  formatClock(ms, { hours: true, empty: "—", round: "round" });
-
-/** セット (Gig Readiness) の合計時間: 1 時間以上は `h:mm:ss`、切り捨て、値なしは `0:00`。 */
-export const formatSetDuration = (ms: Ms): string => formatClock(ms, { hours: true });
-
-/** CD の合計時間 (秒で受ける): 1 時間以上は `h:mm:ss`、四捨五入。 */
-export const formatDiscTotal = (sec: number): string =>
-  formatClock(sec * 1000, { hours: true, round: "round" });
-
-/** CD のトラック長 (整数秒で受ける): `m:ss`。 */
-export const formatDiscTrackLength = (sec: number): string => formatClock(sec * 1000);
+/** 残り時間 (プレイヤーバー): `-m:ss`。曲長を超えた位置は `-0:00`。 */
+export function formatRemainingTime(positionMs: number, durationMs: number): string {
+  return `-${clock(durationMs - positionMs, false)}`;
+}
 
 /** バイト数を 1024 基準の単位で整形する (`0 B` / `12.3 MB`)。 */
 export function formatBytes(bytes: number | null | undefined): string {
