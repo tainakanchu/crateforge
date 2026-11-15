@@ -238,7 +238,10 @@ mod tests {
                 ..Default::default()
             };
             let err = apply_track_edit(&db, 1, &edit).unwrap_err();
-            assert!(matches!(err, EditError::InvalidRating(v) if v == bad), "{err:?}");
+            assert!(
+                matches!(err, EditError::InvalidRating(v) if v == bad),
+                "{err:?}"
+            );
             assert_eq!(
                 err.to_string(),
                 format!("rating must be between 0 and 100: {bad}")

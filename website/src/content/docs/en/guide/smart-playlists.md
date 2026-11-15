@@ -26,7 +26,7 @@ In the editor, you define rules with the following combination.
 The fields available for rules include **analysis values** in addition to basic metadata.
 
 - **BPM** / **Key (Camelot)** / **Energy**
-- **Play count** / **skip count** / **rating** (stars 0–5, in 0.5 steps) / **last played**
+- **Play count** / **skip count** / **rating** (stars 0–5, in 0.5 steps; counted the same way as `rating:` in search — "is 3" matches 3 and 3.5 stars, "is 3.5" matches only 3.5 stars. To match exactly 3 stars, combine "is at least 3" with "is less than 3.5") / **last played**
 - name / artist / album / album artist / genre / grouping / year, etc.
 - **Playlist** — is / is not in another playlist (a smart target uses its evaluated result, a folder covers all playlists inside it).
   Changing the referenced playlist's rules propagates to the smart playlists that reference it.

@@ -224,8 +224,8 @@ viewMode により切替:
 - `inPlaylist { source: generated }` は生成済みプレイリストへの参照 (persistent_id) になるので、親ルールの定義や曲のメタデータを変えると、参照している側にも再適用なしで伝わる (例: `Favorite SONGS = rating ≥ 60`、`Favorite J-POP = Favorite SONGS に含まれる AND genre = J-POP`)。`source: existing` は namespace 外の既存プレイリスト・フォルダ (フォルダは子孫の和集合) を指す。
 - 適用は**パスで upsert** する: 同じパス・同じ種類 (フォルダ / プレイリスト) の既存ノードは playlist_id / persistent_id を保ったまま条件だけ更新するので、namespace 外のスマートプレイリストからの参照も切れない。種類が変わったノードは作り直す (警告)。並びは YAML の順。
 - `removeExistingNamespace: true` (既定) なら、namespace 配下でルールに無いノードを削除する (prune)。`false` なら残す (純粋な upsert。ルートフォルダを増やすことはない)。同名のルートフォルダが複数ある場合は最初の 1 つを使い、警告を出す。
-- スマート条件で再現しきれない指定は**警告**として表示する: `caseSensitiveContains: true` (スマート条件は常に大小無視)、10 の倍数でない rating (スマート側は半星で比較)、未知のフィールド、演算子の無い条件、解決できない existing 参照 (`failOnMissingPlaylist: false` のとき。その条件は「一致しない」扱い) など。`dedupeTrackIds` はスマートでは意味を持たないので無視する。
-- rating は Rules では 0-100 で書き、スマート条件には星 (値 ÷ 20) で保存される。複数キーの `sort` は第 1 キー + `thenBy` (第 2 キー以降) として保存される。
+- スマート条件で再現しきれない指定は**警告**として表示する: `caseSensitiveContains: true` (スマート条件は常に大小無視)、未知のフィールド、演算子の無い条件、解決できない existing 参照 (`failOnMissingPlaylist: false` のとき。その条件は「一致しない」扱い) など。`dedupeTrackIds` はスマートでは意味を持たないので無視する。
+- rating は Rules では 0-100 で書き、スマート条件には星 (値 ÷ 20) で保存される。大小比較 (`gte: 65` など) は 10 の倍数でなくても 0-100 の値そのままの境界になる。`equals` / `in` は「ちょうどその値」で、スマート条件の `is` (整数星は半星を含む区間) ではなく `>= かつ <=` の組として保存される。複数キーの `sort` は第 1 キー + `thenBy` (第 2 キー以降) として保存される。
 - 適用時には評価結果を `playlist_tracks` にもスナップショットとして書く (サイドバーの曲数などが適用時点の状態と一致する)。
 
 **レイアウト**: 横並び 2 ペイン
@@ -370,6 +370,10 @@ viewMode により切替:
 - `PlaybackState`: isPlaying / currentTrackId / positionMs / durationMs / shuffle / repeat / volume
 - `QueueState`: trackIds / currentIndex / shuffle / repeat / volume
 - `Rating`: 0〜100 の整数 (UI 上では 0〜5 ★、`stars = round(rating / 20)`)
+  - 星で書く条件の意味は、検索構文 `rating:` とスマートプレイリストの「評価」で共通 (区間方式):
+    整数星 `n` は n〜n.5 星 (`3` = rating 60〜79、`0` = 0〜19)、半星 `n.5` はその半星だけ (`3.5` = 70〜79)、
+    大小比較は星を連続値 (rating ÷ 20) とみなす (`>=3.5` = 70 以上、`>3` = 61 以上)。
+    スマートプレイリストでは rating の無い曲は「値なし」(否定の条件だけが一致) で、検索構文では 0 扱い。
   - どの経路 (★クリック / Get Info / API) でも 0〜100 に収まる。GUI と `POST /api/tracks/{id}/rating` は
     範囲外を 0〜100 に丸め、`PATCH /api/tracks*` は範囲外を `400` で拒否する。
   - rating だけを変えても `dateModified` は進めない (rating は iTunes XML 取り込みの更新対象外の

@@ -37,7 +37,10 @@ mod tests {
         // ちょうど 3 秒はまだ「前の曲」。
         assert_eq!(prev_action(3000, Some(7)), PrevAction::Previous);
         assert_eq!(prev_action(3001, Some(7)), PrevAction::RestartCurrent(7));
-        assert_eq!(prev_action(600_000, Some(-2)), PrevAction::RestartCurrent(-2));
+        assert_eq!(
+            prev_action(600_000, Some(-2)),
+            PrevAction::RestartCurrent(-2)
+        );
     }
 
     #[test]

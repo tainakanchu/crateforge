@@ -199,6 +199,9 @@ impl Converter<'_> {
 
         // equals: 値なしは偽、その否定 (isNot) は値なしで真なのでそのまま対応する。
         if let Some(expected) = &c.equals {
+            if field == "rating" {
+                return self.rating_equals(expected, negate);
+            }
             return match self.value(field, expected) {
                 Some(v) => rule(field, if negate { SmartOp::IsNot } else { SmartOp::Is }, v),
                 None => Node::Const(negate),
@@ -221,6 +224,13 @@ impl Converter<'_> {
 
         // in [a, b] = any(is a, is b)。否定は all(isNot a, isNot b) (値なしでも真)。
         if let Some(list) = &c.in_ {
+            if field == "rating" {
+                let children = list
+                    .iter()
+                    .map(|item| self.rating_equals(item, negate))
+                    .collect();
+                return fold(negate, children);
+            }
             let op = if negate { SmartOp::IsNot } else { SmartOp::Is };
             let children = list
                 .iter()
@@ -258,19 +268,41 @@ impl Converter<'_> {
         Node::Const(negate)
     }
 
-    /// 数値の境界値を文字列化する (rating は 0-100 → 星)。
+    /// 数値の境界値を文字列化する (rating は 0-100 → 星。割るだけなので 10 の倍数でなくても
+    /// 正確に写る: スマート側は半星の格子に無い値を rating ÷ 20 と比べる)。
     fn number(&mut self, field: &str, v: f64) -> String {
         if field != "rating" {
             return format_number(v);
         }
-        if v % 10.0 != 0.0 {
-            self.warn(format!(
-                "rating {} は 10 の倍数ではありません。スマートプレイリストは半星単位で比べるため、\
-                 この境界付近の曲は一致の結果が変わることがあります",
-                format_number(v)
-            ));
-        }
         format_number(crate::rating::rating_to_stars_exact(v))
+    }
+
+    /// rating の `equals` / `in` の 1 値を条件にする。Rules の値は 0-100 の **ちょうどその値**。
+    /// スマート条件の `is <整数星>` は半星も含む区間 (is 3 = 60〜79) なので、そのまま写すと
+    /// `equals: 60` が rating 70 の曲まで拾ってしまう。`>= v かつ <= v` (否定は `< v` または
+    /// `> v` または値なし) に展開して、ちょうどその値だけに一致させる。
+    fn rating_equals(&mut self, expected: &serde_yaml::Value, negate: bool) -> Node {
+        let Some(v) = self.value("rating", expected) else {
+            return Node::Const(negate);
+        };
+        if negate {
+            fold(
+                false,
+                vec![
+                    rule("rating", SmartOp::Lt, v.clone()),
+                    rule("rating", SmartOp::Gt, v),
+                    rule("rating", SmartOp::NotExists, ""),
+                ],
+            )
+        } else {
+            fold(
+                true,
+                vec![
+                    rule("rating", SmartOp::Gte, v.clone()),
+                    rule("rating", SmartOp::Lte, v),
+                ],
+            )
+        }
     }
 
     /// equals / in の YAML スカラーを比較値の文字列にする。比較できない値 (配列など) は None。
@@ -555,25 +587,65 @@ mod tests {
         }
     }
 
-    /// rating は 0-100 → 星。10 の倍数でなければ警告。
+    /// rating は 0-100 → 星 (割るだけ)。10 の倍数でなくても正確に写るので警告は出さない。
     #[test]
     fn rating_is_converted_to_stars() {
         let (c, w) = convert_one("field: rating\ngte: 60");
         assert_eq!(c.rules, vec![r("rating", SmartOp::Gte, "3")]);
         assert!(w.is_empty());
-        let (c, _) = convert_one("field: rating\nequals: 70");
-        assert_eq!(c.rules, vec![r("rating", SmartOp::Is, "3.5")]);
         let (c, w) = convert_one("field: rating\ngt: 65");
         assert_eq!(c.rules, vec![r("rating", SmartOp::Gt, "3.25")]);
-        assert_eq!(w.len(), 1);
-        assert!(w[0].starts_with("P: rating 65"), "{w:?}");
-        // 実際の評価: rating 80 (4 星) は gte 60 に一致、40 は不一致。
-        let (c, _) = convert_one("field: rating\ngte: 60");
+        assert!(w.is_empty(), "{w:?}");
+        // 実際の評価: 境界は 0-100 の値そのまま (66 は一致、65 は不一致)。
         let mut t = track(1);
-        t.rating = Some(80);
-        assert!(matches(&t, &c));
-        t.rating = Some(40);
+        for (rating, want) in [(66, true), (65, false), (70, true), (60, false)] {
+            t.rating = Some(rating);
+            assert_eq!(matches(&t, &c), want, "gt 65 vs {rating}");
+        }
+        let (c, _) = convert_one("field: rating\ngte: 60");
+        for (rating, want) in [(80, true), (60, true), (59, false), (40, false)] {
+            t.rating = Some(rating);
+            assert_eq!(matches(&t, &c), want, "gte 60 vs {rating}");
+        }
+    }
+
+    /// rating の equals / in は「ちょうどその値」。スマート条件の `is 3` は 60〜79 の区間なので、
+    /// `>= かつ <=` に展開して Rules の意味 (0-100 の値の一致) を保つ。
+    #[test]
+    fn rating_equals_stays_exact() {
+        let (c, w) = convert_one("field: rating\nequals: 60");
+        assert!(w.is_empty());
+        assert!(c.match_all);
+        assert_eq!(
+            c.rules,
+            vec![r("rating", SmartOp::Gte, "3"), r("rating", SmartOp::Lte, "3")]
+        );
+        let mut t = track(1);
+        for (rating, want) in [(60, true), (70, false), (65, false), (59, false), (80, false)] {
+            t.rating = Some(rating);
+            assert_eq!(matches(&t, &c), want, "equals 60 vs {rating}");
+        }
+        t.rating = None;
         assert!(!matches(&t, &c));
+
+        // 否定: その値でない曲と、rating の無い曲。
+        let (c, _) = convert_one("not:\n  field: rating\n  equals: 60");
+        for (rating, want) in [(Some(60), false), (Some(70), true), (Some(40), true), (None, true)] {
+            t.rating = rating;
+            assert_eq!(matches(&t, &c), want, "not equals 60 vs {rating:?}");
+        }
+
+        // in: どれかの値にちょうど一致。
+        let (c, _) = convert_one("field: rating\nin: [60, 100]");
+        for (rating, want) in [(60, true), (100, true), (70, false), (80, false)] {
+            t.rating = Some(rating);
+            assert_eq!(matches(&t, &c), want, "in [60, 100] vs {rating}");
+        }
+        let (c, _) = convert_one("not:\n  field: rating\n  in: [60, 100]");
+        for (rating, want) in [(Some(60), false), (Some(100), false), (Some(70), true), (None, true)] {
+            t.rating = rating;
+            assert_eq!(matches(&t, &c), want, "not in [60, 100] vs {rating:?}");
+        }
     }
 
     /// bool フィールドは 1 / 0、podcast は常に値なし。
