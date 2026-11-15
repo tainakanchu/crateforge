@@ -482,53 +482,6 @@ fn parse_int_range(s: &str) -> Option<(i64, i64)> {
     }
 }
 
-/// 星の値 (0..=5, 0.5 刻み) を rating 列の 10 の倍数に。範囲外/半端な値は None。
-fn parse_star_value(s: &str) -> Option<i64> {
-    let v: f64 = s.trim().parse().ok()?;
-    let doubled = v * 2.0;
-    if !(0.0..=10.0).contains(&doubled) || (doubled - doubled.round()).abs() > 1e-9 {
-        return None;
-    }
-    Some(doubled.round() as i64 * 10)
-}
-
-/// 星の値 1 つが表す rating 列の区間。整数星 n は従来どおり「n 〜 n.5 星」
-/// (`n*20 ..= n*20+19`)、半星 n.5 は `n*20+10 ..= n*20+19`。5 は 100 で頭打ち。
-fn star_bucket(r: i64) -> (i64, i64) {
-    let hi = if r % 20 == 0 { r + 19 } else { r + 9 };
-    (r, hi.min(100))
-}
-
-/// 星 (0..=5, 0.5 刻み #172) を rating 列 (0..=100) の範囲に写す。
-/// - `4` / `3.5` — その星の区間 (`star_bucket`)。
-/// - `3.5-5` — 下限の区間の先頭 〜 上限の区間の末尾。
-/// - `>=3.5` `>3` `<=2` `<2.5` — 星を連続値 (rating/20) とみなした比較。
-///
-/// rating が NULL の曲は 0 星扱い (COALESCE) なので `rating:0` で未評価を拾える。
-fn parse_star_range(s: &str) -> Option<(i64, i64)> {
-    let s = s.trim();
-    if let Some(v) = s.strip_prefix(">=") {
-        return Some((parse_star_value(v)?, 100));
-    }
-    if let Some(v) = s.strip_prefix("<=") {
-        return Some((0, parse_star_value(v)?));
-    }
-    if let Some(v) = s.strip_prefix('>') {
-        let r = parse_star_value(v)?;
-        return (r < 100).then_some((r + 1, 100));
-    }
-    if let Some(v) = s.strip_prefix('<') {
-        let r = parse_star_value(v)?;
-        return (r > 0).then_some((0, r - 1));
-    }
-    if let Some((a, b)) = s.split_once('-') {
-        let (a, b) = (parse_star_value(a)?, parse_star_value(b)?);
-        let (lo, hi) = (a.min(b), a.max(b));
-        return Some((star_bucket(lo).0, star_bucket(hi).1));
-    }
-    Some(star_bucket(parse_star_value(s)?))
-}
-
 /// `yes`/`no` 系の真偽値を解釈する。
 fn parse_bool(s: &str) -> Option<bool> {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -634,7 +587,7 @@ fn parse_field_filter(
             ))
         }
         "rating" => {
-            let (lo, hi) = parse_star_range(val)?;
+            let (lo, hi) = crate::rating::parse_star_range(val)?;
             Some((
                 format!("(COALESCE({prefix}rating, 0) BETWEEN ? AND ?)"),
                 vec![Value::Integer(lo), Value::Integer(hi)],

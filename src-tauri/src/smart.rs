@@ -43,11 +43,6 @@ fn on(v: Option<i64>) -> FieldVal {
     }
 }
 
-/// 0-100 の rating を 0..5 の星 (0.5 刻み) に丸める。フロントの `ratingToStars` と同じ式。
-fn rating_to_stars(r: i64) -> f64 {
-    (r.clamp(0, 100) as f64 / 10.0).round() / 2.0
-}
-
 /// bool の列は 1 / 0 の数値として扱う (Rules の `equals: true` は `is "1"` に変換される)。
 fn ob(v: bool) -> FieldVal {
     FieldVal::Num(if v { 1.0 } else { 0.0 })
@@ -161,7 +156,7 @@ fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
         // 70 → 3.5。10 の倍数でない値 (例 65) は最寄りの半星に丸める (UI 表示と同じ)。
         "rating" => t
             .rating
-            .map(|r| FieldVal::Num(rating_to_stars(r)))
+            .map(|r| FieldVal::Num(crate::rating::rating_to_stars_nearest_half(r)))
             .unwrap_or(FieldVal::None),
         "playCount" => on(t.play_count),
         "skipCount" => on(t.skip_count),

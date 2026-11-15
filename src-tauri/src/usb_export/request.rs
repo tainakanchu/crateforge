@@ -145,7 +145,7 @@ pub struct TraktorInput<'a> {
 
 /// 0–100 → 0–5 の星 (半星は切り上げ)。
 pub fn rating_to_stars(rating: Option<i64>) -> Option<u8> {
-    rating.map(|r| ((r.clamp(0, 100) + 10) / 20) as u8)
+    rating.map(crate::rating::rating_to_whole_stars)
 }
 
 /// Camelot (`8A`) → rekordbox の綴り (`Am`)。不正なら None。

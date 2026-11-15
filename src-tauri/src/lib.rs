@@ -24,6 +24,7 @@ mod pairing;
 mod playback_target;
 mod playlist_rules;
 mod proc;
+mod rating;
 mod rbx_cli;
 mod smart;
 mod smtc;

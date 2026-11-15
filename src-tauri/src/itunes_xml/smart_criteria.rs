@@ -376,7 +376,7 @@ impl Decoder {
         // rating は iTunes では 0-100、crateforge の条件では星 (0-5) なので 20 で割る。
         let fmt = |v: i64| {
             if name == "rating" {
-                format_number(v as f64 / 20.0)
+                format_number(crate::rating::rating_to_stars_exact(v as f64))
             } else {
                 v.to_string()
             }

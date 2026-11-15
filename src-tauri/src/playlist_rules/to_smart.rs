@@ -270,7 +270,7 @@ impl Converter<'_> {
                 format_number(v)
             ));
         }
-        format_number(v / 20.0)
+        format_number(crate::rating::rating_to_stars_exact(v))
     }
 
     /// equals / in の YAML スカラーを比較値の文字列にする。比較できない値 (配列など) は None。
