@@ -66,7 +66,7 @@ impl From<rusqlite::Error> for DeleteError {
 }
 
 /// ライブラリから消えた曲。呼び出し元 (アダプタ) はこの id を再生系から落とすこと。
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 #[must_use = "消えた曲は再生キューからも落とす (commands::playback::drop_tracks_from_playback)"]
 pub struct RemovedTracks {
     /// 実際に DB から消えた曲の track_id (存在しなかった id・重複は含まない)。

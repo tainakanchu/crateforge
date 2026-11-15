@@ -433,6 +433,14 @@ pub async fn sync_evict(
     let summary = crate::sync::evict(&mut db, &persistent_ids)
         .await
         .map_err(|error| error.to_string())?;
+    // 退避で消えた曲を再生系から落とす (ライブラリからの削除 `delete_tracks` と同じ後始末)。
+    // これが無いと、行もファイルも無い曲がキューに残り、再生中なら鳴り続ける。
+    if !summary.removed.track_ids.is_empty() {
+        let removed: std::collections::HashSet<i64> =
+            summary.removed.track_ids.iter().copied().collect();
+        let player = app.state::<Mutex<crate::audio::AudioPlayer>>();
+        crate::commands::playback::drop_tracks_from_playback(&app, &player, &removed);
+    }
     if summary.evicted > 0 {
         let _ = app.emit("library-changed", serde_json::json!({ "playlistId": null, "artworkChanged": true }));
     }

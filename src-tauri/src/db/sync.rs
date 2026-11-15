@@ -819,7 +819,9 @@ impl Database {
     }
 
     /// IMMEDIATE transaction 内で所有・全 playlist 参照・metadata dirty を再確認して削除する。
-    pub fn delete_synced_track_if_eligible(&self, persistent_id: &str) -> Result<bool> {
+    /// 削除したらその曲の track_id を返す (呼び出し元が再生キューから落とすため)。
+    /// 対象外 (同期所有でない / プレイリストから参照されている / ローカル変更あり) なら `None`。
+    pub fn delete_synced_track_if_eligible(&self, persistent_id: &str) -> Result<Option<i64>> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let owned = tx
             .query_row(
@@ -832,7 +834,7 @@ impl Database {
             .optional()?;
         let Some((track_id, base_meta)) = owned else {
             tx.rollback()?;
-            return Ok(false);
+            return Ok(None);
         };
         let referenced: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM playlist_tracks WHERE track_id = ?1)",
@@ -848,12 +850,12 @@ impl Database {
             || crate::sync::writeback::has_local_changes(&base_meta, &local).unwrap_or(true)
         {
             tx.rollback()?;
-            return Ok(false);
+            return Ok(None);
         }
         // 依存行の消し漏れを防ぐため、削除は共通ヘルパー 1 箇所に集約する。
         super::tracks::delete_track_cascade(&tx, track_id)?;
         tx.commit()?;
-        Ok(true)
+        Ok(Some(track_id))
     }
 
     /// provisioning 済み、または source 所有曲だけを含むローカル作成プレイリストを返す。

@@ -63,6 +63,10 @@ pub struct EvictionSummary {
     pub freed_bytes: u64,
     pub dirty_excluded_note: Option<String>,
     pub failures: Vec<SyncFailure>,
+    /// 退避でライブラリから消えた曲。フロントへは送らない (`evicted` が件数)。
+    /// 呼び出し元 (コマンド) がこの id を再生キュー・再生中の曲から落とす。
+    #[serde(skip)]
+    pub removed: crate::library::delete::RemovedTracks,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -745,15 +749,16 @@ pub async fn evict(
                 }
             }
         }
-        if !db.delete_synced_track_if_eligible(persistent_id)? {
+        let Some(track_id) = db.delete_synced_track_if_eligible(persistent_id)? else {
             summary.failures.push(failure(
                 Some(persistent_id.clone()),
                 None,
                 "削除直前の再検証で参照またはローカル変更が見つかりました",
             ));
             continue;
-        }
+        };
         summary.evicted += 1;
+        summary.removed.track_ids.push(track_id);
     }
     Ok(summary)
 }
@@ -1180,6 +1185,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(summary.evicted, 0);
+        assert!(summary.removed.track_ids.is_empty());
         assert!(!summary.failures.is_empty());
         assert!(path.is_file());
         assert!(db
@@ -1217,9 +1223,10 @@ mod tests {
                 [track_id],
             )
             .unwrap();
-        assert!(!db
+        assert!(db
             .delete_synced_track_if_eligible("FCFCFCFCFCFCFC02")
-            .unwrap());
+            .unwrap()
+            .is_none());
         assert!(db
             .synced_track_file_record("FCFCFCFCFCFCFC02")
             .unwrap()
@@ -1578,6 +1585,12 @@ mod tests {
         assert_eq!(evicted.files_deleted, 1);
         assert!(evicted.freed_bytes > 0);
         assert!(evicted.failures.is_empty());
+        // 消えた曲の track_id を返す (コマンドが再生キューから落とす)。フロントへの JSON には出さない。
+        assert_eq!(evicted.removed.track_ids, vec![removed_track_id]);
+        assert!(serde_json::to_value(&evicted)
+            .unwrap()
+            .get("removed")
+            .is_none());
         assert!(!Path::new(&removed_file).exists());
         for pid in ["AAAAAAAAAAAA0001"] {
             let counts: (i64, i64, i64) = slave
