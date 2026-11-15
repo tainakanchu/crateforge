@@ -1,5 +1,5 @@
 // プレイリスト一覧画面（10ft UI / D-pad 操作前提）。
-// core の ApiClient.playlists()（useConnection().client 経由）でフラットな全プレイリストを
+// core の usePlaylists でフラットな全プレイリストを
 // 取得し、core の playlistTree（rootItems / childrenOf）でフォルダ階層を再構成して縦リスト表示する。
 //
 // 画面内ナビゲーション（新ルートを足さず 1 画面で完結）:
@@ -7,39 +7,33 @@
 //   - 詳細 → 行選択でその位置から全曲を usePlayer.setQueue してキューを差し替え、/player へ。
 //   - 「すべて再生」ボタンで先頭から一括再生も可能。
 //
-// データ取得は core の専用フックが無いため songs.tsx と同じく client メソッドを React Query で
-// 包む（mobile の usePlaylists/usePlaylistTracks と同型・queryKey も統一）。共有の TrackRow /
+// データ取得は core の閲覧フック（usePlaylists / usePlaylistTracks。mobile と共通）。共有の TrackRow /
 // LibraryList を流用し、フォルダ/戻る/すべて再生のボタンは Focusable でフォーカス可能にする。
 
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { View, Text, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 import {
   type Playlist,
-  type Track,
   childrenOf,
   playlistKey,
   rootItems,
-  useConnection,
   usePlayer,
+  usePlaylistTracks,
+  usePlaylists,
 } from "@crateforge/core";
 import { Focusable } from "@/components/focus";
 import { TrackRow } from "@/components/library/TrackRow";
 import { LibraryList } from "@/components/library/LibraryList";
 import { PALETTE, TV_FONT, TV_LAYOUT, FOCUS_RING } from "@/theme/palette";
 
-/** 大規模ライブラリでも全件取得（mobile の BROWSE_LIMIT と同値）。 */
-const BROWSE_LIMIT = 100000;
-
 /** フォルダ階層のパンくず 1 段。 */
 type FolderCrumb = { pid: string; name: string };
 
 export default function PlaylistsScreen() {
   const router = useRouter();
-  const client = useConnection((s) => s.client);
   // 再生中の曲をハイライトするための trackId。
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
 
@@ -47,12 +41,8 @@ export default function PlaylistsScreen() {
   const [folderStack, setFolderStack] = useState<FolderCrumb[]>([]);
   const [openPlaylist, setOpenPlaylist] = useState<Playlist | null>(null);
 
-  // 全プレイリスト取得（mobile usePlaylists と同型）。client 未接続時は enabled:false で待機。
-  const playlistsQuery = useQuery<Playlist[]>({
-    queryKey: ["playlists"],
-    enabled: !!client,
-    queryFn: () => client!.playlists(),
-  });
+  // 全プレイリスト取得（フラット）。
+  const playlistsQuery = usePlaylists();
   const allPlaylists = playlistsQuery.data ?? [];
 
   // 現在フォルダの直下項目（root か フォルダ内）。空の通常プレイリストだけ間引く（フォルダは残す）。
@@ -66,12 +56,8 @@ export default function PlaylistsScreen() {
     return items.filter((p) => (p.isFolder ? true : p.trackCount > 0));
   }, [allPlaylists, currentFolderPid]);
 
-  // 詳細表示中プレイリストの曲（mobile usePlaylistTracks と同型）。openPlaylist が無ければ無効。
-  const tracksQuery = useQuery<Track[]>({
-    queryKey: ["playlist-tracks", openPlaylist?.playlistId],
-    enabled: !!client && openPlaylist != null,
-    queryFn: () => client!.playlistTracks(openPlaylist!.playlistId, { limit: BROWSE_LIMIT }),
-  });
+  // 詳細表示中プレイリストの曲。openPlaylist が無ければ無効。
+  const tracksQuery = usePlaylistTracks(openPlaylist?.playlistId);
   const tracks = tracksQuery.data ?? [];
 
   // 行選択（一覧）: フォルダは下階層へ、プレイリストは詳細（曲一覧）へ。

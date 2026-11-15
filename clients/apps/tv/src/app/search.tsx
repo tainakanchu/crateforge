@@ -1,9 +1,9 @@
 // 検索画面。リモコンで TextInput にフォーカス→決定でシステムのオンスクリーンキーボードが開く
-// （Android TV の Gboard / tvOS の IME）。入力語をデバウンスして core の ApiClient.listTracks
+// （Android TV の Gboard / tvOS の IME）。入力語をデバウンスして core の useTracks
 // に q として渡し、ヒットした曲を共有 TrackRow + LibraryList で一覧表示する。
 // 行を選ぶと usePlayer.setQueue で検索結果をキューに差し替え、その index から /player で再生する。
 //
-// データ取得は songs.tsx と同じく client.listTracks を React Query で包む（core 専用フックは無い）。
+// データ取得は songs.tsx と同じく core の useTracks（mobile と共通の閲覧フック）。
 // 検索語が無い／短いうちは投げない（enabled:false）。q は曲名・アーティストの両方に効く。
 //
 // TV の入力制約への配慮:
@@ -15,22 +15,17 @@
 //     ユーザーは入力欄から下キーでリストへ降りる。
 
 import { useEffect, useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { View, Text, TextInput, StyleSheet } from "react-native";
 
-import { type Track, isSearchable, useConnection, usePlayer } from "@crateforge/core";
+import { BROWSE_LIMIT, isSearchable, usePlayer, useTracks } from "@crateforge/core";
 import { TrackRow } from "@/components/library/TrackRow";
 import { LibraryList } from "@/components/library/LibraryList";
 import { Focusable } from "@/components/focus";
 import { PALETTE, TV_FONT, TV_LAYOUT, FOCUS_RING } from "@/theme/palette";
 
-/** 大規模ライブラリでも全件取得（mobile の BROWSE_LIMIT と同値）。 */
-const BROWSE_LIMIT = 100000;
-
 export default function SearchScreen() {
   const router = useRouter();
-  const client = useConnection((s) => s.client);
   // 再生中の曲をハイライトするための trackId。
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
 
@@ -49,13 +44,7 @@ export default function SearchScreen() {
   const searching = term != null;
 
   // q は曲名・アーティストの両方に効く。名前昇順で取得。
-  const query = useQuery<Track[]>({
-    queryKey: ["tracks", { q: term, limit: BROWSE_LIMIT, sort: "name", order: "asc" }],
-    enabled: !!client && searching,
-    queryFn: ({ signal }) =>
-      client!.listTracks({ q: term, limit: BROWSE_LIMIT, sort: "name", order: "asc" }, signal),
-    placeholderData: keepPreviousData,
-  });
+  const query = useTracks({ q: term, limit: BROWSE_LIMIT, sort: "name", order: "asc" }, searching);
 
   // 検索語が無いときは結果を出さない（前回結果が残らないよう空配列に倒す）。
   const tracks = searching ? (query.data ?? []) : [];
