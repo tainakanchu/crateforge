@@ -311,7 +311,9 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const { ref: setParentRef, elRef: parentRef, width } = useElementWidth<HTMLDivElement>();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<CoversCtxMenu | null>(null);
-  const [showAddTagDialog, setShowAddTagDialog] = useState(false);
+  // ジャンルタグ追加ダイアログの対象曲 (null で非表示)。メニューは項目を選んだ時点で閉じて
+  // contextMenu が null になるので、対象は開くときにここへ控えておく。
+  const [addTagTargetIds, setAddTagTargetIds] = useState<number[] | null>(null);
   const [newTag, setNewTag] = useState("");
   // 削除確認モーダルの対象曲（null で非表示）。
   const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
@@ -602,19 +604,15 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleApplyAddTag = useCallback(async () => {
     const tag = newTag.trim();
-    if (!tag || !contextMenu) {
-      setShowAddTagDialog(false);
-      return;
-    }
-    const ids = contextMenu.trackIds;
-    setShowAddTagDialog(false);
+    const ids = addTagTargetIds;
+    setAddTagTargetIds(null);
+    if (!tag || !ids || ids.length === 0) return;
     setNewTag("");
-    closeMenu();
     await run("addTag", async () => {
       await libraryApi.addGenreTag(ids, tag);
       onTracksChanged();
     });
-  }, [newTag, contextMenu, onTracksChanged, closeMenu, run]);
+  }, [newTag, addTagTargetIds, onTracksChanged, run]);
 
   const handleRemoveTag = useCallback(
     async (tag: string) => {
@@ -825,7 +823,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onReveal={() => void handleReveal()}
           onDelete={handleDelete}
           onAddToPlaylist={handleAddToPlaylist}
-          onAddTag={() => setShowAddTagDialog(true)}
+          onAddTag={() => setAddTagTargetIds(contextMenu.trackIds)}
           onRemoveTag={handleRemoveTag}
         />
       )}
@@ -842,12 +840,12 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         />
       )}
 
-      {showAddTagDialog && (
+      {addTagTargetIds && (
         <AddGenreTagDialog
           value={newTag}
           onChange={setNewTag}
           onSubmit={() => void handleApplyAddTag()}
-          onClose={() => setShowAddTagDialog(false)}
+          onClose={() => setAddTagTargetIds(null)}
         />
       )}
     </div>
