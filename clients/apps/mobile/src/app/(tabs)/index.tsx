@@ -7,7 +7,6 @@
 import { albumHref, artistHref } from "@/lib/albumHref";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, RefreshControl, Text, TextInput, View, StyleSheet } from "react-native";
-import { isSearchable, matchesNormalized, naturalCompare } from "@/lib/normalize";
 import { loadPref, savePref } from "@/lib/prefs";
 import { showActionSheet } from "@/components/ActionSheet";
 import { showTrackMenu } from "@/features/playback/trackMenu";
@@ -15,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 
-import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError } from "@crateforge/core";
+import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, browseKeys, compareAlbumsByName, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError, compareNamesUnknownLast, isSearchable, matchesNormalized } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import TrackRow from "@/components/TrackRow";
@@ -95,11 +94,11 @@ export default function LibraryScreen() {
       sort: trackSort.field,
       order: trackSort.order,
     },
-    mode === "tracks",
+    { enabled: mode === "tracks" },
   );
   const genresQuery = useGenres();
-  const albumsQuery = useAlbums(mode === "albums");
-  const artistsQuery = useArtists(mode === "artists");
+  const albumsQuery = useAlbums({ enabled: mode === "albums" });
+  const artistsQuery = useArtists({ enabled: mode === "artists" });
 
   // プル更新（表示中モードの一覧 + ジャンル）と、タブに戻ったときの再取得（stale のみ）。
   const refetchActive = useCallback(
@@ -119,10 +118,10 @@ export default function LibraryScreen() {
   // アルバム/アーティストは軽いので 10 秒の鮮度閾値、全曲一覧は従来どおり stale（5 分）のときだけ。
   useRefetchStaleOnFocus(
     mode === "tracks"
-      ? [{ queryKey: ["tracks"] }, { queryKey: ["genres"] }]
+      ? [{ queryKey: browseKeys.tracksRoot }, { queryKey: browseKeys.genres }]
       : mode === "albums"
-        ? [{ queryKey: ["albums"], freshMs: LIGHT_LIST_FRESH_MS }]
-        : [{ queryKey: ["artists"], freshMs: LIGHT_LIST_FRESH_MS }],
+        ? [{ queryKey: browseKeys.albums, freshMs: LIGHT_LIST_FRESH_MS }]
+        : [{ queryKey: browseKeys.artistsRoot, freshMs: LIGHT_LIST_FRESH_MS }],
   );
   const refreshControl = (
     <RefreshControl
@@ -141,7 +140,7 @@ export default function LibraryScreen() {
   // 全角半角・かなカナ・大小・記号のゆれは正規化して吸収し、並びは自然順（2 < 10）。
   // 不明なアルバム（album: ""）は末尾に置き、検索は表示ラベル（「不明なアルバム」）で照合する。
   const albums = useMemo(() => {
-    const all = [...(albumsQuery.data ?? [])].sort(compareNamesUnknownLast((a) => a.album));
+    const all = [...(albumsQuery.data ?? [])].sort(compareAlbumsByName);
     if (!debounced) return all;
     return all.filter((a) => matchesNormalized(albumLabel(a.album), debounced));
   }, [albumsQuery.data, debounced]);
@@ -482,19 +481,6 @@ function OfflineLibrary() {
       )}
     </Screen>
   );
-}
-
-/**
- * 名前の自然順比較。ただし空名（不明なアルバム / アーティスト）は常に末尾に置く
- * （デスクトップの Artists / Albums と同じ並び）。
- */
-function compareNamesUnknownLast<T>(nameOf: (x: T) => string): (a: T, b: T) => number {
-  return (a, b) => {
-    const an = nameOf(a).trim();
-    const bn = nameOf(b).trim();
-    if (!an !== !bn) return an ? -1 : 1;
-    return naturalCompare(nameOf(a), nameOf(b));
-  };
 }
 
 /** オフライン時のアルバム集約（アート用代表トラック・表示アーティスト付き）。 */

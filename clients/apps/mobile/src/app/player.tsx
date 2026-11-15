@@ -18,8 +18,9 @@ import type { LayoutChangeEvent, GestureResponderEvent } from "react-native";
 import { useRouter } from "expo-router";
 
 import { BRAND, PALETTE } from "@/constants/brand";
-import { ApiError, type SimilarHit, type Track, formatDuration, isNativePlaybackActive, ratingToHalfStars, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
+import { type SimilarHit, type Track, formatDuration, isNativePlaybackActive, nextRepeat, ratingToHalfStars, starsToRating, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
+import ModalToastHost from "@/components/ModalToastHost";
 import Artwork from "@/components/Artwork";
 import ModeToggleButton from "@/components/ModeToggleButton";
 import IconButton from "@/components/IconButton";
@@ -27,7 +28,7 @@ import TrackRow from "@/components/TrackRow";
 import RatingStars from "@/components/RatingStars";
 import { useSetRating } from "@/features/browse/hooks";
 import { COMMON_TRIAGE_TAGS, REVIEW_LATER_TAG } from "@/features/triage/commonTags";
-import { usePendingEdits } from "@/store/pendingEdits";
+import { addTagWithFeedback, reportRatingFailure } from "@/features/triage/feedback";
 
 // 再生速度の選択肢
 const RATE_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] as const;
@@ -172,6 +173,8 @@ export default function PlayerScreen() {
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
       />
+      {/* iOS のモーダルではルートのトーストが裏に隠れるので、この画面の中にも表示先を置く。 */}
+      <ModalToastHost />
     </Screen>
   );
 }
@@ -281,7 +284,7 @@ function NowPlaying({
   const [showSleepPicker, setShowSleepPicker] = useState(false);
 
   const cycleRepeat = () => {
-    setRepeat(repeat === "off" ? "all" : repeat === "all" ? "one" : "off");
+    setRepeat(nextRepeat(repeat));
   };
 
   const skip = useCallback(
@@ -515,9 +518,9 @@ function NowPlaying({
 
 /**
  * 現在曲のレーティング（★×5）をタップで設定するコントロール。
- * - 表示は楽観的ローカル state。タップ即時に星を更新し、サーバ呼び出しが失敗したら元に戻す。
+ * - 表示は楽観的ローカル state。タップ即時に星を更新し、サーバ呼び出しが失敗したら元に戻してトーストで知らせる。
  * - 同じ星を再タップすると 0（未設定）にクリア（RatingStars 側のロジック）。
- * - オフライン時も操作可（pendingEdits に enqueue。useSetRating が振り分け）。
+ * - オフライン時も操作可（pendingEdits に enqueue。features/triage/edits.ts の writeRating が振り分け）。
  * - 成功/失敗後に rating を含むクエリ群を invalidate（useSetRating 内・オンライン時）。
  */
 function RatingControl({ track }: { track: Track }) {
@@ -529,7 +532,7 @@ function RatingControl({ track }: { track: Track }) {
 
   const handleChange = (next: number) => {
     const prev = rating;
-    const value = Math.round(next * 20);
+    const value = starsToRating(next);
     setRatingValue(value); // 楽観的更新
     setRating.mutate(
       {
@@ -539,7 +542,11 @@ function RatingControl({ track }: { track: Track }) {
         trackName: track.name,
       },
       {
-        onError: () => setRatingValue(prev), // 失敗したら元に戻す
+        // 失敗したら元に戻し、長押しメニューと同じ文言のトーストで知らせる。
+        onError: (e) => {
+          setRatingValue(prev);
+          reportRatingFailure(e);
+        },
       },
     );
   };
@@ -556,7 +563,6 @@ function RatingControl({ track }: { track: Track }) {
  * 「あとで聴く」と定番タグ。オフライン時は pending キューへ。
  */
 function TriageQuickActions({ track }: { track: Track }) {
-  const client = useConnection((s) => s.client);
   const [busy, setBusy] = useState(false);
   const [showTagPicker, setShowTagPicker] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -571,33 +577,12 @@ function TriageQuickActions({ track }: { track: Track }) {
     setBusy(true);
     setShowTagPicker(false);
     try {
-      if (client) {
-        try {
-          await client.addTrackTags([track.trackId], tag);
-          flash(tag === REVIEW_LATER_TAG ? "あとで聴くに追加" : `タグ: ${tag}`);
-        } catch (e) {
-          if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
-            flash("ホストがタグ未対応");
-          } else {
-            flash("失敗しました");
-          }
-        }
-      } else {
-        if (tag === REVIEW_LATER_TAG) {
-          usePendingEdits.getState().enqueue({
-            kind: "review-later",
-            trackId: track.trackId,
-            trackName: track.name,
-          });
-        } else {
-          usePendingEdits.getState().enqueue({
-            kind: "tag-add",
-            trackId: track.trackId,
-            tag,
-            trackName: track.name,
-          });
-        }
+      // 失敗・デスクトップ未対応は addTagWithFeedback がトーストで知らせる（長押しメニューと共通）。
+      const outcome = await addTagWithFeedback({ trackId: track.trackId, tag, trackName: track.name });
+      if (outcome === "queued") {
         flash("オフライン: 再接続時に同期");
+      } else if (outcome === "applied") {
+        flash(tag === REVIEW_LATER_TAG ? "あとで聴くに追加" : `タグ: ${tag}`);
       }
     } finally {
       setBusy(false);

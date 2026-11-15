@@ -24,8 +24,9 @@ use tauri::Manager;
 
 use super::error::ApiError;
 use super::ApiState;
-use crate::analyzer::similarity::{rank_similar, SimilarOpts};
+use crate::analyzer::similarity::SimilarOpts;
 use crate::db::tracks::{AlbumInfo, ArtistInfo};
+use crate::library::similar::{similar_hits, DEFAULT_SIMILAR_LIMIT};
 use crate::models::{
     GenreTagCount, LibraryStats, Playlist, SimilarHit, Tag, TagCount, Track, TrackAnalysis,
 };
@@ -253,13 +254,21 @@ pub async fn list_tracks(
     let order = q.order.as_deref();
     let has_query = matches!(q.q.as_deref(), Some(s) if !s.trim().is_empty());
 
-    // 追加フィルタ (rating/genre/album/year/analyzed) は後段で Rust 側 retain している。
+    // 追加フィルタ (rating/album/year/analyzed) は後段で Rust 側 retain している (genre だけは SQL 側)。
     // これらが付いていると DB 側 LIMIT で打ち切ると取りこぼすため、上限は使えない。
     // そこで「q 指定 かつ 追加フィルタ無し」のときだけ DB へ limit/offset を委譲して
     // 全件転送を避ける (保守的対応)。フィルタがある場合・q 無しの全件取得は従来どおり。
+    // genre: タグ単位の完全一致 (docs/genre/design.md §3)。検索構文の `genre:` と同じ判定を
+    // SQL 側 (has_genre_tag) で行う。タグを含まない値 (`genre=` 空・空白のみ) は絞り込まない
+    // (= 指定なしと同じ扱い。下の件数上限の判定にも数えない)。
+    let genre_tags = q
+        .genre
+        .as_deref()
+        .filter(|g| !crate::db::tracks::split_genre_tags(g).is_empty());
+
     let has_extra_filters = q.rating_min.is_some()
         || q.rating_max.is_some()
-        || q.genre.is_some()
+        || genre_tags.is_some()
         || q.album.is_some()
         || q.artist.is_some()
         || q.album_artist.is_some()
@@ -280,10 +289,11 @@ pub async fn list_tracks(
         (ALL_ROWS, 0)
     };
 
-    let mut tracks = match q.q.as_deref() {
-        Some(query) if !query.trim().is_empty() => {
-            db.search_tracks(query, db_limit, db_offset, sort, order)?
+    let mut tracks = match (q.q.as_deref(), genre_tags) {
+        (Some(query), _) if !query.trim().is_empty() => {
+            db.search_tracks_with_genre(query, genre_tags, db_limit, db_offset, sort, order)?
         }
+        (_, Some(_)) => db.search_tracks_with_genre("", genre_tags, ALL_ROWS, 0, sort, order)?,
         _ => db.get_tracks(ALL_ROWS, 0, sort, order)?,
     };
 
@@ -295,17 +305,8 @@ pub async fn list_tracks(
     if let Some(max) = q.rating_max {
         tracks.retain(|t| t.rating.unwrap_or(0) <= max);
     }
-    // genre: 小文字化して部分一致。
-    if let Some(genre) = q.genre.as_deref() {
-        let needle = genre.to_lowercase();
-        tracks.retain(|t| {
-            t.genre
-                .as_deref()
-                .map(|g| g.to_lowercase().contains(&needle))
-                .unwrap_or(false)
-        });
-    }
-    // album: genre と同様に小文字化して部分一致。albumExact=true なら完全一致
+    // (genre は取得時に SQL 側で絞り込み済み。)
+    // album: 小文字化して部分一致。albumExact=true なら完全一致
     // (/api/albums の GROUP BY album と同じ粒度。前後空白だけは無視する)。
     // `album=&albumExact=true` (空) は album が NULL / 空白のみの曲 (= /api/albums の
     // `album: ""`「不明なアルバム」) に一致する。
@@ -1290,7 +1291,8 @@ pub struct SimilarQuery {
     pub energy_tol: Option<f64>,
 }
 
-/// `GET /api/tracks/:trackId/similar` — `commands::analysis::get_similar` の中核を複製。
+/// `GET /api/tracks/:trackId/similar` — GUI の `get_similar` と同じ
+/// [`crate::library::similar::similar_hits`] の結果に、実効 BPM の補完だけを足す。
 /// 基準曲が未解析 (ベクトル空) なら空配列を返す。
 pub async fn get_similar_tracks(
     State(state): State<ApiState>,
@@ -1300,28 +1302,18 @@ pub async fn get_similar_tracks(
     Query(bq): Query<EffectiveBpmQuery>,
 ) -> Result<Json<Vec<SimilarHit>>, ApiError> {
     let db = state.db()?;
-    // 基準曲が未解析 / ベクトル空なら類似なし。
-    let base = match db.get_analysis(track_id)? {
-        Some(b) if !b.vector.is_empty() => b,
-        _ => return Ok(Json(Vec::new())),
-    };
-    let all = db.get_all_analysis()?;
     let opts = SimilarOpts {
         bpm_tol: q.bpm_tol,
         key_compatible: q.key_compatible.unwrap_or(false),
         energy_tol: q.energy_tol,
     };
-    let ranked = rank_similar(&base, &all, &opts, q.limit.unwrap_or(25));
-
-    let mut tracks = Vec::with_capacity(ranked.len());
-    let mut distances = Vec::with_capacity(ranked.len());
-    for (tid, distance) in ranked {
-        if let Ok(Some(track)) = db.get_track_by_track_id(tid) {
-            tracks.push(track);
-            distances.push(distance);
-        }
-    }
-    // 実効 BPM (タグ ?? 解析値) にそろえる (D3)。
+    let limit = q.limit.unwrap_or(DEFAULT_SIMILAR_LIMIT);
+    let (mut tracks, distances): (Vec<Track>, Vec<f64>) =
+        similar_hits(&db, track_id, &opts, limit)?
+            .into_iter()
+            .map(|hit| (hit.track, hit.distance))
+            .unzip();
+    // 実効 BPM (タグ ?? 解析値) にそろえる (D3)。HTTP だけの規則なのでここで行う。
     apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
     let hits = tracks
         .into_iter()
@@ -1746,27 +1738,19 @@ pub async fn delete_playlist(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// スマートプレイリストの曲目は直接編集させない → 409。曲目は条件のライブ評価で決まり、
-/// `playlist_tracks` に書いても無視されるため (黙って成功させない)。
-fn ensure_tracks_editable(db: &crate::db::Database, playlist_id: i64) -> Result<(), ApiError> {
-    if db.has_smart_criteria(playlist_id)? {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            crate::db::playlists::SMART_PLAYLIST_EDIT_ERROR,
-        ));
-    }
-    Ok(())
-}
+// 曲目の編集は GUI と共通の `library::playlists` を通す。スマートプレイリストは 409
+// (曲目は条件のライブ評価で決まり、`playlist_tracks` に書いても無視されるため黙って成功させない)。
+// エラーの HTTP ステータスへの写像は `api/error.rs`。
 
 /// `POST /api/playlists/:playlistId/tracks` — 曲を追加 → { added: n }。
+/// 負の trackId (ライブラリ外の一時再生曲) は追加せず、n にも数えない。
 pub async fn add_tracks(
     State(state): State<ApiState>,
     Path(playlist_id): Path<i64>,
     ExtractJson(body): ExtractJson<ByIdsBody>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
-    ensure_tracks_editable(&db, playlist_id)?;
-    let added = db.add_tracks_to_playlist(playlist_id, &body.track_ids)?;
+    let added = crate::library::playlists::add_tracks(&db, playlist_id, &body.track_ids)?;
     // 追加成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
     state.notify_library_changed(Some(playlist_id));
     Ok(Json(json!({ "added": added })))
@@ -1778,8 +1762,7 @@ pub async fn remove_track(
     Path((playlist_id, track_id)): Path<(i64, i64)>,
 ) -> Result<StatusCode, ApiError> {
     let db = state.db()?;
-    ensure_tracks_editable(&db, playlist_id)?;
-    db.remove_track_from_playlist(playlist_id, track_id)?;
+    crate::library::playlists::remove_track(&db, playlist_id, track_id)?;
     // 削除成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
     state.notify_library_changed(Some(playlist_id));
     Ok(StatusCode::NO_CONTENT)
@@ -1792,35 +1775,13 @@ pub async fn replace_playlist_tracks(
     Path(playlist_id): Path<i64>,
     ExtractJson(body): ExtractJson<ByIdsBody>,
 ) -> Result<StatusCode, ApiError> {
-    use crate::db::playlists::ReplacePlaylistTracksResult;
-
     let db = state.db()?;
-    ensure_tracks_editable(&db, playlist_id)?;
-    match db.replace_playlist_tracks(playlist_id, &body.track_ids)? {
-        ReplacePlaylistTracksResult::Replaced => {
-            state.notify_library_changed(Some(playlist_id));
-            Ok(StatusCode::NO_CONTENT)
-        }
-        ReplacePlaylistTracksResult::PlaylistNotFound => {
-            Err(ApiError::not_found("playlist not found"))
-        }
-        ReplacePlaylistTracksResult::TrackNotFound(track_id) => Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            format!("track not found: {track_id}"),
-        )),
-    }
+    crate::library::playlists::replace_tracks(&db, playlist_id, &body.track_ids)?;
+    state.notify_library_changed(Some(playlist_id));
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ===== 曲メタデータ書き込み =====
-
-/// 実ファイルのタグへ書き戻す。`location_path` が無い / ファイルが存在しない場合は
-/// 何もしない (= 失敗ではない)。書き込みを試みて失敗したときだけ true を返す。
-/// 整理 (フォルダ移動) はせず、その場でタグだけ更新する (rekordbox 等 他アプリへ反映)。
-///
-/// 実体は GUI の `update_track` と共有する [`crate::organizer::write_tags_to_location`]。
-fn writeback(loc: Option<&str>, w: &crate::organizer::TagWrite) -> bool {
-    crate::organizer::write_tags_to_location(loc, w)
-}
 
 /// `POST /api/tracks/genre-tags/{add,remove}` のボディ。
 /// genre を空白区切りタグ集合として扱い、複数曲に対し 1 つのタグを一括追記/除去する。
@@ -1831,6 +1792,39 @@ pub struct GenreTagBody {
     pub tag: String,
 }
 
+/// `POST /api/tracks/genre-tags/{add,remove}` の共通処理。GUI と同じ
+/// [`crate::library::genre::edit_genre_tags`] を呼び、`{ "updated": n, "fileWriteFailed": m }` を返す。
+/// `updated` は genre が実際に変わった曲数 (既に付いていた / もともと無かった曲、存在しない
+/// trackId は数えない)。空タグは 400。DB を更新できなかった曲も数えない (エラーにはしない)。
+fn edit_genre_tags(
+    state: &ApiState,
+    body: &GenreTagBody,
+    op: GenreTagOp,
+) -> Result<Json<Value>, ApiError> {
+    let db = state.db()?;
+    let tag = [body.tag.as_str()];
+    let (add, remove): (&[&str], &[&str]) = match op {
+        GenreTagOp::Add => (&tag, &[]),
+        GenreTagOp::Remove => (&[], &tag),
+    };
+    let outcome = crate::library::genre::edit_genre_tags(&db, &body.track_ids, add, remove)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
+    if outcome.updated > 0 {
+        state.notify_library_changed(None);
+    }
+    Ok(Json(json!({
+        "updated": outcome.updated,
+        "fileWriteFailed": outcome.file_write_failed,
+    })))
+}
+
+/// どちらのエンドポイントか (ハンドラ内だけで使う)。
+#[derive(Clone, Copy)]
+enum GenreTagOp {
+    Add,
+    Remove,
+}
+
 /// `POST /api/tracks/genre-tags/add` — 指定タグを各曲の genre 末尾に一括追記 (重複回避)。
 /// DB 更新後、その曲の genre のみを実ファイルにも書き戻す (他タグは保持)。空タグは 400。
 /// 返り値 `{ "updated": n, "fileWriteFailed": m }`。
@@ -1838,34 +1832,7 @@ pub async fn add_genre_tags(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<GenreTagBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let tag = body.tag.trim();
-    if tag.is_empty() {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "tag is empty"));
-    }
-    let db = state.db()?;
-    let mut updated = 0_i64;
-    let mut file_failed = 0_i64;
-    for &id in &body.track_ids {
-        // 存在しない id は db 側で 0 行更新 (エラーにならない)。Ok なら計上する。
-        if db.add_genre_tag(id, tag).is_ok() {
-            updated += 1;
-            if let Ok(Some(t)) = db.get_track_by_track_id(id) {
-                let w = crate::organizer::TagWrite {
-                    genre: t.genre.as_deref(),
-                    ..Default::default()
-                };
-                if writeback(t.location_path.as_deref(), &w) {
-                    file_failed += 1;
-                }
-            }
-        }
-    }
-    if updated > 0 {
-        state.notify_library_changed(None);
-    }
-    Ok(Json(
-        json!({ "updated": updated, "fileWriteFailed": file_failed }),
-    ))
+    edit_genre_tags(&state, &body, GenreTagOp::Add)
 }
 
 /// `POST /api/tracks/genre-tags/remove` — 指定タグを各曲の genre から一括除去。
@@ -1874,33 +1841,7 @@ pub async fn remove_genre_tags(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<GenreTagBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let tag = body.tag.trim();
-    if tag.is_empty() {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "tag is empty"));
-    }
-    let db = state.db()?;
-    let mut updated = 0_i64;
-    let mut file_failed = 0_i64;
-    for &id in &body.track_ids {
-        if db.remove_genre_tag(id, tag).is_ok() {
-            updated += 1;
-            if let Ok(Some(t)) = db.get_track_by_track_id(id) {
-                let w = crate::organizer::TagWrite {
-                    genre: Some(t.genre.as_deref().unwrap_or("")),
-                    ..Default::default()
-                };
-                if writeback(t.location_path.as_deref(), &w) {
-                    file_failed += 1;
-                }
-            }
-        }
-    }
-    if updated > 0 {
-        state.notify_library_changed(None);
-    }
-    Ok(Json(
-        json!({ "updated": updated, "fileWriteFailed": file_failed }),
-    ))
+    edit_genre_tags(&state, &body, GenreTagOp::Remove)
 }
 
 /// `POST /api/tracks/tags/{add,remove}` のボディ。first-class Tags (ファイル書き戻しなし)。
@@ -1972,8 +1913,7 @@ pub async fn stream_artwork(
 ) -> Result<Response, ApiError> {
     let db = state.db()?;
     let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
 
     let path_str = track.location_path.as_deref().unwrap_or("");
@@ -2029,8 +1969,7 @@ pub async fn set_track_artwork(
     }
     let db = state.db()?;
     let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
     check_track_preconditions(&track, if_match_header(&headers)?.as_deref(), None)?;
     let path_str = track.location_path.as_deref().unwrap_or("");
@@ -2054,8 +1993,7 @@ pub async fn delete_track_artwork(
 ) -> Result<StatusCode, ApiError> {
     let db = state.db()?;
     let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
     check_track_preconditions(&track, if_match_header(&headers)?.as_deref(), None)?;
     let path_str = track.location_path.as_deref().unwrap_or("");
@@ -2136,8 +2074,7 @@ pub async fn cast_media(
         .ok_or_else(|| ApiError::not_found("not found"))?;
     let db = state.db()?;
     let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         .ok_or_else(|| ApiError::not_found("not found"))?;
     let path_str = track.location_path.as_deref().unwrap_or("");
     let path = FsPath::new(path_str);
@@ -2392,8 +2329,7 @@ pub async fn stream_track(
 ) -> Result<Response, ApiError> {
     let db = state.db()?;
     let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
 
     let path_str = track.location_path.as_deref().unwrap_or("");
@@ -2516,23 +2452,25 @@ fn play_error(e: crate::playback_target::PlayError) -> ApiError {
 }
 
 /// track_id で曲を再生するヘルパ (remote_play / remote_prev から呼ぶ)。
+/// `preview` は試聴 (preview) モードで再生するか。曲を指定して再生する操作は常に通常再生 (false)、
+/// 「前の曲」だけはデスクトップの ⏮ と同じく今のモードを保つ。
 async fn play_by_id_for_remote(
     state: &ApiState,
     app: &tauri::AppHandle,
     track_id: i64,
+    preview: bool,
 ) -> Result<(), ApiError> {
     // ライブラリ外の一時再生曲 (デスクトップで「このアプリで開く」した曲) は DB に無い。
     // キュー上の前後移動で当たることがあるので、DB 照合を飛ばして Coordinator に任せる。
     if crate::transient::is_transient_id(track_id) {
         return remote_coordinator(app)
-            .play_track(track_id, false)
+            .play_track(track_id, preview)
             .await
             .map_err(play_error);
     }
     let track = state
         .db()?
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         // リモート操作の失敗はモバイルにそのまま表示されうるので日本語にする (E9)。
         .ok_or_else(|| ApiError::not_found("曲が見つかりません"))?;
     if track.location_path.as_deref().unwrap_or("").is_empty() {
@@ -2541,9 +2479,8 @@ async fn play_by_id_for_remote(
             "この曲にはファイルの場所がありません",
         ));
     }
-    // リモート API 経由は常に通常再生 (preview ではない)。
     remote_coordinator(app)
-        .play_track(track_id, false)
+        .play_track(track_id, preview)
         .await
         .map_err(play_error)
 }
@@ -2617,7 +2554,7 @@ pub async fn remote_play(
     ExtractJson(body): ExtractJson<RemotePlayBody>,
 ) -> Result<StatusCode, ApiError> {
     let app = remote_app(&state)?;
-    play_by_id_for_remote(&state, app, body.track_id).await?;
+    play_by_id_for_remote(&state, app, body.track_id, false).await?;
     app.state::<crate::analyzer::Analyzer>()
         .submit(vec![body.track_id], false);
     Ok(StatusCode::NO_CONTENT)
@@ -2751,17 +2688,18 @@ pub async fn remote_next(State(state): State<ApiState>) -> Result<Json<Value>, A
     Ok(Json(json!({ "trackId": tid })))
 }
 
-/// `POST /api/remote/prev` — キューの前の曲へ戻る。
+/// `POST /api/remote/prev` — 「前の曲」。デスクトップの ⏮ と同じ 3 秒ルール
+/// ([`crate::commands::playback::prev_target`]): 今の曲を 3 秒を超えて再生していれば
+/// その曲を頭から再生し直し、そうでなければキューの前の曲へ戻る。
+/// 返り値 `{ "trackId": 再生した曲 | null }` (前の曲が無ければ null)。
 pub async fn remote_prev(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
     let app = remote_app(&state)?;
-    let prev_id = app
-        .state::<std::sync::Mutex<crate::audio::AudioPlayer>>()
-        .lock()
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .advance_prev();
-    crate::commands::playback::emit_queue_changed(app);
+    let prev_id = crate::commands::playback::prev_target(app)?;
     if let Some(tid) = prev_id {
-        play_by_id_for_remote(&state, app, tid).await?;
+        // デスクトップの ⏮ (play_prev) と同じく、試聴 (preview) 中ならそのモードのまま再生する。
+        // (リモートからの頭出しで、デスクトップの試聴が黙って通常再生に切り替わらないように。)
+        let preview = crate::commands::playback::preview_on(app);
+        play_by_id_for_remote(&state, app, tid, preview).await?;
         Ok(Json(json!({ "trackId": tid })))
     } else {
         Ok(Json(json!({ "trackId": Value::Null })))
@@ -2821,7 +2759,7 @@ pub async fn remote_set_queue(
     crate::commands::playback::emit_queue_changed(app);
     if body.play {
         if let Some(tid) = start_tid {
-            play_by_id_for_remote(&state, app, tid).await?;
+            play_by_id_for_remote(&state, app, tid, false).await?;
             app.state::<crate::analyzer::Analyzer>()
                 .submit(vec![tid], false);
         }
@@ -2903,100 +2841,6 @@ pub async fn remote_repeat(
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .set_repeat(mode);
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// `apply_track_edit` の結果。
-struct TrackEditResult {
-    /// 更新後 (整理による移動後) の Track。
-    track: Track,
-    /// タグの書き込みを試みて失敗したか。
-    file_failed: bool,
-    /// 整理 (フォルダ移動 + リネーム) を試みて失敗したか。
-    relocate_failed: bool,
-}
-
-/// 1 曲に編集を適用するコア処理 (PATCH 単体・一括の両方から呼ぶ)。
-/// DB を更新し、更新後の現在値を実ファイルのタグへ書き戻したうえで、
-/// 整理先ルートが設定されていれば GUI の update_track と同じ規則で移動 + リネームする。
-/// 対象が存在しない場合 (0 行更新) は `None`。
-fn apply_track_edit(
-    db: &crate::db::Database,
-    track_id: i64,
-    edit: &crate::models::TrackEdit,
-) -> Result<Option<TrackEditResult>, ApiError> {
-    db.update_track(track_id, edit)?;
-    // 更新後の Track を取得。存在しない id は 0 行更新なので空 → None。
-    let track: Track = match db.get_tracks_by_ids(&[track_id])?.into_iter().next() {
-        Some(t) => t,
-        None => return Ok(None),
-    };
-    // BPM / Key もファイルタグへ書く (#164)。BPM はトラック自身の値を優先し、
-    // 未設定なら解析結果へフォールバックする。Key は実効キー (手動上書き ?? 解析値, #172)
-    // を DJ ソフトが読む音楽表記 ("Am" 等) に変換して InitialKey へ書く。
-    let analysis = db.get_analysis(track_id).ok().flatten();
-    let bpm = track
-        .bpm
-        .filter(|n| *n > 0)
-        .map(|n| n as f64)
-        .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
-    let key = crate::organizer::effective_initial_key(
-        track.key_camelot_user.as_deref(),
-        analysis.as_ref(),
-    );
-
-    // 現在の DB 値を実ファイルのタグへ書き戻す (GUI の update_track と同様、他アプリにも反映)。
-    let file_failed = {
-        let w = crate::organizer::TagWrite {
-            title: track.name.as_deref(),
-            artist: track.artist.as_deref(),
-            album_artist: track.album_artist.as_deref(),
-            composer: track.composer.as_deref(),
-            album: track.album.as_deref(),
-            genre: track.genre.as_deref(),
-            comments: track.comments.as_deref(),
-            year: track.year,
-            track_number: track.track_number,
-            track_count: track.track_count,
-            disc_number: track.disc_number,
-            disc_count: track.disc_count,
-            compilation: Some(track.compilation),
-            bpm,
-            key,
-        };
-        writeback(track.location_path.as_deref(), &w)
-    };
-
-    // 整理 (フォルダ分け + iTunes 準拠リネーム) と DB location の追従。
-    // GUI の update_track と共通の関数を使う (整理先未設定 / 無効なら移動しない)。
-    // 移動失敗は編集自体の失敗にはせず relocateFailed で知らせる。
-    let meta = crate::organizer::TrackMeta {
-        title: track.name.as_deref(),
-        artist: track.artist.as_deref(),
-        album_artist: track.album_artist.as_deref(),
-        album: track.album.as_deref(),
-        compilation: track.compilation,
-        track_number: track.track_number,
-        disc_number: track.disc_number,
-        disc_count: track.disc_count,
-    };
-    let outcome = crate::organizer::relocate_after_edit(
-        db,
-        track_id,
-        track.location_path.as_deref(),
-        &meta,
-    )?;
-    let relocate_failed = outcome == crate::organizer::RelocateOutcome::Failed;
-    // 移動した場合はレスポンスの locationPath / locationRaw を DB に書いた新パスへ揃える。
-    let mut track = track;
-    if let crate::organizer::RelocateOutcome::Moved { path, url } = outcome {
-        track.location_path = Some(path);
-        track.location_raw = Some(url);
-    }
-    Ok(Some(TrackEditResult {
-        track,
-        file_failed,
-        relocate_failed,
-    }))
 }
 
 /// 曲の取り違え防止のための前提条件 (`PATCH /api/tracks/{trackId}` の `expect`)。
@@ -3144,7 +2988,7 @@ pub async fn patch_track(
         check_track_preconditions(&current, if_match.as_deref(), body.expect.as_ref())?;
     }
     let edit = body.edit;
-    let mut r = match apply_track_edit(&db, track_id, &edit)? {
+    let mut r = match crate::library::edit::apply_track_edit(&db, track_id, &edit)? {
         Some(r) => r,
         None => return Err(ApiError::not_found("track not found")),
     };
@@ -3155,7 +2999,7 @@ pub async fn patch_track(
     state.notify_library_changed(None);
     Ok(Json(json!({
         "track": track_val,
-        "fileWriteFailed": r.file_failed,
+        "fileWriteFailed": r.file_write_failed,
         "relocateFailed": r.relocate_failed,
     })))
 }
@@ -3177,9 +3021,7 @@ pub async fn set_track_rating(
     ExtractJson(body): ExtractJson<SetRatingBody>,
 ) -> Result<StatusCode, ApiError> {
     let db = state.db()?;
-    let rating = body.rating.clamp(0, 100);
-    db.set_rating(track_id, rating)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    db.set_rating(track_id, crate::rating::clamp_rating(body.rating))?;
     state.notify_library_changed(None);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -3207,6 +3049,8 @@ pub async fn patch_tracks_bulk(
     ExtractJson(body): ExtractJson<BulkTrackEdit>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
+    // 入力の検証は 1 回だけ、どの曲にも書く前に行う (対象が空でも不正な入力は 400)。
+    let edit = crate::library::edit::check_edit(&body.edit)?;
     // (trackId, 指定に使った値) の列に解決する。persistentId が見つからなければ notFound へ。
     let mut targets: Vec<(i64, Value)> = Vec::new();
     let mut not_found: Vec<Value> = Vec::new();
@@ -3239,10 +3083,10 @@ pub async fn patch_tracks_bulk(
     let mut file_write_failed: Vec<i64> = Vec::new();
     let mut relocate_failed: Vec<i64> = Vec::new();
     for (id, requested) in targets {
-        match apply_track_edit(&db, id, &body.edit)? {
+        match crate::library::edit::apply_checked_edit(&db, id, &edit)? {
             Some(r) => {
                 updated += 1;
-                if r.file_failed {
+                if r.file_write_failed {
                     file_write_failed.push(id);
                 }
                 if r.relocate_failed {

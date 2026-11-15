@@ -29,18 +29,17 @@ export function formatSeconds(sec: number | null | undefined): string {
   return formatDuration(Math.round(sec * 1000));
 }
 
-/** 0-100 の rating を 0-5 の星（半端は四捨五入で 0.5 刻みに丸めず整数星）に。 */
-export function ratingToStars(rating: number | null | undefined): number {
-  if (rating == null || !Number.isFinite(rating)) return 0;
-  const clamped = Math.max(0, Math.min(100, rating));
-  return Math.round(clamped / 20);
-}
-
 /** 0-100 の rating を 0.5 刻み（0..5）の星数に。10 刻みの半星を保持する。 */
 export function ratingToHalfStars(rating: number | null | undefined): number {
   if (rating == null || !Number.isFinite(rating)) return 0;
   const clamped = Math.max(0, Math.min(100, rating));
   return Math.round(clamped / 10) / 2;
+}
+
+/** 0.5 刻みの星数（0..5）を 0-100 の rating に。ratingToHalfStars の逆（★1 = 20）。 */
+export function starsToRating(stars: number | null | undefined): number {
+  if (stars == null || !Number.isFinite(stars)) return 0;
+  return Math.max(0, Math.min(100, Math.round(stars * 20)));
 }
 
 /** 半星対応の星文字列。例: 70 → "★★★½"、80 → "★★★★"、0 → ""。 */

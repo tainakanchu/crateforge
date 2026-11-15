@@ -39,7 +39,7 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 ### 讀取
 
 - `GET /api/health` — 伺服器資訊 + 目前曲目數
-- `GET /api/tracks`（`?q` 搜尋、`?album` / `?genre` 部分比對、offset/limit）。加上 `?albumExact=true` 可讓 `album` 完全比對
+- `GET /api/tracks`（`?q` 搜尋、`?album` 部分比對、`?genre` 類型標籤完全比對、offset/limit）。加上 `?albumExact=true` 可讓 `album` 完全比對
 - `GET /api/tracks/{trackId}` / `POST /api/tracks/by-ids`（ID 列 → 曲目。屬唯讀查詢，LAN 端帶權杖也可使用）
 - `GET /api/tracks/{trackId}/stream` — 音訊串流（`?native=true` 裝置可播放的格式不轉檔 / `?original=true` 原始檔 / `?fmt=aac&br=192` 轉為 AAC）
 - `GET /api/tracks/{trackId}/analysis` — 解析結果（未解析時為 null）
@@ -68,6 +68,7 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 
 - `PATCH /api/tracks/{trackId}` — 部分更新 name / artist / album / genre / year / bpm / rating / composer / comments 等。
   name / artist / album / genre / year / composer / comments 會寫回實際檔案的標籤，`rating` / `disabled` / `playCount` / `skipCount` 僅寫入 DB。
+  `rating` 為 0〜100，超出範圍會回傳 `400`（不會更新任何內容）。只更新 `rating` 時不會推進 `dateModified`。
 - `PATCH /api/tracks`（`{trackIds, edit}` 或 `{persistentIds, edit}`） — 多曲一次更新。`trackIds` 與 `persistentIds` 只能指定其中一個（兩者皆有或皆無為 `400`）。
   找不到的曲目會以所指定的值（trackId / persistentId）列在 `notFound`。
 - `POST /api/tracks/genre-tags/add` / `/remove` — 對類型標籤在尾端批次增減。

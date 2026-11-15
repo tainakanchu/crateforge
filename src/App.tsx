@@ -48,11 +48,13 @@ import {
 } from "./lib/triage";
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
 import type { ConvertMode, DiscToc, PlaybackState, RepeatMode, SortField, SortOrder, Track } from "./types";
+import { isTauri } from "./lib/env";
+import { combineQuery } from "./lib/query";
+import { useTauriEvent } from "./hooks/useTauriEvent";
 
 // 窓の幅がこれ未満なら右ペインを自動で畳む (最小 1024px でも曲名列が潰れないように)。
 const RAIL_AUTO_HIDE_WIDTH = 1200;
 
-const isTauri = "__TAURI_INTERNALS__" in window;
 
 /// Rust プレイヤー側の「フロントのストアと二重管理になっている値」。
 type RemotePlayerState = { shuffle: boolean; repeat: RepeatMode; volume: number };
@@ -240,9 +242,7 @@ export default function App() {
         const effectiveSort: SortField = manualOrder ? "name" : sortField;
         const effectiveOrder: SortOrder = manualOrder ? "asc" : sortOrder;
         // フリーテキスト検索 + ジャンル等の絞り込みチップを空白区切りで AND 結合。
-        const combinedQuery = [searchQuery.trim(), ...filterTags]
-          .filter(Boolean)
-          .join(" ");
+        const combinedQuery = combineQuery(searchQuery, filterTags);
         let result;
 
         if (viewMode === "history") {
@@ -414,7 +414,7 @@ export default function App() {
         setAlbumsHasMore(false);
         return;
       }
-      const combinedQuery = [searchQuery.trim(), ...filterTags].filter(Boolean).join(" ");
+      const combinedQuery = combineQuery(searchQuery, filterTags);
       const isLibraryScope = viewMode === "library" && !combinedQuery;
       if (!isLibraryScope) return;
       setIsLoading(true);
@@ -619,37 +619,30 @@ export default function App() {
     smtcAlbum,
   ]);
 
-  useEffect(() => {
-    if (!isTauri) return;
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      unlisten = await systemApi.onSmtcButton((kind) => {
-        switch (kind) {
-          case "play":
-            playbackApi.resume().catch(() => {});
-            break;
-          case "pause":
-            playbackApi.pause().catch(() => {});
-            break;
-          case "toggle":
-            if (playback.isPlaying) playbackApi.pause();
-            else playbackApi.resume();
-            break;
-          case "next":
-            playbackApi.playNext();
-            break;
-          case "prev":
-            playbackApi.playPrev();
-            break;
-          case "stop":
-            playbackApi.stop();
-            break;
-        }
-      });
-    })();
-    return () => {
-      if (unlisten) unlisten();
-    };
+  useTauriEvent(() => {
+    return systemApi.onSmtcButton((kind) => {
+      switch (kind) {
+        case "play":
+          playbackApi.resume().catch(() => {});
+          break;
+        case "pause":
+          playbackApi.pause().catch(() => {});
+          break;
+        case "toggle":
+          if (playback.isPlaying) playbackApi.pause();
+          else playbackApi.resume();
+          break;
+        case "next":
+          playbackApi.playNext();
+          break;
+        case "prev":
+          playbackApi.playPrev();
+          break;
+        case "stop":
+          playbackApi.stop();
+          break;
+      }
+    });
     // playback.isPlaying read inside handler is intentionally lagging
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -774,84 +767,63 @@ export default function App() {
   }, []);
 
   // 「閉じるときに更新」: 閉じる要求を捕まえ、予約があればインストーラを起動してから閉じる。
-  useEffect(() => {
-    if (!isTauri) return;
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      const win = getCurrentWindow();
-      unlisten = await win.onCloseRequested(async (event) => {
-        const st = useStore.getState();
-        const pending = st.pendingUpdate;
-        const needsExport =
-          st.autoExportEnabled && !!st.autoExportPath && libraryDirtyRef.current;
-        if (!pending && !needsExport) return; // 何も無ければ通常どおり閉じる
-        event.preventDefault();
-        // 閉じる前に最新のライブラリを書き出しておく。
-        if (needsExport && st.autoExportPath) {
-          try {
-            await libraryApi.exportLibrary(st.autoExportPath);
-            libraryDirtyRef.current = false;
-          } catch (e) {
-            console.error("auto-export on close failed:", e);
-          }
+  useTauriEvent(() => {
+    const win = getCurrentWindow();
+    return win.onCloseRequested(async (event) => {
+      const st = useStore.getState();
+      const pending = st.pendingUpdate;
+      const needsExport =
+        st.autoExportEnabled && !!st.autoExportPath && libraryDirtyRef.current;
+      if (!pending && !needsExport) return; // 何も無ければ通常どおり閉じる
+      event.preventDefault();
+      // 閉じる前に最新のライブラリを書き出しておく。
+      if (needsExport && st.autoExportPath) {
+        try {
+          await libraryApi.exportLibrary(st.autoExportPath);
+          libraryDirtyRef.current = false;
+        } catch (e) {
+          console.error("auto-export on close failed:", e);
         }
-        if (pending) {
-          setInstalling(true);
-          try {
-            // stop ではなく pause: 停止すると永続化される再生状態から曲が消え、
-            // 更新後の起動で復元できなくなる (#159)。
-            await playbackApi.pause().catch(() => {});
-            await systemApi.downloadAndRunUpdate(pending.url);
-          } catch (e) {
-            console.error("update on close failed:", e);
-          }
+      }
+      if (pending) {
+        setInstalling(true);
+        try {
+          // stop ではなく pause: 停止すると永続化される再生状態から曲が消え、
+          // 更新後の起動で復元できなくなる (#159)。
+          await playbackApi.pause().catch(() => {});
+          await systemApi.downloadAndRunUpdate(pending.url);
+        } catch (e) {
+          console.error("update on close failed:", e);
         }
-        await win.destroy();
-      });
-    })();
-    return () => {
-      if (unlisten) unlisten();
-    };
+      }
+      await win.destroy();
+    });
   }, []);
 
   // 曲送り(自動遷移)はバックエンドのワーカーが行う。
   // ポーリングはやめ、`playback-advanced` イベントを購読して即時に再生状態を反映する。
   // (250ms の状態ポーリングは位置表示用に残してあるが、それを待たずに UI を更新するため。)
-  useEffect(() => {
-    if (!isTauri) return;
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      unlisten = await playbackApi.onPlaybackAdvanced(async () => {
-        try {
-          const state = await playbackApi.getPlaybackState();
-          setPlayback(state);
-        } catch {
-          // ignore
-        }
-      });
-    })();
-    return () => {
-      if (unlisten) unlisten();
-    };
+  useTauriEvent(() => {
+    return playbackApi.onPlaybackAdvanced(async () => {
+      try {
+        const state = await playbackApi.getPlaybackState();
+        setPlayback(state);
+      } catch {
+        // ignore
+      }
+    });
   }, [setPlayback]);
 
   // プレビュー曲が終端に達したとき: ワーカーが auto-advance せず停止し preview-ended を発火する。
   // Esc と同じく元の曲・位置へ復帰する。
-  useEffect(() => {
-    if (!isTauri) return;
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      unlisten = await playbackApi.onPreviewEnded(() => {
-        const { previewActive } = useStore.getState();
-        // バックエンドが先に PreviewMode を落としても、フロントの復帰先は残っている。
-        if (previewActive || useStore.getState().previewReturn != null) {
-          audition.exitPreview({ restore: true }).catch(() => {});
-        }
-      });
-    })();
-    return () => {
-      if (unlisten) unlisten();
-    };
+  useTauriEvent(() => {
+    return playbackApi.onPreviewEnded(() => {
+      const { previewActive } = useStore.getState();
+      // バックエンドが先に PreviewMode を落としても、フロントの復帰先は残っている。
+      if (previewActive || useStore.getState().previewReturn != null) {
+        audition.exitPreview({ restore: true }).catch(() => {});
+      }
+    });
   }, []);
 
   // Google Cast 再生先の状態をストアへ反映する (初期取得 + cast-state-changed)。
@@ -978,24 +950,17 @@ export default function App() {
   runAutoExportCallbackRef.current = runAutoExport;
 
   // 内蔵 API 経由の変更（プレイリスト作成・曲追加/削除）を即時反映する。
-  useEffect(() => {
-    if (!isTauri) return;
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      unlisten = await playlistsApi.onLibraryChanged((_playlistId, info) => {
-        // アートワークが実際に変わりうる変更のときだけ epoch を進める。
-        // 毎回進めると全 ArtworkImg が一斉に取り直してしまう (#213)。
-        // アプリ内のアートワーク編集は TrackEditor が直接 bumpArtworkEpoch する。
-        if (info.artworkChanged) useStore.getState().bumpArtworkEpoch();
-        reloadPlaylists();
-        setReloadCount((c) => c + 1);
-        libraryDirtyRef.current = true;
-        scheduleAutoExport();
-      });
-    })();
-    return () => {
-      if (unlisten) unlisten();
-    };
+  useTauriEvent(() => {
+    return playlistsApi.onLibraryChanged((_playlistId, info) => {
+      // アートワークが実際に変わりうる変更のときだけ epoch を進める。
+      // 毎回進めると全 ArtworkImg が一斉に取り直してしまう (#213)。
+      // アプリ内のアートワーク編集は TrackEditor が直接 bumpArtworkEpoch する。
+      if (info.artworkChanged) useStore.getState().bumpArtworkEpoch();
+      reloadPlaylists();
+      setReloadCount((c) => c + 1);
+      libraryDirtyRef.current = true;
+      scheduleAutoExport();
+    });
   }, [reloadPlaylists, scheduleAutoExport]);
 
   const triggerReload = useCallback(() => {
@@ -1013,71 +978,64 @@ export default function App() {
   }, [triggerReload, loadAnalyses]);
 
   // CD リッピング進捗のグローバル購読
-  useEffect(() => {
-    if (!isTauri) return;
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      unlisten = await ripperApi.onRipProgress((p) => {
-        if (p.kind === "start") {
-          setRipStatus({
-            phase: "ripping",
-            current: 0,
-            total: p.total,
-            label: "",
-            log: [`Starting rip (${p.total} tracks)`],
-          });
-        } else if (p.kind === "trackStart") {
-          const prev = useStore.getState().ripStatus;
-          setRipStatus({
-            phase: "ripping",
-            current: p.index + 1,
-            total: p.total,
-            label: p.label,
-            log: prev?.log ?? [],
-            addedTracks: prev?.addedTracks,
-            percent: 0,
-            stage: "reading",
-          });
-          appendRipLog(`[${p.index + 1}/${p.total}] ripping: ${p.label}`);
-        } else if (p.kind === "trackProgress") {
-          const cur = useStore.getState().ripStatus;
-          // 遅れて届いた前トラックのイベントで表示を巻き戻さない。
-          if (cur && cur.phase === "ripping" && cur.current === p.index + 1) {
-            useStore.getState().setRipStatus({ ...cur, percent: p.percent, stage: p.stage });
-          }
-        } else if (p.kind === "trackDone") {
-          appendRipLog(`  → ${p.outputPath}`);
-        } else if (p.kind === "done") {
-          const prev = useStore.getState().ripStatus;
-          setRipStatus({
-            phase: "done",
-            current: prev?.total ?? p.writtenFiles.length,
-            total: prev?.total ?? p.writtenFiles.length,
-            label: prev?.label ?? "",
-            log: [
-              ...(prev?.log ?? []),
-              ...(p.movedOldFiles ?? []).map((f) => `  置き換え前のファイルを移動: ${f}`),
-              ...(p.replaceErrors ?? []).map((e) => `  置き換え失敗: ${e}`),
-              `Done. ${p.writtenFiles.length} file(s), ${p.addedTracks} added` +
-                (p.replacedTracks > 0 ? `, ${p.replacedTracks} replaced.` : "."),
-            ],
-            addedTracks: p.addedTracks,
-          });
-          triggerReload();
-          pushToast(
-            "success",
-            `リッピング完了: ${p.addedTracks} 曲` +
-              (p.replacedTracks > 0 ? `（置き換え ${p.replacedTracks} 曲）` : ""),
-          );
-          if ((p.replaceErrors ?? []).length > 0) {
-            pushToast("error", `置き換えに失敗した曲があります（${p.replaceErrors.length} 曲）。ログを確認してください`, 6000);
-          }
+  useTauriEvent(() => {
+    return ripperApi.onRipProgress((p) => {
+      if (p.kind === "start") {
+        setRipStatus({
+          phase: "ripping",
+          current: 0,
+          total: p.total,
+          label: "",
+          log: [`Starting rip (${p.total} tracks)`],
+        });
+      } else if (p.kind === "trackStart") {
+        const prev = useStore.getState().ripStatus;
+        setRipStatus({
+          phase: "ripping",
+          current: p.index + 1,
+          total: p.total,
+          label: p.label,
+          log: prev?.log ?? [],
+          addedTracks: prev?.addedTracks,
+          percent: 0,
+          stage: "reading",
+        });
+        appendRipLog(`[${p.index + 1}/${p.total}] ripping: ${p.label}`);
+      } else if (p.kind === "trackProgress") {
+        const cur = useStore.getState().ripStatus;
+        // 遅れて届いた前トラックのイベントで表示を巻き戻さない。
+        if (cur && cur.phase === "ripping" && cur.current === p.index + 1) {
+          useStore.getState().setRipStatus({ ...cur, percent: p.percent, stage: p.stage });
         }
-      });
-    })();
-    return () => {
-      if (unlisten) unlisten();
-    };
+      } else if (p.kind === "trackDone") {
+        appendRipLog(`  → ${p.outputPath}`);
+      } else if (p.kind === "done") {
+        const prev = useStore.getState().ripStatus;
+        setRipStatus({
+          phase: "done",
+          current: prev?.total ?? p.writtenFiles.length,
+          total: prev?.total ?? p.writtenFiles.length,
+          label: prev?.label ?? "",
+          log: [
+            ...(prev?.log ?? []),
+            ...(p.movedOldFiles ?? []).map((f) => `  置き換え前のファイルを移動: ${f}`),
+            ...(p.replaceErrors ?? []).map((e) => `  置き換え失敗: ${e}`),
+            `Done. ${p.writtenFiles.length} file(s), ${p.addedTracks} added` +
+              (p.replacedTracks > 0 ? `, ${p.replacedTracks} replaced.` : "."),
+          ],
+          addedTracks: p.addedTracks,
+        });
+        triggerReload();
+        pushToast(
+          "success",
+          `リッピング完了: ${p.addedTracks} 曲` +
+            (p.replacedTracks > 0 ? `（置き換え ${p.replacedTracks} 曲）` : ""),
+        );
+        if ((p.replaceErrors ?? []).length > 0) {
+          pushToast("error", `置き換えに失敗した曲があります（${p.replaceErrors.length} 曲）。ログを確認してください`, 6000);
+        }
+      }
+    });
   }, [setRipStatus, appendRipLog, pushToast, triggerReload]);
 
   // iTunes 互換 XML の自動エクスポート: デバウンスで3秒後に保存。5分インターバルはセーフティネット。
@@ -1095,7 +1053,7 @@ export default function App() {
 
   const handleLoadMore = useCallback(() => {
     if (displayMode === "albums") {
-      const combinedQuery = [searchQuery.trim(), ...filterTags].filter(Boolean).join(" ");
+      const combinedQuery = combineQuery(searchQuery, filterTags);
       const isLibraryScope = viewMode === "library" && !combinedQuery;
       if (isLibraryScope) {
         loadAlbums(false);

@@ -118,6 +118,23 @@ fn register_functions(conn: &Connection) -> Result<()> {
                 .map(|t| crate::text_fold::fold(&t, crate::text_fold::FoldLevel::from_i64(level))))
         },
     )?;
+    // `has_genre_tag(genre, tags, level)`: 曲の genre が `tags` に書かれたタグをすべて持つか
+    // (タグ単位の完全一致。docs/genre/design.md §3)。検索構文 `genre:` と API `?genre=` が使う。
+    // 区切り規則と fold は Rust の `genre_has_tags` 1 か所。genre が NULL なら 0。
+    conn.create_scalar_function(
+        "has_genre_tag",
+        3,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let genre: Option<String> = ctx.get(0)?;
+            let tags: Option<String> = ctx.get(1)?;
+            let level = crate::text_fold::FoldLevel::from_i64(ctx.get(2)?);
+            Ok(match (genre, tags) {
+                (Some(genre), Some(tags)) => tracks::genre_has_tags(&genre, &tags, level),
+                _ => false,
+            })
+        },
+    )?;
     // 自然順の照合順序 (D10): "Song 2" < "Song 10"、大文字小文字は区別しない。
     // 一覧の ORDER BY 専用 (インデックス・ビューには使わない = 外部ツールで DB を開いても壊れない)。
     conn.create_collation("NATSORT", crate::natural_sort::natural_cmp)?;

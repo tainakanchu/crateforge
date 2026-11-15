@@ -6,8 +6,8 @@ import * as castApi from "../api/cast";
 import * as serverApi from "../api/server";
 import { castButtonTitle, castErrorText, castStateLabel, castStateTone } from "../lib/cast";
 import { Icon } from "./Icon";
+import { isTauri } from "../lib/env";
 
-const isTauri = "__TAURI_INTERNALS__" in window;
 const isMac = navigator.userAgent.includes("Mac");
 
 /** 進行中の切替要求の対象 ("local" or deviceId)。 */

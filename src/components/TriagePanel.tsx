@@ -10,16 +10,10 @@ import type { Track } from "../types";
 import { Cover } from "./Cover";
 import { Icon, Stars } from "./Icon";
 import { ratingToStars, starsToRating } from "../lib/rating";
+import { formatTrackTime } from "../lib/format";
+import { isTauri } from "../lib/env";
 
-const isTauri = "__TAURI_INTERNALS__" in window;
 
-function formatDuration(ms: number | null | undefined): string {
-  if (ms == null || ms <= 0) return "—";
-  const s = Math.floor(ms / 1000);
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return `${m}:${r.toString().padStart(2, "0")}`;
-}
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -321,7 +315,7 @@ export function TriagePanel({
           <div className="triage-artist">{track.artist || "—"}</div>
           <div className="triage-album">{track.album || "—"}</div>
           <div className="triage-sub">
-            <span>{formatDuration(track.totalTimeMs)}</span>
+            <span>{formatTrackTime(track.totalTimeMs) || "—"}</span>
             {track.genre && (
               <>
                 <span className="triage-dot">·</span>

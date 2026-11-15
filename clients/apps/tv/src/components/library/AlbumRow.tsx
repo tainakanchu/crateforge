@@ -14,9 +14,9 @@
 // ```
 
 import { View, Text, StyleSheet } from "react-native";
-import { Image } from "expo-image";
 
-import { type Album, albumLabel, useConnection } from "@crateforge/core";
+import { type Album, albumLabel } from "@crateforge/core";
+import { Artwork } from "@/components/Artwork";
 import { Focusable } from "@/components/focus";
 import { PALETTE, TV_FONT, FOCUS_RING } from "@/theme/palette";
 
@@ -33,7 +33,6 @@ export interface AlbumRowProps {
 
 /** 共有のフォーカス可能なアルバム行コンポーネント。 */
 export function AlbumRow({ album, onSelect, onFocus, hasTVPreferredFocus }: AlbumRowProps) {
-  const client = useConnection((s) => s.client);
   // 空のアルバム名（タグにアルバムが無い曲のグループ。API は album: "" で返す）は「不明なアルバム」。
   const name = albumLabel(album.album);
   const meta = `${album.albumArtist ? `${album.albumArtist} ・ ` : ""}${album.trackCount}曲`;
@@ -46,15 +45,7 @@ export function AlbumRow({ album, onSelect, onFocus, hasTVPreferredFocus }: Albu
       style={styles.row}
       accessibilityLabel={`${name}, ${meta}`}
     >
-      {client ? (
-        <Image
-          source={client.artworkSource(album.sampleTrackId)}
-          style={styles.artwork}
-          contentFit="cover"
-        />
-      ) : (
-        <View style={[styles.artwork, styles.artworkPlaceholder]} />
-      )}
+      <Artwork trackId={album.sampleTrackId} name={name} size={ARTWORK} radius={6} />
 
       <View style={styles.texts}>
         <Text style={styles.name} numberOfLines={1}>
@@ -83,16 +74,6 @@ const styles = StyleSheet.create({
     borderWidth: FOCUS_RING.borderWidth,
     borderColor: "transparent",
     borderRadius: FOCUS_RING.borderRadius,
-  },
-  artwork: {
-    width: ARTWORK,
-    height: ARTWORK,
-    borderRadius: 6,
-    backgroundColor: PALETTE.surface,
-    flexShrink: 0,
-  },
-  artworkPlaceholder: {
-    backgroundColor: PALETTE.surface,
   },
   texts: {
     flex: 1,

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import * as playlistsApi from "../api/playlists";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import type { Playlist } from "../types";
+import { useEscapeKey } from "../hooks/useEscapeKey";
 
 interface DeletePlaylistDialogProps {
   playlist: Playlist;
@@ -73,16 +74,8 @@ export function DeletePlaylistDialog({
     }
   }, [busy, playlist, withContents, childCount, pushToast, onDeleted, onClose]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [busy, onClose]);
+  // Esc で閉じる (処理中は無視)。
+  useEscapeKey(onClose, { enabled: !busy });
 
   const kind = playlist.isFolder ? "フォルダ" : playlist.isSmart ? "スマートプレイリスト" : "プレイリスト";
 

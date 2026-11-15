@@ -404,8 +404,8 @@ export class ApiClient {
    * ペアリングの承認状態をポーリングする。トークン不要（公開エンドポイント）。
    * status が "approved" になると token が含まれる。"expired" で再試行が必要。
    */
-  pairPoll(session: string): Promise<PairPollResponse> {
-    return this.get<PairPollResponse>("/api/pair/poll", { session });
+  pairPoll(session: string, signal?: AbortSignal): Promise<PairPollResponse> {
+    return this.get<PairPollResponse>("/api/pair/poll", { session }, signal);
   }
 
   // ---- リモート操作（デスクトップ側を操作）----

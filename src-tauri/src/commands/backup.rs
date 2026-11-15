@@ -13,21 +13,13 @@ use rusqlite::Connection;
 use tauri::{AppHandle, Manager};
 
 use crate::db::backup::check_integrity_at;
-use crate::db::Database;
+use crate::commands::library::open_db;
 
 /// 自動ローテーションで残すバックアップ件数の既定値。
 const DEFAULT_KEEP: usize = 5;
 /// 自動バックアップ (dest 未指定) の最短間隔 (秒)。直近のバックアップがこれより
 /// 新しければ何もせずスキップする ("軽く" 保つため)。
 const AUTO_BACKUP_MIN_INTERVAL_SECS: u64 = 30 * 60;
-
-fn get_db(app: &AppHandle) -> Result<Database, String> {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    Database::open(&app_dir).map_err(|e| format!("Failed to open database: {}", e))
-}
 
 fn backups_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let app_dir = app
@@ -81,7 +73,7 @@ fn seconds_since_modified(path: &Path) -> Option<u64> {
 /// 何もせず、その既存バックアップのパスを返す (自動バックアップを軽く保つため)。
 #[tauri::command(async)]
 pub fn backup_library(app: AppHandle, dest: Option<String>) -> Result<String, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     match dest {
         Some(d) => {
             let path = PathBuf::from(&d);
@@ -174,20 +166,21 @@ pub fn restore_library(app: AppHandle, src: String) -> Result<bool, String> {
 /// 現在の `library.db` の整合性チェック結果を返す。`["ok"]` なら健全。
 #[tauri::command(async)]
 pub fn check_library_integrity(app: AppHandle) -> Result<Vec<String>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.integrity_check().map_err(|e| e.to_string())
 }
 
 /// 現在の `library.db` を VACUUM で最適化する。
 #[tauri::command(async)]
 pub fn vacuum_library(app: AppHandle) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.vacuum().map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Database;
     use std::fs;
 
     #[test]

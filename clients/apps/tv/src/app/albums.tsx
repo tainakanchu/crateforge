@@ -2,22 +2,20 @@
 // 1 ルート内の master/detail で切り替える。TV は flat ルート構成（album 詳細用の
 // 個別ルートが無い）ため、選択状態をローカルに持って画面内で詳細へ切り替える。
 //
-// データ取得は core の専用フックが無いため songs.tsx と同様に React Query で
-// client.albums() / client.listTracks({ album }) を包む（mobile の useAlbums /
-// useAlbumTracks と同型）。再生開始は mobile の onPressTrack パターンを踏襲し、
+// データ取得は core の閲覧フック（useAlbums / useAlbumTracks。mobile と共通）。
+// 再生開始は mobile の onPressTrack パターンを踏襲し、
 // usePlayer.setQueue でキューを差し替えて /player（Now Playing）へ遷移する。
 
 import { useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { View, Text, StyleSheet } from "react-native";
 
 import {
   type Album,
-  type Track,
   albumLabel,
-  filterAlbumTracks,
-  useConnection,
+  compareAlbumsByName,
+  useAlbumTracks,
+  useAlbums,
   usePlayer,
 } from "@crateforge/core";
 import { AlbumRow } from "@/components/library/AlbumRow";
@@ -26,59 +24,27 @@ import { LibraryList } from "@/components/library/LibraryList";
 import { Focusable } from "@/components/focus";
 import { PALETTE, TV_FONT, TV_LAYOUT, FOCUS_RING } from "@/theme/palette";
 
-/** 大規模ライブラリでも全件取得（mobile の BROWSE_LIMIT と同値）。 */
-const BROWSE_LIMIT = 100000;
-
-/**
- * アルバムの並び順比較（mobile compareAlbums の簡易版）。
- * 「アルバムアーティスト（無ければアルバム名）→ アルバム名」の昇順。
- * /api/albums は year を返さないため年順は省略（安定ソートで十分）。
- */
-function compareAlbums(a: Album, b: Album): number {
-  // 不明なアルバム（album: ""）は常に末尾。
-  if (!a.album.trim() !== !b.album.trim()) return a.album.trim() ? -1 : 1;
-  const byArtist = (a.albumArtist ?? a.album).localeCompare(b.albumArtist ?? b.album, undefined, {
-    sensitivity: "base",
-  });
-  if (byArtist !== 0) return byArtist;
-  return a.album.localeCompare(b.album, undefined, { sensitivity: "base" });
-}
-
-/** disc 番号 → トラック番号 の収録順比較。 */
-function byDiscTrack(a: Track, b: Track): number {
-  return (a.discNumber ?? 0) - (b.discNumber ?? 0) || (a.trackNumber ?? 0) - (b.trackNumber ?? 0);
+/** useAlbums の select（参照を固定して、再描画のたびに並べ替え直さない）。 */
+function sortAlbumsForTv(albums: Album[]): Album[] {
+  // mobile と同じ core の比較（名前の自然順・不明は末尾・同名はアルバムアーティスト順）。
+  return [...albums].sort(compareAlbumsByName);
 }
 
 export default function AlbumsScreen() {
   const router = useRouter();
-  const client = useConnection((s) => s.client);
   // 再生中の曲をハイライトするための trackId。
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
   // 選択中アルバム（null=一覧表示 / 非null=詳細表示）。
   const [selected, setSelected] = useState<Album | null>(null);
 
-  // アルバム一覧（distinct）。client 未接続時は enabled:false で待機。
-  const albumsQuery = useQuery<Album[], Error, Album[]>({
-    queryKey: ["albums"],
-    enabled: !!client,
-    queryFn: () => client!.albums(),
-    placeholderData: keepPreviousData,
-    select: (albums) => [...albums].sort(compareAlbums),
-  });
+  // アルバム一覧（distinct）。並びは mobile と同じ名前順（不明なアルバム末尾）。
+  const albumsQuery = useAlbums({ select: sortAlbumsForTv });
   const albums = albumsQuery.data ?? [];
 
-  // 選択アルバムの曲（disc→track 昇順）。album 名は完全一致（mobile の useAlbumTracks と同じ）:
-  // `?album=` は部分一致なので albumExact=true を付け、古いホスト向けにクライアントでも絞る。
-  // 不明なアルバム（album: ""）も albumExact で album が空の曲を引ける。
+  // 選択アルバムの曲（disc→track 昇順、album 名は完全一致）。一覧と詳細を 1 画面で切り替えるので
+  // 切り替え直後は前の結果を仮表示する（keepPrevious）。
   const albumName = selected ? selected.album : null;
-  const tracksQuery = useQuery<Track[], Error, Track[]>({
-    queryKey: ["album-tracks", albumName],
-    enabled: !!client && albumName != null,
-    queryFn: ({ signal }) =>
-      client!.listTracks({ album: albumName!, albumExact: true, limit: BROWSE_LIMIT }, signal),
-    placeholderData: keepPreviousData,
-    select: (tracks) => filterAlbumTracks(tracks, albumName ?? "").sort(byDiscTrack),
-  });
+  const tracksQuery = useAlbumTracks(albumName, { keepPrevious: true });
   const albumTracks = tracksQuery.data ?? [];
 
   // アルバム選択（不明なアルバム = 空名も詳細へ入れる）。

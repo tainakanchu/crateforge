@@ -7,7 +7,7 @@ use std::time::UNIX_EPOCH;
 use rusqlite::{params, OptionalExtension, Result, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
-use super::tracks::SEARCH_TEXT_EXPR;
+use super::tracks::{SEARCH_TEXT_EXPR, TRACK_COLUMNS_T};
 use super::Database;
 use crate::models::{Playlist, Track};
 
@@ -86,23 +86,16 @@ fn file_fingerprint(path: &Path) -> (Option<i64>, Option<i64>) {
 impl Database {
     /// どの同期元にもまだ所属していない、ローカル由来のファイル付き曲を返す。
     pub fn list_local_origin_tracks(&self) -> Result<Vec<Track>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT t.id, t.track_id, t.persistent_id, t.name, t.artist, t.album_artist,
-                    t.composer, t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count,
-                    t.total_time_ms, t.date_added, t.date_modified, t.bpm, t.comments,
-                    t.location_raw, t.location_path, t.track_type, t.disabled, t.compilation,
-                    t.disc_number, t.disc_count, t.track_number, t.track_count, t.file_exists,
-                    t.last_played, t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels,
-                    t.file_size_bytes, t.codec,
-                    t.key_camelot_user, t.grouping
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS_T}
              FROM tracks t
              WHERE t.file_exists = 1
                AND t.location_path IS NOT NULL
                AND NOT EXISTS (
                    SELECT 1 FROM sync_track st WHERE st.persistent_id = t.persistent_id
                )
-             ORDER BY t.track_id",
-        )?;
+             ORDER BY t.track_id"
+        ))?;
         let rows = stmt.query_map([], super::tracks::row_to_track)?;
         rows.collect()
     }
@@ -825,8 +818,19 @@ impl Database {
             .optional()
     }
 
+    /// 曲のファイルが無くなったことを記録する (`file_exists = 0`)。行は残す。
+    pub fn mark_track_file_missing(&self, persistent_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tracks SET file_exists = 0 WHERE persistent_id = ?1",
+            [persistent_id],
+        )?;
+        Ok(())
+    }
+
     /// IMMEDIATE transaction 内で所有・全 playlist 参照・metadata dirty を再確認して削除する。
-    pub fn delete_synced_track_if_eligible(&self, persistent_id: &str) -> Result<bool> {
+    /// 削除したらその曲の track_id を返す (呼び出し元が再生キューから落とすため)。
+    /// 対象外 (同期所有でない / プレイリストから参照されている / ローカル変更あり) なら `None`。
+    pub fn delete_synced_track_if_eligible(&self, persistent_id: &str) -> Result<Option<i64>> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let owned = tx
             .query_row(
@@ -839,7 +843,7 @@ impl Database {
             .optional()?;
         let Some((track_id, base_meta)) = owned else {
             tx.rollback()?;
-            return Ok(false);
+            return Ok(None);
         };
         let referenced: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM playlist_tracks WHERE track_id = ?1)",
@@ -855,12 +859,12 @@ impl Database {
             || crate::sync::writeback::has_local_changes(&base_meta, &local).unwrap_or(true)
         {
             tx.rollback()?;
-            return Ok(false);
+            return Ok(None);
         }
         // 依存行の消し漏れを防ぐため、削除は共通ヘルパー 1 箇所に集約する。
         super::tracks::delete_track_cascade(&tx, track_id)?;
         tx.commit()?;
-        Ok(true)
+        Ok(Some(track_id))
     }
 
     /// provisioning 済み、または source 所有曲だけを含むローカル作成プレイリストを返す。

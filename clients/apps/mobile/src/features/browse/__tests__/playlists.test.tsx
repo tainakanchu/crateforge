@@ -5,11 +5,10 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react-native";
 import { router, useLocalSearchParams } from "expo-router";
 
-import { type DownloadEntry, type Playlist, type Track, useDownloads, usePlayer } from "@crateforge/core";
+import { type DownloadEntry, type Playlist, type Track, childrenOf, playlistKey, rootItems, useDownloads, usePlayer } from "@crateforge/core";
 import { setTestConnection, createQueryWrapper, resetTestState, mockFetch } from "@/test-utils";
 import PlaylistsScreen from "@/app/(tabs)/playlists";
 import PlaylistScreen from "@/app/playlist/[id]";
-import { childrenOf, rootItems } from "@/features/browse/playlistTree";
 
 // SafeAreaProvider を張らずに insets を固定で返す。
 jest.mock("react-native-safe-area-context", () => ({
@@ -110,6 +109,23 @@ describe("playlistTree", () => {
       makePlaylist({ playlistId: 4, persistentId: "P1", parentPersistentId: "F", name: "Apple" }),
     ];
     expect(childrenOf(all, "F").map((p) => p.name)).toEqual(["Alpha", "Apple", "Beta"]);
+  });
+});
+
+describe("playlistKey", () => {
+  test("persistentId を使い、無ければ playlistId の文字列", () => {
+    expect(playlistKey(makePlaylist({ playlistId: 7, persistentId: "ABC" }))).toBe("ABC");
+    expect(playlistKey(makePlaylist({ playlistId: 7, persistentId: null }))).toBe("7");
+  });
+
+  test("rootItems / childrenOf は入力配列を並べ替えない（コピーを返す）", () => {
+    const all = [
+      makePlaylist({ playlistId: 1, persistentId: "B", name: "B" }),
+      makePlaylist({ playlistId: 2, persistentId: "A", name: "A" }),
+    ];
+    expect(rootItems(all).map((p) => p.name)).toEqual(["A", "B"]);
+    expect(childrenOf(all, null).map((p) => p.name)).toEqual(["A", "B"]);
+    expect(all.map((p) => p.name)).toEqual(["B", "A"]);
   });
 });
 

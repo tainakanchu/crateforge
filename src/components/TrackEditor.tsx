@@ -13,17 +13,9 @@ import type { Track, TrackEdit } from "../types";
 import { formatTagStr } from "../types";
 import { ALL_CAMELOT_KEYS, describeKey, formatKey } from "../lib/keyNotation";
 import { joinGenre, splitGenre } from "../lib/genre";
+import { genreFileWriteFailureMessage } from "../lib/trackActions";
+import { formatTrackTime } from "../lib/format";
 
-function formatDuration(ms: number | null | undefined): string {
-  if (!ms || ms <= 0) return "—";
-  const totalSec = Math.round(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  return h > 0
-    ? `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`
-    : `${m}:${s.toString().padStart(2, "0")}`;
-}
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -331,8 +323,12 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
         const after = splitTags(form.genre);
         const added = after.filter((t) => !before.some((x) => eqi(x, t)));
         const removed = before.filter((t) => !after.some((x) => eqi(x, t)));
-        for (const tag of added) await libraryApi.addGenreTag(trackIds, tag);
-        for (const tag of removed) await libraryApi.removeGenreTag(trackIds, tag);
+        // 追加・削除をまとめて 1 回で適用する (1 曲につきファイルの書き込みは 1 回)。
+        if (added.length > 0 || removed.length > 0) {
+          const result = await libraryApi.editGenreTags(trackIds, added, removed);
+          const warning = genreFileWriteFailureMessage(result);
+          if (warning) pushToast("error", warning);
+        }
       }
       // first-class Tags: 初期共通集合との差分を merge add/remove (他曲固有タグは消さない)。
       if (dirty.has("tags")) {
@@ -774,7 +770,7 @@ export function TrackEditor({ tracks, onClose, onSaved }: TrackEditorProps) {
               </div>
               <div className="te-info-grid">
                 <InfoCell k="形式" v={fileKind(tracks[0].locationPath, tracks[0].trackType)} />
-                <InfoCell k="長さ" v={formatDuration(tracks[0].totalTimeMs)} />
+                <InfoCell k="長さ" v={formatTrackTime(tracks[0].totalTimeMs) || "—"} />
                 <InfoCell k="再生回数" v={String(tracks[0].playCount ?? 0)} />
                 <InfoCell k="スキップ回数" v={String(tracks[0].skipCount ?? 0)} />
                 <InfoCell k="追加日" v={formatDate(tracks[0].dateAdded)} />

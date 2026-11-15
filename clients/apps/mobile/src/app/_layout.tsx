@@ -6,7 +6,7 @@ import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AppState, type AppStateStatus, Platform } from "react-native";
-import { QueryClient, focusManager } from "@tanstack/react-query";
+import { focusManager } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -22,23 +22,9 @@ import DownloadFailureToast from "@/components/DownloadFailureToast";
 import PlaybackErrorToast from "@/components/PlaybackErrorToast";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { usePendingEdits } from "@/store/pendingEdits";
+import { queryClient } from "@/lib/queryClient";
 import { flushPending } from "@/features/triage/syncPending";
 import { onDownloadsHydrated, setupPlayback } from "@/playback/setupPlayback";
-
-// stale でもキャッシュを即表示し、必要時のみ裏で更新する（stale-while-revalidate）。
-// staleTime は 1 分: タブに戻る/アプリを前面に戻すと、1 分以上経った表示中の一覧だけ裏で取り直す
-// （デスクトップ側の追加・編集が反映されないまま残らないように。round-2 M7）。
-// 全曲取得（曲モード）は重いので useTracks 側で個別に長めの staleTime を指定している。
-// すぐ反映したいときは各一覧のプル更新（RefreshControl）を使う。
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 60 * 1000,
-      gcTime: 30 * 60 * 1000, // 30分メモリ保持
-      retry: 1,
-    },
-  },
-});
 
 // アプリ再起動後も即座に前回キャッシュを表示するためのディスク永続化設定。
 const persister = createFilePersister();

@@ -3,9 +3,7 @@
 // トリアージ系（評価・タグ・あとで聴く）はオンライン直書き / オフラインは pending キュー (#125)。
 
 import {
-  ApiError,
   type Track,
-  describeApiError,
   trackArtist,
   trackArtistKey,
   trackAlbumArtistKey,
@@ -24,7 +22,9 @@ import { showToast } from "@/components/Toast";
 import { albumHref, artistHref } from "@/lib/albumHref";
 
 import { COMMON_TRIAGE_TAGS, REVIEW_LATER_TAG } from "@/features/triage/commonTags";
-import { usePendingEdits } from "@/store/pendingEdits";
+import { invalidateRatingQueries } from "@/features/triage/edits";
+import { addTagWithFeedback, rateWithFeedback } from "@/features/triage/feedback";
+import { queryClient } from "@/lib/queryClient";
 import { startRadio } from "./radio";
 import { playTrackOnDesktop } from "./desktopPlay";
 
@@ -57,7 +57,7 @@ export function showTrackMenu(track: Track): void {
   // --- トリアージ（評価 / タグ / あとで）---
   actions.push({ label: "評価…", onPress: () => showRateMenu(track) });
   actions.push({ label: "タグを付ける…", onPress: () => showTagMenu(track) });
-  actions.push({ label: "あとで聴く", onPress: () => void applyReviewLater(track) });
+  actions.push({ label: "あとで聴く", onPress: () => void applyTagAdd(track, REVIEW_LATER_TAG) });
 
   // アーティストを見る（タグにアーティストがあるときだけ。不明なアーティストは一覧から辿れる）。
   if (artistKey.trim()) {
@@ -110,82 +110,36 @@ function showTagMenu(track: Track): void {
   showActionSheet({ title: "タグを付ける", subtitle: trackTitle(track), actions });
 }
 
+// 失敗・デスクトップ未対応のトーストは features/triage/feedback.ts（プレイヤーと共通）。
+// ここでは成功・オフラインで積んだときのトーストだけ出す。
 async function applyRating(track: Track, rating: number): Promise<void> {
-  const client = useConnection.getState().client;
-  const baseRating = track.rating ?? null;
-  if (client) {
-    try {
-      await client.setRating(track.trackId, rating);
-      showToast(rating > 0 ? `評価を保存しました（${formatRatingStars(rating)}）` : "評価をクリアしました");
-    } catch (e) {
-      showToast(`評価を保存できませんでした（${errorMessage(e)}）`, "error");
-    }
-    return;
-  }
-  usePendingEdits.getState().enqueue({
-    kind: "rating",
+  const outcome = await rateWithFeedback({
     trackId: track.trackId,
     rating,
-    baseRating,
+    baseRating: track.rating ?? null,
     trackName: track.name,
   });
-  showToast("オフライン: 再接続時に評価を同期します");
+  if (outcome === "queued") {
+    showToast("オフライン: 再接続時に評価を同期します");
+  } else if (outcome === "applied") {
+    showToast(rating > 0 ? `評価を保存しました（${formatRatingStars(rating)}）` : "評価をクリアしました");
+  }
+  // プレイヤーの星（useSetRating）と同じく、成功/失敗どちらでも rating を含む一覧を取り直す
+  // （しないと、開いている一覧の星や評価順が古いまま残る）。
+  void invalidateRatingQueries(queryClient);
 }
 
+/** タグを付ける。`review:later`（あとで聴く）は、タグメニューから選んでも直下の項目と同じ扱い。 */
 async function applyTagAdd(track: Track, tag: string): Promise<void> {
-  const client = useConnection.getState().client;
-  if (client) {
-    try {
-      await client.addTrackTags([track.trackId], tag);
-      showToast("タグを付けました");
-    } catch (e) {
-      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
-        showToast("このデスクトップはタグ機能に未対応です（アプリを更新してください）", "error");
-        return;
-      }
-      showToast(`タグを付けられませんでした（${errorMessage(e)}）`, "error");
-    }
-    return;
+  const reviewLater = tag === REVIEW_LATER_TAG;
+  const outcome = await addTagWithFeedback({ trackId: track.trackId, tag, trackName: track.name });
+  if (outcome === "queued") {
+    showToast(
+      reviewLater
+        ? "オフライン: 再接続時に「あとで聴く」を同期します"
+        : "オフライン: 再接続時にタグを同期します",
+    );
+  } else if (outcome === "applied") {
+    showToast(reviewLater ? "「あとで聴く」に追加しました" : "タグを付けました");
   }
-  usePendingEdits.getState().enqueue({
-    kind: "tag-add",
-    trackId: track.trackId,
-    tag,
-    trackName: track.name,
-  });
-  showToast("オフライン: 再接続時にタグを同期します");
-}
-
-async function applyReviewLater(track: Track): Promise<void> {
-  const client = useConnection.getState().client;
-  if (client) {
-    try {
-      await client.addTrackTags([track.trackId], REVIEW_LATER_TAG);
-      showToast("「あとで聴く」に追加しました");
-    } catch (e) {
-      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
-        // タグ API 無しでもローカルフラグとしてキューへ。
-        usePendingEdits.getState().enqueue({
-          kind: "review-later",
-          trackId: track.trackId,
-          trackName: track.name,
-        });
-        showToast("デスクトップ未対応のため、端末側のみに記録しました");
-        return;
-      }
-      showToast(`記録できませんでした（${errorMessage(e)}）`, "error");
-    }
-    return;
-  }
-  usePendingEdits.getState().enqueue({
-    kind: "review-later",
-    trackId: track.trackId,
-    trackName: track.name,
-  });
-  showToast("オフライン: 再接続時に「あとで聴く」を同期します");
-}
-
-// API の生本文（{"error":...} / "HTTP 500"）を出さず、日本語の理由にする（round-3 N7）。
-function errorMessage(e: unknown): string {
-  return describeApiError(e);
 }

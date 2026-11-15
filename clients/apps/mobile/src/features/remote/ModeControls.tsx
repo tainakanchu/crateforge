@@ -6,7 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { PALETTE } from "@/constants/brand";
 import ModeToggleButton from "@/components/ModeToggleButton";
-import type { PlaybackState, RepeatMode } from "@crateforge/core";
+import { type PlaybackState, type RepeatMode, nextRepeat } from "@crateforge/core";
 import DragBar from "./DragBar";
 
 export const REPEAT_LABEL: Record<RepeatMode, string> = {
@@ -14,10 +14,6 @@ export const REPEAT_LABEL: Record<RepeatMode, string> = {
   all: "全曲リピート",
   one: "1曲リピート",
 };
-
-export function nextRepeat(mode: RepeatMode): RepeatMode {
-  return mode === "off" ? "all" : mode === "all" ? "one" : "off";
-}
 
 export interface ModeControlsProps {
   state: Pick<PlaybackState, "volume" | "shuffle" | "repeat"> | undefined;

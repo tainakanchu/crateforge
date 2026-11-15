@@ -63,6 +63,10 @@ pub struct EvictionSummary {
     pub freed_bytes: u64,
     pub dirty_excluded_note: Option<String>,
     pub failures: Vec<SyncFailure>,
+    /// 退避でライブラリから消えた曲。フロントへは送らない (`evicted` が件数)。
+    /// 呼び出し元 (コマンド) がこの id を再生キュー・再生中の曲から落とす。
+    #[serde(skip)]
+    pub removed: crate::library::delete::RemovedTracks,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -702,13 +706,26 @@ pub async fn evict(
             ));
             continue;
         }
-        let Some(record) = db.synced_track_file_record(persistent_id)? else {
-            summary.failures.push(failure(
-                Some(persistent_id.clone()),
-                None,
-                "同期所有の曲が見つかりません",
-            ));
-            continue;
+        // ここから先の DB エラーは `?` で抜けない。先に退避した曲の id (summary.removed) を
+        // 呼び出し元へ必ず返し、再生キューの掃除と UI への通知を漏らさないため。
+        let record = match db.synced_track_file_record(persistent_id) {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                summary.failures.push(failure(
+                    Some(persistent_id.clone()),
+                    None,
+                    "同期所有の曲が見つかりません",
+                ));
+                continue;
+            }
+            Err(error) => {
+                summary.failures.push(failure(
+                    Some(persistent_id.clone()),
+                    None,
+                    format!("DB エラーのため削除しませんでした: {error}"),
+                ));
+                continue;
+            }
         };
         let validated = match fingerprint_is_dirty(&record) {
             Ok((false, validated)) => validated,
@@ -729,11 +746,13 @@ pub async fn evict(
                 continue;
             }
         };
+        let mut file_removed = false;
         if let ValidatedLandedFile::Present { path, bytes, .. } = validated {
             match std::fs::remove_file(&path) {
                 Ok(()) => {
                     summary.files_deleted += 1;
                     summary.freed_bytes += bytes;
+                    file_removed = true;
                 }
                 Err(error) => {
                     summary.failures.push(failure(
@@ -745,17 +764,44 @@ pub async fn evict(
                 }
             }
         }
-        if !db.delete_synced_track_if_eligible(persistent_id)? {
-            summary.failures.push(failure(
-                Some(persistent_id.clone()),
-                None,
-                "削除直前の再検証で参照またはローカル変更が見つかりました",
-            ));
-            continue;
-        }
+        let track_id = match db.delete_synced_track_if_eligible(persistent_id) {
+            Ok(Some(track_id)) => track_id,
+            Ok(None) => {
+                mark_missing_after_file_removal(db, persistent_id, file_removed);
+                summary.failures.push(failure(
+                    Some(persistent_id.clone()),
+                    None,
+                    "削除直前の再検証で参照またはローカル変更が見つかりました",
+                ));
+                continue;
+            }
+            Err(error) => {
+                mark_missing_after_file_removal(db, persistent_id, file_removed);
+                summary.failures.push(failure(
+                    Some(persistent_id.clone()),
+                    None,
+                    format!("DB エラーのためライブラリから削除できませんでした: {error}"),
+                ));
+                continue;
+            }
+        };
         summary.evicted += 1;
+        summary.removed.track_ids.push(track_id);
     }
     Ok(summary)
+}
+
+/// 退避でファイルは消したのに tracks 行を消せなかった曲 (直前の再検証で対象外になった /
+/// DB エラー) を、ファイルなし (`file_exists = 0`) にする。行だけ「再生できる曲」として残ると、
+/// 一覧では普通の曲に見えて再生だけ失敗するため。ここでの失敗は握りつぶす (もともと失敗の後始末で、
+/// 次回のファイル確認でも同じ状態に直る)。
+fn mark_missing_after_file_removal(db: &Database, persistent_id: &str, file_removed: bool) {
+    if !file_removed {
+        return;
+    }
+    if let Err(error) = db.mark_track_file_missing(persistent_id) {
+        eprintln!("failed to mark evicted file as missing for {persistent_id}: {error}");
+    }
 }
 
 pub fn storage_usage(db: &Database, source_id: i64) -> Result<StorageUsage, SyncError> {
@@ -1157,6 +1203,61 @@ mod tests {
             .contains("2 曲"));
     }
 
+    /// 途中の曲で DB エラーが起きても、それまでに退避した曲の id は summary で返す
+    /// (コマンドが再生キューから落とせるように)。エラーの曲は failures に入り、後続も処理する。
+    #[tokio::test(flavor = "current_thread")]
+    async fn eviction_db_error_on_one_track_keeps_removed_ids_of_others() {
+        let mut db = Database::open_memory().unwrap();
+        let dir = tempdir().unwrap();
+        let source = db
+            .upsert_sync_source("partial", Some("Partial"), "http://p", "token")
+            .unwrap();
+        let mut ids = Vec::new();
+        let pids = ["EEEEEEEEEEEEEE01", "EEEEEEEEEEEEEE02", "EEEEEEEEEEEEEE03"];
+        for pid in pids {
+            let path = dir.path().join(format!("{pid}.mp3"));
+            std::fs::write(&path, b"audio").unwrap();
+            let value = track(pid, pid, &path);
+            let id = db
+                .upsert_synced_track(&value, &path, source.id)
+                .unwrap()
+                .unwrap();
+            db.record_sync_track_with_root(
+                pid,
+                source.id,
+                &serde_json::to_string(&value).unwrap(),
+                Some(dir.path()),
+            )
+            .unwrap();
+            ids.push(id);
+        }
+        // 2 曲目の tracks 行の DELETE だけを失敗させる。
+        db.conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_delete BEFORE DELETE ON tracks
+                 WHEN OLD.persistent_id = 'EEEEEEEEEEEEEE02'
+                 BEGIN SELECT RAISE(ABORT, 'delete refused'); END;",
+            )
+            .unwrap();
+
+        let pids: Vec<String> = pids.iter().map(|p| p.to_string()).collect();
+        let summary = evict(&mut db, &pids).await.unwrap();
+        assert_eq!(summary.evicted, 2);
+        assert_eq!(summary.removed.track_ids, vec![ids[0], ids[2]]);
+        assert_eq!(summary.failures.len(), 1);
+        assert_eq!(
+            summary.failures[0].persistent_id.as_deref(),
+            Some("EEEEEEEEEEEEEE02")
+        );
+        assert!(summary.failures[0].error.contains("delete refused"));
+        // 失敗した曲の行はロールバックされて残っている。ファイルは先に消えているので、
+        // 「再生できる曲」に見えないよう file_exists = 0 になっている。
+        let leftover = db.get_track_by_track_id(ids[1]).unwrap().unwrap();
+        assert!(!leftover.file_exists);
+        assert!(!dir.path().join("EEEEEEEEEEEEEE02.mp3").exists());
+        assert!(db.get_track_by_track_id(ids[0]).unwrap().is_none());
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn eviction_fails_closed_for_unsafe_path_and_transaction_rechecks_references() {
         let mut db = Database::open_memory().unwrap();
@@ -1180,6 +1281,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(summary.evicted, 0);
+        assert!(summary.removed.track_ids.is_empty());
         assert!(!summary.failures.is_empty());
         assert!(path.is_file());
         assert!(db
@@ -1217,9 +1319,10 @@ mod tests {
                 [track_id],
             )
             .unwrap();
-        assert!(!db
+        assert!(db
             .delete_synced_track_if_eligible("FCFCFCFCFCFCFC02")
-            .unwrap());
+            .unwrap()
+            .is_none());
         assert!(db
             .synced_track_file_record("FCFCFCFCFCFCFC02")
             .unwrap()
@@ -1578,6 +1681,12 @@ mod tests {
         assert_eq!(evicted.files_deleted, 1);
         assert!(evicted.freed_bytes > 0);
         assert!(evicted.failures.is_empty());
+        // 消えた曲の track_id を返す (コマンドが再生キューから落とす)。フロントへの JSON には出さない。
+        assert_eq!(evicted.removed.track_ids, vec![removed_track_id]);
+        assert!(serde_json::to_value(&evicted)
+            .unwrap()
+            .get("removed")
+            .is_none());
         assert!(!Path::new(&removed_file).exists());
         for pid in ["AAAAAAAAAAAA0001"] {
             let counts: (i64, i64, i64) = slave

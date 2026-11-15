@@ -8,17 +8,15 @@
 //      新着曲を取得し、共有の TrackRow を LibraryList（縦リスト）で表示する。行を選ぶと
 //      usePlayer.setQueue でキューを新着曲に差し替え、その index から /player で再生する。
 //
-// データ取得は core の専用フックが無いため、songs.tsx と同じく client.listTracks を
-// React Query で包む（mobile の useTracks と同型 / queryKey は ["tracks", query]）。
+// データ取得は songs.tsx と同じく core の useTracks（mobile と共通の閲覧フック）。
 // クイックアクセスは常時表示し、新着曲セクションのローディング/空は LibraryList が吸収する
 // （ナビ導線がローディング中に消えないよう、ヘッダはリスト外の固定領域に置く）。
 
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { View, Text, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { type Track, useConnection, usePlayer } from "@crateforge/core";
+import { useConnection, usePlayer, useTracks } from "@crateforge/core";
 import { Focusable } from "@/components/focus";
 import { TrackRow } from "@/components/library/TrackRow";
 import { LibraryList } from "@/components/library/LibraryList";
@@ -42,19 +40,12 @@ const QUICK_ACCESS = [
 
 export default function HomeScreen() {
   const router = useRouter();
-  const client = useConnection((s) => s.client);
   const baseUrl = useConnection((s) => s.baseUrl);
   // 再生中の曲をハイライトするための trackId。
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
 
-  // 最近追加した曲（dateAdded 降順）。client 未接続時は enabled:false で待機。
-  const query = useQuery<Track[]>({
-    queryKey: ["tracks", { limit: RECENT_LIMIT, sort: "dateAdded", order: "desc" }],
-    enabled: !!client,
-    queryFn: ({ signal }) =>
-      client!.listTracks({ limit: RECENT_LIMIT, sort: "dateAdded", order: "desc" }, signal),
-    placeholderData: keepPreviousData,
-  });
+  // 最近追加した曲（dateAdded 降順）。未接続時は取得せず待機。
+  const query = useTracks({ limit: RECENT_LIMIT, sort: "dateAdded", order: "desc" });
 
   const recent = query.data ?? [];
 

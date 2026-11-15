@@ -1,8 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useCallback, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
-import * as playbackApi from "../api/playback";
-import * as audition from "../lib/audition";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
@@ -16,8 +13,20 @@ import type { ConvertMode, Track, Playlist } from "../types";
 import { EmptyState } from "./EmptyState";
 import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import { splitGenre } from "../lib/genre";
-
-type Row = { tracks: Track[] };
+import {
+  GRID_GAP as GAP,
+  GRID_META_H as META_H,
+  GRID_PAD_X as PAD_X,
+  buildGridRows,
+  gridMetrics,
+  isNearBottom,
+} from "../lib/gridRows";
+import { useElementWidth } from "../hooks/useElementWidth";
+import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
+import * as trackActions from "../lib/trackActions";
+import { trackApi } from "../lib/trackActionsApi";
+import { AddGenreTagDialog } from "./AddGenreTagDialog";
+import { useTrackActionRunner } from "../hooks/useTrackActionRunner";
 
 interface CtxMenu {
   x: number;
@@ -32,10 +41,6 @@ interface TracksViewProps {
   onConvert: (trackIds: number[], mode?: ConvertMode) => void;
 }
 
-const GAP = 18;
-const PAD_X = 20;
-const MIN_CARD = 150;
-const META_H = 46;
 
 export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert }: TracksViewProps) {
   const {
@@ -53,71 +58,44 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     setSimilarBase,
   } = useStore();
   const pushToast = useStore((s) => s.pushToast);
+  const run = useTrackActionRunner();
   const analysisByTrack = useStore((s) => s.analysisByTrack);
 
-  const parentRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
+  const { ref: setParentRef, elRef: parentRef, width } = useElementWidth<HTMLDivElement>();
   const [contextMenu, setContextMenu] = useState<CtxMenu | null>(null);
-  const [showAddTagDialog, setShowAddTagDialog] = useState(false);
+  // ジャンルタグ追加ダイアログの対象曲 (null で非表示)。メニューは項目を選んだ時点で閉じて
+  // contextMenu が null になるので、対象は開くときにここへ控えておく。
+  const [addTagTargetIds, setAddTagTargetIds] = useState<number[] | null>(null);
   // 削除確認モーダルの対象曲（null で非表示）。
   const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
   const [newTag, setNewTag] = useState("");
 
-  useLayoutEffect(() => {
-    const el = parentRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setWidth(e.contentRect.width);
-    });
-    ro.observe(el);
-    setWidth(el.clientWidth);
-    return () => ro.disconnect();
-  }, []);
-
-  const inner = Math.max(0, width - PAD_X * 2);
-  const cols = Math.max(2, Math.floor((inner + GAP) / (MIN_CARD + GAP)) || 2);
-  const cardW = Math.max(60, inner > 0 ? (inner - GAP * (cols - 1)) / cols : MIN_CARD);
-
-  const rows = useMemo<Row[]>(() => {
-    const out: Row[] = [];
-    for (let i = 0; i < tracks.length; i += cols) {
-      out.push({ tracks: tracks.slice(i, i + cols) });
-    }
-    return out;
-  }, [tracks, cols]);
-
-  const rowVirtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => cardW + META_H + GAP,
-    overscan: 6,
-    paddingStart: 18,
-    paddingEnd: 18,
+  const { cols, cardW } = gridMetrics(width);
+  const rows = useMemo(() => buildGridRows(tracks, cols), [tracks, cols]);
+  const rowVirtualizer = useCardGridVirtualizer({
+    rows,
+    scrollRef: parentRef,
+    cols,
+    gridRowHeight: cardW + META_H + GAP,
   });
-
-  useEffect(() => {
-    rowVirtualizer.measure();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardW, cols, rows.length]);
 
   const handleScroll = useCallback(() => {
     const el = parentRef.current;
     if (!el || isLoading || !hasMore) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 400) onLoadMore();
+    if (isNearBottom(el)) onLoadMore();
   }, [isLoading, hasMore, onLoadMore]);
 
   const playTrack = useCallback(async (t: Track) => {
-    const ids = tracks.filter((x) => x.fileExists).map((x) => x.trackId);
+    const ids = trackActions.playableIds(tracks);
     if (ids.length === 0) return;
     const start = Math.max(0, ids.indexOf(t.trackId));
-    try {
-      await audition.ensureNormalPlay();
-      await playbackApi.setQueue(ids, start);
-      await playbackApi.playTrack(t.trackId);
-    } catch (err) {
-      console.error("Failed to play:", err);
-    }
-  }, [tracks]);
+    // キューは再生できる曲だけ。鳴らすのはクリックした曲そのもの。
+    await run(
+      "play",
+      () => trackActions.playQueueFrom(trackApi, ids, start, t.trackId),
+      t.name || "(unknown)",
+    );
+  }, [tracks, run]);
 
   const closeMenu = useCallback(() => setContextMenu(null), []);
 
@@ -129,14 +107,19 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleSetRating = useCallback(async (stars: number) => {
     if (!contextMenu) return;
-    const id = contextMenu.track.trackId;
-    try {
-      await libraryApi.setTrackRating(id, starsToRating(stars));
-      onTracksChanged();
-    } catch (err) {
-      console.error("Failed to set rating:", err);
-    }
-  }, [contextMenu, onTracksChanged]);
+    const menu = contextMenu;
+    const ok = await run("rating", async () => {
+      try {
+        await trackActions.setRatingForTracks(trackApi, [menu.track.trackId], starsToRating(stars));
+      } finally {
+        // 失敗しても取り直して、一覧を実際の値に合わせる。
+        onTracksChanged();
+      }
+    });
+    // 星はメニューを開いたまま付け直せるが、失敗したら (プレビューの星が残らないよう) 閉じる。
+    // 待っている間に別のメニューが開かれていたら、そちらは閉じない。
+    if (!ok) setContextMenu((cur) => (cur === menu ? null : cur));
+  }, [contextMenu, onTracksChanged, run]);
 
   const handleAddToCrate = useCallback(() => {
     if (!contextMenu) return;
@@ -146,25 +129,24 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleEnqueue = useCallback(async () => {
     if (!contextMenu) return;
-    await playbackApi.enqueueTrack(contextMenu.track.trackId);
+    const id = contextMenu.track.trackId;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("enqueue", () => trackActions.enqueueTracks(trackApi, [id]));
+  }, [contextMenu, closeMenu, run]);
 
   const handlePlayNext = useCallback(async () => {
     if (!contextMenu) return;
-    await playbackApi.enqueueTrackNext(contextMenu.track.trackId);
+    const id = contextMenu.track.trackId;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("playNext", () => trackActions.playNextTracks(trackApi, [id]));
+  }, [contextMenu, closeMenu, run]);
 
   const handleAnalyze = useCallback(async () => {
     if (!contextMenu) return;
-    try {
-      await analysisApi.analyzeTracks([contextMenu.track.trackId], true);
-    } catch (err) {
-      console.error("Failed to queue analysis:", err);
-    }
+    const id = contextMenu.track.trackId;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("analyze", () => analysisApi.analyzeTracks([id], true));
+  }, [contextMenu, closeMenu, run]);
 
   const handleFindSimilar = useCallback(() => {
     if (!contextMenu) return;
@@ -189,13 +171,9 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleReveal = useCallback(async () => {
     const path = contextMenu?.track.locationPath;
     if (!path) return;
-    try {
-      await libraryApi.revealInFileManager(path);
-    } catch (err) {
-      pushToast("error", `ファイルマネージャで表示できませんでした: ${err}`);
-    }
     closeMenu();
-  }, [contextMenu, closeMenu, pushToast]);
+    await run("reveal", () => libraryApi.revealInFileManager(path));
+  }, [contextMenu, closeMenu, run]);
 
   const handleDelete = useCallback(() => {
     if (!contextMenu) return;
@@ -211,56 +189,51 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleAddToPlaylist = useCallback(async (playlistId: number) => {
     if (!contextMenu) return;
-    try {
-      const added = await playlistsApi.addTracksToPlaylist(playlistId, [contextMenu.track.trackId]);
+    const id = contextMenu.track.trackId;
+    closeMenu();
+    await run("addToPlaylist", async () => {
+      const added = await trackActions.addTracksToPlaylist(trackApi, playlists, playlistId, [id]);
       pushRecentPlaylist(playlistId);
       onTracksChanged();
-      const name = playlists.find((p) => p.playlistId === playlistId)?.name ?? "プレイリスト";
-      pushToast("success", `「${name}」に ${added} 曲を追加しました`);
-    } catch (err) {
-      pushToast("error", `追加に失敗しました: ${err}`);
-    }
-    closeMenu();
-  }, [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast, playlists]);
+      pushToast("success", trackActions.addedToPlaylistMessage(added));
+    });
+  }, [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast, playlists, run]);
 
   const handleRemoveFromPlaylist = useCallback(async () => {
     if (!contextMenu || viewMode !== "playlist" || selectedPlaylistId === null) return;
-    try {
-      await playlistsApi.removeTrackFromPlaylist(selectedPlaylistId, contextMenu.track.trackId);
-      onTracksChanged();
-    } catch (err) {
-      pushToast("error", `削除に失敗しました: ${err}`);
-    }
+    const id = contextMenu.track.trackId;
     closeMenu();
-  }, [contextMenu, viewMode, selectedPlaylistId, onTracksChanged, closeMenu, pushToast]);
+    await run("removeFromPlaylist", async () => {
+      await playlistsApi.removeTrackFromPlaylist(selectedPlaylistId, id);
+      onTracksChanged();
+    });
+  }, [contextMenu, viewMode, selectedPlaylistId, onTracksChanged, closeMenu, run]);
 
   const handleApplyAddTag = useCallback(async () => {
     const tag = newTag.trim();
-    if (!tag || !contextMenu) {
-      setShowAddTagDialog(false);
-      return;
-    }
-    try {
-      await libraryApi.addGenreTag([contextMenu.track.trackId], tag);
-      onTracksChanged();
-    } catch (err) {
-      pushToast("error", `タグの追加に失敗しました: ${err}`);
-    }
-    setShowAddTagDialog(false);
+    const ids = addTagTargetIds;
+    setAddTagTargetIds(null);
+    if (!tag || !ids || ids.length === 0) return;
     setNewTag("");
-    closeMenu();
-  }, [newTag, contextMenu, onTracksChanged, closeMenu, pushToast]);
+    await run("addTag", async () => {
+      const result = await libraryApi.addGenreTag(ids, tag);
+      onTracksChanged();
+      const warning = trackActions.genreFileWriteFailureMessage(result);
+      if (warning) pushToast("error", warning);
+    });
+  }, [newTag, addTagTargetIds, onTracksChanged, run, pushToast]);
 
   const handleRemoveTag = useCallback(async (tag: string) => {
     if (!contextMenu) return;
-    try {
-      await libraryApi.removeGenreTag([contextMenu.track.trackId], tag);
-      onTracksChanged();
-    } catch (err) {
-      pushToast("error", `タグの削除に失敗しました: ${err}`);
-    }
+    const id = contextMenu.track.trackId;
     closeMenu();
-  }, [contextMenu, onTracksChanged, closeMenu, pushToast]);
+    await run("removeTag", async () => {
+      const result = await libraryApi.removeGenreTag([id], tag);
+      onTracksChanged();
+      const warning = trackActions.genreFileWriteFailureMessage(result);
+      if (warning) pushToast("error", warning);
+    });
+  }, [contextMenu, onTracksChanged, closeMenu, run, pushToast]);
 
   const crateSet = useMemo(() => new Set(crate.map((t) => t.trackId)), [crate]);
 
@@ -288,7 +261,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const items = rowVirtualizer.getVirtualItems();
 
   return (
-    <div className="cb-grid-wrap" ref={parentRef} onScroll={handleScroll} onClick={closeMenu}>
+    <div className="cb-grid-wrap" ref={setParentRef} onScroll={handleScroll} onClick={closeMenu}>
       <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
         {items.map((vRow) => {
           const row = rows[vRow.index];
@@ -313,7 +286,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                   padding: `0 ${PAD_X}px ${GAP}px`,
                 }}
               >
-                {row.tracks.map((t, j) => {
+                {row.items.map((t, j) => {
                   const inCrate = crateSet.has(t.trackId);
                   const isCurrent = playback.currentTrackId === t.trackId;
                   return (
@@ -428,7 +401,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onReveal={() => void handleReveal()}
           onDelete={handleDelete}
           onAddToPlaylist={handleAddToPlaylist}
-          onAddTag={() => setShowAddTagDialog(true)}
+          onAddTag={() => setAddTagTargetIds([contextMenu.track.trackId])}
           onRemoveTag={handleRemoveTag}
         />
       )}
@@ -441,42 +414,13 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         />
       )}
 
-      {showAddTagDialog && (
-        <div className="modal-overlay" onClick={() => setShowAddTagDialog(false)}>
-          <div className="modal" style={{ width: 360 }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>
-                <Icon name="tag" size={16} /> ジャンルタグを追加
-              </h2>
-              <button className="modal-close" onClick={() => setShowAddTagDialog(false)}>
-                <Icon name="x" size={16} />
-              </button>
-            </div>
-            <div className="modal-body" style={{ padding: 16 }}>
-              <input
-                autoFocus
-                type="text"
-                className="rip-input"
-                placeholder="例: Deep House"
-                value={newTag}
-                onChange={(e) => setNewTag(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void handleApplyAddTag();
-                  if (e.key === "Escape") setShowAddTagDialog(false);
-                }}
-                style={{ width: "100%" }}
-              />
-              <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
-                <button className="toolbar-btn" onClick={() => setShowAddTagDialog(false)}>
-                  キャンセル
-                </button>
-                <button className="toolbar-btn primary" onClick={() => void handleApplyAddTag()}>
-                  追加
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+      {addTagTargetIds && (
+        <AddGenreTagDialog
+          value={newTag}
+          onChange={setNewTag}
+          onSubmit={() => void handleApplyAddTag()}
+          onClose={() => setAddTagTargetIds(null)}
+        />
       )}
     </div>
   );

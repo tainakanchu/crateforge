@@ -25,10 +25,10 @@ GET/DELETE では `<path>` の後ろに `key=value` を並べると `curl -G --d
 候補集めの主力。クエリ（すべて任意, camelCase）:
 - `q` — 検索クエリ（下記「`q` の検索構文」）。日本語・中国語など非 ASCII や空白を含む値は **`key=value` 形式**（`crate-api.sh GET /api/tracks q="..."`）で渡す（自動 URL エンコード）。
 - `ratingMin` / `ratingMax` — 0–100。例: ★3 以上は `ratingMin=60`。rating 未設定の曲は 0 扱い。
-- `genre` — ジャンル部分一致（大小無視）。
+- `genre` — **ジャンルタグの完全一致**（大小・全角半角は無視）。`genre=House` は `House` タグを持つ曲で、`DeepHouse` だけの曲は一致しない（別ジャンル。両方欲しければ 2 回引く）。値に空白を含めると全タグ必須（`genre=House Techno` = House かつ Techno）。`/` は区切らない（`Electronic/Dance` は 1 タグ）。タグ名は `GET /api/genres` が返すものをそのまま使える。空の値は絞り込まない。
 - `album` — アルバム名部分一致（大小無視）。
-- `artist` — 表示アーティスト名（`artist`、空なら `albumArtist`、どちらも無ければ `"Unknown Artist"`）と**完全一致**。`GET /api/artists` の `artist` 値をそのまま渡せる。
-- `albumArtist` — 表示アルバムアーティスト名（`albumArtist`、空なら `artist`、どちらも無ければ `"Unknown Artist"`）と**完全一致**。`GET /api/artists?grouping=albumArtist` の値と対応。
+- `artist` — 表示アーティスト名（`artist`、空なら `albumArtist`、どちらも無ければ空文字 `""`）と**完全一致**。`GET /api/artists` の `artist` 値をそのまま渡せる。`artist=`（空）はアーティストが分からない曲（artist も albumArtist も無い）に一致する。
+- `albumArtist` — 表示アルバムアーティスト名（`albumArtist`、空なら `artist`、どちらも無ければ空文字 `""`）と**完全一致**。`GET /api/artists?grouping=albumArtist` の値と対応。
 - `yearFrom` / `yearTo` — 年代範囲（指定時、year 未設定の曲は除外）。
 - `analyzed` — `true`=解析済みのみ / `false`=未解析のみ。
 - `limit` / `offset` — ページング（既定: 上限なし＝全件）。
@@ -40,7 +40,8 @@ GET/DELETE では `<path>` の後ろに `key=value` を並べると `curl -G --d
 - 空白区切りのトークンは **AND**。値に空白を含めたいときは二重引用符で囲む（`artist:"daft punk"`）。
 - フィールド指定の無いトークンは、テキスト 6 列（name / artist / album / albumArtist / genre / comments）のいずれかへの部分一致（OR）。
 - フィールド指定トークン（解釈できない値はフリーテキスト扱いに落ちる）:
-  - `artist:` `album:` `albumartist:`（`album_artist:` も可）`genre:` `comment:` — その列の部分一致。
+  - `artist:` `album:` `albumartist:`（`album_artist:` も可）`comment:` — その列の部分一致。
+  - `genre:` — ジャンルタグの完全一致（クエリパラメータ `genre` と同じ規則。`genre:House` は `DeepHouse` に一致しない。`genre:"House Techno"` は両方のタグを持つ曲）。ジャンル名の部分一致で探したいときはフィールド指定なしのトークン（`house`）を使う。
   - `year:2015` / `year:2010-2019` — 年（範囲は両端含む）。
   - `rating:` — **★（0〜5、0.5 刻み）で指定**（0–100 ではない）。`rating:4`（rating 80〜99）、`rating:3.5-5`、`rating:>=3`、`rating:<2`、`rating:0`（rating 0〜19。未評価も含む）。
   - `bpm:120-128` / `bpm:124`（単一値は ±2）。解析 BPM があればそれを、無ければ曲の BPM タグを見る。
@@ -93,17 +94,19 @@ crate-api.sh GET /api/tracks q="key:compat:8A rating:>=3" limit=200
 
 ### `GET /api/genres`
 `{ "tag": "House", "count": 42 }[]`（ジャンルタグの頻度）。
+集計は**表記どおり**（`House` と `house`、全角・半角の違いは別の行になる）。一方 `GET /api/tracks` の `genre` は大小・全角半角を無視して一致させるので、`genre=House` の件数は `House` と `house` の行の合計になりうる。
 
 ### `GET /api/tags`
 first-class Tag（Genre とは独立した、DB のみのタグ。`mood:dreamy` のような `namespace:value` か、`bridge` のような free tag）の一覧。
 → `{ id, namespace, value, count }[]`（付与曲数の多い順。**どの曲にも付いていない tag も `count: 0` で含む**）。`q=tag:...` で絞り込みに使える。
 
 ### `GET /api/albums`
-distinct なアルバム一覧 → `{ album, albumArtist, trackCount, sampleTrackId }[]`（アルバム名昇順・大小無視。album が空の曲は除外。同名アルバムは 1 件にまとまる）。
+distinct なアルバム一覧 → `{ album, albumArtist, trackCount, sampleTrackId }[]`（アルバム名昇順・大小無視。同名アルバムは 1 件にまとまる）。
+album が無い（未設定・空白のみ）曲は除外されず、**`album: ""` の 1 件**（不明なアルバム）にまとまって末尾に来る。その曲は `GET /api/tracks?album=&albumExact=true` で引ける。
 
 ### `GET /api/artists`
 クエリ: `grouping` = `artist`（既定）| `albumArtist`。distinct な表示アーティスト一覧 → `{ artist, trackCount, sampleTrackId }[]`（表示名昇順・大小無視）。
-`artist` は表示名（`grouping=artist` なら artist→albumArtist→`"Unknown Artist"` の順でフォールバック、`albumArtist` なら逆順）。この値を `GET /api/tracks` の `artist` / `albumArtist` クエリにそのまま渡すと完全一致で引ける。
+`artist` は表示名（`grouping=artist` なら artist→albumArtist の順でフォールバック、`albumArtist` なら逆順）。どちらも無い曲は **`artist: ""` の 1 件**（不明なアーティスト。`"Unknown Artist"` のような文字列は入らない）にまとまって末尾に来る。この値を `GET /api/tracks` の `artist` / `albumArtist` クエリにそのまま渡すと完全一致で引ける。
 アーティスト軸で母集団を作るとき（名前の表記ゆれ確認・曲数の把握）に使う。
 
 ### `GET /api/playlists`
@@ -156,8 +159,9 @@ crate-api.sh POST /api/tracks/analyze '{"trackIds":[12,7,30]}'
 - `persistentId`（任意）は 16 桁の大文字 16 進数。指定した PID のプレイリストが既に在れば**作らずに `200` + 既存の `Playlist`** を返す（冪等作成）。形式不正は `400`。通常は省略してよい。
 
 ### `POST /api/playlists/{playlistId}/tracks`
-ボディ `{ "trackIds": [i64,...] }` → `{ "added": n }`（`n` = 送った件数）。
+ボディ `{ "trackIds": [i64,...] }` → `{ "added": n }`（`n` = 追加した件数）。
 既存の末尾に入力順で追記する。**重複チェック・存在チェックはしない**（同じ曲を 2 回送ると 2 回入る）ので、送る前に `trackIds` を重複排除しておく。
+ただし負の `trackId`（ライブラリ外の一時再生曲。`/api/remote/*` の再生状態に現れることがある）は追加されず、`n` にも数えない。
 
 ### `PUT /api/playlists/{playlistId}/tracks`
 ボディ `{ "trackIds": [i64,...] }` → 所属曲を**入力順どおりに全置換** → `204`。
@@ -189,12 +193,12 @@ DB を更新したうえで、**実ファイルの ID3 / Vorbis / MP4 タグに�
 
 実ファイルまで書き換わる（自動整理が有効ならファイル移動も起きる）ので、**ユーザーの指示かワークスペース方針がある場合に使う**。選曲の過程で「印を付けておきたい」だけなら、ファイルに触れない first-class Tag（後述）や rating 専用エンドポイントの方が影響が小さい。
 
-ジャンルは**空白区切りのタグ集合**として扱う。「末尾にタグを 1 個足す/外す」は genre-tags、「genre 文字列をまるごと置換」「rating 等の他フィールド更新」は PATCH を使う。
+ジャンルは**空白区切りのタグ集合**として扱う（`;` `,` も区切り、`/` は区切らない）。複数語のジャンルは空白なしで書く（`DeepHouse`。`Deep House` は `Deep` と `House` の 2 タグになる）。「末尾にタグを 1 個足す/外す」は genre-tags、「genre 文字列をまるごと置換」「rating 等の他フィールド更新」は PATCH を使う。
 
 ### `POST /api/tracks/genre-tags/add`
 ボディ `{ "trackIds": [i64,...], "tag": String }` → 各曲の genre 末尾に `tag` を追記（重複は付かない）。
 → `{ "updated": n, "fileWriteFailed": m }`。`tag` が空白のみなら `400`。
-`updated` は DB 更新がエラーにならなかった件数で、**存在しない `trackId` も数えられる**（0 行更新でもエラーにならないため）。
+`updated` は **genre が実際に変わった曲数**（既にそのタグが付いていた曲と、存在しない `trackId` は数えない。その曲は DB もファイルも書き換えない）。remove も同じ（もともとそのタグが無い曲は数えない）。
 ```
 crate-api.sh POST /api/tracks/genre-tags/add '{"trackIds":[12,7],"tag":"台語"}'
 ```
@@ -206,9 +210,9 @@ crate-api.sh POST /api/tracks/genre-tags/add '{"trackIds":[12,7],"tag":"台語"}
 ### `PATCH /api/tracks/{trackId}`
 ボディ = 更新したいフィールドだけ（camelCase, **部分更新**＝未指定は据え置き）。
 - 文字列: `name` / `artist` / `albumArtist` / `composer` / `album` / `genre` / `comments`（`""` で空にする）。
-- 数値: `year` / `bpm` / `trackNumber` / `trackCount` / `discNumber` / `discCount` / `playCount` / `skipCount`（`null` で値をクリア）。`rating`(0-100)。
+- 数値: `year` / `bpm` / `trackNumber` / `trackCount` / `discNumber` / `discCount` / `playCount` / `skipCount`（`null` で値をクリア）。`rating`(0-100。**範囲外は `400`** でそのリクエストでは何も更新されない。一括 `PATCH /api/tracks` も同じ)。`rating` だけを変えた場合 `dateModified` は進まない。
 - 真偽: `compilation` / `disabled`。
-- `keyCamelotUser` — Key の手動上書き（Camelot 表記, 例 `"8A"`）。`null` で解除（解析値に戻る）。
+- `keyCamelotUser` — Key の手動上書き（Camelot 表記, 例 `"8A"`）。`null` で解除（解析値に戻る）。Camelot として解釈できない値は `400`（そのリクエストでは何も更新されない。一括 `PATCH /api/tracks` も同じ）。
 - ファイルタグへ書き戻すのは、更新後の 曲名・artist・albumArtist・composer・album・genre・comments・year・トラック/ディスク番号と総数・compilation・BPM（曲の BPM、未設定なら解析 BPM）・Key（実効キーを `Am` 等の音楽表記で）。**`rating` / `disabled` / `playCount` / `skipCount` はファイルには書かれない**（DB のみ）。
 → `{ "track": Track, "fileWriteFailed": bool, "relocateFailed": bool }`（更新後の全フィールド。移動した場合 `locationPath` は新パス）。存在しない trackId は `404`。
 ```
@@ -266,7 +270,7 @@ crate-api.sh POST /api/tracks/tags/add '{"trackIds":[12,7],"tag":"mood:dreamy"}'
 - `GET /manifest.webmanifest` `/icon-512.png` `/icon-192.png` `/apple-touch-icon.png` `/favicon.ico` — PWA 資産（トークン不要）。
 - `POST /api/pair/start` / `GET /api/pair/poll` — モバイル等のペアリング（トークン不要）。
 - `GET /api/remote/queue` / `GET /api/remote/state` — 再生キュー・再生状態の取得。
-- `POST /api/remote/{play,pause,resume,stop,next,prev,seek,set-queue,volume,shuffle,repeat}` — アプリ本体の再生リモート操作。
+- `POST /api/remote/{play,pause,resume,stop,next,prev,seek,set-queue,volume,shuffle,repeat}` — アプリ本体の再生リモート操作。`prev` はデスクトップの ⏮ と同じ 3 秒ルール（今の曲を 3 秒を超えて再生していればその曲を頭から再生し直し、そうでなければキューの前の曲へ。返り値 `{ "trackId": 再生した曲 | null }`。デスクトップが試聴（Preview）中なら、⏮ と同じく試聴のまま再生する）。
 - `GET /api/tracks/{trackId}/stream` — 音源ストリーミング（トランスコード対応）。
 - `GET /api/tracks/{trackId}/artwork` — アートワーク配信（`size` / `format` でリサイズ）。
 - `PUT` / `DELETE /api/tracks/{trackId}/artwork` — 埋め込みアートワークの設定/削除（実ファイルを書き換える）。単体 PATCH と同じく `If-Match: <persistentId>` を付けられ、不一致ならファイルに触れず `409`。

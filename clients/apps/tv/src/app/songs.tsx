@@ -1,37 +1,23 @@
-// 曲一覧画面。core の ApiClient.listTracks（useConnection().client 経由）で全曲を取得し、
+// 曲一覧画面。core の useTracks（mobile と共通の閲覧フック）で全曲を取得し、
 // 共有の TrackRow を縦リスト（LibraryList）で表示する。行を選ぶと usePlayer.setQueue で
 // キューを差し替え、/player（Now Playing）へ遷移して再生を始める。
-//
-// データ取得は core の専用フックが無いため、mobile の useTracks と同じ要領で
-// client.listTracks を React Query で包む（QueryClientProvider は _layout.tsx に既設）。
-// 後続の albums/artists/playlists/search 画面はこのパターンと TrackRow/LibraryList を流用する。
+// albums/artists/playlists/search 画面も同じく core の閲覧フックと TrackRow/LibraryList を使う。
 
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { View, Text, StyleSheet } from "react-native";
 
-import { type Track, useConnection, usePlayer } from "@crateforge/core";
+import { BROWSE_LIMIT, usePlayer, useTracks } from "@crateforge/core";
 import { TrackRow } from "@/components/library/TrackRow";
 import { LibraryList } from "@/components/library/LibraryList";
 import { PALETTE, TV_FONT, TV_LAYOUT } from "@/theme/palette";
 
-/** 大規模ライブラリでも全件取得（mobile の BROWSE_LIMIT と同値）。 */
-const BROWSE_LIMIT = 100000;
-
 export default function SongsScreen() {
   const router = useRouter();
-  const client = useConnection((s) => s.client);
   // 再生中の曲をハイライトするための trackId。
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);
 
-  // 全曲を名前昇順で取得。client 未接続時は enabled:false で待機（Gate が /connect へ誘導）。
-  const query = useQuery<Track[]>({
-    queryKey: ["tracks", { limit: BROWSE_LIMIT, sort: "name", order: "asc" }],
-    enabled: !!client,
-    queryFn: ({ signal }) =>
-      client!.listTracks({ limit: BROWSE_LIMIT, sort: "name", order: "asc" }, signal),
-    placeholderData: keepPreviousData,
-  });
+  // 全曲を名前昇順で取得。未接続時は取得せず待機（Gate が /connect へ誘導）。
+  const query = useTracks({ limit: BROWSE_LIMIT, sort: "name", order: "asc" });
 
   const tracks = query.data ?? [];
 

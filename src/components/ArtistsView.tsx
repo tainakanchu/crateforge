@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { useStore } from "../store/useStore";
 import * as libraryApi from "../api/library";
-import * as playbackApi from "../api/playback";
-import * as audition from "../lib/audition";
 import { Icon } from "./Icon";
 import { ArtworkImg } from "./Cover";
 import { artGradient, leadingGlyph } from "../lib/art";
@@ -12,8 +9,26 @@ import { ARTIST_SORT_FIELDS } from "../types";
 import type { AlbumRow, ArtistRow, SortField, Track } from "../types";
 import { EmptyState } from "./EmptyState";
 import { albumLabel, artistLabel } from "../lib/unknownLabels";
+import {
+  GRID_GAP as GAP,
+  GRID_META_H as META_H,
+  GRID_PAD_X as PAD_X,
+  appendUniqueBy,
+  buildGridRows,
+  gridMetrics,
+  isNearBottom,
+} from "../lib/gridRows";
+import { useElementWidth } from "../hooks/useElementWidth";
+import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
+import { formatTotalTime, formatTrackTime } from "../lib/format";
+import { isTauri } from "../lib/env";
+import { combineQuery } from "../lib/query";
+import * as trackActions from "../lib/trackActions";
+import { trackApi } from "../lib/trackActionsApi";
+import { CovTrackRow } from "./CovTrackRow";
+import { useTrackActionRunner } from "../hooks/useTrackActionRunner";
+import { LoadRetry } from "./LoadRetry";
 
-const isTauri = "__TAURI_INTERNALS__" in window;
 
 /**
  * 表示中のアーティスト数 (検索中の見出しの件数用。Toolbar が読む)。
@@ -24,10 +39,6 @@ export const useArtistsResult = create<{ count: number | null; hasMore: boolean 
   hasMore: false,
 }));
 
-const GAP = 18;
-const PAD_X = 20;
-const MIN_CARD = 150;
-const META_H = 46; // カード下のアーティスト名・件数ラベルのおよその高さ
 /// サーバ集約を 1 ページずつ取る件数 (App.tsx のトラック取得と同じ粒度)。
 const PAGE_SIZE = 500;
 
@@ -36,20 +47,10 @@ interface ArtistsViewProps {
   reloadKey: number;
 }
 
-function formatTime(ms: number | null): string {
-  if (!ms) return "";
-  const total = Math.floor(ms / 1000);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  return h > 0
-    ? `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`
-    : `${m}:${s.toString().padStart(2, "0")}`;
-}
 
 const ARTIST_SORT_SET = new Set<string>(ARTIST_SORT_FIELDS);
 
-type Row = { type: "grid"; artists: ArtistRow[] } | { type: "expand"; artist: ArtistRow };
+const artistKeyOf = (a: ArtistRow) => a.name;
 
 /// アーティスト単位のブラウズビュー (viewMode = "artists")。
 /// 集約はサーバ (`get_artists`) が行い、全曲をメモリに載せない。カードは仮想化し、
@@ -58,16 +59,18 @@ type Row = { type: "grid"; artists: ArtistRow[] } | { type: "expand"; artist: Ar
 export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   const { playback, crate, addToCrate, sortField, sortOrder } = useStore();
   const pushToast = useStore((s) => s.pushToast);
+  const run = useTrackActionRunner();
   // 検索ボックス + フィルタタグ (D4)。トラック一覧と同じ組み立て (App.tsx の combinedQuery)。
   const searchQuery = useStore((s) => s.searchQuery);
   const filterTags = useStore((s) => s.filterTags);
   const combinedQuery = useMemo(
-    () => [searchQuery.trim(), ...filterTags].filter(Boolean).join(" "),
+    () => combineQuery(searchQuery, filterTags),
     [searchQuery, filterTags],
   );
 
-  const parentRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
+  // グリッドのスクロール要素。初回描画は空状態 (データ到着前) で要素が無いので、
+  // 付いた時点で幅計測を始められるよう callback ref で持つ (useElementWidth)。AlbumsView と同じ。
+  const { ref: setParentRef, elRef: parentRef, width } = useElementWidth<HTMLDivElement>();
   const [artists, setArtists] = useState<ArtistRow[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -83,10 +86,8 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   const bumpCache = useCallback(() => setCacheEpoch((e) => e + 1), []);
 
   // 追加ロードの offset 計算で使う (state の閉じ込みを避ける)。
-  const artistsRef = useRef<ArtistRow[]>([]);
-  useEffect(() => {
-    artistsRef.current = artists;
-  }, [artists]);
+  // サーバから受け取った行数 (重複を落とす前)。表示中の件数とは別に数える。
+  const fetchedCountRef = useRef(0);
   // 見出しの件数 (検索結果のアーティスト数) を Toolbar へ渡す。
   useEffect(() => {
     useArtistsResult.setState({ count: isLoading ? null : artists.length, hasMore });
@@ -101,17 +102,6 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   // store 側でもビュー切替時に正規化しているので、ここは保険。
   const artistSort: SortField = ARTIST_SORT_SET.has(sortField) ? sortField : "name";
 
-  useLayoutEffect(() => {
-    const el = parentRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setWidth(e.contentRect.width);
-    });
-    ro.observe(el);
-    setWidth(el.clientWidth);
-    return () => ro.disconnect();
-  }, []);
-
   const load = useCallback(
     async (reset: boolean) => {
       if (!isTauri) {
@@ -125,7 +115,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
       loadingRef.current = true;
       setIsLoading(true);
       try {
-        const offset = reset ? 0 : artistsRef.current.length;
+        const offset = reset ? 0 : fetchedCountRef.current;
         const rows = await libraryApi.getArtists(
           artistSort,
           sortOrder,
@@ -134,7 +124,9 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
           combinedQuery || undefined,
         );
         if (seq !== reqSeq.current) return; // 古い応答は捨てる
-        setArtists((prev) => (reset ? rows : [...prev, ...rows]));
+        fetchedCountRef.current = offset + rows.length;
+        // 追加ページに既出のアーティストが混ざっても重ねない (名前は展開行の行キーになる)。
+        setArtists((prev) => appendUniqueBy(reset ? [] : prev, rows, artistKeyOf));
         setHasMore(rows.length === PAGE_SIZE);
       } catch (err) {
         if (seq !== reqSeq.current) return;
@@ -158,90 +150,121 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
     setHasMore(false);
     albumCache.current = new Map();
     trackCache.current = new Map();
+    failedAlbums.current = new Set();
+    failedTracks.current = new Set();
     bumpCache();
     void load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [artistSort, sortOrder, combinedQuery, reloadKey]);
 
-  const ensureAlbums = useCallback(
+  // 取得に失敗したキー (アーティスト名 / albumKey)。展開行が「Loading…」のまま止まらないよう、
+  // 失敗を表示して再試行できるようにする。キャッシュと同じく ref + epoch で再描画する。
+  const failedAlbums = useRef(new Set<string>());
+  const failedTracks = useRef(new Set<string>());
+
+  /// アーティストのアルバム一覧を取得してキャッシュする。失敗は throw する (通知は呼び出し側)。
+  const fetchAlbums = useCallback(
     async (name: string): Promise<AlbumRow[]> => {
       const hit = albumCache.current.get(name);
       if (hit) return hit;
+      if (failedAlbums.current.delete(name)) bumpCache(); // 再試行中は Loading… に戻す
       try {
         const rows = await libraryApi.getArtistAlbums(name);
         albumCache.current.set(name, rows);
-        bumpCache();
         return rows;
       } catch (err) {
-        console.error("Failed to load artist albums:", err);
-        return [];
+        failedAlbums.current.add(name);
+        throw err;
+      } finally {
+        bumpCache();
       }
     },
     [bumpCache],
+  );
+
+  /// アルバムの曲を取得してキャッシュする。失敗は throw する (通知は呼び出し側)。
+  const fetchTracks = useCallback(
+    async (albumKey: string): Promise<Track[]> => {
+      const hit = trackCache.current.get(albumKey);
+      if (hit) return hit;
+      if (failedTracks.current.delete(albumKey)) bumpCache();
+      try {
+        const ts = await libraryApi.getAlbumTracks(albumKey);
+        trackCache.current.set(albumKey, ts);
+        return ts;
+      } catch (err) {
+        failedTracks.current.add(albumKey);
+        throw err;
+      } finally {
+        bumpCache();
+      }
+    },
+    [bumpCache],
+  );
+
+  // 単発の取得: 失敗したらトーストで知らせて空を返す (再生・キュー・Crate が黙って何もしない、を避ける)。
+  const ensureAlbums = useCallback(
+    async (name: string): Promise<AlbumRow[]> => {
+      let rows: AlbumRow[] = [];
+      const ok = await run("loadAlbums", async () => {
+        rows = await fetchAlbums(name);
+      });
+      return ok ? rows : [];
+    },
+    [fetchAlbums, run],
   );
 
   const ensureTracks = useCallback(
     async (albumKey: string): Promise<Track[]> => {
-      const hit = trackCache.current.get(albumKey);
-      if (hit) return hit;
-      try {
-        const ts = await libraryApi.getAlbumTracks(albumKey);
-        trackCache.current.set(albumKey, ts);
-        bumpCache();
-        return ts;
-      } catch (err) {
-        console.error("Failed to load album tracks:", err);
-        return [];
-      }
+      let ts: Track[] = [];
+      const ok = await run("loadTracks", async () => {
+        ts = await fetchTracks(albumKey);
+      });
+      return ok ? ts : [];
     },
-    [bumpCache],
+    [fetchTracks, run],
   );
 
   /// アーティストの全曲 (アルバム順 → disc/track 順)。未取得ぶんはここで取りに行く。
+  /// アルバムごとの取得は並列なので、失敗の通知はアルバムの数だけ出さず 1 回にまとめる。
+  /// 取得できたアルバムの曲はそのまま返す (操作は取れたぶんで続ける)。
   const artistTracks = useCallback(
     async (a: ArtistRow): Promise<Track[]> => {
       const albums = await ensureAlbums(a.name);
-      const lists = await Promise.all(albums.map((al) => ensureTracks(al.albumKey)));
-      return lists.flat();
+      const results = await Promise.allSettled(albums.map((al) => fetchTracks(al.albumKey)));
+      const { items, failures } = trackActions.splitSettled(results);
+      const message = trackActions.albumLoadFailureMessage(failures);
+      if (message) {
+        console.error("Failed to load album tracks:", failures);
+        pushToast("error", message);
+      }
+      return items;
     },
-    [ensureAlbums, ensureTracks],
+    [ensureAlbums, fetchTracks, pushToast],
   );
 
-  const inner = Math.max(0, width - PAD_X * 2);
-  const cols = Math.max(2, Math.floor((inner + GAP) / (MIN_CARD + GAP)) || 2);
-  const cardW = Math.max(60, inner > 0 ? (inner - GAP * (cols - 1)) / cols : MIN_CARD);
+  const { cols, cardW } = gridMetrics(width);
 
   // グリッド行 (cols 枚ずつ) に、展開中アーティストの行を差し込んだ仮想行リスト。
-  const rows = useMemo<Row[]>(() => {
-    const out: Row[] = [];
-    for (let i = 0; i < artists.length; i += cols) {
-      const chunk = artists.slice(i, i + cols);
-      out.push({ type: "grid", artists: chunk });
-      for (const a of chunk) {
-        if (expanded === a.name) out.push({ type: "expand", artist: a });
-      }
-    }
-    return out;
-  }, [artists, cols, expanded]);
+  const rows = useMemo(
+    () => buildGridRows(artists, cols, artistKeyOf, expanded),
+    [artists, cols, expanded],
+  );
 
-  const rowVirtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: (i) => (rows[i].type === "grid" ? cardW + META_H + GAP : 260),
-    overscan: 6,
-    paddingStart: 18,
-    paddingEnd: 18,
+  // 行キーの安定化と再計測の規則は useCardGridVirtualizer 側。展開の開閉・アルバムの開閉・
+  // 遅延取得の完了では measure() しない (実測キャッシュが消えて展開行が見積もり高さに戻り、
+  // 次の行が重なる)。高さの変化は各行の ResizeObserver (measureElement) が拾う。
+  const rowVirtualizer = useCardGridVirtualizer({
+    rows,
+    scrollRef: parentRef,
+    cols,
+    gridRowHeight: cardW + META_H + GAP,
   });
-
-  useEffect(() => {
-    rowVirtualizer.measure();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardW, cols, expanded, openAlbumKey, cacheEpoch, rows.length]);
 
   const handleScroll = useCallback(() => {
     const el = parentRef.current;
     if (!el || isLoading || !hasMore) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 400) void load(false);
+    if (isNearBottom(el)) void load(false);
   }, [isLoading, hasMore, load]);
 
   const toggleArtist = useCallback(
@@ -266,31 +289,19 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   // ---- 再生 / キュー / クレート ----
 
   const playTracks = useCallback(async (ts: Track[], startId?: number) => {
-    const ids = ts.filter((t) => t.fileExists).map((t) => t.trackId);
-    if (ids.length === 0) return;
-    const start = startId != null ? Math.max(0, ids.indexOf(startId)) : 0;
-    try {
-      await audition.ensureNormalPlay();
-      await playbackApi.setQueue(ids, start);
-      await playbackApi.playTrack(ids[start]);
-    } catch (err) {
-      console.error("Failed to play:", err);
-      pushToast("error", `再生に失敗しました: ${err}`);
-    }
-  }, [pushToast]);
+    await run("play", () => trackActions.playTracks(trackApi, ts, startId));
+  }, [run]);
 
   const enqueueTracks = useCallback(
     async (ts: Track[]) => {
-      const ids = ts.filter((t) => t.fileExists).map((t) => t.trackId);
+      const ids = trackActions.playableIds(ts);
       if (ids.length === 0) return;
-      try {
-        for (const id of ids) await playbackApi.enqueueTrack(id);
+      await run("enqueue", async () => {
+        await trackActions.enqueueTracks(trackApi, ids);
         pushToast("success", `${ids.length} 曲をキューに追加しました`);
-      } catch (err) {
-        pushToast("error", `キューへの追加に失敗しました: ${err}`);
-      }
+      });
     },
-    [pushToast],
+    [pushToast, run],
   );
 
   const crateTracks = useCallback(
@@ -331,7 +342,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   const items = rowVirtualizer.getVirtualItems();
 
   return (
-    <div className="cb-grid-wrap" ref={parentRef} onScroll={handleScroll}>
+    <div className="cb-grid-wrap" ref={setParentRef} onScroll={handleScroll}>
       <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
         {items.map((vRow) => {
           const row = rows[vRow.index];
@@ -358,7 +369,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                     padding: `0 ${PAD_X}px ${GAP}px`,
                   }}
                 >
-                  {row.artists.map((a) => {
+                  {row.items.map((a) => {
                     const kt = knownArtistTracks(a);
                     const allIn = kt ? kt.length > 0 && kt.every((t) => crateSet.has(t.trackId)) : false;
                     const isCurrent = kt
@@ -436,23 +447,27 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                 </div>
               ) : (
                 <ArtistExpansion
-                  artist={row.artist}
-                  albums={albumCache.current.get(row.artist.name) ?? null}
+                  artist={row.item}
+                  albums={albumCache.current.get(row.item.name) ?? null}
                   openAlbumKey={openAlbumKey}
                   tracksOf={(key) => trackCache.current.get(key) ?? null}
+                  albumsFailed={failedAlbums.current.has(row.item.name)}
+                  tracksFailed={(key) => failedTracks.current.has(key)}
+                  onRetryAlbums={() => void ensureAlbums(row.item.name)}
+                  onRetryTracks={(al) => void ensureTracks(al.albumKey)}
                   crateSet={crateSet}
                   currentTrackId={playback.currentTrackId}
                   onToggleAlbum={toggleAlbum}
-                  onPlayArtist={() => artistTracks(row.artist).then((ts) => playTracks(ts))}
-                  onQueueArtist={() => artistTracks(row.artist).then(enqueueTracks)}
-                  onCrateArtist={() => artistTracks(row.artist).then(crateTracks)}
+                  onPlayArtist={() => artistTracks(row.item).then((ts) => playTracks(ts))}
+                  onQueueArtist={() => artistTracks(row.item).then(enqueueTracks)}
+                  onCrateArtist={() => artistTracks(row.item).then(crateTracks)}
                   onPlayAlbum={(al, startId) =>
                     ensureTracks(al.albumKey).then((ts) => playTracks(ts, startId))
                   }
                   onQueueAlbum={(al) => ensureTracks(al.albumKey).then(enqueueTracks)}
                   onCrateAlbum={(al) => ensureTracks(al.albumKey).then(crateTracks)}
                   onCrateTrack={addToCrate}
-                  onClose={() => toggleArtist(row.artist)}
+                  onClose={() => toggleArtist(row.item)}
                 />
               )}
             </div>
@@ -470,6 +485,11 @@ interface ArtistExpansionProps {
   albums: AlbumRow[] | null;
   openAlbumKey: string | null;
   tracksOf: (albumKey: string) => Track[] | null;
+  /// アルバム一覧 / アルバムの曲の取得に失敗している (再試行の表示に切り替える)。
+  albumsFailed: boolean;
+  tracksFailed: (albumKey: string) => boolean;
+  onRetryAlbums: () => void;
+  onRetryTracks: (album: AlbumRow) => void;
   crateSet: Set<number>;
   currentTrackId: number | null;
   onToggleAlbum: (album: AlbumRow) => void;
@@ -489,6 +509,10 @@ function ArtistExpansion({
   albums,
   openAlbumKey,
   tracksOf,
+  albumsFailed,
+  tracksFailed,
+  onRetryAlbums,
+  onRetryTracks,
   crateSet,
   currentTrackId,
   onToggleAlbum,
@@ -528,7 +552,11 @@ function ArtistExpansion({
           </div>
         </div>
         {albums === null ? (
-          <div className="cb-loading">Loading…</div>
+          albumsFailed ? (
+            <LoadRetry message="アルバムを取得できませんでした" onRetry={onRetryAlbums} />
+          ) : (
+            <div className="cb-loading">Loading…</div>
+          )
         ) : (
           <div className="art-albs">
             {albums.map((al) => {
@@ -549,7 +577,7 @@ function ArtistExpansion({
                       <div className="s">
                         {al.year != null ? `${al.year} · ` : ""}
                         {al.trackCount} 曲
-                        {al.totalTimeMs > 0 ? ` · ${formatTime(al.totalTimeMs)}` : ""}
+                        {al.totalTimeMs > 0 ? ` · ${formatTotalTime(al.totalTimeMs)}` : ""}
                       </div>
                     </div>
                     <button
@@ -588,7 +616,14 @@ function ArtistExpansion({
                   </div>
                   {isOpen &&
                     (tracks === null ? (
-                      <div className="cb-loading">Loading…</div>
+                      tracksFailed(al.albumKey) ? (
+                        <LoadRetry
+                          message="曲を取得できませんでした"
+                          onRetry={() => onRetryTracks(al)}
+                        />
+                      ) : (
+                        <div className="cb-loading">Loading…</div>
+                      )
                     ) : (
                       <div className="cov-trks">
                         {tracks.map((t, i) => {
@@ -596,48 +631,18 @@ function ArtistExpansion({
                           const isCurrent = currentTrackId === t.trackId;
                           const showArtist = !!t.artist && t.artist !== artist.name;
                           return (
-                            <div
+                            // 列は番号 / 曲名 / 長さ / +Crate のみ (ui-spec 3.2)。extra は渡さない。
+                            <CovTrackRow
                               key={`${t.trackId}-${i}`}
-                              className={
-                                "cov-trk" +
-                                (isCurrent ? " play" : "") +
-                                (!t.fileExists ? " missing" : "")
-                              }
-                              onDoubleClick={() => onPlayAlbum(al, t.trackId)}
-                            >
-                              <span className="n">{t.trackNumber ?? i + 1}</span>
-                              <span className="nm">
-                                {isCurrent && (
-                                  <span className="cov-now">
-                                    <Icon name="play" size={9} fill="currentColor" stroke={0} />
-                                  </span>
-                                )}
-                                {!t.fileExists && (
-                                  <span className="cb-warn" title="ファイルが見つかりません">
-                                    <Icon name="warning" size={11} />
-                                  </span>
-                                )}
-                                <span className="ell">{t.name || "(unknown)"}</span>
-                                {showArtist && <span className="sub"> — {t.artist}</span>}
-                              </span>
-                              <span className="tm cb-fmono">{formatTime(t.totalTimeMs)}</span>
-                              {isIn ? (
-                                <span className="cov-trk-add in" title="Crate に追加済み">
-                                  <Icon name="check" size={15} />
-                                </span>
-                              ) : (
-                                <button
-                                  className="cov-trk-add"
-                                  title="Crate に追加"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onCrateTrack(t);
-                                  }}
-                                >
-                                  <Icon name="plus" size={15} />
-                                </button>
-                              )}
-                            </div>
+                              track={t}
+                              index={i}
+                              isCurrent={isCurrent}
+                              inCrate={isIn}
+                              showArtist={showArtist}
+                              time={formatTrackTime(t.totalTimeMs)}
+                              onPlay={() => onPlayAlbum(al, t.trackId)}
+                              onAddToCrate={() => onCrateTrack(t)}
+                            />
                           );
                         })}
                       </div>

@@ -16,6 +16,7 @@ import {
 import type { GigCheckItem, GigReadinessResult, GigSnapshot } from "../types/gig";
 import type { Track } from "../types";
 import { Icon } from "./Icon";
+import { formatTotalTime } from "../lib/format";
 
 type SourceMode = "crate" | "playlist";
 type DialogTab = "check" | "snapshots";
@@ -48,18 +49,6 @@ function severityIcon(sev: GigCheckItem["severity"]): string {
   return "checkCircle";
 }
 
-function fmtDuration(ms: number): string {
-  if (ms <= 0) return "0:00";
-  const totalSec = Math.floor(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  if (min >= 60) {
-    const h = Math.floor(min / 60);
-    const m = min % 60;
-    return `${h}:${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
-  }
-  return `${min}:${sec.toString().padStart(2, "0")}`;
-}
 
 function fmtDate(iso: string): string {
   const d = new Date(iso);
@@ -453,7 +442,7 @@ export function GigReadinessDialog({
                         <strong>{badge.text}</strong>
                         <span>
                           {sourceName} · {result.summary.total} tracks ·{" "}
-                          {fmtDuration(result.summary.durationMs)}
+                          {formatTotalTime(result.summary.durationMs)}
                           {result.summary.missing > 0 &&
                             ` · missing ${result.summary.missing}`}
                           {result.summary.unanalyzed > 0 &&
@@ -580,7 +569,7 @@ export function GigReadinessDialog({
                     </div>
                     <div>
                       <dt>Duration</dt>
-                      <dd>{fmtDuration(viewSnapshot.summary.durationMs)}</dd>
+                      <dd>{formatTotalTime(viewSnapshot.summary.durationMs)}</dd>
                     </div>
                     <div>
                       <dt>Missing @ save</dt>

@@ -18,9 +18,9 @@
 
 import type { ReactNode } from "react";
 import { View, Text, StyleSheet } from "react-native";
-import { Image } from "expo-image";
 
-import { type Track, useConnection, trackTitle, trackSubtitle } from "@crateforge/core";
+import { type Track, trackTitle, trackSubtitle } from "@crateforge/core";
+import { Artwork } from "@/components/Artwork";
 import { Focusable } from "@/components/focus";
 import { PALETTE, TV_FONT, FOCUS_RING } from "@/theme/palette";
 
@@ -54,7 +54,6 @@ export function TrackRow({
   subtitle,
   hasTVPreferredFocus,
 }: TrackRowProps) {
-  const client = useConnection((s) => s.client);
   const sub = subtitle ?? trackSubtitle(track);
 
   return (
@@ -71,15 +70,12 @@ export function TrackRow({
         </Text>
       ) : null}
 
-      {client ? (
-        <Image
-          source={client.artworkSource(track.trackId)}
-          style={styles.artwork}
-          contentFit="cover"
-        />
-      ) : (
-        <View style={[styles.artwork, styles.artworkPlaceholder]} />
-      )}
+      <Artwork
+        trackId={track.trackId}
+        name={track.album || trackTitle(track)}
+        size={ARTWORK}
+        radius={6}
+      />
 
       <View style={styles.texts}>
         <Text style={[styles.title, active && styles.titleActive]} numberOfLines={1}>
@@ -120,16 +116,6 @@ const styles = StyleSheet.create({
     color: PALETTE.textSub,
     fontSize: TV_FONT.xs,
     fontVariant: ["tabular-nums"],
-  },
-  artwork: {
-    width: ARTWORK,
-    height: ARTWORK,
-    borderRadius: 6,
-    backgroundColor: PALETTE.surface,
-    flexShrink: 0,
-  },
-  artworkPlaceholder: {
-    backgroundColor: PALETTE.surface,
   },
   texts: {
     flex: 1,

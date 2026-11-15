@@ -3,6 +3,7 @@ import * as libraryApi from "../api/library";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
 import type { Track } from "../types";
+import { useEscapeKey } from "../hooks/useEscapeKey";
 
 interface DeleteTracksDialogProps {
   /** 削除対象の曲（曲名とファイルパスの表示・ルート判定に使う） */
@@ -103,16 +104,8 @@ export function DeleteTracksDialog({ tracks: rawTracks, onClose, onDeleted }: De
     }
   }, [busy, tracks, deleteFiles, canDeleteFiles, removeFromCrate, pushToast, onDeleted, onClose]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [busy, onClose]);
+  // Esc で閉じる (処理中は無視)。
+  useEscapeKey(onClose, { enabled: !busy });
 
   const preview = tracks.slice(0, 5);
 

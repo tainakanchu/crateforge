@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { artGradient, leadingGlyph } from "../lib/art";
 import { useStore } from "../store/useStore";
+import { isTauri } from "../lib/env";
 
-const isTauri = "__TAURI_INTERNALS__" in window;
 
 /// バックエンドが縮小サムネイルを用意する段階 (px, 最大辺)。
 /// `src-tauri/src/artwork/thumb.rs` の BUCKETS と揃える。

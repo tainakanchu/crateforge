@@ -126,7 +126,8 @@ pnpm tauri build
 | `daft punk` | フリーテキスト (両方を含む) |
 | `artist:daft` / `artist:"daft punk"` | アーティスト名の部分一致 |
 | `album:discovery` / `albumartist:aphex` | アルバム / アルバムアーティスト |
-| `genre:house` / `comment:classic` | ジャンル / コメント |
+| `genre:house` / `genre:"house techno"` | ジャンルタグの完全一致 (`DeepHouse` だけの曲は `genre:house` に一致しない。空白で並べるとすべてのタグを持つ曲) |
+| `comment:classic` | コメントの部分一致 |
 | `year:2018` / `year:2015-2020` | 発売年 (単一 / 範囲) |
 | `rating:5` / `rating:4-5` / `rating:0` | 星 0〜5 (0 = 未評価) |
 | `bpm:128` / `bpm:120-128` | BPM (単一は ±2、解析値優先) |

@@ -55,6 +55,34 @@ impl From<String> for ApiError {
     }
 }
 
+/// 曲の編集 (`library::edit`) のエラー。入力の誤り (不正な Camelot キー・範囲外の rating) は 400、
+/// DB 障害は 500。
+impl From<crate::library::edit::EditError> for ApiError {
+    fn from(e: crate::library::edit::EditError) -> Self {
+        use crate::library::edit::EditError;
+        let status = match &e {
+            EditError::Invalid(_) => StatusCode::BAD_REQUEST,
+            EditError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        ApiError::new(status, e.to_string())
+    }
+}
+
+/// プレイリストの曲目編集 (`library::playlists`) のエラー。
+/// スマートプレイリストは 409、プレイリスト無しは 404、ライブラリに無い曲は 400、DB 障害は 500。
+impl From<crate::library::playlists::PlaylistEditError> for ApiError {
+    fn from(e: crate::library::playlists::PlaylistEditError) -> Self {
+        use crate::library::playlists::PlaylistEditError;
+        let status = match &e {
+            PlaylistEditError::Smart => StatusCode::CONFLICT,
+            PlaylistEditError::NotFound => StatusCode::NOT_FOUND,
+            PlaylistEditError::TrackNotFound(_) => StatusCode::BAD_REQUEST,
+            PlaylistEditError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        ApiError::new(status, e.to_string())
+    }
+}
+
 /// rusqlite のエラーも 500 にマップする (DB 障害は内部エラー)。
 impl From<rusqlite::Error> for ApiError {
     fn from(e: rusqlite::Error) -> Self {

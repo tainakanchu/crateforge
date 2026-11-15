@@ -21,6 +21,11 @@ import { describePlaybackError } from "../playback/errorMessage";
 
 export type RepeatMode = "off" | "all" | "one";
 
+/** リピートボタンを押すたびの切り替え順: off → all → one → off。 */
+export function nextRepeat(mode: RepeatMode): RepeatMode {
+  return mode === "off" ? "all" : mode === "all" ? "one" : "off";
+}
+
 /** shuffle / repeat の永続化キー（settings.ts と同じ SecureStore を使う）。 */
 const KEY_SHUFFLE = "crateforge.player.shuffle";
 const KEY_REPEAT = "crateforge.player.repeat";

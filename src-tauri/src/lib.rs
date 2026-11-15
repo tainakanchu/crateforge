@@ -11,6 +11,7 @@ mod devices;
 mod ffmpeg;
 mod fonts;
 mod importer;
+mod library;
 mod itunes_xml;
 mod library_match;
 mod logging;
@@ -24,6 +25,7 @@ mod pairing;
 mod playback_target;
 mod playlist_rules;
 mod proc;
+mod rating;
 mod rbx_cli;
 mod smart;
 mod smtc;
@@ -288,6 +290,7 @@ pub fn run() {
             commands::library::set_track_rating,
             commands::library::add_genre_tag,
             commands::library::remove_genre_tag,
+            commands::library::edit_genre_tags,
             commands::library::get_all_genre_tags,
             commands::library::get_all_tags,
             commands::library::get_track_tags,

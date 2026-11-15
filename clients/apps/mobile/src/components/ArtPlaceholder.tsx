@@ -1,22 +1,10 @@
 // アートワーク無しのプレースホルダ。名前の頭文字 + 名前から決まる色（デスクトップと同系統）。
+// 頭文字と色の決め方は core/src/lib/artPlaceholder.ts（TV と共有）。
 
 import { StyleSheet, Text, View } from "react-native";
 import type { StyleProp, ViewStyle } from "react-native";
 
-export function placeholderInitial(name: string | null | undefined): string {
-  const t = (name ?? "").trim();
-  if (!t) return "♪";
-  const ch = Array.from(t)[0] ?? "♪";
-  return ch.toUpperCase();
-}
-
-/** 名前の文字列ハッシュから決まる暗めの色相（同じ名前は常に同じ色）。 */
-export function placeholderColor(name: string | null | undefined): string {
-  const t = (name ?? "").trim();
-  let h = 0;
-  for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
-  return `hsl(${h % 360}, 32%, 30%)`;
-}
+import { placeholderColor, placeholderInitial } from "@crateforge/core";
 
 export default function ArtPlaceholder({
   name,

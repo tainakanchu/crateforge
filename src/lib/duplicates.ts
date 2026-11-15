@@ -1,4 +1,5 @@
 import type { DuplicateHit, ItemAction } from "../types";
+import { formatTrackTime } from "./format";
 
 /**
  * 取り込み済み検出 (iTunes の「すでにライブラリにあります」相当) の表示と既定動作。
@@ -62,11 +63,6 @@ export function kindHint(h: DuplicateHit): string | null {
   }
 }
 
-function fmtTime(ms: number | null): string {
-  if (!ms || ms <= 0) return "--:--";
-  const s = Math.round(ms / 1000);
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
-}
 
 /** ツールチップ用: 一致した既存曲 (アーティスト / アルバム / 長さ / パス)。 */
 export function hitTooltip(hits: DuplicateHit[]): string {
@@ -76,7 +72,7 @@ export function hitTooltip(hits: DuplicateHit[]): string {
         h.kind === "exact" ? "一致" : h.kind === "probable" ? "ほぼ一致 (アルバム違い)" : "確証なし (長さで確認できず)";
       return [
         `${h.name || "(no title)"} — ${h.artist || "(no artist)"}`,
-        `アルバム: ${h.album || "-"}  長さ: ${fmtTime(h.totalTimeMs)}  [${kind}]`,
+        `アルバム: ${h.album || "-"}  長さ: ${formatTrackTime(h.totalTimeMs) || "-"}  [${kind}]`,
         `${h.locationPath ?? "(パスなし)"}`,
       ].join("\n");
     })

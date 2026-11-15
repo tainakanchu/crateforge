@@ -976,7 +976,7 @@ mod tests {
             // (track_id, name, artist, album, genre, year, rating)
             (1, "Sunrise", "Alpha", "Dawn", "House", 2019, 80),
             (2, "Midnight", "Beta", "Night", "Techno", 2020, 100),
-            (3, "Afternoon", "Gamma", "Day", "Deep House", 2018, 60),
+            (3, "Afternoon", "Gamma", "Day", "DeepHouse", 2018, 60),
             (4, "Evening", "Delta", "Dusk", "Trance", 2021, 40),
             (5, "Noon", "Epsilon", "Bright", "Ambient", 2017, 0),
         ];
@@ -1224,18 +1224,74 @@ mod tests {
         assert!(ids.contains(&2));
     }
 
-    // ===== ケース 5: genre 部分一致 =====
+    // ===== ケース 5: genre はタグ単位の完全一致 (docs/genre/design.md §3) =====
     #[tokio::test]
     async fn case05_tracks_genre() {
-        let (_dir, app) = setup();
-        let (status, body) = req(app, "GET", "/api/tracks?genre=House", None).await;
-        assert_eq!(status, StatusCode::OK);
-        let arr = body.as_array().unwrap();
-        // "House" と "Deep House" の 2 件 (部分一致, 大小無視)。
-        let ids: Vec<i64> = arr.iter().map(|t| t["trackId"].as_i64().unwrap()).collect();
-        assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&1));
-        assert!(ids.contains(&3));
+        let (dir, app) = setup();
+        let ids_of = |body: &Value| -> Vec<i64> {
+            body.as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["trackId"].as_i64().unwrap())
+                .collect()
+        };
+
+        // seed: 1 = "House", 3 = "DeepHouse"。House タグを持つのは 1 だけ (大小無視)。
+        for uri in ["/api/tracks?genre=House", "/api/tracks?genre=house"] {
+            let (status, body) = req(app.clone(), "GET", uri, None).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(ids_of(&body), vec![1], "{uri}");
+        }
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?genre=DeepHouse", None).await;
+        assert_eq!(ids_of(&body), vec![3]);
+
+        // 値に空白を含めると全タグ必須。
+        {
+            let db = crate::db::Database::open(dir.path()).unwrap();
+            db.conn
+                .execute("UPDATE tracks SET genre = 'House Techno' WHERE track_id = 4", [])
+                .unwrap();
+        }
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?genre=House&sort=trackNumber", None).await;
+        let mut ids = ids_of(&body);
+        ids.sort();
+        assert_eq!(ids, vec![1, 4]);
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?genre=Techno%20House", None).await;
+        assert_eq!(ids_of(&body), vec![4]);
+
+        // q / ほかの構造化フィルタ / offset・limit との組み合わせ。
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?genre=House&q=Sunrise", None).await;
+        assert_eq!(ids_of(&body), vec![1]);
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?genre=House&ratingMin=60", None).await;
+        assert_eq!(ids_of(&body), vec![1]);
+        let (_, all) = req(app.clone(), "GET", "/api/tracks?genre=House", None).await;
+        let (_, page) = req(app.clone(), "GET", "/api/tracks?genre=House&offset=1&limit=1", None).await;
+        assert_eq!(ids_of(&page), ids_of(&all)[1..2].to_vec());
+
+        // タグを含まない値は絞り込まない (全曲)。
+        let (_, everything) = req(app.clone(), "GET", "/api/tracks", None).await;
+        let (_, blank) = req(app.clone(), "GET", "/api/tracks?genre=", None).await;
+        assert_eq!(ids_of(&blank), ids_of(&everything));
+
+        // 空の genre= は「指定なし」なので、q だけのときの 1000 件上限も外さない。
+        {
+            let db = crate::db::Database::open(dir.path()).unwrap();
+            let tx = db.conn.unchecked_transaction().unwrap();
+            for i in 0..1100 {
+                tx.execute(
+                    "INSERT INTO tracks (track_id, name, file_exists) VALUES (?1, ?2, 1)",
+                    rusqlite::params![10_000 + i, format!("Bulk {i}")],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let (_, capped) = req(app.clone(), "GET", "/api/tracks?q=Bulk", None).await;
+        assert_eq!(capped.as_array().unwrap().len(), 1000);
+        for uri in ["/api/tracks?q=Bulk&genre=", "/api/tracks?q=Bulk&genre=%20%20"] {
+            let (_, body) = req(app.clone(), "GET", uri, None).await;
+            assert_eq!(body.as_array().unwrap().len(), 1000, "{uri}");
+        }
     }
 
     // ===== 追加: album 部分一致フィルタ =====
@@ -1695,7 +1751,7 @@ mod tests {
         let (_dir, app) = setup();
         let (status, body) = req(app, "GET", "/api/genres", None).await;
         assert_eq!(status, StatusCode::OK);
-        // genre は空白区切りタグ集合としてバラされる ("Deep House" → "Deep" + "House")。
+        // genre は空白区切りタグ集合としてバラされる (複数語は "DeepHouse" のように 1 タグで書く規約)。
         let arr = body.as_array().unwrap();
         assert!(!arr.is_empty());
         let tags: Vec<&str> = arr.iter().map(|g| g["tag"].as_str().unwrap()).collect();
@@ -1921,6 +1977,42 @@ mod tests {
         assert_eq!(ids, vec![3, 2, 3], "失敗前の所属と順序を維持する");
     }
 
+    // ===== 追加: 一時再生曲 (負の trackId) はプレイリストに入らない (GUI と同じ) =====
+    #[tokio::test]
+    async fn case_add_tracks_skips_transient_ids() {
+        let (_dir, app) = setup();
+        let uri = "/api/playlists/100/tracks";
+        let (_, before) = req(app.clone(), "GET", "/api/playlists", None).await;
+        let count = |v: &Value| {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["playlistId"] == 100)
+                .unwrap()["trackCount"]
+                .as_i64()
+                .unwrap()
+        };
+
+        let (status, body) = req(
+            app.clone(),
+            "POST",
+            uri,
+            Some(json!({ "trackIds": [-1, 2, -3] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["added"], 1, "負の ID は数えない");
+
+        let (_, after) = req(app.clone(), "GET", "/api/playlists", None).await;
+        assert_eq!(count(&after), count(&before) + 1, "見えない行が件数を増やさない");
+
+        // 負の ID だけなら何も足さない。
+        let (status, body) =
+            req(app, "POST", uri, Some(json!({ "trackIds": [-1] }))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["added"], 0);
+    }
+
     // ===== ケース 14: 不正な JSON ボディ → 4xx =====
     #[tokio::test]
     async fn case14_invalid_json_body() {
@@ -2144,6 +2236,141 @@ mod tests {
         // GET でも反映。
         let (_, track) = req(app, "GET", "/api/tracks/1", None).await;
         assert_eq!(track["genre"], "Disco Funk");
+    }
+
+    // ===== メタデータ書き込み: 不正な Camelot キーは 400 (以前は 500) で、何も書き換えない =====
+    #[tokio::test]
+    async fn case_patch_invalid_key_is_400() {
+        let (dir, app) = setup();
+        let edit = json!({ "name": "Renamed", "keyCamelotUser": "13Z" });
+
+        let (status, body) = req(app.clone(), "PATCH", "/api/tracks/1", Some(edit.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "invalid Camelot key: 13Z");
+
+        // 一括でも同じ。
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks",
+            Some(json!({ "trackIds": [1, 2], "edit": edit })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // 対象の曲が無くても入力の誤りが先 (404 ではなく 400)。trackIds が空の一括も 400。
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/99999",
+            Some(edit.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks",
+            Some(json!({ "trackIds": [], "edit": edit })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // 同じリクエストの他の項目 (name) も書かれていない。
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        for id in [1, 2] {
+            let t = db.get_track_by_track_id(id).unwrap().unwrap();
+            assert_ne!(t.name.as_deref(), Some("Renamed"));
+            assert_eq!(t.key_camelot_user, None);
+        }
+
+        // 正しいキーは従来どおり正規化して保存される。
+        let (status, body) = req(
+            app,
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "keyCamelotUser": "08a" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["track"]["keyCamelotUser"], "8A");
+    }
+
+    // ===== メタデータ書き込み: 範囲外の rating は 400、rating だけの PATCH は dateModified を進めない =====
+    #[tokio::test]
+    async fn case_patch_rating_range_and_date_modified() {
+        let (dir, app) = setup();
+        {
+            let db = crate::db::Database::open(dir.path()).unwrap();
+            db.conn
+                .execute(
+                    "UPDATE tracks SET date_modified = '2020-01-01T00:00:00Z' WHERE track_id IN (1, 2)",
+                    [],
+                )
+                .unwrap();
+        }
+
+        for bad in [-1, 101, 250] {
+            let edit = json!({ "name": "Renamed", "rating": bad });
+            let (status, body) =
+                req(app.clone(), "PATCH", "/api/tracks/1", Some(edit.clone())).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "rating {bad}");
+            assert_eq!(
+                body["error"],
+                format!("rating must be between 0 and 100: {bad}")
+            );
+            // 一括も、trackIds が空でも 400。
+            for ids in [json!([1, 2]), json!([])] {
+                let (status, _) = req(
+                    app.clone(),
+                    "PATCH",
+                    "/api/tracks",
+                    Some(json!({ "trackIds": ids, "edit": edit })),
+                )
+                .await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "bulk rating {bad}");
+            }
+        }
+        // 何も書かれていない (seed: track 1 は rating 80)。
+        let (_, track) = req(app.clone(), "GET", "/api/tracks/1", None).await;
+        assert_eq!(track["name"], "Sunrise");
+        assert_eq!(track["rating"], 80);
+
+        // rating だけの PATCH: 値は入り、dateModified は進まない (単体・一括とも)。
+        let (status, body) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "rating": 100 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["track"]["rating"], 100);
+        assert_eq!(body["track"]["dateModified"], "2020-01-01T00:00:00Z");
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks",
+            Some(json!({ "trackIds": [2], "edit": { "rating": 0 } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, track) = req(app.clone(), "GET", "/api/tracks/2", None).await;
+        assert_eq!(track["rating"], 0);
+        assert_eq!(track["dateModified"], "2020-01-01T00:00:00Z");
+
+        // POST .../rating は従来どおり範囲外を収める。
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/1/rating",
+            Some(json!({ "rating": 250 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, track) = req(app, "GET", "/api/tracks/1", None).await;
+        assert_eq!(track["rating"], 100);
+        assert_eq!(track["dateModified"], "2020-01-01T00:00:00Z");
     }
 
     // ===== メタデータ書き込み: 整理先が設定されていれば PATCH でも移動 + リネーム =====
@@ -4299,7 +4526,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::Database::open(dir.path()).unwrap();
         seed(&db);
-        // genre に "house" を含む曲 = 1 (House) と 3 (Deep House)。
+        // genre に "house" を含む曲 = 1 (House) と 3 (DeepHouse)。
         let criteria: crate::models::SmartCriteria = serde_json::from_value(json!({
             "matchAll": true,
             "rules": [{ "field": "genre", "op": "contains", "value": "house" }],

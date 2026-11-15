@@ -2,6 +2,7 @@
 // MVP: frontend-only (same pattern as Gig Snapshots). DB promotion can follow.
 
 import type { SetHistoryEntry, SetHistorySource, SetHistoryUnresolved } from "../types/setHistory";
+import { formatYmd } from "./format";
 
 export const SET_HISTORY_STORAGE_KEY = "crateforge-set-history";
 /** 保持上限（古い performedAt から捨てる） */
@@ -273,10 +274,7 @@ export function removeSetHistoryUnresolved(
 }
 
 export function defaultHistoryName(now = new Date()): string {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d} Set`;
+  return `${formatYmd(now)} Set`;
 }
 
 /** Compare planned (snapshot) vs played (history) track id sets. */

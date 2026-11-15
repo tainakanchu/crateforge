@@ -155,4 +155,57 @@ describe("ConnectScreen", () => {
       jest.useRealTimers();
     }
   });
+
+  it("コードが届くまでは「接続中…」を出し、届いたら承認の案内に切り替える", async () => {
+    let resolveStart!: (r: Response) => void;
+    jest.spyOn(global, "fetch").mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+
+    const screen = await render(<ConnectScreen />);
+    await typeAndPress(screen, "192.168.1.10:8787", "192.168.1.10:8787", "ペアリング開始");
+
+    // pairStart の応答待ち: 空白ではなく「接続中…」とやり直しボタン。
+    expect(screen.getByText("接続中…")).toBeTruthy();
+    expect(screen.getByText("やり直す")).toBeTruthy();
+    expect(screen.queryByText(/デスクトップで承認してください/)).toBeNull();
+
+    const body = { session: "sess-late", code: "777888" };
+    await act(async () => {
+      resolveStart({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(JSON.stringify(body)),
+      } as Response);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("777888")).toBeTruthy();
+    });
+    expect(screen.queryByText("接続中…")).toBeNull();
+    // 案内はデスクトップの設定タブ名（モバイル / API）に合わせる。
+    expect(screen.getByText(/設定 → モバイル \/ API → 端末を承認/)).toBeTruthy();
+
+    // 後始末: ポーリングを止める。
+    await act(async () => {
+      fireEvent.press(screen.getByText("やり直す"));
+    });
+  });
+
+  it("接続できないときは原因と対処つきの文言（describeApiError）を出す", async () => {
+    jest.spyOn(global, "fetch").mockRejectedValue(new TypeError("Network request failed"));
+
+    const screen = await render(<ConnectScreen />);
+    await typeAndPress(screen, "192.168.1.10:8787", "192.168.1.10:8787", "ペアリング開始");
+
+    await waitFor(() => {
+      expect(screen.getByText(/デスクトップに接続できません/)).toBeTruthy();
+    });
+    expect(screen.queryByText("Network request failed")).toBeNull();
+    expect(screen.getByText("もう一度試す")).toBeTruthy();
+  });
 });

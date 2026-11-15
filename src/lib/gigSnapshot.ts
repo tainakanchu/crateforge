@@ -3,6 +3,7 @@
 import type { Track, TrackAnalysis } from "../types";
 import type { SetMeta } from "../types/setWorkspace";
 import type { GigSnapshot } from "../types/gig";
+import { formatYmd } from "./format";
 
 export const GIG_SNAPSHOTS_STORAGE_KEY = "crateforge-gig-snapshots";
 /**
@@ -195,9 +196,6 @@ export function buildGigSnapshot(input: BuildSnapshotInput): GigSnapshot {
 
 /** default snapshot name: `YYYY-MM-DD {sourceName}` */
 export function defaultSnapshotName(sourceName: string, now = new Date()): string {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
   const label = sourceName.trim() || "Set";
-  return `${y}-${m}-${d} ${label}`;
+  return `${formatYmd(now)} ${label}`;
 }

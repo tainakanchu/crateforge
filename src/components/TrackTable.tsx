@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useStore } from "../store/useStore";
-import * as playbackApi from "../api/playback";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
-import * as audition from "../lib/audition";
 import { Icon, Stars } from "./Icon";
 import { ratingToStars, starsToRating } from "../lib/rating";
 import { Cover } from "./Cover";
@@ -25,6 +23,11 @@ import type { ConvertMode, Track, FieldKey, Playlist } from "../types";
 import { describeKey, effectiveKeyCamelot, formatKey, isKeyOverridden } from "../lib/keyNotation";
 import { EmptyState } from "./EmptyState";
 import { joinGenre, splitGenre } from "../lib/genre";
+import { formatTrackTime } from "../lib/format";
+import * as trackActions from "../lib/trackActions";
+import { trackApi } from "../lib/trackActionsApi";
+import { AddGenreTagDialog } from "./AddGenreTagDialog";
+import { useTrackActionRunner } from "../hooks/useTrackActionRunner";
 
 // 曲名列の最小幅 (未固定 = flex のとき)。styles.css の .cb-id / .cb-h-id と揃える。
 const NAME_MIN_WIDTH = 180;
@@ -32,13 +35,6 @@ const NAME_MIN_WIDTH = 180;
 const ROW_SIDE_PADDING = 18;
 const ADD_CELL_WIDTH = 40;
 
-function formatTime(ms: number | null): string {
-  if (!ms) return "";
-  const totalSec = Math.floor(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `${min}:${sec.toString().padStart(2, "0")}`;
-}
 
 
 /// 並べ替えコミット時に「プレイリストの全曲順」を取り直すときの上限。
@@ -102,6 +98,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   } = useStore();
   // グローバルトースト通知
   const pushToast = useStore((s) => s.pushToast);
+  const run = useTrackActionRunner();
 
   const parentRef = useRef<HTMLDivElement>(null);
   // 範囲選択の起点（Shift の基準）と、矢印移動のカーソル位置。
@@ -405,7 +402,9 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   );
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [showAddTagDialog, setShowAddTagDialog] = useState(false);
+  // ジャンルタグ追加ダイアログの対象曲 (null で非表示)。対象はダイアログを開いた時点で決める
+  // (入力中に選択が変わっても、開いたときの曲に付く)。TracksView / AlbumsView と同じ。
+  const [addTagTargetIds, setAddTagTargetIds] = useState<number[] | null>(null);
   // 削除確認モーダルの対象曲（null で非表示）。window.confirm は使わない。
   const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
   const [newTag, setNewTag] = useState("");
@@ -472,18 +471,15 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleDoubleClick = useCallback(
     async (track: Track) => {
       if (!track.fileExists) return;
-      try {
-        const ids = tracks.map((t) => t.trackId);
-        const startIndex = ids.indexOf(track.trackId);
-        await audition.ensureNormalPlay();
-        await playbackApi.setQueue(ids, Math.max(0, startIndex));
-        await playbackApi.playTrack(track.trackId);
-      } catch (err) {
-        console.error("Failed to play:", err);
-        pushToast("error", `『${track.name || "(unknown)"}』を再生できませんでした: ${err}`);
-      }
+      const ids = tracks.map((t) => t.trackId);
+      const startIndex = ids.indexOf(track.trackId);
+      await run(
+        "play",
+        () => trackActions.playQueueFrom(trackApi, ids, Math.max(0, startIndex), track.trackId),
+        track.name || "(unknown)",
+      );
     },
-    [tracks, pushToast],
+    [tracks, run],
   );
 
   const handleContextMenu = useCallback(
@@ -510,19 +506,16 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleAddToPlaylist = useCallback(
     async (playlistId: number) => {
       const ids = ctxIds();
+      setContextMenu(null);
       if (ids.length === 0) return;
-      try {
-        const added = await playlistsApi.addTracksToPlaylist(playlistId, ids);
+      await run("addToPlaylist", async () => {
+        const added = await trackActions.addTracksToPlaylist(trackApi, playlists, playlistId, ids);
         pushRecentPlaylist(playlistId);
         onTracksChanged();
-        const name = playlists.find((p) => p.playlistId === playlistId)?.name ?? "プレイリスト";
-        pushToast("success", `「${name}」に ${added} 曲を追加しました`);
-      } catch (err) {
-        pushToast("error", `追加に失敗しました: ${err}`);
-      }
-      setContextMenu(null);
+        pushToast("success", trackActions.addedToPlaylistMessage(added));
+      });
     },
-    [ctxIds, pushRecentPlaylist, onTracksChanged, pushToast, playlists],
+    [ctxIds, pushRecentPlaylist, onTracksChanged, pushToast, playlists, run],
   );
 
   const handleAddSelectionToCrate = useCallback(() => {
@@ -538,28 +531,28 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     const ids = ctxIds();
     setContextMenu(null);
     if (viewMode !== "playlist" || selectedPlaylistId === null || ids.length === 0) return;
-    try {
+    await run("removeFromPlaylist", async () => {
       const removed = await playlistsApi.removeTracksFromPlaylist(selectedPlaylistId, ids);
       // 外した曲は一覧から消えるので、選択も残さない（見えない曲が選択件数に残らないように）。
       setSelectedTrackIds(new Set());
       onTracksChanged();
       if (removed > 1) pushToast("success", `${removed} 曲をプレイリストから外しました`);
-    } catch (err) {
-      pushToast("error", `削除に失敗しました: ${err}`);
-    }
-  }, [ctxIds, viewMode, selectedPlaylistId, setSelectedTrackIds, onTracksChanged, pushToast]);
+    });
+  }, [ctxIds, viewMode, selectedPlaylistId, setSelectedTrackIds, onTracksChanged, pushToast, run]);
 
   const handleSetRating = useCallback(
     async (track: Track, stars: number) => {
       const newRating = starsToRating(stars);
-      try {
-        await libraryApi.setTrackRating(track.trackId, newRating);
-        onTracksChanged();
-      } catch (err) {
-        console.error("Failed to set rating:", err);
-      }
+      await run("rating", async () => {
+        try {
+          await trackActions.setRatingForTracks(trackApi, [track.trackId], newRating);
+        } finally {
+          // 失敗しても取り直して、一覧を実際の値に合わせる。
+          onTracksChanged();
+        }
+      });
     },
-    [onTracksChanged],
+    [onTracksChanged, run],
   );
 
   // コンテキストメニュー用: 選択中（または右クリック対象）の全曲へレーティングを適用
@@ -568,71 +561,68 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       const ids = ctxIds();
       if (ids.length === 0) return;
       const newRating = starsToRating(stars);
-      try {
-        for (const id of ids) await libraryApi.setTrackRating(id, newRating);
-        onTracksChanged();
-      } catch (err) {
-        console.error("Failed to set rating:", err);
-      }
+      const menu = contextMenu;
+      const ok = await run("rating", async () => {
+        try {
+          await trackActions.setRatingForTracks(trackApi, ids, newRating);
+        } finally {
+          // 複数曲の途中で失敗しても、先に成功した曲の値が一覧に出るよう取り直す。
+          onTracksChanged();
+        }
+      });
+      // 星はメニューを開いたまま付け直せるが、失敗したら (プレビューの星が残らないよう) 閉じる。
+      // 待っている間に別のメニューが開かれていたら、そちらは閉じない。
+      if (!ok) setContextMenu((cur) => (cur === menu ? null : cur));
     },
-    [ctxIds, onTracksChanged],
+    [ctxIds, contextMenu, onTracksChanged, run],
   );
 
   const handleEnqueue = useCallback(async () => {
-    for (const id of ctxIds()) await playbackApi.enqueueTrack(id);
+    const ids = ctxIds();
     setContextMenu(null);
-  }, [ctxIds]);
+    await run("enqueue", () => trackActions.enqueueTracks(trackApi, ids));
+  }, [ctxIds, run]);
 
-  // 「次に再生」: 各曲を現在曲の直後へ割り込ませる。enqueueTrackNext は一曲ずつ
-  // 現在曲の直後に挿入するため、選択順のまま回すと後の曲ほど前へ来て逆順になる。
-  // ids を反転してから入れると、最終的な並びが選択順どおりになる。
+  // 「次に再生」: 現在曲の直後に選択順で並ぶ (挿入順の反転は playNextTracks 側)。
   const handlePlayNext = useCallback(async () => {
     const ids = ctxIds();
-    for (const id of [...ids].reverse()) await playbackApi.enqueueTrackNext(id);
     setContextMenu(null);
-  }, [ctxIds]);
+    await run("playNext", () => trackActions.playNextTracks(trackApi, ids));
+  }, [ctxIds, run]);
 
   // 選択（or 右クリック対象）の曲を BPM/Key/Energy 解析キューへ投入（手動なので再解析強制）。
   const handleAnalyzeSelection = useCallback(async () => {
     const ids = ctxIds();
-    if (ids.length > 0) {
-      try {
-        await analysisApi.analyzeTracks(ids, true);
-      } catch (err) {
-        console.error("Failed to queue analysis:", err);
-      }
-    }
     setContextMenu(null);
-  }, [ctxIds]);
+    if (ids.length > 0) await run("analyze", () => analysisApi.analyzeTracks(ids, true));
+  }, [ctxIds, run]);
 
   const handleApplyAddTag = useCallback(async () => {
     const tag = newTag.trim();
-    if (!tag) {
-      setShowAddTagDialog(false);
-      return;
-    }
-    try {
-      await libraryApi.addGenreTag(ctxIds(), tag);
-      onTracksChanged();
-    } catch (err) {
-      pushToast("error", `タグの追加に失敗しました: ${err}`);
-    }
-    setShowAddTagDialog(false);
+    const ids = addTagTargetIds;
+    setAddTagTargetIds(null);
+    if (!tag || !ids || ids.length === 0) return;
     setNewTag("");
-    setContextMenu(null);
-  }, [newTag, ctxIds, onTracksChanged, pushToast]);
+    await run("addTag", async () => {
+      const result = await libraryApi.addGenreTag(ids, tag);
+      onTracksChanged();
+      const warning = trackActions.genreFileWriteFailureMessage(result);
+      if (warning) pushToast("error", warning);
+    });
+  }, [newTag, addTagTargetIds, onTracksChanged, run, pushToast]);
 
   const handleRemoveGenreTag = useCallback(
     async (tag: string) => {
-      try {
-        await libraryApi.removeGenreTag(ctxIds(), tag);
-        onTracksChanged();
-      } catch (err) {
-        pushToast("error", `タグの削除に失敗しました: ${err}`);
-      }
+      const ids = ctxIds();
       setContextMenu(null);
+      await run("removeTag", async () => {
+        const result = await libraryApi.removeGenreTag(ids, tag);
+        onTracksChanged();
+        const warning = trackActions.genreFileWriteFailureMessage(result);
+        if (warning) pushToast("error", warning);
+      });
     },
-    [ctxIds, onTracksChanged, pushToast],
+    [ctxIds, onTracksChanged, run, pushToast],
   );
 
   const handleGetInfo = useCallback(() => {
@@ -669,13 +659,11 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     if (!genreEdit) return;
     const next = joinGenre(genreEdit.tags);
     setGenreEdit(null);
-    try {
+    await run("saveGenre", async () => {
       await libraryApi.updateTrack(genreEdit.trackId, { genre: next });
       onTracksChanged();
-    } catch (err) {
-      pushToast("error", `ジャンルの保存に失敗しました: ${err}`);
-    }
-  }, [genreEdit, onTracksChanged, pushToast]);
+    });
+  }, [genreEdit, onTracksChanged, run]);
 
   // 右クリックした 1 曲を基準に右レールの Similar タブを開く。
   const handleFindSimilar = useCallback(() => {
@@ -707,13 +695,9 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   // 右クリックした 1 曲を Finder / エクスプローラで表示する。
   const handleReveal = useCallback(async (path: string) => {
-    try {
-      await libraryApi.revealInFileManager(path);
-    } catch (err) {
-      pushToast("error", `ファイルマネージャで表示できませんでした: ${err}`);
-    }
     setContextMenu(null);
-  }, [pushToast]);
+    await run("reveal", () => libraryApi.revealInFileManager(path));
+  }, [run]);
 
   const closeMenu = useCallback(() => setContextMenu(null), []);
 
@@ -804,15 +788,14 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         e.preventDefault();
         const ids = ts.map((t) => t.trackId);
         const startIndex = ids.indexOf(track.trackId);
-        audition
-          .ensureNormalPlay()
-          .then(() => playbackApi.setQueue(ids, Math.max(0, startIndex)))
-          .then(() => playbackApi.playTrack(track!.trackId))
-          .catch((err) => {
-            console.error("Failed to play:", err);
-            // useStore.getState() 経由でトーストを出す（effect クロージャ内のため）。
-            useStore.getState().pushToast("error", `『${track!.name || "(unknown)"}』を再生できませんでした: ${err}`);
-          });
+        const playId = track.trackId;
+        // useStore.getState() 経由でトーストを出す（effect クロージャ内のため）。
+        void trackActions.runTrackAction(
+          (message) => useStore.getState().pushToast("error", message),
+          "play",
+          () => trackActions.playQueueFrom(trackApi, ids, Math.max(0, startIndex), playId),
+          track.name || "(unknown)",
+        );
         return;
       }
 
@@ -969,7 +952,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       case "plays":
         return <span className="cb-fmono cb-dim">{t.playCount ?? ""}</span>;
       case "time":
-        return <span className="cb-fmono cb-dim">{formatTime(t.totalTimeMs)}</span>;
+        return <span className="cb-fmono cb-dim">{formatTrackTime(t.totalTimeMs)}</span>;
       case "trackNumber":
         return <span className="cb-fmono cb-dim">{t.trackNumber ?? ""}</span>;
       case "dateAdded":
@@ -1332,50 +1315,23 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onReveal={() => void handleReveal(ctxTrack.locationPath ?? "")}
           onDelete={handleDelete}
           onAddToPlaylist={handleAddToPlaylist}
-          onAddTag={() => setShowAddTagDialog(true)}
+          onAddTag={() => {
+            // 対象が無ければダイアログを開かない。
+            const ids = ctxIds();
+            if (ids.length > 0) setAddTagTargetIds(ids);
+          }}
           onRemoveTag={handleRemoveGenreTag}
         />
       )}
 
       {/* Add genre tag dialog */}
-      {showAddTagDialog && (
-        <div className="modal-overlay" onClick={() => setShowAddTagDialog(false)}>
-          <div className="modal" style={{ width: 360 }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>
-                <Icon name="tag" size={16} /> ジャンルタグを追加
-              </h2>
-              <button className="modal-close" onClick={() => setShowAddTagDialog(false)}>
-                <Icon name="x" size={16} />
-              </button>
-            </div>
-            <div className="modal-body" style={{ padding: 16 }}>
-              <input
-                autoFocus
-                type="text"
-                className="rip-input"
-                placeholder="例: Deep House"
-                value={newTag}
-                onChange={(e) => setNewTag(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleApplyAddTag();
-                  if (e.key === "Escape") setShowAddTagDialog(false);
-                }}
-                style={{ width: "100%" }}
-              />
-              <div
-                style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}
-              >
-                <button className="toolbar-btn" onClick={() => setShowAddTagDialog(false)}>
-                  キャンセル
-                </button>
-                <button className="toolbar-btn primary" onClick={handleApplyAddTag}>
-                  追加
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+      {addTagTargetIds && (
+        <AddGenreTagDialog
+          value={newTag}
+          onChange={setNewTag}
+          onSubmit={() => void handleApplyAddTag()}
+          onClose={() => setAddTagTargetIds(null)}
+        />
       )}
 
       {/* ライブラリからの削除（確認モーダル） */}

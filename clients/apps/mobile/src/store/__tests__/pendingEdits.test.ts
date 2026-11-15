@@ -17,6 +17,28 @@ beforeEach(() => {
   });
 });
 
+describe("usePendingEdits: あとで聴くの重複", () => {
+  const kinds = () => usePendingEdits.getState().ops.map((o) => `${o.kind}:${o.trackId}`);
+
+  it("同じ曲の review-later は 1 件にまとめる", () => {
+    const { enqueue } = usePendingEdits.getState();
+    enqueue({ kind: "review-later", trackId: 1 });
+    enqueue({ kind: "review-later", trackId: 1 });
+    enqueue({ kind: "review-later", trackId: 2 });
+    expect(kinds()).toEqual(["review-later:1", "review-later:2"]);
+  });
+
+  it("以前の版が積んだ tag-add(review:later) も同じ曲なら review-later に置き換える", () => {
+    const { enqueue } = usePendingEdits.getState();
+    enqueue({ kind: "tag-add", trackId: 1, tag: "review:later" });
+    enqueue({ kind: "tag-add", trackId: 1, tag: "mood:chill" });
+    enqueue({ kind: "tag-add", trackId: 2, tag: "review:later" });
+    enqueue({ kind: "review-later", trackId: 1 });
+    expect(kinds()).toEqual(["tag-add:1", "tag-add:2", "review-later:1"]);
+    expect(usePendingEdits.getState().ops[0]).toMatchObject({ tag: "mood:chill" });
+  });
+});
+
 describe("usePendingEdits", () => {
   it("enqueue が id と createdAt を付与する", () => {
     const op = usePendingEdits.getState().enqueue({

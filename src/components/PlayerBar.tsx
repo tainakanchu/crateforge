@@ -8,28 +8,16 @@ import { Cover } from "./Cover";
 import { CastDevicePicker } from "./CastDevicePicker";
 import { WaveBars } from "./WaveBars";
 import { useCurrentTrack } from "../hooks/useCurrentTrack";
+import { useElementWidth } from "../hooks/useElementWidth";
 import { bpmColor } from "../lib/art";
 import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import * as audition from "../lib/audition";
+import { formatPlaybackTime, formatRemainingTime } from "../lib/format";
+import { isTauri } from "../lib/env";
 
 // 残り時間を "-mm:ss" 形式でフォーマット。
-function formatRemainingTime(positionMs: number, durationMs: number): string {
-  const remaining = Math.max(0, durationMs - positionMs);
-  const totalSec = Math.floor(remaining / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `-${min}:${sec.toString().padStart(2, "0")}`;
-}
-
-function formatTime(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `${min}:${sec.toString().padStart(2, "0")}`;
-}
 
 // ブラウザ (vite dev) では IPC が使えないので、ストア更新のみで動かす。
-const isTauri = "__TAURI_INTERNALS__" in window;
 
 const WAVE_N = 64;
 
@@ -80,18 +68,10 @@ export function PlayerBar() {
   const lastVolumeRef = useRef(volume > 0 ? volume : 1);
 
   // プレイヤーバーの実幅 (右ペインの表示・リサイズに追従)。
-  const playerRef = useRef<HTMLDivElement>(null);
-  const [playerW, setPlayerW] = useState(0);
-  useEffect(() => {
-    const el = playerRef.current;
-    if (!el) return;
-    setPlayerW(el.clientWidth);
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setPlayerW(e.contentRect.width + PLAYER_PAD_X * 2);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  // useElementWidth は内容幅 (padding を除く) を返すので、左右の padding を足して実幅に戻す。
+  // 計測前 (負値) は 0 = 未確定として扱う。
+  const { ref: playerRef, width: playerContentW } = useElementWidth<HTMLDivElement>(-1);
+  const playerW = playerContentW < 0 ? 0 : playerContentW + PLAYER_PAD_X * 2;
 
   // 再生中の曲 (表示中の一覧 (tracks) に無いときは ID で取り直す #159)。
   const currentTrack = useCurrentTrack();
@@ -267,6 +247,12 @@ export function PlayerBar() {
     [playback.durationMs],
   );
 
+  // 1 時間以上の曲は再生位置が 59:59 → 1:00:00 で 2 文字増える。時間表示の幅を先に確保して、
+  // その瞬間に波形の幅が変わらないようにする (等幅フォントなので ch で足りる)。
+  const longTrack = playback.durationMs >= 3_600_000;
+  const timeMinWidth = longTrack ? "7ch" : undefined; // 1:15:03
+  const remainMinWidth = longTrack ? "8ch" : undefined; // -1:15:03
+
   return (
     <div
       ref={playerRef}
@@ -390,7 +376,9 @@ export function PlayerBar() {
           )}
         </div>
         <div className="cb-seek">
-          <span>{formatTime(playback.positionMs)}</span>
+          <span style={{ minWidth: timeMinWidth, textAlign: "right" }}>
+            {formatPlaybackTime(playback.positionMs)}
+          </span>
           {/* ドラッグシーク対応: pointerDown/Move/Up + setPointerCapture でドラッグを捕捉 */}
           <div
             ref={waveRef}
@@ -438,12 +426,12 @@ export function PlayerBar() {
           {/* クリックで経過時間 ↔ 残り時間をトグル */}
           <span
             onClick={toggleRemainingTime}
-            style={{ cursor: "pointer", userSelect: "none" }}
+            style={{ cursor: "pointer", userSelect: "none", minWidth: remainMinWidth }}
             title="クリックで残り時間/経過時間を切替"
           >
             {showRemainingTime
               ? formatRemainingTime(playback.positionMs, playback.durationMs)
-              : formatTime(playback.durationMs)}
+              : formatPlaybackTime(playback.durationMs)}
           </span>
         </div>
       </div>

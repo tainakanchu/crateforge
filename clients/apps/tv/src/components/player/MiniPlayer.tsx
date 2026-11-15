@@ -4,11 +4,11 @@
 // D-pad で操作できるよう、再生/一時停止・次へは Focusable コンポーネントを使用。
 
 import { View, Text, StyleSheet } from "react-native";
-import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
-import { usePlayer, useConnection, trackTitle, trackArtist } from "@crateforge/core";
+import { usePlayer, trackTitle, trackArtist } from "@crateforge/core";
+import { Artwork } from "@/components/Artwork";
 import { Focusable } from "@/components/focus/Focusable";
 import { PALETTE, TV_FONT, FOCUS_RING } from "@/theme/palette";
 
@@ -20,7 +20,6 @@ export function MiniPlayer() {
   const next = usePlayer((s) => s.next);
   const positionMs = usePlayer((s) => s.positionMs);
   const durationMs = usePlayer((s) => s.durationMs);
-  const client = useConnection((s) => s.client);
 
   // 曲が無いときは何も表示しない
   if (!current) return null;
@@ -42,15 +41,12 @@ export function MiniPlayer() {
           focusedStyle={styles.metaAreaFocused}
           accessibilityLabel="プレイヤーを開く"
         >
-          {client ? (
-            <Image
-              source={client.artworkSource(current.trackId)}
-              style={styles.artwork}
-              contentFit="cover"
-            />
-          ) : (
-            <View style={[styles.artwork, styles.artworkPlaceholder]} />
-          )}
+          <Artwork
+            trackId={current.trackId}
+            name={current.album || trackTitle(current)}
+            size={52}
+            radius={6}
+          />
           <View style={styles.texts}>
             <Text style={styles.title} numberOfLines={1}>
               {trackTitle(current)}
@@ -124,16 +120,6 @@ const styles = StyleSheet.create({
     borderColor: PALETTE.teal,
     backgroundColor: PALETTE.focusBg,
     borderRadius: 8,
-  },
-  artwork: {
-    width: 52,
-    height: 52,
-    borderRadius: 6,
-    backgroundColor: PALETTE.surface,
-    flexShrink: 0,
-  },
-  artworkPlaceholder: {
-    backgroundColor: PALETTE.surface,
   },
   texts: {
     flex: 1,

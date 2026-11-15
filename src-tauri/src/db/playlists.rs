@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, OptionalExtension, Result};
 
-use super::tracks::row_to_track;
+use super::tracks::{row_to_track, TRACK_COLUMNS_T};
 use super::Database;
 use crate::itunes_xml::parser::RawPlaylist;
 use crate::models::{Playlist, SmartCriteria, Track};
@@ -357,14 +357,7 @@ impl Database {
         all_binds.push(Value::Integer(offset));
 
         let sql = format!(
-            "SELECT t.id, t.track_id, t.persistent_id, t.name, t.artist, t.album_artist, t.composer,
-                    t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count, t.total_time_ms,
-                    t.date_added, t.date_modified, t.bpm, t.comments, t.location_raw, t.location_path,
-                    t.track_type, t.disabled, t.compilation, t.disc_number, t.disc_count,
-                    t.track_number, t.track_count, t.file_exists, t.last_played,
-                    t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes,
-                    t.codec,
-                    t.key_camelot_user, t.grouping
+            "SELECT {TRACK_COLUMNS_T}
              FROM tracks t
              INNER JOIN playlist_tracks pt ON t.track_id = pt.track_id
              WHERE pt.playlist_id = ?{}

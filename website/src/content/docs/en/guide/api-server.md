@@ -40,7 +40,7 @@ It exposes a REST API for reading and writing the library, analysis data, and pl
 ### Read
 
 - `GET /api/health` — server identity + current track count
-- `GET /api/tracks` (`?q` search, `?album` / `?genre` partial match, offset/limit). Add `?albumExact=true` to match `album` exactly
+- `GET /api/tracks` (`?q` search, `?album` partial match, `?genre` exact match on a genre tag, offset/limit). Add `?albumExact=true` to match `album` exactly
 - `GET /api/tracks/{trackId}` / `POST /api/tracks/by-ids` (IDs → tracks; read-only, so it also works from the LAN with a token)
 - `GET /api/tracks/{trackId}/stream` — audio streaming (`?native=true` serves device-playable formats as-is / `?original=true` original bytes / `?fmt=aac&br=192` AAC transcode)
 - `GET /api/tracks/{trackId}/analysis` — analysis results (null if not analyzed)
@@ -69,6 +69,7 @@ When the client sends `Accept-Encoding: gzip`, large JSON responses (such as the
 
 - `PATCH /api/tracks/{trackId}` — partially update name / artist / album / genre / year / bpm / rating / composer / comments, etc.
   name / artist / album / genre / year / composer / comments are also reflected in the actual file's tags, while `rating` / `disabled` / `playCount` / `skipCount` are DB-only.
+  `rating` is 0–100; a value outside that range returns `400` (nothing is updated). Updating only `rating` does not advance `dateModified`.
 - `PATCH /api/tracks` (`{trackIds, edit}` or `{persistentIds, edit}`) — bulk-update multiple tracks. Specify exactly one of `trackIds` / `persistentIds` (both or neither → `400`).
   Tracks that are not found are returned in `notFound` as the values you sent (trackId / persistentId).
 - `POST /api/tracks/genre-tags/add` / `/remove` — add or remove genre tags at the end in bulk.

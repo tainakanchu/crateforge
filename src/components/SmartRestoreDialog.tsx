@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as playlistsApi from "../api/playlists";
 import { Icon } from "./Icon";
 import type { SmartRestoreEntry, SmartRestoreReport } from "../types";
+import { useEscapeKey } from "../hooks/useEscapeKey";
 
 interface SmartRestoreDialogProps {
   onClose: () => void;
@@ -53,17 +54,7 @@ export function SmartRestoreDialog({ onClose, onRestored }: SmartRestoreDialogPr
   }, [paths, overwrite, onRestored]);
 
   // Esc で閉じる (処理中は無視)。
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (busy) return;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [busy, onClose]);
+  useEscapeKey(onClose, { enabled: !busy });
 
   const failed = report?.playlists.filter((p) => p.status === "failed") ?? [];
   const withWarnings =

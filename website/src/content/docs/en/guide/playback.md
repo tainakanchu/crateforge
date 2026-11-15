@@ -13,6 +13,7 @@ You build up playback and curation in the right rail (the curation workbench): *
 - **Double-click** a track to play it.
 - `Space` to **play / pause**, `Enter` to play the focused/selected row.
 - `J` / `K` for previous / next track, `Shift + ←` / `Shift + →` to seek 5 seconds.
+  "Previous" restarts the current track from the beginning when it has played for more than 3 seconds, instead of going back (press it again to go to the previous track).
 - `S` for shuffle, `R` for repeat (off / all / one). `Ctrl + ↑` / `Ctrl + ↓` for volume.
 
 In the player bar, drag the seek bar to scrub, click the time display to toggle "elapsed ⇄ remaining,"
@@ -22,6 +23,10 @@ Automatic track advance is driven by a **worker thread on the Rust side**. Playb
 and if the next track's file can't be found, it skips automatically and keeps playing.
 Tracks that fail to play are notified via a toast, and the failure details (file missing / decode failure / decoder crash) are
 logged to `crateforge.log`.
+
+In every view (track list, cards, albums, artists), when an action on a track fails (play, add to queue, play next, rating,
+adding to or removing from a playlist, adding or removing a genre tag, saving genres, analysis, showing in the file manager),
+a toast tells you so along with the reason. The same applies when the tracks of an album or artist cannot be loaded; the expanded list then shows the failure, and clicking it retries.
 
 Toggling shuffle / repeat is reflected in the UI only after the playback engine has applied it,
 so Up Next never shows a stale order. If the toggle fails, the state is left unchanged and an error is shown.
@@ -154,7 +159,7 @@ The **Up Next** in the right rail is the queue of what will be played next.
 - **"次に再生" (Play Next)** in the context menu inserts the selected tracks (multiple supported, selection order preserved)
   right after the currently playing track.
 - The **"×"** that appears on row hover removes from the queue, and you can reorder with **drag and drop**.
-- The header shows the **count, total time, and a shuffle badge**.
+- The header shows the **count, total time, and a shuffle badge**. Once the total reaches an hour it is shown as `1:15:03` (h:mm:ss); track lengths and the playback position use the same format.
 - The list shows the first **100 tracks**; the rest are summarized as "+N more" at the bottom (the header count covers the whole queue).
 - Shuffle precomputes the actual play order (a permutation), so Up Next reflects exactly what will play next.
   Toggling shuffle updates Up Next to the new order immediately.
@@ -233,7 +238,7 @@ The **Inbox** in the sidebar collects freshly imported and unrated tracks (the c
 
 Auditioning in Triage counts as Preview, so it does not pollute play counts.
 
-Ratings use **half-star steps**. In the track list, the track editor, the context menu, and Triage, clicking the **left half of a star sets a half star** (e.g. the left half of the 4th star → 3.5) and the right half sets a whole star; clicking the current value clears it. Values are stored on the iTunes-compatible 0–100 scale (★1 = 20, half stars in steps of 10). Mobile / TV show the nearest whole star.
+Ratings use **half-star steps**. In the track list, the track editor, the context menu, and Triage, clicking the **left half of a star sets a half star** (e.g. the left half of the 4th star → 3.5) and the right half sets a whole star; clicking the current value clears it. Values are stored on the iTunes-compatible 0–100 scale (★1 = 20, half stars in steps of 10). Mobile also shows and sets ratings in half-star steps. TV does not display ratings.
 The done / later state is stored inside the app and requires no database schema changes.
 
 ## Now Playing (BPM / Key / Energy)

@@ -40,7 +40,7 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 ### 読み取り
 
 - `GET /api/health` — サーバーの素性 + 現在の曲数
-- `GET /api/tracks`（`?q` 検索、`?album` / `?genre` 部分一致、offset/limit）。`?albumExact=true` を付けると `album` を完全一致で絞ります
+- `GET /api/tracks`（`?q` 検索、`?album` 部分一致、`?genre` ジャンルタグの完全一致、offset/limit）。`?albumExact=true` を付けると `album` を完全一致で絞ります
 - `GET /api/tracks/{trackId}` / `POST /api/tracks/by-ids`（ID 列 → 曲。読み取り専用なので LAN からもトークン付きで使えます）
 - `GET /api/tracks/{trackId}/stream` — 音源の配信（`?native=true` 端末で再生できる形式は無変換 / `?original=true` 原本 / `?fmt=aac&br=192` AAC 変換）
 - `GET /api/tracks/{trackId}/analysis` — 解析結果（未解析なら null）
@@ -69,6 +69,7 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 
 - `PATCH /api/tracks/{trackId}` — name / artist / album / genre / year / bpm / rating / composer / comments などを部分更新。
   name / artist / album / genre / year / composer / comments などは実ファイルのタグへ書き戻し、`rating` / `disabled` / `playCount` / `skipCount` は DB のみ。
+  `rating` は 0〜100 で、範囲外は `400`（何も更新されません）。`rating` だけの更新では `dateModified` は進みません。
 - `PATCH /api/tracks`（`{trackIds, edit}` または `{persistentIds, edit}`） — 複数曲の一括更新。`trackIds` と `persistentIds` はどちらか一方だけ指定します（両方・どちらも無しは `400`）。
   見つからない曲は `notFound` に指定した値（trackId / persistentId）で返ります。
 - `POST /api/tracks/genre-tags/add` / `/remove` — ジャンルタグを末尾に一括で増減。

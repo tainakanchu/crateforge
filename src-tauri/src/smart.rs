@@ -43,11 +43,6 @@ fn on(v: Option<i64>) -> FieldVal {
     }
 }
 
-/// 0-100 の rating を 0..5 の星 (0.5 刻み) に丸める。フロントの `ratingToStars` と同じ式。
-fn rating_to_stars(r: i64) -> f64 {
-    (r.clamp(0, 100) as f64 / 10.0).round() / 2.0
-}
-
 /// bool の列は 1 / 0 の数値として扱う (Rules の `equals: true` は `is "1"` に変換される)。
 fn ob(v: bool) -> FieldVal {
     FieldVal::Num(if v { 1.0 } else { 0.0 })
@@ -157,11 +152,12 @@ fn field_value(t: &Track, a: Option<&TrackAnalysis>, field: &str) -> FieldVal {
         "bpm" => effective_bpm(t, a)
             .map(FieldVal::Num)
             .unwrap_or(FieldVal::None),
-        // rating はスター数 (0-5, 0.5 刻み) で扱う (DB は 0-100)。#172 半星:
-        // 70 → 3.5。10 の倍数でない値 (例 65) は最寄りの半星に丸める (UI 表示と同じ)。
+        // rating は星 (0-5) で扱う (DB は 0-100。70 → 3.5)。is / 大小比較は `rule_matches` が
+        // 検索構文 `rating:` と同じ区間方式で判定する (`rating_op`)。ここの値 (rating ÷ 20) は
+        // contains などの文字列演算だけが使う。
         "rating" => t
             .rating
-            .map(|r| FieldVal::Num(rating_to_stars(r)))
+            .map(|r| FieldVal::Num(crate::rating::rating_to_stars_exact(r as f64)))
             .unwrap_or(FieldVal::None),
         "playCount" => on(t.play_count),
         "skipCount" => on(t.skip_count),
@@ -250,6 +246,27 @@ fn num_op(n: f64, r: &SmartRule) -> bool {
     }
 }
 
+/// rating の is / isNot / 大小比較。星の条件の意味は検索構文 `rating:` と同じ区間方式
+/// ([`crate::rating::rating_matches_stars`]): `is 3` は rating 60〜79、`is 0` は 0〜19、
+/// 比較は星を連続値とみなす。それ以外の演算子は `None` (呼び出し側が数値の一般則で判定)。
+fn rating_op(rating: i64, r: &SmartRule) -> Option<bool> {
+    use crate::rating::{rating_matches_stars, StarCmp};
+    let (cmp, negate) = match r.op {
+        SmartOp::Is => (StarCmp::Eq, false),
+        SmartOp::IsNot => (StarCmp::Eq, true),
+        SmartOp::Gt => (StarCmp::Gt, false),
+        SmartOp::Gte => (StarCmp::Gte, false),
+        SmartOp::Lt => (StarCmp::Lt, false),
+        SmartOp::Lte => (StarCmp::Lte, false),
+        _ => return None,
+    };
+    let Ok(stars) = r.value.trim().parse::<f64>() else {
+        // 数値として読めない値は、ほかの数値フィールドと同じくどの曲にも一致しない。
+        return Some(false);
+    };
+    Some(rating_matches_stars(rating, cmp, stars) != negate)
+}
+
 fn rule_matches(t: &Track, a: Option<&TrackAnalysis>, r: &SmartRule, ctx: &EvalContext) -> bool {
     if r.field == PLAYLIST_FIELD {
         // 参照先が無い (削除済み・未解決) なら空集合扱い: is → false / isNot → true。
@@ -262,6 +279,11 @@ fn rule_matches(t: &Track, a: Option<&TrackAnalysis>, r: &SmartRule, ctx: &EvalC
             SmartOp::IsNot => !member,
             _ => false,
         };
+    }
+    if r.field == "rating" {
+        if let Some(matched) = t.rating.and_then(|rating| rating_op(rating, r)) {
+            return matched;
+        }
     }
     let v = field_value(t, a, &r.field);
     match r.op {
@@ -562,9 +584,10 @@ mod tests {
         }
     }
 
-    /// #172 半星: rating 70 は 3.5 星として比較される。65 は最寄りの半星 3.5 に丸める。
+    /// rating の条件は検索構文 `rating:` と同じ区間方式 (R1)。
+    /// 整数星は半星を含む (is 3 = 60〜79)、半星は自分だけ (is 3.5 = 70〜79)、比較は連続値。
     #[test]
-    fn rating_half_stars() {
+    fn rating_uses_search_syntax_intervals() {
         let crit = |op, v: &str| SmartCriteria {
             match_all: true,
             rules: vec![rule("rating", op, v)],
@@ -574,57 +597,40 @@ mod tests {
             sort_desc: false,
             then_by: Vec::new(),
         };
-        let half = track(1, "A", None, Some(70));
-        assert!(matches_lvl(
-            &half,
-            None,
-            &crit(SmartOp::Is, "3.5"),
-            FoldLevel::Standard
-        ));
-        assert!(matches_lvl(
-            &half,
-            None,
-            &crit(SmartOp::Gte, "3.5"),
-            FoldLevel::Standard
-        ));
-        assert!(matches_lvl(
-            &half,
-            None,
-            &crit(SmartOp::Gt, "3"),
-            FoldLevel::Standard
-        ));
-        assert!(!matches_lvl(
-            &half,
-            None,
-            &crit(SmartOp::Gte, "4"),
-            FoldLevel::Standard
-        ));
-        assert!(!matches_lvl(
-            &half,
-            None,
-            &crit(SmartOp::Is, "3"),
-            FoldLevel::Standard
-        ));
-        let odd = track(2, "A", None, Some(65));
-        assert!(matches_lvl(
-            &odd,
-            None,
-            &crit(SmartOp::Is, "3.5"),
-            FoldLevel::Standard
-        ));
-        let full = track(3, "A", None, Some(60));
-        assert!(matches_lvl(
-            &full,
-            None,
-            &crit(SmartOp::Is, "3"),
-            FoldLevel::Standard
-        ));
-        assert!(matches_lvl(
-            &full,
-            None,
-            &crit(SmartOp::Lt, "3.5"),
-            FoldLevel::Standard
-        ));
+        let m = |rating: Option<i64>, op, v: &str| {
+            matches_lvl(&track(1, "A", None, rating), None, &crit(op, v), FoldLevel::Standard)
+        };
+        // 3.5 星 (70)。
+        assert!(m(Some(70), SmartOp::Is, "3.5"));
+        assert!(m(Some(70), SmartOp::Gte, "3.5"));
+        assert!(m(Some(70), SmartOp::Gt, "3"));
+        assert!(!m(Some(70), SmartOp::Gte, "4"));
+        // 仕様変更: 整数星の is は半星も含む (検索の rating:3 と同じ 60〜79)。
+        assert!(m(Some(70), SmartOp::Is, "3"));
+        assert!(!m(Some(70), SmartOp::IsNot, "3"));
+        assert!(m(Some(60), SmartOp::Is, "3"));
+        assert!(!m(Some(60), SmartOp::Is, "3.5"));
+        assert!(m(Some(60), SmartOp::Lt, "3.5"));
+        assert!(!m(Some(80), SmartOp::Is, "3"));
+        // is 0 = 0〜19。
+        assert!(m(Some(0), SmartOp::Is, "0"));
+        assert!(m(Some(10), SmartOp::Is, "0"));
+        assert!(!m(Some(20), SmartOp::Is, "0"));
+        // 仕様変更: 10 の倍数でない rating は最寄りの半星に丸めない。65 は 3 星の区間。
+        assert!(m(Some(65), SmartOp::Is, "3"));
+        assert!(!m(Some(65), SmartOp::Is, "3.5"));
+        assert!(!m(Some(65), SmartOp::Gte, "3.5"));
+        // 格子に無い境界値 (iTunes の「> 49」= 2.45 星) は rating ÷ 20 と比べる。
+        assert!(!m(Some(45), SmartOp::Gt, "2.45"));
+        assert!(m(Some(50), SmartOp::Gt, "2.45"));
+        // rating が無い曲の扱いは変えていない: 否定の演算だけが一致する。
+        assert!(!m(None, SmartOp::Is, "0"));
+        assert!(!m(None, SmartOp::Lt, "3"));
+        assert!(m(None, SmartOp::IsNot, "3"));
+        // 数値として読めない値はどの曲にも一致しない。
+        assert!(!m(Some(60), SmartOp::Is, "three"));
+        // 文字列演算は rating ÷ 20 の文字列に対して行う。
+        assert!(m(Some(70), SmartOp::Contains, "3.5"));
     }
 
     #[test]

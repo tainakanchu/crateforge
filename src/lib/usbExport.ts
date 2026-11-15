@@ -29,14 +29,8 @@ export const USB_ANALYSIS_LABELS: Record<string, string> = {
   failed: "解析失敗",
 };
 
-export function formatBytes(bytes: number | null | undefined): string {
-  if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / 1024 ** power;
-  const digits = value >= 100 || power === 0 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} ${units[power]}`;
-}
+// 既存の import 元 (UsbExportDialog など) を変えないための再エクスポート。
+export { formatBytes } from "./format";
 
 export function formatDurationMs(ms: number): string {
   const sec = Math.max(0, Math.round(ms / 1000));

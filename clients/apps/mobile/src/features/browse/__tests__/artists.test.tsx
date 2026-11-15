@@ -127,7 +127,7 @@ describe("useArtists", () => {
     const fetchMock = mockFetchByUrl(artists);
 
     const wrapper = createQueryWrapper();
-    const { result } = await renderHook(() => useArtists(true, "albumArtist"), { wrapper });
+    const { result } = await renderHook(() => useArtists({ grouping: "albumArtist" }), { wrapper });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 

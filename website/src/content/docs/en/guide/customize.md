@@ -16,7 +16,7 @@ You can fine-tune the track table and the right rail to match how you work. Sett
 - **Artist column** — shown by default (separate from the artist line under the track name at taller row heights, and sortable).
 - **The track-name column never collapses** — when columns or a narrow window leave too little room, the track-name column keeps a minimum width and the list scrolls horizontally instead.
 - **BPM column** — shows the tag BPM; tracks without one show the analyzed value in a dimmer color (sorting, `bpm:` search and smart playlists use the same "tag first, then analysis" value).
-- **Genre tags** — the genre is shown and edited as space-separated tags (e.g. `House Techno Electronic`). Write multi-word genres without spaces, like `DeepHouse`. `;` and `,` are also accepted as separators. Tags are saved joined with a single space.
+- **Genre tags** — the genre is shown and edited as space-separated tags (e.g. `House Techno Electronic`). Write multi-word genres without spaces, like `DeepHouse`. `;` and `,` are also accepted as separators. Tags are saved joined with a single space. Adding or removing a tag from the right-click **Genre tags** menu also writes the genre back to the audio file's tags, just like editing it in Get Info (tracks whose file cannot be found are updated in the library only).
 
 ## Row height, covers, and the right rail
 
@@ -73,7 +73,7 @@ To include spaces in a value, wrap it in double quotes, as in `artist:"daft punk
 | `artist:daft` / `artist:"daft punk"` | Partial match on the artist name |
 | `album:discovery` | Partial match on the album |
 | `albumartist:aphex` (`album_artist:` also works) | Partial match on the album artist |
-| `genre:house` | Partial match on the genre |
+| `genre:house` / `genre:"house techno"` | Exact match on a genre tag (tracks that have the `House` tag; a track tagged only `DeepHouse` does not match). Several tags separated by spaces match tracks that have all of them. Case-insensitive |
 | `comment:classic` | Partial match on the comments |
 | `year:2018` / `year:2015-2020` | Release year (single / range) |
 | `rating:5` / `rating:4-5` / `rating:0` | Stars 0–5 (`rating:0` is unrated; a whole number `n` covers n to n.5 stars) |

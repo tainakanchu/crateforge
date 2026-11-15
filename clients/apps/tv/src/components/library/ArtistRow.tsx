@@ -14,9 +14,9 @@
 // ```
 
 import { View, Text, StyleSheet } from "react-native";
-import { Image } from "expo-image";
 
-import { type Artist, artistLabel, useConnection } from "@crateforge/core";
+import { type Artist, artistLabel } from "@crateforge/core";
+import { Artwork } from "@/components/Artwork";
 import { Focusable } from "@/components/focus";
 import { PALETTE, TV_FONT, FOCUS_RING } from "@/theme/palette";
 
@@ -35,8 +35,6 @@ export interface ArtistRowProps {
 
 /** 共有のフォーカス可能なアーティスト行コンポーネント。 */
 export function ArtistRow({ artist, onSelect, onFocus, active = false, hasTVPreferredFocus }: ArtistRowProps) {
-  const client = useConnection((s) => s.client);
-
   return (
     <Focusable
       onSelect={onSelect}
@@ -45,16 +43,13 @@ export function ArtistRow({ artist, onSelect, onFocus, active = false, hasTVPref
       style={[styles.row, active && styles.rowActive]}
       accessibilityLabel={`${artistLabel(artist.artist)}, ${artist.trackCount}曲`}
     >
-      {client ? (
-        <Image
-          source={client.artworkSource(artist.sampleTrackId)}
-          style={styles.artwork}
-          contentFit="cover"
-          recyclingKey={String(artist.sampleTrackId)}
-        />
-      ) : (
-        <View style={[styles.artwork, styles.artworkPlaceholder]} />
-      )}
+      {/* 円形でアーティストらしさを出す。 */}
+      <Artwork
+        trackId={artist.sampleTrackId}
+        name={artistLabel(artist.artist)}
+        size={ARTWORK}
+        radius={ARTWORK / 2}
+      />
 
       <View style={styles.texts}>
         <Text style={[styles.name, active && styles.nameActive]} numberOfLines={1}>
@@ -86,17 +81,6 @@ const styles = StyleSheet.create({
     borderRadius: FOCUS_RING.borderRadius,
   },
   rowActive: {
-    backgroundColor: PALETTE.surface,
-  },
-  artwork: {
-    width: ARTWORK,
-    height: ARTWORK,
-    // 円形でアーティストらしさを出す。
-    borderRadius: ARTWORK / 2,
-    backgroundColor: PALETTE.surface,
-    flexShrink: 0,
-  },
-  artworkPlaceholder: {
     backgroundColor: PALETTE.surface,
   },
   texts: {

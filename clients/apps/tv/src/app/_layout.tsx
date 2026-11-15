@@ -7,6 +7,8 @@
 //   - 接続済み時: 「左サイドナビ ＋ 右コンテンツ(Slot)」の 2 カラム 10ft UI。
 //
 // Gate コンポーネントが接続状態に応じて /connect と / を出し分ける（描画なし）。
+// 接続の死活監視は mobile と同じ core の useConnectionMonitor。デスクトップに一時的に届かなく
+// なっても /connect へは飛ばさず、ConnectionBanner で知らせて自動で復帰する。
 
 import { useEffect } from "react";
 import { View, StyleSheet } from "react-native";
@@ -18,9 +20,17 @@ import { StatusBar } from "expo-status-bar";
 import * as Updates from "expo-updates";
 
 import { PALETTE } from "@/theme/palette";
-import { useConnection, createAudioEngine, initPlayback } from "@crateforge/core";
+import {
+  useConnection,
+  useConnectionMonitor,
+  selectIsOffline,
+  createAudioEngine,
+  initPlayback,
+} from "@crateforge/core";
 import { usePlayer } from "@/stores/playerStore";
 import { SideNav } from "@/components/shell/SideNav";
+import { ConnectionBanner } from "@/components/shell/ConnectionBanner";
+import { gateTarget } from "@/lib/gate";
 import { MiniPlayer } from "@/components/player/MiniPlayer";
 
 // TV は軽量な QueryClient（永続化なし）で十分。
@@ -62,6 +72,9 @@ export default function RootLayout() {
     void checkForOtaUpdate();
   }, []);
 
+  // 接続の見張り（前面復帰で再確認・接続中の死活監視・届かない間の自動再試行）。mobile と同じ。
+  useConnectionMonitor();
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
@@ -84,19 +97,17 @@ export default function RootLayout() {
 function Gate() {
   const status = useConnection((s) => s.status);
   const hydrated = useConnection((s) => s.hydrated);
+  // 保存済みの接続先に届かないだけ（接続監視が再試行中）。このときは /connect へ飛ばさない。
+  const offline = useConnection(selectIsOffline);
   const segments = useSegments();
   const router = useRouter();
 
   useEffect(() => {
     // hydrate() が完了するまでリダイレクト判定をしない（接続情報復元を待つ）。
     if (!hydrated) return;
-    const onConnect = segments[0] === "connect";
-    if ((status === "idle" || status === "error") && !onConnect) {
-      router.replace("/connect");
-    } else if (status === "connected" && onConnect) {
-      router.replace("/");
-    }
-  }, [status, hydrated, segments, router]);
+    const target = gateTarget({ status, offline, onConnect: segments[0] === "connect" });
+    if (target) router.replace(target);
+  }, [status, offline, hydrated, segments, router]);
 
   return null;
 }
@@ -120,6 +131,8 @@ function AppShell() {
       <SideNav />
       {/* 右: コンテンツ列（ページ + now-playing バー） */}
       <View style={styles.contentColumn}>
+        {/* デスクトップに届かない間だけ出る帯（自動再接続中の案内）。 */}
+        <ConnectionBanner />
         <View style={styles.content}>
           <Slot />
         </View>

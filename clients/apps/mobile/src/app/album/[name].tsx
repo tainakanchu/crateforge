@@ -9,6 +9,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   type ArtistGrouping,
   type Track,
+  byDiscTrack,
   albumLabel,
   trackArtistKey,
   filterAlbumTracks,
@@ -29,11 +30,6 @@ import { useAlbumTracks, useArtistTracks } from "@/features/browse/hooks";
 import { showTrackMenu } from "@/features/playback/trackMenu";
 import { usePullToRefresh } from "@/hooks/use-refresh";
 import { nameFromParams } from "@/lib/albumHref";
-
-/** disc 番号 → トラック番号 の収録順比較。 */
-function byDiscTrack(a: Track, b: Track): number {
-  return (a.discNumber ?? 0) - (b.discNumber ?? 0) || (a.trackNumber ?? 0) - (b.trackNumber ?? 0);
-}
 
 export default function AlbumScreen() {
   const router = useRouter();
@@ -59,7 +55,7 @@ export default function AlbumScreen() {
   // 不明なアルバム（album=""）も albumExact で album が空の曲を引ける。
   // アーティストの不明なアルバムはアーティストの曲から album 空を抽出する。
   const albumQuery = useAlbumTracks(isNoAlbum ? null : albumParam);
-  const artistQuery = useArtistTracks(isNoAlbum ? artist : null, grouping);
+  const artistQuery = useArtistTracks(isNoAlbum ? artist : null, { grouping });
   const query = isNoAlbum ? artistQuery : albumQuery;
   const { refreshing, onRefresh } = usePullToRefresh(query.refetch);
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);

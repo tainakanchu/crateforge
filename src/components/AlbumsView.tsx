@@ -1,8 +1,5 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useCallback, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
-import * as playbackApi from "../api/playback";
-import * as audition from "../lib/audition";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
 import * as analysisApi from "../api/analysis";
@@ -18,11 +15,25 @@ import { EmptyState } from "./EmptyState";
 import { ANALYZED_BPM_TITLE, effectiveBpm } from "../lib/bpm";
 import { splitGenre } from "../lib/genre";
 import { albumLabel } from "../lib/unknownLabels";
+import {
+  GRID_GAP as GAP,
+  GRID_META_H as META_H,
+  GRID_PAD_X as PAD_X,
+  buildGridRows,
+  gridMetrics,
+  isNearBottom,
+} from "../lib/gridRows";
+import { useElementWidth } from "../hooks/useElementWidth";
+import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
+import { formatTotalTime, formatTrackTime } from "../lib/format";
+import { combineQuery } from "../lib/query";
+import * as trackActions from "../lib/trackActions";
+import { trackApi } from "../lib/trackActionsApi";
+import { AddGenreTagDialog } from "./AddGenreTagDialog";
+import { CovTrackRow } from "./CovTrackRow";
+import { useTrackActionRunner } from "../hooks/useTrackActionRunner";
+import { LoadRetry } from "./LoadRetry";
 
-const GAP = 18;
-const PAD_X = 20;
-const MIN_CARD = 150;
-const META_H = 46; // カード下のアルバム名・曲数ラベルのおよその高さ
 const SORT_LINE_H = 15; // ソートキー表示行 (.cov-meta .ls) のおよその高さ
 
 interface AlbumsViewProps {
@@ -67,13 +78,6 @@ interface CoversCtxMenu {
 }
 
 
-function formatTime(ms: number | null): string {
-  if (!ms) return "";
-  const total = Math.floor(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
 
 // サーバ集約の AlbumRow を描画用 AlbumVM へ。曲は展開時に遅延取得するので tracks=null。
 function albumRowToVM(r: AlbumRow): AlbumVM {
@@ -272,7 +276,15 @@ function sortKeyLabel(vm: AlbumVM, sortField: SortField): string | null {
   }
 }
 
-type Row = { type: "grid"; albums: AlbumVM[] } | { type: "expand"; album: AlbumVM };
+const albumKeyOf = (vm: AlbumVM) => vm.key;
+
+/** key を除いた Set (含んでいなければ同じ Set を返し、再描画を起こさない)。 */
+function withoutKey(set: Set<string>, key: string): Set<string> {
+  if (!set.has(key)) return set;
+  const next = new Set(set);
+  next.delete(key);
+  return next;
+}
 
 /// アート前面のブラウズビュー。アルバム単位でまとめ、クリックで曲一覧を展開する。
 /// 入力は2系統:
@@ -302,18 +314,15 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   } = useStore();
   // グローバルトースト通知
   const pushToast = useStore((s) => s.pushToast);
-  const parentRef = useRef<HTMLDivElement | null>(null);
+  const run = useTrackActionRunner();
   // グリッドのスクロール要素。初回描画が空状態 (データ到着前) だと要素が無いので、
-  // 付いた時点で幅計測を始められるよう state でも持つ (callback ref)。
-  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
-  const setParentRef = useCallback((el: HTMLDivElement | null) => {
-    parentRef.current = el;
-    setScrollEl(el);
-  }, []);
-  const [width, setWidth] = useState(0);
+  // 付いた時点で幅計測を始められるよう callback ref で持つ (useElementWidth)。
+  const { ref: setParentRef, elRef: parentRef, width } = useElementWidth<HTMLDivElement>();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<CoversCtxMenu | null>(null);
-  const [showAddTagDialog, setShowAddTagDialog] = useState(false);
+  // ジャンルタグ追加ダイアログの対象曲 (null で非表示)。メニューは項目を選んだ時点で閉じて
+  // contextMenu が null になるので、対象は開くときにここへ控えておく。
+  const [addTagTargetIds, setAddTagTargetIds] = useState<number[] | null>(null);
   const [newTag, setNewTag] = useState("");
   // 削除確認モーダルの対象曲（null で非表示）。
   const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
@@ -321,21 +330,8 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const [trackCache, setTrackCache] = useState<Map<string, Track[]>>(new Map());
 
   // スコープ判定: 検索なしのライブラリ全体ならサーバ集約 (store.albums) を使う。
-  const combinedQuery = [searchQuery.trim(), ...filterTags].filter(Boolean).join(" ");
+  const combinedQuery = combineQuery(searchQuery, filterTags);
   const isLibraryScope = viewMode === "library" && !combinedQuery;
-
-  // 依存を [] にすると、空状態でマウント → 後からグリッドが出たケースで計測が始まらず、
-  // width=0 → cols=2 (下限) でタイルが倍幅になっていた。要素の付け替えに追従する。
-  useLayoutEffect(() => {
-    const el = scrollEl;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setWidth(e.contentRect.width);
-    });
-    ro.observe(el);
-    setWidth(el.clientWidth);
-    return () => ro.disconnect();
-  }, [scrollEl]);
 
   // ライブラリスコープはサーバ ORDER BY 済み。スコープ外は同じ規則でクライアントソートする。
   const albums = useMemo<AlbumVM[]>(
@@ -357,77 +353,56 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     [trackCache],
   );
 
+  // 曲の取得に失敗したアルバム (albumKey)。展開行が「Loading…」のまま止まらないようにする。
+  const [loadFailedKeys, setLoadFailedKeys] = useState<Set<string>>(new Set());
+
   // ライブラリスコープのアルバムの曲を遅延取得してキャッシュする。
   const ensureTracks = useCallback(
     async (vm: AlbumVM): Promise<Track[]> => {
       if (vm.tracks) return vm.tracks;
       const cached = trackCache.get(vm.key);
       if (cached) return cached;
-      try {
-        const ts = await libraryApi.getAlbumTracks(vm.key);
-        setTrackCache((prev) => {
-          const next = new Map(prev);
-          next.set(vm.key, ts);
-          return next;
-        });
-        return ts;
-      } catch (err) {
-        console.error("Failed to load album tracks:", err);
+      // 取得に失敗したらトーストで知らせて空を返す (再生・キュー・メニューが黙って何もしない、を避ける)。
+      // 展開行は失敗の表示 (再試行つき) に切り替える。再試行中は Loading… に戻す。
+      setLoadFailedKeys((prev) => withoutKey(prev, vm.key));
+      let ts: Track[] = [];
+      const ok = await run("loadTracks", async () => {
+        ts = await libraryApi.getAlbumTracks(vm.key);
+      });
+      if (!ok) {
+        setLoadFailedKeys((prev) => new Set(prev).add(vm.key));
         return [];
       }
+      setTrackCache((prev) => {
+        const next = new Map(prev);
+        next.set(vm.key, ts);
+        return next;
+      });
+      return ts;
     },
-    [trackCache],
+    [trackCache, run],
   );
 
-  const inner = Math.max(0, width - PAD_X * 2);
-  const cols = Math.max(2, Math.floor((inner + GAP) / (MIN_CARD + GAP)) || 2);
-  const cardW = Math.max(60, inner > 0 ? (inner - GAP * (cols - 1)) / cols : MIN_CARD);
+  const { cols, cardW } = gridMetrics(width);
 
   // グリッド行 (cols 枚ずつ) に、展開中アルバムの曲一覧行を差し込んだ仮想行リスト。
-  const rows = useMemo<Row[]>(() => {
-    const out: Row[] = [];
-    for (let i = 0; i < albums.length; i += cols) {
-      const chunk = albums.slice(i, i + cols);
-      out.push({ type: "grid", albums: chunk });
-      for (const al of chunk) {
-        if (expanded === al.key) out.push({ type: "expand", album: al });
-      }
-    }
-    return out;
-  }, [albums, cols, expanded]);
+  const rows = useMemo(
+    () => buildGridRows(albums, cols, albumKeyOf, expanded),
+    [albums, cols, expanded],
+  );
 
-  const rowVirtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: (i) =>
-      rows[i].type === "grid" ? cardW + META_H + (showSortLine ? SORT_LINE_H : 0) + GAP : 260,
-    // 行番号ではなくアルバム単位の安定キーにする。index キーだと展開行の挿入/除去で
-    // 後続行の番号がずれ、実測サイズのキャッシュが別の行 (グリッド⇔展開) に付け替わる。
-    getItemKey: (i) => {
-      const r = rows[i];
-      return r.type === "grid" ? `g:${cols}:${r.albums[0]?.key ?? i}` : `x:${r.album.key}`;
-    },
-    overscan: 6,
-    paddingStart: 18,
-    paddingEnd: 18,
+  // 行キーの安定化と再計測の規則は useCardGridVirtualizer 側 (展開の開閉では measure() しない)。
+  const rowVirtualizer = useCardGridVirtualizer({
+    rows,
+    scrollRef: parentRef,
+    cols,
+    gridRowHeight: cardW + META_H + (showSortLine ? SORT_LINE_H : 0) + GAP,
   });
-
-  // カード幅/列数が変わるとグリッド行の高さが変わるので実測キャッシュを捨てる。
-  // measure() はキャッシュを消すだけで再計測しないため、表示中の行はその場で測り直す
-  // (しないと展開行が estimateSize=260 のまま残り、次の行が重なって描画される)。
-  // 展開の開閉では呼ばない: 安定キーなので不要で、呼ぶと上記の重なりが起きる。
-  useLayoutEffect(() => {
-    rowVirtualizer.measure();
-    parentRef.current
-      ?.querySelectorAll<HTMLElement>(":scope > div > [data-index]")
-      .forEach((el) => rowVirtualizer.measureElement(el));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardW, cols, showSortLine]);
 
   const handleScroll = useCallback(() => {
     const el = parentRef.current;
     if (!el || isLoading || !moreAvailable) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 400) onLoadMore();
+    if (isNearBottom(el)) onLoadMore();
   }, [isLoading, moreAvailable, onLoadMore]);
 
   const toggleExpand = useCallback(
@@ -442,17 +417,8 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   // 解決済みトラックを頭から (または指定トラックから) 再生。
   const playTracks = useCallback(async (ts: Track[], startId?: number) => {
-    const ids = ts.filter((t) => t.fileExists).map((t) => t.trackId);
-    if (ids.length === 0) return;
-    const start = startId != null ? Math.max(0, ids.indexOf(startId)) : 0;
-    try {
-      await audition.ensureNormalPlay();
-      await playbackApi.setQueue(ids, start);
-      await playbackApi.playTrack(ids[start]);
-    } catch (err) {
-      console.error("Failed to play:", err);
-    }
-  }, []);
+    await run("play", () => trackActions.playTracks(trackApi, ts, startId));
+  }, [run]);
 
   // アルバムを再生 (必要なら曲を取得してから)。
   const playAlbum = useCallback(
@@ -518,13 +484,25 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const applyRating = useCallback(
     async (trackIds: number[], stars: number) => {
       const rating = starsToRating(stars);
-      try {
-        for (const id of trackIds) await libraryApi.setTrackRating(id, rating);
-      } catch (err) {
-        console.error("Failed to set rating:", err);
-        return;
-      }
+      const ok = await run("rating", () =>
+        trackActions.setRatingForTracks(trackApi, trackIds, rating),
+      );
       const ids = new Set(trackIds);
+      if (!ok) {
+        // 複数曲の途中で失敗すると、先に成功した曲だけ値が変わっている。どの曲まで進んだかは
+        // 分からないので、一覧と、対象を含む展開キャッシュを取り直して実際の値に合わせる。
+        onTracksChanged();
+        for (const [key, ts] of trackCache) {
+          if (!ts.some((t) => ids.has(t.trackId))) continue;
+          try {
+            const fresh = await libraryApi.getAlbumTracks(key);
+            setTrackCache((prev) => new Map(prev).set(key, fresh));
+          } catch (err) {
+            console.error("Failed to reload album tracks:", err);
+          }
+        }
+        return false;
+      }
       setTrackCache((prev) => {
         let next: Map<string, Track[]> | null = null;
         for (const [key, ts] of prev) {
@@ -535,14 +513,20 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         return next ?? prev;
       });
       onTracksChanged();
+      return true;
     },
-    [onTracksChanged],
+    [onTracksChanged, run, trackCache],
   );
 
   const handleSetRating = useCallback(
     async (stars: number) => {
       if (!contextMenu) return;
-      await applyRating(contextMenu.trackIds, stars);
+      const menu = contextMenu;
+      // 星はメニューを開いたまま付け直せるが、失敗したら (プレビューの星が残らないよう) 閉じる。
+      // 待っている間に別のメニューが開かれていたら、そちらは閉じない。
+      if (!(await applyRating(menu.trackIds, stars))) {
+        setContextMenu((cur) => (cur === menu ? null : cur));
+      }
     },
     [contextMenu, applyRating],
   );
@@ -564,29 +548,25 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleEnqueue = useCallback(async () => {
     if (!contextMenu) return;
-    for (const id of contextMenu.trackIds) await playbackApi.enqueueTrack(id);
+    const ids = contextMenu.trackIds;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("enqueue", () => trackActions.enqueueTracks(trackApi, ids));
+  }, [contextMenu, closeMenu, run]);
 
-  // 「次に再生」: enqueueTrackNext は現在曲の直後へ1曲ずつ挿入するため、
-  // 反転してから入れると最終的な並びが選択順どおりになる。
+  // 「次に再生」: 現在曲の直後に選択順で並ぶ (挿入順の反転は playNextTracks 側)。
   const handlePlayNext = useCallback(async () => {
     if (!contextMenu) return;
-    for (const id of [...contextMenu.trackIds].reverse()) {
-      await playbackApi.enqueueTrackNext(id);
-    }
+    const ids = contextMenu.trackIds;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("playNext", () => trackActions.playNextTracks(trackApi, ids));
+  }, [contextMenu, closeMenu, run]);
 
   const handleAnalyze = useCallback(async () => {
     if (!contextMenu) return;
-    try {
-      await analysisApi.analyzeTracks(contextMenu.trackIds, true);
-    } catch (err) {
-      console.error("Failed to queue analysis:", err);
-    }
+    const ids = contextMenu.trackIds;
     closeMenu();
-  }, [contextMenu, closeMenu]);
+    await run("analyze", () => analysisApi.analyzeTracks(ids, true));
+  }, [contextMenu, closeMenu, run]);
 
   const handleFindSimilar = useCallback(() => {
     if (!contextMenu) return;
@@ -611,13 +591,9 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleReveal = useCallback(async () => {
     const path = contextMenu?.primary.locationPath;
     if (!path) return;
-    try {
-      await libraryApi.revealInFileManager(path);
-    } catch (err) {
-      pushToast("error", `ファイルマネージャで表示できませんでした: ${err}`);
-    }
     closeMenu();
-  }, [contextMenu, closeMenu, pushToast]);
+    await run("reveal", () => libraryApi.revealInFileManager(path));
+  }, [contextMenu, closeMenu, run]);
 
   // 削除対象はメニューの操作対象 (trackIds) と揃える。
   // アルバムのカバーから開いた場合はアルバム全曲が対象になる。
@@ -637,65 +613,57 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const handleAddToPlaylist = useCallback(
     async (playlistId: number) => {
       if (!contextMenu) return;
-      try {
-        const added = await playlistsApi.addTracksToPlaylist(playlistId, contextMenu.trackIds);
+      const ids = contextMenu.trackIds;
+      closeMenu();
+      await run("addToPlaylist", async () => {
+        const added = await trackActions.addTracksToPlaylist(trackApi, playlists, playlistId, ids);
         pushRecentPlaylist(playlistId);
         onTracksChanged();
-        const name = playlists.find((p) => p.playlistId === playlistId)?.name ?? "プレイリスト";
-        pushToast("success", `「${name}」に ${added} 曲を追加しました`);
-      } catch (err) {
-        pushToast("error", `追加に失敗しました: ${err}`);
-      }
-      closeMenu();
+        pushToast("success", trackActions.addedToPlaylistMessage(added));
+      });
     },
-    [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast, playlists],
+    [contextMenu, pushRecentPlaylist, onTracksChanged, closeMenu, pushToast, playlists, run],
   );
 
   const handleRemoveFromPlaylist = useCallback(async () => {
     if (!contextMenu || viewMode !== "playlist" || selectedPlaylistId === null) return;
-    try {
+    const ids = contextMenu.trackIds;
+    closeMenu();
+    await run("removeFromPlaylist", async () => {
       // アルバムのカバーから開いた場合は全曲を 1 回の呼び出し (1 トランザクション) で外す。
-      const removed = await playlistsApi.removeTracksFromPlaylist(
-        selectedPlaylistId,
-        contextMenu.trackIds,
-      );
+      const removed = await playlistsApi.removeTracksFromPlaylist(selectedPlaylistId, ids);
       onTracksChanged();
       if (removed > 1) pushToast("success", `${removed} 曲をプレイリストから外しました`);
-    } catch (err) {
-      pushToast("error", `削除に失敗しました: ${err}`);
-    }
-    closeMenu();
-  }, [contextMenu, viewMode, selectedPlaylistId, onTracksChanged, closeMenu, pushToast]);
+    });
+  }, [contextMenu, viewMode, selectedPlaylistId, onTracksChanged, closeMenu, pushToast, run]);
 
   const handleApplyAddTag = useCallback(async () => {
     const tag = newTag.trim();
-    if (!tag || !contextMenu) {
-      setShowAddTagDialog(false);
-      return;
-    }
-    try {
-      await libraryApi.addGenreTag(contextMenu.trackIds, tag);
-      onTracksChanged();
-    } catch (err) {
-      pushToast("error", `タグの追加に失敗しました: ${err}`);
-    }
-    setShowAddTagDialog(false);
+    const ids = addTagTargetIds;
+    setAddTagTargetIds(null);
+    if (!tag || !ids || ids.length === 0) return;
     setNewTag("");
-    closeMenu();
-  }, [newTag, contextMenu, onTracksChanged, closeMenu, pushToast]);
+    await run("addTag", async () => {
+      const result = await libraryApi.addGenreTag(ids, tag);
+      onTracksChanged();
+      const warning = trackActions.genreFileWriteFailureMessage(result);
+      if (warning) pushToast("error", warning);
+    });
+  }, [newTag, addTagTargetIds, onTracksChanged, run, pushToast]);
 
   const handleRemoveTag = useCallback(
     async (tag: string) => {
       if (!contextMenu) return;
-      try {
-        await libraryApi.removeGenreTag(contextMenu.trackIds, tag);
-        onTracksChanged();
-      } catch (err) {
-        pushToast("error", `タグの削除に失敗しました: ${err}`);
-      }
+      const ids = contextMenu.trackIds;
       closeMenu();
+      await run("removeTag", async () => {
+        const result = await libraryApi.removeGenreTag(ids, tag);
+        onTracksChanged();
+        const warning = trackActions.genreFileWriteFailureMessage(result);
+        if (warning) pushToast("error", warning);
+      });
     },
-    [contextMenu, onTracksChanged, closeMenu, pushToast],
+    [contextMenu, onTracksChanged, closeMenu, run, pushToast],
   );
 
   // メニュー表示用の派生値 (レーティングは最新の tracks から引き直す)。
@@ -751,7 +719,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                     padding: `0 ${PAD_X}px ${GAP}px`,
                   }}
                 >
-                  {row.albums.map((al) => {
+                  {row.items.map((al) => {
                     const kt = knownTracks(al);
                     const allIn = kt ? kt.length > 0 && kt.every((t) => crateSet.has(t.trackId)) : false;
                     const isCurrent = kt ? kt.some((t) => playback.currentTrackId === t.trackId) : false;
@@ -833,17 +801,19 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 </div>
               ) : (
                 <AlbumExpansion
-                  vm={row.album}
-                  tracks={knownTracks(row.album)}
+                  vm={row.item}
+                  tracks={knownTracks(row.item)}
+                  loadFailed={loadFailedKeys.has(row.item.key)}
+                  onRetry={() => void ensureTracks(row.item)}
                   crateSet={crateSet}
                   currentTrackId={playback.currentTrackId}
-                  onPlayTrack={(id) => playAlbum(row.album, id)}
+                  onPlayTrack={(id) => playAlbum(row.item, id)}
                   onAddTrack={addToCrate}
                   onSetRating={(t, stars) => void applyRating([t.trackId], stars)}
                   onTrackContextMenu={(e, t) =>
-                    openTrackMenu(e, knownTracks(row.album) ?? [], row.album.key, t)
+                    openTrackMenu(e, knownTracks(row.item) ?? [], row.item.key, t)
                   }
-                  onClose={() => toggleExpand(row.album)}
+                  onClose={() => toggleExpand(row.item)}
                 />
               )}
             </div>
@@ -894,7 +864,7 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onReveal={() => void handleReveal()}
           onDelete={handleDelete}
           onAddToPlaylist={handleAddToPlaylist}
-          onAddTag={() => setShowAddTagDialog(true)}
+          onAddTag={() => setAddTagTargetIds(contextMenu.trackIds)}
           onRemoveTag={handleRemoveTag}
         />
       )}
@@ -911,44 +881,13 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         />
       )}
 
-      {showAddTagDialog && (
-        <div className="modal-overlay" onClick={() => setShowAddTagDialog(false)}>
-          <div className="modal" style={{ width: 360 }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>
-                <Icon name="tag" size={16} /> ジャンルタグを追加
-              </h2>
-              <button className="modal-close" onClick={() => setShowAddTagDialog(false)}>
-                <Icon name="x" size={16} />
-              </button>
-            </div>
-            <div className="modal-body" style={{ padding: 16 }}>
-              <input
-                autoFocus
-                type="text"
-                className="rip-input"
-                placeholder="例: Deep House"
-                value={newTag}
-                onChange={(e) => setNewTag(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleApplyAddTag();
-                  if (e.key === "Escape") setShowAddTagDialog(false);
-                }}
-                style={{ width: "100%" }}
-              />
-              <div
-                style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}
-              >
-                <button className="toolbar-btn" onClick={() => setShowAddTagDialog(false)}>
-                  キャンセル
-                </button>
-                <button className="toolbar-btn primary" onClick={handleApplyAddTag}>
-                  追加
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+      {addTagTargetIds && (
+        <AddGenreTagDialog
+          value={newTag}
+          onChange={setNewTag}
+          onSubmit={() => void handleApplyAddTag()}
+          onClose={() => setAddTagTargetIds(null)}
+        />
       )}
     </div>
   );
@@ -957,6 +896,9 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 interface AlbumExpansionProps {
   vm: AlbumVM;
   tracks: Track[] | null;
+  /// 曲の取得に失敗している (tracks が null のとき、再試行の表示に切り替える)。
+  loadFailed: boolean;
+  onRetry: () => void;
   crateSet: Set<number>;
   currentTrackId: number | null;
   onPlayTrack: (trackId: number) => void;
@@ -969,6 +911,8 @@ interface AlbumExpansionProps {
 function AlbumExpansion({
   vm,
   tracks,
+  loadFailed,
+  onRetry,
   crateSet,
   currentTrackId,
   onPlayTrack,
@@ -983,7 +927,11 @@ function AlbumExpansion({
     return (
       <div style={{ padding: `0 ${PAD_X}px ${GAP}px` }}>
         <div className="cov-exp">
-          <div className="cb-loading">Loading…</div>
+          {loadFailed ? (
+            <LoadRetry message="曲を取得できませんでした" onRetry={onRetry} />
+          ) : (
+            <div className="cb-loading">Loading…</div>
+          )}
         </div>
       </div>
     );
@@ -998,7 +946,7 @@ function AlbumExpansion({
         <div className="cov-exp-title">
           <span className="t">{albumLabel(vm.album)}</span>
           <span className="s">
-            {[vm.albumArtist, `${tracks.length} tracks`, formatTime(totalMs)]
+            {[vm.albumArtist, `${tracks.length} tracks`, totalMs > 0 ? formatTotalTime(totalMs) : ""]
               .filter(Boolean)
               .join(" · ")}
           </span>
@@ -1012,46 +960,34 @@ function AlbumExpansion({
           const isIn = crateSet.has(t.trackId);
           const isCurrent = currentTrackId === t.trackId;
           const showArtist = (t.artist || "") !== vm.albumArtist && !!t.artist;
+          // 実効 BPM (タグ ?? 解析値)。解析値は薄く表示する。
+          const b = effectiveBpm(t, analysisByTrack.get(t.trackId));
+          const stars = ratingToStars(t.rating);
           return (
-            <div
+            <CovTrackRow
               key={`${t.trackId}-${i}`}
-              className={"cov-trk" + (isCurrent ? " play" : "") + (!t.fileExists ? " missing" : "")}
-              onDoubleClick={() => onPlayTrack(t.trackId)}
+              track={t}
+              index={i}
+              isCurrent={isCurrent}
+              inCrate={isIn}
+              showArtist={showArtist}
+              time={formatTrackTime(t.totalTimeMs)}
+              onPlay={() => onPlayTrack(t.trackId)}
               onContextMenu={(e) => onTrackContextMenu(e, t)}
-            >
-              <span className="n">{t.trackNumber ?? i + 1}</span>
-              <span className="nm">
-                {isCurrent && (
-                  <span className="cov-now">
-                    <Icon name="play" size={9} fill="currentColor" stroke={0} />
-                  </span>
-                )}
-                {!t.fileExists && (
-                  <span className="cb-warn" title="ファイルが見つかりません">
-                    <Icon name="warning" size={11} />
-                  </span>
-                )}
-                <span className="ell">{t.name || "(unknown)"}</span>
-                {showArtist && <span className="sub"> — {t.artist}</span>}
-              </span>
-              {(() => {
-                // 実効 BPM (タグ ?? 解析値)。解析値は薄く表示する。
-                const b = effectiveBpm(t, analysisByTrack.get(t.trackId));
-                return b ? (
-                  <span
-                    className="bpm cb-fmono"
-                    style={{ color: bpmColor(b.value), opacity: b.fromAnalysis ? 0.6 : undefined }}
-                    title={b.fromAnalysis ? ANALYZED_BPM_TITLE : undefined}
-                  >
-                    {b.value}
-                  </span>
-                ) : null;
-              })()}
-              {(() => {
-                const stars = ratingToStars(t.rating);
-                return (
-                  // 未評価は行ホバー時だけ出す (全行に空の星が並ぶとうるさいため)。
-                  // ダブルクリックが行の再生に化けないよう止める。
+              onAddToCrate={() => onAddTrack(t)}
+              extra={
+                <>
+                  {b ? (
+                    <span
+                      className="bpm cb-fmono"
+                      style={{ color: bpmColor(b.value), opacity: b.fromAnalysis ? 0.6 : undefined }}
+                      title={b.fromAnalysis ? ANALYZED_BPM_TITLE : undefined}
+                    >
+                      {b.value}
+                    </span>
+                  ) : null}
+                  {/* 未評価は行ホバー時だけ出す (全行に空の星が並ぶとうるさいため)。
+                      ダブルクリックが行の再生に化けないよう止める。 */}
                   <span
                     className={"rt" + (stars > 0 ? "" : " empty")}
                     title="レーティング (左半分クリックで半星 / 同じ値で解除)"
@@ -1059,26 +995,9 @@ function AlbumExpansion({
                   >
                     <Stars value={stars} size={12} onSet={(n) => onSetRating(t, n)} />
                   </span>
-                );
-              })()}
-              <span className="tm cb-fmono">{formatTime(t.totalTimeMs)}</span>
-              {isIn ? (
-                <span className="cov-trk-add in" title="Crate に追加済み">
-                  <Icon name="check" size={15} />
-                </span>
-              ) : (
-                <button
-                  className="cov-trk-add"
-                  title="Crate に追加"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onAddTrack(t);
-                  }}
-                >
-                  <Icon name="plus" size={15} />
-                </button>
-              )}
-            </div>
+                </>
+              }
+            />
           );
         })}
       </div>

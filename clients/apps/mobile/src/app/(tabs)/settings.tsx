@@ -16,6 +16,7 @@ import { type ArtistGrouping, type TrackMetaField, formatDuration, useConnection
 import QualityPicker from "@/features/offline/QualityPicker";
 import { formatBytes } from "@/features/offline/format";
 import { formatRatingConflict } from "@/features/triage/conflict";
+import { describePendingOp } from "@/features/triage/labels";
 import { flushPending, keepMine, keepServer } from "@/features/triage/syncPending";
 import { usePendingEdits } from "@/store/pendingEdits";
 import { BRAND, PALETTE } from "@/constants/brand";
@@ -429,24 +430,6 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
       <View style={styles.rowValue}>{children}</View>
     </View>
   );
-}
-
-function describePendingOp(op: {
-  kind: string;
-  trackId: number;
-  trackName?: string | null;
-  rating?: number;
-  tag?: string;
-}): string {
-  const name = op.trackName || `#${op.trackId}`;
-  if (op.kind === "rating") {
-    const stars = Math.round((op.rating ?? 0) / 20);
-    return `★${stars} ← ${name}`;
-  }
-  if (op.kind === "tag-add") return `+${op.tag} ← ${name}`;
-  if (op.kind === "tag-remove") return `-${op.tag} ← ${name}`;
-  if (op.kind === "review-later") return `あとで ← ${name}`;
-  return `${op.kind} ← ${name}`;
 }
 
 const styles = StyleSheet.create({

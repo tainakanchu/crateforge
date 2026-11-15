@@ -1,45 +1,58 @@
-// Browse スライスの React Query フック群。
+// Browse スライスの React Query フック群（mobile 固有分）。
+// 読み取りの共通フック（usePlaylists / usePlaylistTracks / useAlbumTracks / useArtists /
+// useArtistTracks）は core/src/hooks/browse.ts にあり、ここから再エクスポートする。
+// useTracks / useAlbums は core のフックに mobile の staleTime・並び順を足した薄いラッパ。
+// ここに残すのは mobile だけが使うもの: アルバムの並び順、オフライン（DL 済み）からの導出、書き込み。
 // 全フックは useConnection().client（接続中のみ非 null）を読み、enabled: !!client。
-// queryFn では client のメソッドを使い、AbortSignal を受け取る経路には渡す。
-// ApiClient.artists() / TracksQuery.artist / TracksQuery.albumArtist の型拡張は
-// lib/api/augment.d.ts に宣言している（別エージェントが core に実装する新 IF）。
 
 import { useCallback, useMemo } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, type Album, type Artist, type ArtistGrouping, type GenreTagCount, type Playlist, type PlaylistDetail, type SimilarHit, type Track, type TracksQuery, filterAlbumTracks, trackArtistKey, trackAlbumArtistKey, useConnection, useDownloads, useSettings } from "@crateforge/core";
+import {
+  type Album,
+  type ArtistGrouping,
+  type GenreTagCount,
+  type PlaylistDetail,
+  type SimilarHit,
+  type Track,
+  type TracksQuery,
+  BROWSE_LIMIT,
+  artistTracksQuery,
+  browseKeys,
+  compareAlbums,
+  trackArtistKey,
+  trackAlbumArtistKey,
+  useAlbums as useAlbumsUnsorted,
+  useTracks as useTracksQuery,
+  useConnection,
+  useDownloads,
+  useSettings,
+} from "@crateforge/core";
 
-import { usePendingEdits } from "@/store/pendingEdits";
+import { type RatingEdit, invalidateRatingQueries, writeRating } from "@/features/triage/edits";
 
-/** 大規模ライブラリでも全件取得（仮想リスト前提）。500/200 上限の撤廃。 */
-export const BROWSE_LIMIT = 100000;
+export {
+  BROWSE_LIMIT,
+  useAlbumTracks,
+  useArtistTracks,
+  useArtists,
+  usePlaylistTracks,
+  usePlaylists,
+} from "@crateforge/core";
 
-/** アルバム並べ替えに必要な最小キー。year は代表年（MIN 推奨, 無ければ null）。 */
-type AlbumSortKey = { album: string; albumArtist: string | null; year?: number | null };
+/** 絞り込み無しの全曲取得（数万件）をフォーカス/前面復帰のたびに取り直さないための staleTime。 */
+export const UNFILTERED_TRACKS_STALE_MS = 5 * 60 * 1000;
 
 /**
- * アルバムの共通ソート比較。順序は「アルバムアーティスト → アルバム名 → 年(昇順)」。
- * - 名前比較は localeCompare（base sensitivity）。読み仮名フィールドが無いため漢字は
- *   文字コード順になり得るが許容（簡易ソート）。ロケールは undefined（Hermes 互換重視）。
- * - year は MIN(year) を想定。null/undefined は「年不明」として最後に置く。
- * deriveArtistAlbums と useAlbums の両方から再利用して重複を避ける。
+ * 曲一覧（core の useTracks）。絞り込み無しの全曲取得は重いので、mobile の既定（1 分）より
+ * 長い staleTime にする。検索・ジャンル絞り込みは既定のまま。最新化はプル更新で行える。
  */
-export function compareAlbums(a: AlbumSortKey, b: AlbumSortKey): number {
-  const byArtist = (a.albumArtist ?? a.album).localeCompare(
-    b.albumArtist ?? b.album,
-    undefined,
-    { sensitivity: "base" },
-  );
-  if (byArtist !== 0) return byArtist;
-  const byAlbum = a.album.localeCompare(b.album, undefined, { sensitivity: "base" });
-  if (byAlbum !== 0) return byAlbum;
-  // 年順（昇順）。不明（null/undefined）は最後。
-  const ay = a.year ?? null;
-  const by = b.year ?? null;
-  if (ay == null && by == null) return 0;
-  if (ay == null) return 1;
-  if (by == null) return -1;
-  return ay - by;
+export function useTracks(query?: TracksQuery, options?: { enabled?: boolean }) {
+  const unfiltered = !query?.q && !query?.genre;
+  return useTracksQuery(query, {
+    enabled: options?.enabled,
+    ...(unfiltered ? { staleTime: UNFILTERED_TRACKS_STALE_MS } : {}),
+  });
 }
 
 /** トラック配列から「アルバム名 → 代表年(MIN)」のマップを作る（year を持つ曲のみ集計）。 */
@@ -54,41 +67,13 @@ export function albumYearMap(tracks: Track[]): Map<string, number> {
   return map;
 }
 
-/** 曲一覧（検索/ジャンル等のクエリで絞り込み）。enabled=false で取得抑止（非表示モード時）。
- * placeholderData: keepPreviousData で検索/ソート/モード変更時のスピナー点滅を抑える。
- */
-export function useTracks(query?: TracksQuery, enabled = true) {
-  const client = useConnection((s) => s.client);
-  // 絞り込み無しの全曲取得は重い（数万件）ので、フォーカス/前面復帰のたびに取り直さないよう
-  // staleTime を長めにする（既定は 1 分）。最新化はプル更新で行える。
-  const unfiltered = !query?.q && !query?.genre;
-  return useQuery<Track[]>({
-    queryKey: ["tracks", query ?? {}],
-    enabled: !!client && enabled,
-    queryFn: ({ signal }) => client!.listTracks(query, signal),
-    placeholderData: keepPreviousData,
-    // undefined を渡すと既定（QueryClient の staleTime）を上書きしてしまうので、指定時だけ載せる。
-    ...(unfiltered ? { staleTime: 5 * 60 * 1000 } : {}),
-  });
-}
-
 /** ジャンルタグの頻度一覧（チップ用）。 */
 export function useGenres() {
   const client = useConnection((s) => s.client);
   return useQuery<GenreTagCount[]>({
-    queryKey: ["genres"],
+    queryKey: browseKeys.genres,
     enabled: !!client,
     queryFn: () => client!.genres(),
-  });
-}
-
-/** プレイリスト一覧（UI 側でフォルダを除外できる）。 */
-export function usePlaylists() {
-  const client = useConnection((s) => s.client);
-  return useQuery<Playlist[]>({
-    queryKey: ["playlists"],
-    enabled: !!client,
-    queryFn: () => client!.playlists(),
   });
 }
 
@@ -96,19 +81,9 @@ export function usePlaylists() {
 export function usePlaylist(playlistId: number) {
   const client = useConnection((s) => s.client);
   return useQuery<PlaylistDetail>({
-    queryKey: ["playlist", playlistId],
+    queryKey: browseKeys.playlist(playlistId),
     enabled: !!client && Number.isFinite(playlistId),
     queryFn: () => client!.playlist(playlistId),
-  });
-}
-
-/** プレイリスト内の曲。 */
-export function usePlaylistTracks(playlistId: number) {
-  const client = useConnection((s) => s.client);
-  return useQuery<Track[]>({
-    queryKey: ["playlist-tracks", playlistId],
-    enabled: !!client,
-    queryFn: () => client!.playlistTracks(playlistId, { limit: BROWSE_LIMIT }),
   });
 }
 
@@ -117,20 +92,15 @@ export function usePlaylistTracks(playlistId: number) {
  * /api/albums は year を返さないので、全曲キャッシュ（["tracks", {limit}]）が
  * 既にあれば代表年(MIN)を引いて年順まで効かせる。無ければ（＝重い全曲取得を
  * わざわざ誘発しないため取得はしない）「アーティスト → アルバム名」までで安定ソート。
- * placeholderData: keepPreviousData で grouping/検索変更時のスピナー点滅を抑える。
  */
-export function useAlbums(enabled = true) {
-  const client = useConnection((s) => s.client);
+export function useAlbums(options?: { enabled?: boolean }) {
   const queryClient = useQueryClient();
-  return useQuery<Album[], Error, Album[]>({
-    queryKey: ["albums"],
-    enabled: !!client && enabled,
-    queryFn: () => client!.albums(),
-    placeholderData: keepPreviousData,
+  return useAlbumsUnsorted({
+    enabled: options?.enabled,
     select: (albums) => {
       // 既にキャッシュ済みの全曲があれば年マップを引く（無ければ空＝年順はスキップ）。
       const tracks =
-        queryClient.getQueryData<Track[]>(["tracks", { limit: BROWSE_LIMIT }]) ?? [];
+        queryClient.getQueryData<Track[]>(browseKeys.tracks({ limit: BROWSE_LIMIT })) ?? [];
       const years = albumYearMap(tracks);
       return [...albums].sort((a, b) =>
         compareAlbums(
@@ -139,68 +109,6 @@ export function useAlbums(enabled = true) {
         ),
       );
     },
-  });
-}
-
-/** 指定アルバムの曲（album が null のときは無効）。disc→track 昇順でソート。
- * album 名は完全一致（`?album=` は部分一致なので "Dawn" が "Dawn (Remixes)" を含んでしまう）。
- * 新しいホストには albumExact=true で絞らせ、古いホスト向けにクライアントでも完全一致で絞る。
- * albumArtist では絞らない: アルバム一覧（/api/albums）が album 名単位の集計なので、詳細も同じ粒度にする
- * （コンピ/DJ ミックスで album_artist が曲ごとに違っても全曲出す。round-2 M1）。
- */
-export function useAlbumTracks(album: string | null) {
-  const client = useConnection((s) => s.client);
-  return useQuery<Track[], Error, Track[]>({
-    queryKey: ["album-tracks", album],
-    enabled: !!client && album != null,
-    queryFn: ({ signal }) =>
-      client!.listTracks({ album: album!, albumExact: true, limit: BROWSE_LIMIT }, signal),
-    select: (tracks) =>
-      filterAlbumTracks(tracks, album ?? "").sort(
-        (a, b) =>
-          (a.discNumber ?? 0) - (b.discNumber ?? 0) ||
-          (a.trackNumber ?? 0) - (b.trackNumber ?? 0),
-      ),
-  });
-}
-
-/** アーティスト一覧（サーバ側 /api/artists で集計）。enabled=false で取得抑止。
- * grouping を引数で上書き可能。省略時はストアの artistGrouping を読む。
- * 従来はクライアント側で全曲から集計していたが、サーバ側の専用エンドポイントに切替えて
- * 重い全曲転送を回避する。キーを ["artists", grouping] にして永続化の対象にも含める。
- * placeholderData: keepPreviousData で grouping 切替時のスピナー点滅を抑える。
- */
-export function useArtists(enabled = true, grouping?: ArtistGrouping) {
-  const client = useConnection((s) => s.client);
-  // 引数省略時はストアの設定を使う（index.tsx が引数なしで呼ぶため）。
-  const storedGrouping = useSettings((s) => s.artistGrouping);
-  const resolvedGrouping = grouping ?? storedGrouping;
-  return useQuery<Artist[]>({
-    queryKey: ["artists", resolvedGrouping],
-    enabled: !!client && enabled,
-    queryFn: () => client!.artists(resolvedGrouping),
-    placeholderData: keepPreviousData,
-  });
-}
-
-/** 指定アーティストの曲（artist が null のときは無効）。
- * grouping を引数で上書き可能。省略時はストアの artistGrouping を使う。
- * サーバ側 artist/albumArtist フィルタで取得するため全曲転送を回避する。
- * placeholderData: keepPreviousData でアーティスト切替時のスピナー点滅を抑える。
- */
-export function useArtistTracks(artist: string | null, grouping?: ArtistGrouping) {
-  const client = useConnection((s) => s.client);
-  // 引数省略時はストアから読む。
-  const storedGrouping = useSettings((s) => s.artistGrouping);
-  const resolvedGrouping = grouping ?? storedGrouping;
-  return useQuery<Track[]>({
-    queryKey: ["artist-tracks", resolvedGrouping, artist],
-    enabled: !!client && artist != null,
-    queryFn: ({ signal }) =>
-      resolvedGrouping === "albumArtist"
-        ? client!.listTracks({ albumArtist: artist!, limit: BROWSE_LIMIT }, signal)
-        : client!.listTracks({ artist: artist!, limit: BROWSE_LIMIT }, signal),
-    placeholderData: keepPreviousData,
   });
 }
 
@@ -281,12 +189,9 @@ export function useArtistAlbums(artist: string | null, grouping?: ArtistGrouping
     [artist, resolvedGrouping, downloadedIds],
   );
   const query = useQuery<Track[], Error, Album[]>({
-    queryKey: ["artist-tracks", resolvedGrouping, artist],
+    queryKey: browseKeys.artistTracks(resolvedGrouping, artist),
     enabled: !!client && artist != null,
-    queryFn: ({ signal }) =>
-      resolvedGrouping === "albumArtist"
-        ? client!.listTracks({ albumArtist: artist!, limit: BROWSE_LIMIT }, signal)
-        : client!.listTracks({ artist: artist!, limit: BROWSE_LIMIT }, signal),
+    queryFn: ({ signal }) => client!.listTracks(artistTracksQuery(artist!, resolvedGrouping), signal),
     select,
     placeholderData: keepPreviousData,
   });
@@ -303,98 +208,28 @@ export function useArtistAlbums(artist: string | null, grouping?: ArtistGrouping
 export function useSimilar(trackId: number | null) {
   const client = useConnection((s) => s.client);
   return useQuery<SimilarHit[]>({
-    queryKey: ["similar", trackId],
+    queryKey: browseKeys.similar(trackId),
     enabled: !!client && trackId != null,
     queryFn: () => client!.similar(trackId!),
   });
 }
 
-/** rating を含むキャッシュ済みクエリのキープレフィックス（無効化対象）。 */
-const RATING_AFFECTED_KEYS = [
-  ["tracks"],
-  ["artist-tracks"],
-  ["album-tracks"],
-  ["playlist-tracks"],
-  ["similar"],
-] as const;
-
 /**
  * 曲のレーティング設定ミューテーション。
  * - `rating` は 0..100 スケール（★ = rating/20）。ApiClient.setRating が clamp する。
- * - オンライン: 直接 setRating。
- * - オフライン: pendingEdits に enqueue（baseRating で再接続時の衝突検知）。
+ * - 書き込みは features/triage/edits.ts の writeRating（オンライン: 直接 setRating /
+ *   オフライン: pendingEdits に enqueue。baseRating で再接続時の衝突検知）。
  * - 成功/失敗いずれでも rating を含む可能性のあるクエリ群を invalidate して再取得させる
  *   （楽観的な行の星表示は呼び出し側のローカル state で行う。ここはサーバ確定後の整合用）。
  */
 export function useSetRating() {
-  const client = useConnection((s) => s.client);
   const qc = useQueryClient();
 
-  const mutation = useMutation<
-    void,
-    Error,
-    { trackId: number; rating: number; baseRating?: number | null; trackName?: string | null }
-  >({
-    mutationFn: async ({ trackId, rating, baseRating, trackName }) => {
-      if (client) {
-        await client.setRating(trackId, rating);
-        return;
-      }
-      // オフライン: キューへ。再接続時に baseRating と突き合わせて衝突検知する。
-      usePendingEdits.getState().enqueue({
-        kind: "rating",
-        trackId,
-        rating,
-        baseRating: baseRating ?? null,
-        trackName: trackName ?? null,
-      });
+  return useMutation<void, Error, RatingEdit>({
+    mutationFn: async (edit) => {
+      await writeRating(edit);
     },
-    onSettled: async () => {
-      // オフライン時は invalidate しても client 無しで再取得できないが害はない。
-      await Promise.all(
-        RATING_AFFECTED_KEYS.map((key) => qc.invalidateQueries({ queryKey: key })),
-      );
-    },
-  });
-
-  return mutation;
-}
-
-/**
- * 曲に first-class Tag を付けるミューテーション。
- * オンライン直書き / オフラインは pending キュー。ホスト未対応 (404) は握りつぶす。
- */
-export function useAddTrackTag() {
-  const client = useConnection((s) => s.client);
-  const qc = useQueryClient();
-
-  return useMutation<
-    void,
-    Error,
-    { trackId: number; tag: string; trackName?: string | null }
-  >({
-    mutationFn: async ({ trackId, tag, trackName }) => {
-      const trimmed = tag.trim();
-      if (!trimmed) return;
-      if (client) {
-        try {
-          await client.addTrackTags([trackId], trimmed);
-        } catch (e) {
-          // 古いホスト: タグ API 無し → 黙って成功扱い（機能 degrade）。
-          if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return;
-          throw e;
-        }
-        return;
-      }
-      usePendingEdits.getState().enqueue({
-        kind: "tag-add",
-        trackId,
-        tag: trimmed,
-        trackName: trackName ?? null,
-      });
-    },
-    onSettled: async () => {
-      await qc.invalidateQueries({ queryKey: ["track-tags"] });
-    },
+    // オフライン時は invalidate しても client 無しで再取得できないが害はない。
+    onSettled: () => invalidateRatingQueries(qc),
   });
 }

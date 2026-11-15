@@ -9,6 +9,34 @@ use crate::itunes_xml::parser::RawTrack;
 use crate::metadata::tech::TechMeta;
 use crate::models::{AlbumRow, ArtistRow, GenreTagCount, Track, TrackEdit};
 
+/// [`row_to_track`] が読む `tracks` の列 (この順)。Track を返す SELECT はすべてこれを使い、
+/// 列の足し忘れ (row_to_track が `InvalidColumnIndex` で落ちる) を 1 か所で防ぐ。
+macro_rules! track_columns {
+    () => {
+        "id, track_id, persistent_id, name, artist, album_artist, composer, \
+         album, genre, year, rating, play_count, skip_count, total_time_ms, \
+         date_added, date_modified, bpm, comments, location_raw, location_path, \
+         track_type, disabled, compilation, disc_number, disc_count, \
+         track_number, track_count, file_exists, last_played, \
+         bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec, \
+         key_camelot_user, grouping"
+    };
+}
+
+/// `tracks` を別名なしで引くときの列リスト ([`track_columns!`])。
+pub(crate) const TRACK_COLUMNS: &str = track_columns!();
+
+/// `tracks t` と別名付きで JOIN するときの列リスト。[`TRACK_COLUMNS`] の各列に `t.` を付けたもの
+/// (一致はテスト `track_columns_t_is_prefixed_track_columns` で固定)。
+pub(crate) const TRACK_COLUMNS_T: &str =
+    "t.id, t.track_id, t.persistent_id, t.name, t.artist, t.album_artist, t.composer, \
+     t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count, t.total_time_ms, \
+     t.date_added, t.date_modified, t.bpm, t.comments, t.location_raw, t.location_path, \
+     t.track_type, t.disabled, t.compilation, t.disc_number, t.disc_count, \
+     t.track_number, t.track_count, t.file_exists, t.last_played, \
+     t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes, t.codec, \
+     t.key_camelot_user, t.grouping";
+
 /// `/api/albums` で返す、ライブラリ内の distinct なアルバム 1 件分の情報。
 /// `sample_track_id` はアートワーク表示用の代表トラック (アルバム内最小 track_id)。
 #[derive(Debug, Clone, Serialize)]
@@ -54,6 +82,30 @@ pub(crate) const SEARCH_TEXT_EXPR: &str = "COALESCE(fold(name,2),'')||char(10)||
      COALESCE(fold(album_artist,2),'')||char(10)||COALESCE(fold(genre,2),'')||char(10)||\
      COALESCE(fold(comments,2),'')";
 
+/// 「アルバムアーティスト、無ければアーティスト」を表す SQL 断片は、artist 側の空白の扱いが
+/// 3 通りある。**結果が変わるので互いに置き換えない** (統一はしない。docs/refactor/design.md)。
+/// ここでは同じ文字列の書き写しをなくすためだけに名前を付ける。
+///
+/// 1. [`ALBUM_ARTIST_OR_ARTIST_EXPR`]: artist は **trim しない** (空白のみの artist もそのまま返す)。
+///    どちらも NULL なら `''`。アルバム束ね (ALBUM_KEY_EXPR / album_agg_sql) 用。
+macro_rules! album_artist_or_artist_expr {
+    () => {
+        "coalesce(nullif(trim(album_artist),''), artist, '')"
+    };
+}
+/// 2. [`ALBUM_ARTIST_OR_NONBLANK_ARTIST_EXPR`]: artist も空白のみなら無効。どちらも無ければ `''`。
+///    アーティスト表示名 (ARTIST_NAME_EXPR) と legacy `/api/albums` の distinct 数え上げ用。
+macro_rules! album_artist_or_nonblank_artist_expr {
+    () => {
+        "coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''), '')"
+    };
+}
+const ALBUM_ARTIST_OR_ARTIST_EXPR: &str = album_artist_or_artist_expr!();
+const ALBUM_ARTIST_OR_NONBLANK_ARTIST_EXPR: &str = album_artist_or_nonblank_artist_expr!();
+/// 3. 2 と同じだが、どちらも無ければ **NULL** (`MAX` / `COUNT(DISTINCT)` が数えない)。
+const ALBUM_ARTIST_OR_NONBLANK_ARTIST_OR_NULL_EXPR: &str =
+    "coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))";
+
 /// アルバム束ねキーの算出式。get_albums の GROUP BY と get_album_tracks の WHERE で同一に使う。
 /// - album が空/NULL → `unk:` (タグにアルバムが無い曲をまとめた 1 つの「不明なアルバム」)
 /// - compilation=1  → `cmp:<album>` のみ (アーティストが曲ごとに違っても1枚に束ねる)
@@ -61,11 +113,15 @@ pub(crate) const SEARCH_TEXT_EXPR: &str = "COALESCE(fold(name,2),'')||char(10)||
 ///
 /// アーティスト展開 (get_artist_albums) では「そのアーティストの不明なアルバム」を
 /// 区別するため、`unk:` を [`UNKNOWN_ALBUM_OF_ARTIST_PREFIX`]`<アーティスト名>` に読み替えて返す。
-const ALBUM_KEY_EXPR: &str = "CASE \
+const ALBUM_KEY_EXPR: &str = concat!(
+    "CASE \
   WHEN album IS NULL OR trim(album) = '' THEN 'unk:' \
   WHEN compilation = 1 THEN 'cmp:' || lower(trim(album)) \
-  ELSE 'al:' || lower(trim(coalesce(nullif(trim(album_artist),''), artist, ''))) || char(31) || lower(trim(album)) \
-END";
+  ELSE 'al:' || lower(trim(",
+    album_artist_or_artist_expr!(),
+    ")) || char(31) || lower(trim(album)) \
+END"
+);
 
 /// アーティスト表示名の算出式。get_artists の GROUP BY と get_artist_albums の WHERE で
 /// 同一に使うので、ALBUM_KEY_EXPR と同じくコンピレーションを特別扱いする:
@@ -75,10 +131,14 @@ END";
 /// どちらも無い曲は空文字の 1 グループ (= 「不明なアーティスト」。ラベルは表示側で付ける。
 /// 実在の "Unknown Artist" という名前のアーティストと混ざらないよう文字列は埋めない)。
 /// ALBUM_KEY_EXPR の `al:` 分岐と同じ優先順 (album_artist → artist) を保つこと。
-const ARTIST_NAME_EXPR: &str = "CASE \
+const ARTIST_NAME_EXPR: &str = concat!(
+    "CASE \
   WHEN compilation = 1 THEN 'Various Artists' \
-  ELSE coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''), '') \
-END";
+  ELSE ",
+    album_artist_or_nonblank_artist_expr!(),
+    " \
+END"
+);
 
 /// get_artist_albums が返す「そのアーティストの不明なアルバム」の album_key の接頭辞。
 /// 続く文字列はアーティスト名 (get_artists の表示名)。get_album_tracks はこのキーを
@@ -113,6 +173,41 @@ pub(crate) fn split_genre_tags(genre: &str) -> Vec<&str> {
         .split(|c: char| c.is_whitespace() || c == ';' || c == ',')
         .filter(|t| !t.is_empty())
         .collect()
+}
+
+/// 曲の `genre` が、`wanted` に書かれたタグを **すべて** 持つか (タグ単位の完全一致)。
+/// 検索構文 `genre:` と API `?genre=` の判定はこれ 1 つ (SQL からは `has_genre_tag`)。
+/// 規則は docs/genre/design.md §3、挙動は `tests/vectors/genre-match.json` で固定する。
+///
+/// - `genre` も `wanted` も [`split_genre_tags`] でタグに分ける (`/` は区切らない)。
+///   名前が重なるだけの別ジャンル (`House` と `DeepHouse`) は一致しない。
+/// - `wanted` が複数タグ (`"House Techno"`) なら全部を持つ曲だけ。タグを 1 つも含まなければ false。
+/// - 大文字小文字・全角半角などの揺れは、他の検索と同じ fold レベルで無視する
+///   (Off でも ASCII の大文字小文字は無視する。SQLite の LIKE / NOCASE と同じ)。
+pub(crate) fn genre_has_tags(genre: &str, wanted: &str, level: crate::text_fold::FoldLevel) -> bool {
+    let normalize = |tag: &str| match level {
+        crate::text_fold::FoldLevel::Off => tag.to_ascii_lowercase(),
+        _ => crate::text_fold::fold(tag, level),
+    };
+    let wanted: Vec<String> = split_genre_tags(wanted).into_iter().map(normalize).collect();
+    if wanted.is_empty() {
+        return false;
+    }
+    let have: HashSet<String> = split_genre_tags(genre).into_iter().map(normalize).collect();
+    wanted.iter().all(|tag| have.contains(tag))
+}
+
+/// `genre` 列に対するタグ単位一致の SQL 句 (`has_genre_tag` は `db::register_functions` で登録)。
+/// `prefix` は tracks の別名 + ドット。値は必ずバインドする。
+fn genre_tag_clause(
+    prefix: &str,
+    value: &str,
+    level: crate::text_fold::FoldLevel,
+) -> (String, rusqlite::types::Value) {
+    (
+        format!("has_genre_tag({prefix}genre, ?, {})", level.as_i64()),
+        rusqlite::types::Value::Text(value.to_string()),
+    )
 }
 
 /// タグを genre 文字列へ戻すときの区切り (フロントの GENRE_JOIN と同じ)。
@@ -263,13 +358,13 @@ fn album_agg_sql(filter: &str, order_by: &str, tail: &str) -> String {
               CASE WHEN album_key = 'unk:'
                      -- 不明なアルバムは寄せ集めなので Various Artists とは呼ばない
                      -- (アーティストが 1 人ならその名前、複数なら空)。
-                     THEN CASE WHEN COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), artist, '')))) = 1
-                               THEN coalesce(MAX(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))), '')
+                     THEN CASE WHEN COUNT(DISTINCT lower(trim({aa_or_artist}))) = 1
+                               THEN coalesce(MAX({aa_nonblank_or_null}), '')
                                ELSE '' END
                    WHEN MAX(compilation) = 1
-                     OR COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), artist, '')))) > 1
+                     OR COUNT(DISTINCT lower(trim({aa_or_artist}))) > 1
                    THEN 'Various Artists'
-                   ELSE MAX(coalesce(nullif(trim(album_artist),''), artist, '')) END AS album_artist,
+                   ELSE MAX({aa_or_artist}) END AS album_artist,
               MAX(compilation)                                                   AS is_compilation,
               COUNT(*)                                                           AS track_count,
               MAX(CASE WHEN rn=1 THEN track_id END)                              AS cover_track_id,
@@ -290,6 +385,8 @@ fn album_agg_sql(filter: &str, order_by: &str, tail: &str) -> String {
             {tail}",
         key = ALBUM_KEY_EXPR,
         artist = artist_key_expr(),
+        aa_or_artist = ALBUM_ARTIST_OR_ARTIST_EXPR,
+        aa_nonblank_or_null = ALBUM_ARTIST_OR_NONBLANK_ARTIST_OR_NULL_EXPR,
     )
 }
 
@@ -314,15 +411,15 @@ fn row_to_album_row(r: &rusqlite::Row) -> rusqlite::Result<AlbumRow> {
     })
 }
 
-/// フィールド検索で使える「テキスト列」の別名 → 実カラム名。
+/// フィールド検索で使える「テキスト列」(部分一致) の別名 → 実カラム名。
 /// ここに無いキーは通常のフリーテキストとして扱う。列名はこの表の右辺 (固定文字列) しか
 /// SQL に埋めないため、インジェクションの余地は無い。
-const TEXT_FIELDS: [(&str, &str); 6] = [
+/// `genre:` はここに入れない: 部分一致ではなくタグ単位の一致 ([`genre_has_tags`])。
+const TEXT_FIELDS: [(&str, &str); 5] = [
     ("artist", "artist"),
     ("album", "album"),
     ("albumartist", "album_artist"),
     ("album_artist", "album_artist"),
-    ("genre", "genre"),
     ("comment", "comments"),
 ];
 
@@ -420,53 +517,6 @@ fn parse_int_range(s: &str) -> Option<(i64, i64)> {
     }
 }
 
-/// 星の値 (0..=5, 0.5 刻み) を rating 列の 10 の倍数に。範囲外/半端な値は None。
-fn parse_star_value(s: &str) -> Option<i64> {
-    let v: f64 = s.trim().parse().ok()?;
-    let doubled = v * 2.0;
-    if !(0.0..=10.0).contains(&doubled) || (doubled - doubled.round()).abs() > 1e-9 {
-        return None;
-    }
-    Some(doubled.round() as i64 * 10)
-}
-
-/// 星の値 1 つが表す rating 列の区間。整数星 n は従来どおり「n 〜 n.5 星」
-/// (`n*20 ..= n*20+19`)、半星 n.5 は `n*20+10 ..= n*20+19`。5 は 100 で頭打ち。
-fn star_bucket(r: i64) -> (i64, i64) {
-    let hi = if r % 20 == 0 { r + 19 } else { r + 9 };
-    (r, hi.min(100))
-}
-
-/// 星 (0..=5, 0.5 刻み #172) を rating 列 (0..=100) の範囲に写す。
-/// - `4` / `3.5` — その星の区間 (`star_bucket`)。
-/// - `3.5-5` — 下限の区間の先頭 〜 上限の区間の末尾。
-/// - `>=3.5` `>3` `<=2` `<2.5` — 星を連続値 (rating/20) とみなした比較。
-///
-/// rating が NULL の曲は 0 星扱い (COALESCE) なので `rating:0` で未評価を拾える。
-fn parse_star_range(s: &str) -> Option<(i64, i64)> {
-    let s = s.trim();
-    if let Some(v) = s.strip_prefix(">=") {
-        return Some((parse_star_value(v)?, 100));
-    }
-    if let Some(v) = s.strip_prefix("<=") {
-        return Some((0, parse_star_value(v)?));
-    }
-    if let Some(v) = s.strip_prefix('>') {
-        let r = parse_star_value(v)?;
-        return (r < 100).then_some((r + 1, 100));
-    }
-    if let Some(v) = s.strip_prefix('<') {
-        let r = parse_star_value(v)?;
-        return (r > 0).then_some((0, r - 1));
-    }
-    if let Some((a, b)) = s.split_once('-') {
-        let (a, b) = (parse_star_value(a)?, parse_star_value(b)?);
-        let (lo, hi) = (a.min(b), a.max(b));
-        return Some((star_bucket(lo).0, star_bucket(hi).1));
-    }
-    Some(star_bucket(parse_star_value(s)?))
-}
-
 /// `yes`/`no` 系の真偽値を解釈する。
 fn parse_bool(s: &str) -> Option<bool> {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -520,6 +570,15 @@ fn parse_field_filter(
         return Some((clause, vec![bind]));
     }
     match kind.as_str() {
+        // ジャンルはタグ単位の完全一致 (docs/genre/design.md §3)。タグを含まない値は
+        // フィールド指定として扱わない (ほかのテキスト項目の空の値と同じ)。
+        "genre" => {
+            if split_genre_tags(val).is_empty() {
+                return None;
+            }
+            let (clause, bind) = genre_tag_clause(prefix, val, level);
+            Some((clause, vec![bind]))
+        }
         "bpm" => {
             let (lo, hi) = parse_range(val, 2.0)?;
             Some((
@@ -572,7 +631,7 @@ fn parse_field_filter(
             ))
         }
         "rating" => {
-            let (lo, hi) = parse_star_range(val)?;
+            let (lo, hi) = crate::rating::parse_star_range(val)?;
             Some((
                 format!("(COALESCE({prefix}rating, 0) BETWEEN ? AND ?)"),
                 vec![Value::Integer(lo), Value::Integer(hi)],
@@ -1255,13 +1314,7 @@ impl Database {
     ) -> Result<Vec<Track>> {
         let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NATSORT ASC");
         let sql = format!(
-            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
+            "SELECT {TRACK_COLUMNS}
              FROM tracks ORDER BY {} LIMIT ?1 OFFSET ?2",
             order_by
         );
@@ -1283,6 +1336,21 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
+        self.search_tracks_with_genre(query, None, limit, offset, sort_field, sort_order)
+    }
+
+    /// [`Self::search_tracks`] に、ジャンルのタグ単位一致 (`genre_tags` のタグをすべて持つ曲) を
+    /// AND で足したもの。API の `?genre=` 用で、検索構文の `genre:` と同じ判定
+    /// (`has_genre_tag`) を使う。`query` が空ならジャンルだけで絞る。
+    pub fn search_tracks_with_genre(
+        &self,
+        query: &str,
+        genre_tags: Option<&str>,
+        limit: i64,
+        offset: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<Vec<Track>> {
         use rusqlite::types::Value;
 
         let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NATSORT ASC");
@@ -1297,8 +1365,13 @@ impl Database {
 
         // 各トークンを AND 結合。句とバインド値の組み立ては build_search_clauses に集約し、
         // プレイリスト内検索と同じ構文を共有する (ここは FROM tracks なので prefix は "tracks.")。
-        let (clauses, mut bind): (Vec<String>, Vec<Value>) =
+        let (mut clauses, mut bind): (Vec<String>, Vec<Value>) =
             build_search_clauses(query, level, "tracks.");
+        if let Some(genre_tags) = genre_tags {
+            let (clause, value) = genre_tag_clause("tracks.", genre_tags, level);
+            clauses.push(clause);
+            bind.push(value);
+        }
         let where_sql = if clauses.is_empty() {
             "1=1".to_string()
         } else {
@@ -1308,13 +1381,7 @@ impl Database {
         bind.push(Value::Integer(offset));
 
         let sql = format!(
-            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
+            "SELECT {TRACK_COLUMNS}
              FROM tracks
              WHERE {}
              ORDER BY {} LIMIT ? OFFSET ?",
@@ -1381,16 +1448,10 @@ impl Database {
     /// 指定した persistent_id 群を、入力順を保って Track へ解決する。
     /// 見つからない ID はスキップする。テーブルは小さいため prepared statement を再利用する。
     pub fn get_tracks_by_persistent_ids(&self, persistent_ids: &[String]) -> Result<Vec<Track>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
-             FROM tracks WHERE persistent_id = ?1",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS}
+             FROM tracks WHERE persistent_id = ?1"
+        ))?;
         let mut out = Vec::with_capacity(persistent_ids.len());
         for persistent_id in persistent_ids {
             if let Some(track) = stmt
@@ -1404,23 +1465,21 @@ impl Database {
     }
 
     pub fn get_all_tracks(&self) -> Result<Vec<Track>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
-             FROM tracks ORDER BY track_id ASC",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS}
+             FROM tracks ORDER BY track_id ASC"
+        ))?;
         let rows = stmt.query_map([], row_to_track)?;
         rows.collect()
     }
 
     /// 編集可能フィールドの部分更新。None のフィールドは触らない。
     #[allow(clippy::too_many_arguments)]
-    pub fn update_track(&self, track_id: i64, edits: &TrackEdit) -> Result<()> {
+    ///
+    /// 受け取るのは検証・正規化済みの [`CheckedTrackEdit`] だけ。不正な入力をどう返すか
+    /// (API は 400) は検証した側が決め、DB 層は不正な値を見ない。
+    pub fn update_track(&self, track_id: i64, edits: &CheckedTrackEdit) -> Result<()> {
+        let edits = &edits.0;
         // We build the SET clause dynamically so unset fields stay untouched.
         let mut sets: Vec<&str> = Vec::new();
         let mut values: Vec<rusqlite::types::Value> = Vec::new();
@@ -1430,14 +1489,6 @@ impl Database {
                 if let Some(v) = &edits.$field {
                     sets.push(concat!($col, " = ?"));
                     values.push(rusqlite::types::Value::Text(v.clone()));
-                }
-            };
-        }
-        macro_rules! set_int_opt {
-            ($field:ident, $col:literal) => {
-                if let Some(v) = edits.$field {
-                    sets.push(concat!($col, " = ?"));
-                    values.push(rusqlite::types::Value::Integer(v));
                 }
             };
         }
@@ -1476,7 +1527,7 @@ impl Database {
             || edits.comments.is_some();
         set_int_clear!(year, "year");
         set_int_clear!(bpm, "bpm");
-        set_int_opt!(rating, "rating");
+        // rating はここには入れない (下で別 UPDATE。date_modified を進めないため)。
         set_int_clear!(track_number, "track_number");
         set_int_clear!(track_count, "track_count");
         set_int_clear!(disc_number, "disc_number");
@@ -1496,25 +1547,30 @@ impl Database {
 
         // Key の手動上書き (#172)。アプリ管轄フィールドなので rating と同様に
         // XML メタデータの LWW 時計 (date_modified) は進めず、別 UPDATE で確定させる。
-        if let Some(opt) = &edits.key_camelot_user {
-            let value = match opt.as_deref().map(str::trim) {
-                None | Some("") => None,
-                Some(raw) => Some(
-                    crate::analyzer::similarity::normalize_camelot(raw).ok_or_else(|| {
-                        rusqlite::Error::ToSqlConversionFailure(
-                            format!("invalid Camelot key: {raw}").into(),
-                        )
-                    })?,
-                ),
-            };
-            self.conn.execute(
+        // 値は CheckedTrackEdit が正規化済み (`Some(None)` = 上書き解除)。
+        let key_override = &edits.key_camelot_user;
+
+        // Key の UPDATE と本体の UPDATE (+ search_text の再計算) は 1 トランザクションにまとめる。
+        // 本体が失敗したのに Key だけ書き換わった、という中途半端な状態を残さないため。
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some(value) = key_override {
+            tx.execute(
                 "UPDATE tracks SET key_camelot_user = ?1 WHERE track_id = ?2",
                 params![value, track_id],
             )?;
         }
+        // rating も `set_rating` と同じ規則: XML インポートの更新対象外の保護フィールドなので
+        // date_modified は進めない (rating だけの編集で LWW 時計が進むと、XML 側の正当な
+        // 更新まで止まる)。値は CheckedTrackEdit が 0..=100 と確認済み。
+        if let Some(rating) = edits.rating {
+            tx.execute(
+                "UPDATE tracks SET rating = ?1 WHERE track_id = ?2",
+                params![rating, track_id],
+            )?;
+        }
 
         if sets.is_empty() {
-            return Ok(());
+            return tx.commit();
         }
 
         // Touch date_modified.
@@ -1527,11 +1583,12 @@ impl Database {
 
         let sql = format!("UPDATE tracks SET {} WHERE track_id = ?", sets.join(", "));
         let params = rusqlite::params_from_iter(values);
-        self.conn.execute(&sql, params)?;
+        tx.execute(&sql, params)?;
         if touches_search {
+            // 同じ接続なのでこのトランザクションの中で実行される。
             self.recompute_search_text(track_id)?;
         }
-        Ok(())
+        tx.commit()
     }
 
     /// トラックの実ファイル位置を更新する (自動整理でファイルを移動した後)。
@@ -1600,7 +1657,7 @@ impl Database {
     /// 同期の書き戻しでは rating 衝突の新旧を判定できず、既定は手元の値になる。
     pub fn set_rating(&self, track_id: i64, rating: i64) -> Result<()> {
         // iTunes 互換の 0-100 に収める (半星 #172 は 10 刻みの値でそのまま保存)。
-        let rating = rating.clamp(0, 100);
+        let rating = crate::rating::clamp_rating(rating);
         // date_modified は XML メタデータの LWW 時計なので、保護フィールドの rating では進めない。
         self.conn.execute(
             "UPDATE tracks SET rating = ?1 WHERE track_id = ?2",
@@ -1705,47 +1762,41 @@ impl Database {
         rows.collect()
     }
 
-    /// genre を空白区切り (`;` `,` も可) のタグ集合として扱い、tag を追加。重複は無視。
-    pub fn add_genre_tag(&self, track_id: i64, tag: &str) -> Result<()> {
-        let current: Option<String> = self
+    /// genre を空白区切り (`;` `,` も可) のタグ集合として扱い、`add` のタグを足して `remove` の
+    /// タグを外す (1 曲につき UPDATE は 1 回)。足すタグが既にある・外すタグが無いなどで
+    /// **タグの集合が変わらない** ときは何も書かない (date_modified も進めない)。
+    /// 比較は ASCII の大文字小文字を区別しない。
+    pub fn edit_genre_tags(
+        &self,
+        track_id: i64,
+        add: &[&str],
+        remove: &[&str],
+    ) -> Result<GenreTagEdit> {
+        let current: Option<Option<String>> = self
             .conn
             .query_row(
                 "SELECT genre FROM tracks WHERE track_id = ?1",
                 params![track_id],
                 |r| r.get(0),
             )
-            .ok();
-
-        let new_genre = merge_tag(current.as_deref().unwrap_or(""), tag);
-        self.conn.execute(
-            "UPDATE tracks SET genre = ?1, date_modified = ?2 WHERE track_id = ?3",
-            params![
-                new_genre,
-                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-                track_id
-            ],
-        )?;
-        // genre は検索対象列なので search_text を再計算する。
-        self.recompute_search_text(track_id)?;
-        Ok(())
-    }
-
-    pub fn remove_genre_tag(&self, track_id: i64, tag: &str) -> Result<()> {
-        let current: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT genre FROM tracks WHERE track_id = ?1",
-                params![track_id],
-                |r| r.get(0),
-            )
-            .ok();
-
-        let new_genre = remove_tag(current.as_deref().unwrap_or(""), tag);
-        let new_value: Option<String> = if new_genre.is_empty() {
-            None
-        } else {
-            Some(new_genre)
+            .optional()?;
+        let Some(current) = current else {
+            return Ok(GenreTagEdit::NotFound);
         };
+        let current = current.unwrap_or_default();
+
+        let mut edited = current.clone();
+        for tag in add {
+            edited = merge_tag(&edited, tag);
+        }
+        for tag in remove {
+            edited = remove_tag(&edited, tag);
+        }
+        if split_genre_tags(&edited) == split_genre_tags(&current) {
+            return Ok(GenreTagEdit::Unchanged);
+        }
+        // タグが 1 つも残らなければ NULL (「ジャンルなし」)。
+        let new_value = (!edited.is_empty()).then_some(edited);
         self.conn.execute(
             "UPDATE tracks SET genre = ?1, date_modified = ?2 WHERE track_id = ?3",
             params![
@@ -1756,7 +1807,7 @@ impl Database {
         )?;
         // genre は検索対象列なので search_text を再計算する。
         self.recompute_search_text(track_id)?;
-        Ok(())
+        Ok(GenreTagEdit::Changed(new_value))
     }
 
     /// DB 中の全 genre 値を空白 (と `;` `,`) でバラして頻度順に返す。
@@ -1787,7 +1838,7 @@ impl Database {
     /// `/api/tracks?album=&albumExact=true` で引ける。
     /// `sample_track_id` はアルバム内最小 track_id (代表曲)。
     pub fn get_albums_legacy(&self) -> Result<Vec<AlbumInfo>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             // 代表アーティスト: album_artist (空なら artist) が曲ごとに複数ある / コンピなら
             // "Various Artists" (MAX だとコンピが特定アーティストのアルバムに見えた: E5)。
             // 不明なアルバムは寄せ集めなので、複数アーティストなら Various Artists ではなく NULL。
@@ -1795,17 +1846,19 @@ impl Database {
             // '' に寄せる)。数えないと「タグ無し + Aoi Tanaka」が Aoi Tanaka のアルバムに見える。
             "SELECT coalesce(nullif(trim(album),''), '') AS album_name,
                     CASE WHEN coalesce(nullif(trim(album),''), '') = '' THEN
-                           CASE WHEN COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''), '')))) > 1
+                           CASE WHEN COUNT(DISTINCT lower(trim({aa_nonblank}))) > 1
                                 THEN NULL
-                                ELSE MAX(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))) END
+                                ELSE MAX({aa_nonblank_or_null}) END
                          WHEN MAX(compilation) = 1
-                           OR COUNT(DISTINCT lower(trim(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))))) > 1
+                           OR COUNT(DISTINCT lower(trim({aa_nonblank_or_null}))) > 1
                          THEN 'Various Artists'
-                         ELSE MAX(coalesce(nullif(trim(album_artist),''), nullif(trim(artist),''))) END,
+                         ELSE MAX({aa_nonblank_or_null}) END,
                     COUNT(*), MIN(track_id) FROM tracks
              GROUP BY CASE WHEN coalesce(nullif(trim(album),''), '') = '' THEN '' ELSE album END
              ORDER BY (album_name = ''), album_name COLLATE NOCASE",
-        )?;
+            aa_nonblank = ALBUM_ARTIST_OR_NONBLANK_ARTIST_EXPR,
+            aa_nonblank_or_null = ALBUM_ARTIST_OR_NONBLANK_ARTIST_OR_NULL_EXPR,
+        ))?;
         let rows = stmt.query_map([], |r| {
             Ok(AlbumInfo {
                 album: r.get(0)?,
@@ -1869,13 +1922,7 @@ impl Database {
     pub fn get_album_tracks(&self, album_key: &str) -> Result<Vec<Track>> {
         if let Some(artist) = album_key.strip_prefix(UNKNOWN_ALBUM_OF_ARTIST_PREFIX) {
             let sql = format!(
-                "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                        album, genre, year, rating, play_count, skip_count, total_time_ms,
-                        date_added, date_modified, bpm, comments, location_raw, location_path,
-                        track_type, disabled, compilation, disc_number, disc_count,
-                        track_number, track_count, file_exists, last_played,
-                        bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                        key_camelot_user, grouping
+                "SELECT {TRACK_COLUMNS}
                  FROM (
                    SELECT *, ({key}) AS album_key, ({artist_key}) AS artist_key FROM tracks
                  ) WHERE album_key = 'unk:' AND artist_key = lower(trim(?1))
@@ -1889,13 +1936,7 @@ impl Database {
             return rows.collect();
         }
         let sql = format!(
-            "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
+            "SELECT {TRACK_COLUMNS}
              FROM (
                SELECT *, ({key}) AS album_key FROM tracks
              ) WHERE album_key = ?1
@@ -2084,34 +2125,28 @@ impl Database {
     }
 
     pub fn get_recent_tracks(&self, limit: i64) -> Result<Vec<Track>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT t.id, t.track_id, t.persistent_id, t.name, t.artist, t.album_artist, t.composer,
-                    t.album, t.genre, t.year, t.rating, t.play_count, t.skip_count, t.total_time_ms,
-                    t.date_added, t.date_modified, t.bpm, t.comments, t.location_raw, t.location_path,
-                    t.track_type, t.disabled, t.compilation, t.disc_number, t.disc_count,
-                    t.track_number, t.track_count, t.file_exists, t.last_played,
-                    t.bitrate_kbps, t.sample_rate_hz, t.bit_depth, t.channels, t.file_size_bytes,
-                    t.codec,
-                    t.key_camelot_user, t.grouping
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS_T}
              FROM tracks t
              INNER JOIN recent_tracks rt ON t.track_id = rt.track_id
              ORDER BY rt.played_at DESC
-             LIMIT ?1",
-        )?;
+             LIMIT ?1"
+        ))?;
 
         let rows = stmt.query_map(params![limit], row_to_track)?;
         rows.collect()
     }
 
     /// 複数トラックをライブラリから完全に削除する (依存行ごと)。
-    /// 実際に消えた曲数を返す (存在しない track_id は 0 件として無視)。
+    /// 実際に消えた曲の track_id を入力順で返す (存在しない track_id と、入力内で
+    /// 2 回目以降の重複は含まない)。
     /// 1 トランザクションにまとめるので、途中で失敗しても中途半端に消えない。
-    pub fn delete_tracks(&self, track_ids: &[i64]) -> Result<usize> {
+    pub fn delete_tracks(&self, track_ids: &[i64]) -> Result<Vec<i64>> {
         let tx = self.conn.unchecked_transaction()?;
-        let mut deleted = 0usize;
+        let mut deleted = Vec::new();
         for &track_id in track_ids {
             if delete_track_cascade(&tx, track_id)? {
-                deleted += 1;
+                deleted.push(track_id);
             }
         }
         tx.commit()?;
@@ -2288,16 +2323,76 @@ pub fn delete_track_cascade(conn: &Connection, track_id: i64) -> Result<bool> {
     Ok(conn.execute("DELETE FROM tracks WHERE track_id = ?1", params![track_id])? > 0)
 }
 
+/// [`Database::edit_genre_tags`] の結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GenreTagEdit {
+    /// その track_id の曲が無い。
+    NotFound,
+    /// タグの集合が変わらないので何も書いていない。
+    Unchanged,
+    /// 書き換えた。中身は新しい genre (タグが無くなれば `None`)。
+    Changed(Option<String>),
+}
+
+/// [`TrackEdit`] の入力の誤り (何も書き換える前に見つける)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidTrackEdit {
+    /// Key の手動上書き (`key_camelot_user`) が Camelot として解釈できない。
+    Key(String),
+    /// rating が 0..=100 の外。
+    Rating(i64),
+}
+
+impl std::fmt::Display for InvalidTrackEdit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InvalidTrackEdit::Key(raw) => write!(f, "invalid Camelot key: {raw}"),
+            InvalidTrackEdit::Rating(v) => write!(f, "rating must be between 0 and 100: {v}"),
+        }
+    }
+}
+
+/// 検証・正規化済みの [`TrackEdit`]。[`Database::update_track`] はこれだけを受け取る。
+///
+/// 作る方法は [`CheckedTrackEdit::new`] のみ。Key の手動上書きは正規形
+/// (`Some(Some("8A"))`) か解除 (`Some(None)`)、rating は 0..=100 になっている。
+#[derive(Debug, Clone)]
+pub struct CheckedTrackEdit(TrackEdit);
+
+impl CheckedTrackEdit {
+    /// 入力を検証して正規化する。不正なら何も書かないまま [`InvalidTrackEdit`]。
+    pub fn new(edit: &TrackEdit) -> std::result::Result<Self, InvalidTrackEdit> {
+        let mut edit = edit.clone();
+        if let Some(key) = &edit.key_camelot_user {
+            edit.key_camelot_user = Some(normalize_key_override(key.as_deref())?);
+        }
+        if let Some(rating) = edit.rating {
+            if !crate::rating::RATING_RANGE.contains(&rating) {
+                return Err(InvalidTrackEdit::Rating(rating));
+            }
+        }
+        Ok(Self(edit))
+    }
+}
+
+/// Key の手動上書きの入力を DB に入れる値へ正規化する (規則はここ 1 か所)。
+/// `None` / 空白のみ → `None` (上書き解除)、Camelot 表記 → 正規形 ("08a" → "8A")、
+/// それ以外はエラー。
+fn normalize_key_override(raw: Option<&str>) -> std::result::Result<Option<String>, InvalidTrackEdit> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(raw) => crate::analyzer::similarity::normalize_camelot(raw)
+            .map(Some)
+            .ok_or_else(|| InvalidTrackEdit::Key(raw.to_string())),
+    }
+}
+
 /// `get_track_by_track_id` / `get_tracks_by_ids` が共有する単曲取得 SQL。
-const TRACK_BY_TRACK_ID_SQL: &str =
-    "SELECT id, track_id, persistent_id, name, artist, album_artist, composer,
-                    album, genre, year, rating, play_count, skip_count, total_time_ms,
-                    date_added, date_modified, bpm, comments, location_raw, location_path,
-                    track_type, disabled, compilation, disc_number, disc_count,
-                    track_number, track_count, file_exists, last_played,
-                    bitrate_kbps, sample_rate_hz, bit_depth, channels, file_size_bytes, codec,
-                    key_camelot_user, grouping
-             FROM tracks WHERE track_id = ?1";
+const TRACK_BY_TRACK_ID_SQL: &str = concat!(
+    "SELECT ",
+    track_columns!(),
+    " FROM tracks WHERE track_id = ?1"
+);
 
 pub fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
     Ok(Track {
@@ -2355,6 +2450,252 @@ mod tests {
         remove_tag, split_genre_tags,
     };
     use crate::db::Database;
+
+    fn checked(edit: &crate::models::TrackEdit) -> super::CheckedTrackEdit {
+        super::CheckedTrackEdit::new(edit).unwrap()
+    }
+
+    /// update_track は Key の UPDATE と本体の UPDATE を 1 トランザクションで行う。
+    /// 本体の UPDATE が失敗したら、先に実行した Key の上書きも残らない。
+    #[test]
+    fn update_track_key_and_body_are_atomic() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, file_exists) VALUES (1, 'Song', 1)",
+                [],
+            )
+            .unwrap();
+        // 本体の UPDATE だけを失敗させる (name の変更を拒否するトリガー)。
+        db.conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_name BEFORE UPDATE OF name ON tracks
+                 BEGIN SELECT RAISE(ABORT, 'name is frozen'); END;",
+            )
+            .unwrap();
+        let edit = crate::models::TrackEdit {
+            name: Some("Renamed".into()),
+            key_camelot_user: Some(Some("8A".into())),
+            ..Default::default()
+        };
+        assert!(db.update_track(1, &checked(&edit)).is_err());
+        let t = db.get_track_by_track_id(1).unwrap().unwrap();
+        assert_eq!(t.name.as_deref(), Some("Song"));
+        assert_eq!(t.key_camelot_user, None, "Key だけ書き換わっていないこと");
+
+        // Key だけの編集は従来どおり通り、date_modified は進めない。
+        db.conn.execute_batch("DROP TRIGGER reject_name").unwrap();
+        let key_only = crate::models::TrackEdit {
+            key_camelot_user: Some(Some("08a".into())),
+            ..Default::default()
+        };
+        db.update_track(1, &checked(&key_only)).unwrap();
+        let t = db.get_track_by_track_id(1).unwrap().unwrap();
+        assert_eq!(t.key_camelot_user.as_deref(), Some("8A"));
+        assert_eq!(t.date_modified, None);
+
+        // 不正キーは DB 層に届く前 (CheckedTrackEdit::new) で弾かれる。
+        let bad = crate::models::TrackEdit {
+            key_camelot_user: Some(Some("nope".into())),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::CheckedTrackEdit::new(&bad).unwrap_err().to_string(),
+            "invalid Camelot key: nope"
+        );
+    }
+
+    /// ジャンルのタグ単位一致は共通テストベクタ (tests/vectors/genre-match.json) で固定する。
+    /// 純関数 `genre_has_tags` と、SQL 経由 (`genre:` 検索 = `has_genre_tag`) の両方が同じ結果になること。
+    #[test]
+    fn genre_match_vectors() {
+        use crate::text_fold::FoldLevel;
+
+        let json: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/vectors/genre-match.json")).unwrap();
+        let cases = json["cases"].as_array().unwrap();
+        assert!(cases.len() >= 20, "ベクタが読めていない");
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let genre = case["genre"].as_str();
+            let query = case["query"].as_str().unwrap();
+            let level_name = case["level"].as_str().unwrap_or("standard");
+            let level = FoldLevel::from_state(Some(level_name));
+            assert_eq!(level.as_str(), level_name, "{name}: 未知の level");
+            let want = case["match"].as_bool().unwrap();
+
+            // 純関数 (genre が NULL の曲は一致しない)。
+            let got = genre.is_some_and(|g| super::genre_has_tags(g, query, level));
+            assert_eq!(got, want, "genre_has_tags: {name}");
+
+            // SQL 関数 (検索構文・API が使う経路)。
+            let db = Database::open_memory().unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, genre, file_exists) VALUES (1, 'T', ?1, 1)",
+                    params![genre],
+                )
+                .unwrap();
+            let got: bool = db
+                .conn
+                .query_row(
+                    "SELECT has_genre_tag(genre, ?1, ?2) FROM tracks",
+                    params![query, level.as_i64()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(got, want, "has_genre_tag: {name}");
+
+            // API の ?genre= 経路 (search_tracks_with_genre)。fold レベルは DB の設定から読む。
+            db.set_state("search_fold_level", level_name).unwrap();
+            let hits = db
+                .search_tracks_with_genre("", Some(query), 10, 0, None, None)
+                .unwrap();
+            assert_eq!(!hits.is_empty(), want, "search_tracks_with_genre: {name}");
+        }
+    }
+
+    /// 検索構文の `genre:` はタグ単位の完全一致 (部分一致ではない)。フリーテキストは従来どおり部分一致。
+    #[test]
+    fn genre_field_is_tag_exact() {
+        let db = Database::open_memory().unwrap();
+        for (id, genre) in [
+            (1, Some("House")),
+            (2, Some("DeepHouse")),
+            (3, Some("House Techno")),
+            (4, Some("Electronic/Dance")),
+            (5, None),
+        ] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, genre, file_exists) VALUES (?1, ?2, ?3, 1)",
+                    params![id, format!("T{id}"), genre],
+                )
+                .unwrap();
+            db.recompute_search_text(id).unwrap();
+        }
+        assert_eq!(ids(&db, "genre:house"), vec![1, 3]);
+        assert_eq!(ids(&db, "genre:deephouse"), vec![2]);
+        assert_eq!(ids(&db, "genre:\"House Techno\""), vec![3]);
+        assert_eq!(ids(&db, "genre:house genre:techno"), vec![3]);
+        assert!(ids(&db, "genre:electronic").is_empty());
+        assert_eq!(ids(&db, "genre:Electronic/Dance"), vec![4]);
+        // フィールド指定なしは部分一致のまま (DeepHouse も拾う)。
+        assert_eq!(ids(&db, "house"), vec![1, 2, 3]);
+    }
+
+    /// edit_genre_tags: タグの集合が変わらなければ何も書かない。複数の追加・削除は 1 回で反映。
+    #[test]
+    fn edit_genre_tags_skips_no_op_and_applies_all_at_once() {
+        use super::GenreTagEdit;
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO tracks (track_id, name, genre, file_exists, date_modified) VALUES
+                   (1, 'A', 'House; Techno', 1, '2020-01-01T00:00:00Z'),
+                   (2, 'B', NULL, 1, '2020-01-01T00:00:00Z');",
+            )
+            .unwrap();
+        let get = |id| db.get_track_by_track_id(id).unwrap().unwrap();
+
+        // 既にあるタグの追加 / 無いタグの削除 / 何も指定しない → 変化なし (旧区切りも正規化しない)。
+        for (add, remove) in [(vec!["house"], vec![]), (vec![], vec!["Trance"]), (vec![], vec![])] {
+            assert_eq!(
+                db.edit_genre_tags(1, &add, &remove).unwrap(),
+                GenreTagEdit::Unchanged
+            );
+        }
+        assert_eq!(get(1).genre.as_deref(), Some("House; Techno"));
+        assert_eq!(get(1).date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+        assert_eq!(
+            db.edit_genre_tags(2, &[], &["House"]).unwrap(),
+            GenreTagEdit::Unchanged
+        );
+        assert_eq!(get(2).genre, None);
+        assert_eq!(db.edit_genre_tags(99, &["X"], &[]).unwrap(), GenreTagEdit::NotFound);
+
+        // 追加 2 つ + 削除 1 つを 1 回で。
+        assert_eq!(
+            db.edit_genre_tags(1, &["Acid", "Dub"], &["techno"]).unwrap(),
+            GenreTagEdit::Changed(Some("House Acid Dub".into()))
+        );
+        assert_ne!(get(1).date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+        // 最後の 1 つを外すと NULL。
+        db.edit_genre_tags(2, &["House"], &[]).unwrap();
+        assert_eq!(
+            db.edit_genre_tags(2, &[], &["House"]).unwrap(),
+            GenreTagEdit::Changed(None)
+        );
+        assert_eq!(get(2).genre, None);
+    }
+
+    /// rating だけの編集は date_modified を進めない (set_rating と同じ規則)。
+    /// ほかの項目と一緒なら、その項目のぶん date_modified は進む。範囲外は検証で弾く。
+    #[test]
+    fn update_track_rating_does_not_touch_date_modified() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, rating, file_exists, date_modified)
+                 VALUES (1, 'Song', 20, 1, '2020-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        let get = || db.get_track_by_track_id(1).unwrap().unwrap();
+
+        let rating_only = crate::models::TrackEdit {
+            rating: Some(70),
+            ..Default::default()
+        };
+        db.update_track(1, &checked(&rating_only)).unwrap();
+        assert_eq!(get().rating, Some(70));
+        assert_eq!(get().date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+
+        // set_rating も同じ (範囲外は 0..=100 に収める)。
+        db.set_rating(1, 250).unwrap();
+        assert_eq!(get().rating, Some(100));
+        db.set_rating(1, -3).unwrap();
+        assert_eq!(get().rating, Some(0));
+        assert_eq!(get().date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+
+        let with_name = crate::models::TrackEdit {
+            name: Some("Renamed".into()),
+            rating: Some(40),
+            ..Default::default()
+        };
+        db.update_track(1, &checked(&with_name)).unwrap();
+        assert_eq!(get().rating, Some(40));
+        assert_ne!(get().date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+
+        for bad in [-1, 101, 250] {
+            let edit = crate::models::TrackEdit {
+                rating: Some(bad),
+                ..Default::default()
+            };
+            assert_eq!(
+                super::CheckedTrackEdit::new(&edit).unwrap_err(),
+                super::InvalidTrackEdit::Rating(bad)
+            );
+        }
+        for ok in [0, 100] {
+            let edit = crate::models::TrackEdit {
+                rating: Some(ok),
+                ..Default::default()
+            };
+            assert!(super::CheckedTrackEdit::new(&edit).is_ok());
+        }
+    }
+
+    /// 別名付きの列リストは、別名なしの各列に `t.` を付けたものと一致すること。
+    #[test]
+    fn track_columns_t_is_prefixed_track_columns() {
+        let prefixed: Vec<String> = super::TRACK_COLUMNS
+            .split(',')
+            .map(|c| format!("t.{}", c.trim()))
+            .collect();
+        let aliased: Vec<&str> = super::TRACK_COLUMNS_T.split(',').map(str::trim).collect();
+        assert_eq!(prefixed, aliased);
+    }
 
     /// album_order_by は全分岐で `album_key ASC` を最終タイブレークに持つこと
     /// (LIMIT/OFFSET のページ間で並びが揺れないため)。
@@ -2521,7 +2862,7 @@ mod tests {
         }
 
         // 存在しない ID を混ぜても件数は実際に消えた分だけ。
-        assert_eq!(db.delete_tracks(&[1, 999]).unwrap(), 1);
+        assert_eq!(db.delete_tracks(&[1, 999]).unwrap().len(), 1);
 
         let count = |sql: &str| -> i64 { db.conn.query_row(sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(count("SELECT COUNT(*) FROM tracks WHERE track_id = 1"), 0);
@@ -2577,7 +2918,7 @@ mod tests {
         db.add_tag_to_tracks(&[1, 2], "bridge").unwrap();
         db.add_tag_to_tracks(&[1], "mood:dreamy").unwrap();
 
-        assert_eq!(db.delete_tracks(&[1]).unwrap(), 1);
+        assert_eq!(db.delete_tracks(&[1]).unwrap().len(), 1);
 
         let count = |sql: &str| -> i64 { db.conn.query_row(sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(
@@ -2608,7 +2949,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert_eq!(db.delete_tracks(&[7]).unwrap(), 1);
+        assert_eq!(db.delete_tracks(&[7]).unwrap().len(), 1);
         let left: i64 = db
             .conn
             .query_row("SELECT COUNT(*) FROM track_analysis", [], |r| r.get(0))
@@ -2632,7 +2973,7 @@ mod tests {
             name: Some("みどり".to_string()),
             ..Default::default()
         };
-        db.update_track(1, &edit).unwrap();
+        db.update_track(1, &checked(&edit)).unwrap();
         // カタカナで検索 → 更新後の名前にヒット。
         assert_eq!(
             db.search_tracks("ミドリ", 100, 0, None, None)
@@ -2647,7 +2988,7 @@ mod tests {
         );
 
         // genre タグ追加でも search_text が更新される。
-        db.add_genre_tag(1, "ハウス").unwrap();
+        db.edit_genre_tags(1, &["ハウス"], &[]).unwrap();
         assert_eq!(
             db.search_tracks("はうす", 100, 0, None, None)
                 .unwrap()
@@ -3172,16 +3513,20 @@ mod tests {
         let set = |id: i64, v: Option<&str>| {
             db.update_track(
                 id,
-                &TrackEdit {
+                &checked(&TrackEdit {
                     key_camelot_user: Some(v.map(str::to_string)),
                     ..Default::default()
-                },
+                }),
             )
         };
-        // 小文字・空白は正規化して保存。不正値はエラーで何も書かない。
+        // 小文字・空白は正規化して保存。不正値は DB 層に届く前に弾かれる。
         set(1, Some(" 3b ")).unwrap();
         set(2, Some("8A")).unwrap();
-        assert!(set(2, Some("Am")).is_err());
+        assert!(super::CheckedTrackEdit::new(&TrackEdit {
+            key_camelot_user: Some(Some("Am".into())),
+            ..Default::default()
+        })
+        .is_err());
         let t1 = db.get_track_by_track_id(1).unwrap().unwrap();
         assert_eq!(t1.key_camelot_user.as_deref(), Some("3B"));
         assert_eq!(t1.date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));

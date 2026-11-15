@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::AudioPlayer;
@@ -15,9 +16,10 @@ use crate::models::{
     ImportResult, ImportSummary, LibraryStats, Tag, TagCount, TechMetaRefreshSummary, Track,
     TrackEdit,
 };
-use crate::organizer;
 
-fn get_db(app: &AppHandle) -> Result<Database, String> {
+/// アプリのデータディレクトリにある DB を開く。Tauri コマンドはすべてこれを使う
+/// (開けなかったときの文言を 1 か所にするため)。
+pub(crate) fn open_db(app: &AppHandle) -> Result<Database, String> {
     let app_dir = app
         .path()
         .app_data_dir()
@@ -27,7 +29,7 @@ fn get_db(app: &AppHandle) -> Result<Database, String> {
 
 #[tauri::command]
 pub fn import_library(app: AppHandle, xml_path: String) -> Result<ImportResult, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     let (track_count, playlist_count, missing_files) = parser::import_library(&xml_path, &db)?;
 
     db.set_state("last_xml_path", &xml_path)
@@ -42,13 +44,13 @@ pub fn import_library(app: AppHandle, xml_path: String) -> Result<ImportResult, 
 
 #[tauri::command(async)]
 pub fn export_library(app: AppHandle, output_path: String) -> Result<ExportResult, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     writer::export_library(&db, &output_path)
 }
 
 #[tauri::command]
 pub fn import_files(app: AppHandle, paths: Vec<String>) -> Result<ImportFileResult, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     Ok(importer::import_files(&db, &paths))
 }
 
@@ -57,7 +59,7 @@ pub fn import_files(app: AppHandle, paths: Vec<String>) -> Result<ImportFileResu
 /// 進行状況は `import-progress` イベント (`{done, total}`) で通知する。
 #[tauri::command]
 pub fn import_folders(app: AppHandle, paths: Vec<String>) -> Result<ImportSummary, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     let roots: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     let event_app = app.clone();
     // 大量ファイルでイベントを流しすぎないよう、最初・最後・25件ごとだけ通知する。
@@ -98,7 +100,7 @@ pub async fn refresh_tech_metadata(app: AppHandle) -> Result<TechMetaRefreshSumm
     let worker_app = app.clone();
     let summary = tauri::async_runtime::spawn_blocking(move || {
         let _guard = RunningGuard(&TECH_META_REFRESH_RUNNING);
-        let db = get_db(&worker_app)?;
+        let db = open_db(&worker_app)?;
         let event_app = worker_app.clone();
         importer::refresh_missing_tech_meta(&db, move |done, total| {
             if done == 0 || done == total || done % 25 == 0 {
@@ -129,7 +131,7 @@ pub async fn rescan_file_existence(app: AppHandle) -> Result<FileCheckSummary, S
     let worker_app = app.clone();
     let summary = tauri::async_runtime::spawn_blocking(move || {
         let _guard = RunningGuard(&FILE_CHECK_RUNNING);
-        let db = get_db(&worker_app)?;
+        let db = open_db(&worker_app)?;
         let event_app = worker_app.clone();
         // stat は 1 件が軽いので、tech-meta (25 件ごと) より間引いて通知する。
         importer::rescan_file_existence(&db, move |done, total| {
@@ -159,7 +161,7 @@ pub async fn rescan_file_existence(app: AppHandle) -> Result<FileCheckSummary, S
 /// 更新後の Track を返し、`library-changed` を送る (一覧・ジャケットを再読み込みさせる)。
 #[tauri::command(async)]
 pub fn relocate_track_file(app: AppHandle, track_id: i64, path: String) -> Result<Track, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     let track = importer::relocate_track(&db, track_id, &path)?;
     // 参照先ファイルが変わり埋め込みアートワークも変わりうるので artworkChanged を立てる (#213)。
     let _ = app.emit(
@@ -177,7 +179,7 @@ pub fn get_tracks(
     sort_field: Option<String>,
     sort_order: Option<String>,
 ) -> Result<Vec<Track>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_tracks(
         limit.unwrap_or(500),
         offset.unwrap_or(0),
@@ -196,7 +198,7 @@ pub fn search_tracks(
     sort_field: Option<String>,
     sort_order: Option<String>,
 ) -> Result<Vec<Track>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.search_tracks(
         &query,
         limit.unwrap_or(500),
@@ -217,7 +219,7 @@ pub fn get_tracks_by_ids(app: AppHandle, track_ids: Vec<i64>) -> Result<Vec<Trac
         .iter()
         .any(|&id| crate::transient::is_transient_id(id))
     {
-        let db = get_db(&app)?;
+        let db = open_db(&app)?;
         return db.get_tracks_by_ids(&track_ids).map_err(|e| e.to_string());
     }
     let transient = app.state::<crate::transient::TransientTracks>();
@@ -229,7 +231,7 @@ pub fn get_tracks_by_ids(app: AppHandle, track_ids: Vec<i64>) -> Result<Vec<Trac
     let from_db: std::collections::HashMap<i64, Track> = if db_ids.is_empty() {
         Default::default()
     } else {
-        get_db(&app)?
+        open_db(&app)?
             .get_tracks_by_ids(&db_ids)
             .map_err(|e| e.to_string())?
             .into_iter()
@@ -251,123 +253,36 @@ pub fn get_tracks_by_ids(app: AppHandle, track_ids: Vec<i64>) -> Result<Vec<Trac
 
 #[tauri::command(async)]
 pub fn get_library_stats(app: AppHandle) -> Result<LibraryStats, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.library_stats().map_err(|e| e.to_string())
 }
 
-/// `Option<Option<i64>>` のパッチを最終値へ解決する。
-/// `Some(Some(v))`=設定 / `Some(None)`=クリア / `None`=旧値を維持。
-fn resolve_int(edit: &Option<Option<i64>>, before: Option<i64>) -> Option<i64> {
-    match edit {
-        Some(v) => *v,
-        None => before,
-    }
-}
-
+/// 曲のメタデータを編集する (Get Info)。手順は HTTP API の `PATCH /api/tracks/:id` と共通の
+/// [`crate::library::edit::apply_track_edit`] (DB 更新 → タグ書き戻し → 整理)。
+///
+/// GUI では、対象の曲が無くても、タグ書き戻し・移動に失敗しても成功として返す
+/// (失敗は警告ログに留め、編集自体は確定させる)。
 #[tauri::command]
-pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(), String> {
-    let db = get_db(&app)?;
-
-    // 1. 編集前のトラックを取得 (旧 location / 非編集フィールドの保持に使う)。
-    let before = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| e.to_string())?;
-
-    // 2. DB を更新 (ここまでは必ず確定させる)。
-    db.update_track(track_id, &edits)
-        .map_err(|e| e.to_string())?;
-
-    // 3. 書き戻しのガード: 旧トラックや実ファイルが無いなら DB 更新だけで終了。
-    //    タグ書き戻し・移動の失敗は警告に留め、編集自体は成功扱いとする。
-    let Some(before) = before else { return Ok(()) };
-    let loc = before.location_path.clone();
-
-    // 4. 最終値を確定 (edits 優先、来なかった項目は旧値)。
-    let name = edits.name.clone().or(before.name.clone());
-    let artist = edits.artist.clone().or(before.artist.clone());
-    let album_artist = edits.album_artist.clone().or(before.album_artist.clone());
-    let composer = edits.composer.clone().or(before.composer.clone());
-    let album = edits.album.clone().or(before.album.clone());
-    let genre = edits.genre.clone().or(before.genre.clone());
-    let comments = edits.comments.clone().or(before.comments.clone());
-    let year = resolve_int(&edits.year, before.year);
-    let track_number = resolve_int(&edits.track_number, before.track_number);
-    let track_count = resolve_int(&edits.track_count, before.track_count);
-    let disc_number = resolve_int(&edits.disc_number, before.disc_number);
-    let disc_count = resolve_int(&edits.disc_count, before.disc_count);
-    // Compilation は編集された場合は新値、なければ旧値を引き継ぐ。
-    let compilation = edits.compilation.unwrap_or(before.compilation);
-
-    // BPM / Key もファイルタグへ書く (#164)。
-    // BPM はトラック自身の値 (ユーザーが編集した可能性がある) を優先し、
-    // 未設定なら解析結果へフォールバックする。Key は実効キー
-    // (手動上書き ?? 解析結果, #172)。上書きは DB 側で正規化済みの値を読み直す。
-    let analysis = db.get_analysis(track_id).ok().flatten();
-    let bpm = resolve_int(&edits.bpm, before.bpm)
-        .filter(|n| *n > 0)
-        .map(|n| n as f64)
-        .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
-    let key_user = if edits.key_camelot_user.is_some() {
-        db.get_track_by_track_id(track_id)
-            .ok()
-            .flatten()
-            .and_then(|t| t.key_camelot_user)
-    } else {
-        before.key_camelot_user.clone()
-    };
-    let key = organizer::effective_initial_key(key_user.as_deref(), analysis.as_ref());
-
-    // 5. 実ファイルのタグを書き戻す (他アプリでも編集内容が見えるように)。
-    //    #163: これは整理先フォルダの設定とは無関係に常に行う。
-    //    HTTP API (PATCH /api/tracks/:id) と同じ organizer 側の関数を使う。
-    let w = organizer::TagWrite {
-        title: name.as_deref(),
-        artist: artist.as_deref(),
-        album_artist: album_artist.as_deref(),
-        composer: composer.as_deref(),
-        album: album.as_deref(),
-        genre: genre.as_deref(),
-        comments: comments.as_deref(),
-        year,
-        track_number,
-        track_count,
-        disc_number,
-        disc_count,
-        compilation: Some(compilation),
-        bpm,
-        key,
-    };
-    organizer::write_tags_to_location(loc.as_deref(), &w);
-
-    // 6. 整理 (フォルダ分け + iTunes 準拠リネーム) は整理先ルートが設定されている
-    //    ときだけ行う。未設定なら移動しない (タグは 5 で書き戻し済み)。
-    //    移動 + DB location 追従は HTTP API の PATCH と共通の関数で行う。
-    let meta = organizer::TrackMeta {
-        title: name.as_deref(),
-        artist: artist.as_deref(),
-        album_artist: album_artist.as_deref(),
-        album: album.as_deref(),
-        compilation,
-        track_number,
-        disc_number,
-        disc_count,
-    };
-    organizer::relocate_after_edit(&db, track_id, loc.as_deref(), &meta)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+pub fn update_track(app: AppHandle, track_id: i64, mut edits: TrackEdit) -> Result<(), String> {
+    let db = open_db(&app)?;
+    // rating は星クリック (set_track_rating) と同じく 0..=100 に収める (GUI は範囲外を送らない)。
+    edits.rating = edits.rating.map(crate::rating::clamp_rating);
+    crate::library::edit::apply_track_edit(&db, track_id, &edits)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// 整理先 (ライブラリルート) を取得する。未設定なら `None`。
 #[tauri::command]
 pub fn get_library_root(app: AppHandle) -> Result<Option<String>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_state("library_root").map_err(|e| e.to_string())
 }
 
 /// 整理先 (ライブラリルート) を設定する。空文字を渡すと整理を無効化する。
 #[tauri::command]
 pub fn set_library_root(app: AppHandle, path: String) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.set_state("library_root", &path)
         .map_err(|e| e.to_string())
 }
@@ -376,14 +291,14 @@ pub fn set_library_root(app: AppHandle, path: String) -> Result<(), String> {
 /// 設定 UI の「自動検出」から呼ぶ(検出のみ。確定は呼び出し側で set_library_root)。
 #[tauri::command]
 pub fn detect_library_root(app: AppHandle) -> Result<Option<String>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.detect_library_root().map_err(|e| e.to_string())
 }
 
 /// 検索・スマプレの字体ゆれ吸収レベルを取得する。未設定なら "standard"。
 #[tauri::command]
 pub fn get_search_fold_level(app: AppHandle) -> Result<String, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     Ok(db
         .get_state("search_fold_level")
         .map_err(|e| e.to_string())?
@@ -399,59 +314,107 @@ pub fn set_search_fold_level(app: AppHandle, level: String) -> Result<(), String
         "light" => "light",
         _ => "standard",
     };
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.set_state("search_fold_level", v)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_track_rating(app: AppHandle, track_id: i64, rating: i64) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.set_rating(track_id, rating).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn add_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
-    let db = get_db(&app)?;
-    for tid in track_ids {
-        db.add_genre_tag(tid, &tag).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+/// `add_genre_tag` / `remove_genre_tag` の結果 (`POST /api/tracks/genre-tags/*` と同じ形)。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenreTagResult {
+    /// DB を更新した曲数。
+    pub updated: usize,
+    /// ファイルのタグへの書き込みを試みて失敗した曲数。
+    pub file_write_failed: usize,
 }
 
-#[tauri::command]
-pub fn remove_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
-    let db = get_db(&app)?;
-    for tid in track_ids {
-        db.remove_genre_tag(tid, &tag).map_err(|e| e.to_string())?;
+/// ジャンルタグの追加・削除。API と同じ [`crate::library::genre::edit_genre_tags`] を使い、
+/// DB と実ファイルのタグの両方を更新する (docs/genre/design.md §2)。
+/// DB の更新に失敗した曲があれば、残りの曲を処理したうえで最初のエラーを返す。
+fn edit_genre_tags_blocking(
+    app: &AppHandle,
+    track_ids: &[i64],
+    add: &[String],
+    remove: &[String],
+) -> Result<GenreTagResult, String> {
+    let db = open_db(app)?;
+    let add: Vec<&str> = add.iter().map(String::as_str).collect();
+    let remove: Vec<&str> = remove.iter().map(String::as_str).collect();
+    let outcome = crate::library::genre::edit_genre_tags(&db, track_ids, &add, &remove)
+        .map_err(|e| e.to_string())?;
+    if let Some((_, e)) = outcome.db_errors.first() {
+        return Err(e.to_string());
     }
-    Ok(())
+    Ok(GenreTagResult {
+        updated: outcome.updated,
+        file_write_failed: outcome.file_write_failed,
+    })
+}
+
+// ジャンルタグのコマンドは曲ごとにファイルのタグを書き換える (曲数ぶんのファイル IO)。
+// メインスレッドを塞がないよう `command(async)` でスレッドプール上で実行する。
+
+#[tauri::command(async)]
+pub fn add_genre_tag(
+    app: AppHandle,
+    track_ids: Vec<i64>,
+    tag: String,
+) -> Result<GenreTagResult, String> {
+    edit_genre_tags_blocking(&app, &track_ids, &[tag], &[])
+}
+
+#[tauri::command(async)]
+pub fn remove_genre_tag(
+    app: AppHandle,
+    track_ids: Vec<i64>,
+    tag: String,
+) -> Result<GenreTagResult, String> {
+    edit_genre_tags_blocking(&app, &track_ids, &[], &[tag])
+}
+
+/// 複数のジャンルタグの追加・削除をまとめて適用する (Get Info の複数曲編集)。
+/// 1 曲につき DB の更新とファイルの書き込みは 1 回ずつ (タグの数だけ書き直さない)。
+#[tauri::command(async)]
+pub fn edit_genre_tags(
+    app: AppHandle,
+    track_ids: Vec<i64>,
+    add: Vec<String>,
+    remove: Vec<String>,
+) -> Result<GenreTagResult, String> {
+    edit_genre_tags_blocking(&app, &track_ids, &add, &remove)
 }
 
 #[tauri::command]
 pub fn get_all_genre_tags(app: AppHandle) -> Result<Vec<GenreTagCount>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_all_genre_tags().map_err(|e| e.to_string())
 }
 
 /// ライブラリ内の first-class Tags を頻度つきで返す。
 #[tauri::command]
 pub fn get_all_tags(app: AppHandle) -> Result<Vec<TagCount>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.list_all_tags().map_err(|e| e.to_string())
 }
 
 /// 1 曲に付いている first-class Tags。
 #[tauri::command]
 pub fn get_track_tags(app: AppHandle, track_id: i64) -> Result<Vec<Tag>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_track_tags(track_id).map_err(|e| e.to_string())
 }
 
 /// 複数曲に同じ first-class Tag を付与 (`mood:dreamy` / free は `bridge`)。
 #[tauri::command]
 pub fn add_track_tags(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.add_tag_to_tracks(&track_ids, &tag)
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -460,7 +423,7 @@ pub fn add_track_tags(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Resul
 /// 複数曲から同じ first-class Tag を除去。
 #[tauri::command]
 pub fn remove_track_tags(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.remove_tag_from_tracks(&track_ids, &tag)
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -474,7 +437,7 @@ pub fn get_albums(
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> Result<Vec<AlbumRow>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_albums(
         sort_field.as_deref(),
         sort_order.as_deref(),
@@ -486,7 +449,7 @@ pub fn get_albums(
 
 #[tauri::command]
 pub fn get_album_tracks(app: AppHandle, album_key: String) -> Result<Vec<Track>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_album_tracks(&album_key).map_err(|e| e.to_string())
 }
 
@@ -501,7 +464,7 @@ pub fn get_artists(
     offset: Option<i64>,
     query: Option<String>,
 ) -> Result<Vec<ArtistRow>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     // query (検索ボックス + フィルタタグ) があれば一致する曲を持つアーティストだけ (D4)。
     db.get_artists_matching(
         sort_field.as_deref(),
@@ -516,37 +479,15 @@ pub fn get_artists(
 /// 指定アーティストのアルバム一覧 (Artists ビューの展開表示用)。
 #[tauri::command]
 pub fn get_artist_albums(app: AppHandle, name: String) -> Result<Vec<AlbumRow>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_artist_albums(&name).map_err(|e| e.to_string())
-}
-
-/// 削除対象の実ファイルが「整理ルート配下」にあることを検証し、正規化パスを返す。
-///
-/// `trash` クレートを依存に持たないため OS のゴミ箱へは送れず、削除は復元不能になる。
-/// そのためアプリが管理するライブラリルート配下に限って実削除を許可し、
-/// それ以外 (外部参照のファイル) は消さずにエラーで返す。
-/// symlink でルート外を指すファイルも弾けるよう、両者 canonicalize してから比較する。
-fn ensure_inside_root(root: &Path, file: &Path) -> Result<PathBuf, String> {
-    let canonical = std::fs::canonicalize(file)
-        .map_err(|e| format!("{} のパスを解決できませんでした: {}", file.display(), e))?;
-    if !canonical.starts_with(root) {
-        return Err(format!(
-            "{} はライブラリルート ({}) の外にあるため、安全のためファイルを削除しません。\
-             「ファイルも削除する」のチェックを外せば、ライブラリ (DB) からの削除だけを行えます。",
-            file.display(),
-            root.display()
-        ));
-    }
-    Ok(canonical)
 }
 
 /// 指定トラックをライブラリから削除する。実際に消えた曲数を返す。
 ///
-/// - DB からはトラック行と依存行 (プレイリスト所属 / 再生履歴 / 解析結果 / 同期メタ) を消す。
-/// - `delete_files` が true のときだけ実ファイルも削除する。ゴミ箱へ送れない
-///   (`trash` クレート非依存) ため、ライブラリルート配下のファイルに限定し、
-///   1 件でもルート外があれば **何も消さずに** エラーを返す。
-/// - 削除した曲が再生中 / キューに積まれていれば、再生を止めキューから外す。
+/// DB・ファイルの削除は [`crate::library::delete::remove_tracks`] (ファイルも消すのは
+/// `delete_files` が true のときだけ。ライブラリルート外のファイルが 1 件でもあれば何も消さない)。
+/// 削除した曲が再生中 / キューに積まれていれば、再生を止めキューから外す。
 #[tauri::command]
 pub fn delete_tracks(
     app: AppHandle,
@@ -557,55 +498,16 @@ pub fn delete_tracks(
     if track_ids.is_empty() {
         return Ok(0);
     }
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
+    let removed = crate::library::delete::remove_tracks(&db, &track_ids, delete_files)
+        .map_err(|e| e.to_string())?;
 
-    // 1. ファイル削除は「全件検証 → まとめて実行」にして、途中失敗で
-    //    DB とファイルがちぐはぐになるのを防ぐ。
-    let mut files: Vec<PathBuf> = Vec::new();
-    if delete_files {
-        let root = db.organize_root().ok_or_else(|| {
-            "ファイルを削除するにはライブラリルート (整理先) の設定が必要です。\
-             設定でルートを指定するか、ライブラリ (DB) からの削除だけを行ってください。"
-                .to_string()
-        })?;
-        let root = std::fs::canonicalize(&root)
-            .map_err(|e| format!("ライブラリルート ({}) を解決できませんでした: {}", root, e))?;
-        for track in db
-            .get_tracks_by_ids(&track_ids)
-            .map_err(|e| e.to_string())?
-        {
-            let Some(loc) = track.location_path.filter(|p| !p.is_empty()) else {
-                continue;
-            };
-            let path = Path::new(&loc);
-            // 既に存在しないファイルは検証せずスキップ (DB の掃除だけ行う)。
-            if !path.exists() {
-                continue;
-            }
-            files.push(ensure_inside_root(&root, path)?);
-        }
-    }
+    // 再生中 / キューに残っている曲を落とす。対象は要求された id 全部 (消えた曲 removed を
+    // 含む。DB に行が無かった id も、キューに古いまま残っていれば一緒に掃除する: 従来どおり)。
+    let dropped: HashSet<i64> = track_ids.into_iter().collect();
+    crate::commands::playback::drop_tracks_from_playback(&app, &player, &dropped);
 
-    // 2. DB から削除 (1 トランザクション)。
-    let deleted = db.delete_tracks(&track_ids).map_err(|e| e.to_string())?;
-
-    // 3. 検証済みファイルを削除する。個別の失敗 (権限など) は警告に留め、
-    //    DB 側の削除は確定させる (再試行しても DB に行は残っていない)。
-    for path in files {
-        if let Err(e) = std::fs::remove_file(&path) {
-            eprintln!("remove_file failed for {}: {}", path.display(), e);
-            crate::logging::write_line(
-                "warn",
-                &format!("failed to delete file {}: {}", path.display(), e),
-            );
-        }
-    }
-
-    // 4. 再生中 / キューに残っている曲を落とす。
-    let removed: HashSet<i64> = track_ids.into_iter().collect();
-    crate::commands::playback::drop_tracks_from_playback(&app, &player, &removed);
-
-    Ok(deleted)
+    Ok(removed.track_ids.len())
 }
 
 /// OS のファイルマネージャでファイルを表示する (Finder / エクスプローラで表示)。
@@ -644,8 +546,4 @@ pub fn reveal_in_file_manager(app: AppHandle, path: String) -> Result<(), String
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("ファイルマネージャを起動できませんでした: {}", e))
-}
-
-pub(crate) fn open_db(app: &AppHandle) -> Result<Database, String> {
-    get_db(app)
 }

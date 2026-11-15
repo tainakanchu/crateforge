@@ -1,6 +1,6 @@
 import * as SecureStore from "expo-secure-store";
 
-import { type Track, type AudioEngine, type EngineHandlers, resetPlayer, upNextEntries, usePlayer } from "@crateforge/core";
+import { type Track, type AudioEngine, type EngineHandlers, nextRepeat, resetPlayer, upNextEntries, usePlayer } from "@crateforge/core";
 
 const getItem = SecureStore.getItemAsync as jest.Mock;
 const setItem = SecureStore.setItemAsync as jest.Mock;
@@ -591,5 +591,13 @@ describe("setSleepTimer", () => {
   it("initializes sleepTimerMs to null and stopAtTrackEnd to false", () => {
     expect(s().sleepTimerMs).toBeNull();
     expect(s().stopAtTrackEnd).toBe(false);
+  });
+});
+
+describe("nextRepeat", () => {
+  it("off → all → one → off の順に回る", () => {
+    expect(nextRepeat("off")).toBe("all");
+    expect(nextRepeat("all")).toBe("one");
+    expect(nextRepeat("one")).toBe("off");
   });
 });
