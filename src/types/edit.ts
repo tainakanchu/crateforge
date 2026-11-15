@@ -152,7 +152,8 @@ export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
   rating: { key: "rating", label: "評価", width: 84, sortField: "rating" },
   year: { key: "year", label: "年", width: 56, sortField: "year" },
   plays: { key: "plays", label: "再生回数", width: 56, sortField: "playCount" },
-  time: { key: "time", label: "時間", width: 60, sortField: "totalTimeMs" },
+  // 1 時間を超える曲の `1:15:03` (等幅 7 文字 + 右余白) が切れない幅。
+  time: { key: "time", label: "時間", width: 64, sortField: "totalTimeMs" },
   albumArtist: { key: "albumArtist", label: "アルバムアーティスト", width: 150, sortField: "albumArtist" },
   trackNumber: { key: "trackNumber", label: "曲番号", width: 64, sortField: "trackNumber" },
   dateAdded: { key: "dateAdded", label: "追加日", width: 104, sortField: "dateAdded" },

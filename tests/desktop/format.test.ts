@@ -22,13 +22,14 @@ function table(fn: (ms: number | null | undefined) => string, rows: [number | nu
   }
 }
 
-test("formatTrackTime: m:ss・切り捨て・時を付けない・長さ不明は空", () => {
+test("formatTrackTime: 1 時間以上は h:mm:ss (合計と同じ規則)・切り捨て・長さ不明は空", () => {
   table(formatTrackTime, [
     [61_000, "1:01"],
     [ALMOST_MIN, "0:59"],
     [500, "0:00"],
-    [HOUR, "75:03"],
     [ALMOST_HOUR, "59:59"],
+    [3_600_000, "1:00:00"],
+    [HOUR, "1:15:03"],
     [null, ""],
     [undefined, ""],
     [0, ""],
@@ -53,11 +54,12 @@ test("formatTotalTime: 1 時間以上は h:mm:ss・切り捨て・値なしは 0
   ]);
 });
 
-test("formatPlaybackTime: m:ss・切り捨て・時を付けない・値なしは 0:00", () => {
+test("formatPlaybackTime: 1 時間以上は h:mm:ss・切り捨て・値なしは 0:00", () => {
   table(formatPlaybackTime, [
     [61_000, "1:01"],
     [ALMOST_MIN, "0:59"],
-    [HOUR, "75:03"],
+    [ALMOST_HOUR, "59:59"],
+    [HOUR, "1:15:03"],
     [0, "0:00"],
     [null, "0:00"],
     [Number.NaN, "0:00"],
@@ -65,14 +67,23 @@ test("formatPlaybackTime: m:ss・切り捨て・時を付けない・値なし�
   ]);
 });
 
-test("formatRemainingTime: -m:ss・切り捨て・曲長を超えたら -0:00", () => {
+test("formatRemainingTime: 先頭に - ・1 時間以上は -h:mm:ss・切り捨て・曲長を超えたら -0:00", () => {
   assert.equal(formatRemainingTime(0, 185_000), "-3:05");
   assert.equal(formatRemainingTime(400, 60_000), "-0:59");
   assert.equal(formatRemainingTime(60_000, 60_000), "-0:00");
   assert.equal(formatRemainingTime(70_000, 60_000), "-0:00");
   assert.equal(formatRemainingTime(0, 0), "-0:00");
-  assert.equal(formatRemainingTime(0, HOUR), "-75:03");
+  assert.equal(formatRemainingTime(0, HOUR), "-1:15:03");
+  assert.equal(formatRemainingTime(HOUR - 3_599_000, HOUR), "-59:59");
   assert.equal(formatRemainingTime(0, Number.NaN), "-0:00");
+});
+
+test("時間表示: 同じ長さは用途によらず同じ書式になる", () => {
+  for (const ms of [1_000, 61_000, ALMOST_HOUR, 3_600_000, HOUR]) {
+    assert.equal(formatTrackTime(ms), formatTotalTime(ms));
+    assert.equal(formatPlaybackTime(ms), formatTotalTime(ms));
+    assert.equal(formatRemainingTime(0, ms), `-${formatTotalTime(ms)}`);
+  }
 });
 
 test("formatBytes", () => {

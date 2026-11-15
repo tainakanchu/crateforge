@@ -2,18 +2,17 @@
 
 // 時間表示の規則 (docs/ui-spec.md §3.8):
 // - 秒未満は常に切り捨て。
-// - 曲 1 曲の長さと再生位置は `m:ss` (1 時間を超えても分を繰り上げない)。
-// - 合計時間は 1 時間以上で `h:mm:ss`。
-// 画面からは用途別の 4 関数だけを使う。
+// - 長さ・合計・再生位置のどれも、1 時間未満は `m:ss`、1 時間以上は `h:mm:ss` (規則は 1 つ)。
+// 用途で違うのは「値が無いとき」の表示だけ。画面からは用途別の 4 関数を使う。
 
 type Ms = number | null | undefined;
 
-/** `m:ss` / `h:mm:ss`。0 以下・NaN・null は 0 として整形する。 */
-function clock(ms: Ms, withHours: boolean): string {
+/** `m:ss` (1 時間未満) / `h:mm:ss` (1 時間以上)。0 以下・NaN・null は 0 として整形する。 */
+function clock(ms: Ms): string {
   const value = ms != null && ms > 0 ? ms : 0;
   const total = Math.floor(value / 1000);
   const sec = (total % 60).toString().padStart(2, "0");
-  if (withHours && total >= 3600) {
+  if (total >= 3600) {
     const h = Math.floor(total / 3600);
     const m = Math.floor((total % 3600) / 60);
     return `${h}:${m.toString().padStart(2, "0")}:${sec}`;
@@ -22,29 +21,29 @@ function clock(ms: Ms, withHours: boolean): string {
 }
 
 /**
- * 曲 1 曲の長さ: `m:ss`。長さが分からない (null / 0 以下 / NaN) ときは空文字。
+ * 曲 1 曲の長さ。長さが分からない (null / 0 以下 / NaN) ときは空文字。
  * ラベル付きの欄で「—」などを出したい画面は `formatTrackTime(ms) || "—"` とする。
  */
 export function formatTrackTime(ms: Ms): string {
-  return ms != null && ms > 0 ? clock(ms, false) : "";
+  return ms != null && ms > 0 ? clock(ms) : "";
 }
 
 /**
- * 合計時間 (アルバム・アーティストのアルバム・Crate・キュー・セット・CD):
- * 1 時間未満は `m:ss`、以上は `h:mm:ss`。値が無いときは `0:00`。
+ * 合計時間 (アルバム・アーティストのアルバム・Crate・キュー・セット・CD)。
+ * 値が無いときは `0:00`。
  */
 export function formatTotalTime(ms: Ms): string {
-  return clock(ms, true);
+  return clock(ms);
 }
 
-/** 再生位置・再生中の曲の長さ (プレイヤーバー): `m:ss`。値が無いときは `0:00`。 */
+/** 再生位置・再生中の曲の長さ (プレイヤーバー)。値が無いときは `0:00`。 */
 export function formatPlaybackTime(ms: Ms): string {
-  return clock(ms, false);
+  return clock(ms);
 }
 
-/** 残り時間 (プレイヤーバー): `-m:ss`。曲長を超えた位置は `-0:00`。 */
+/** 残り時間 (プレイヤーバー): 先頭に `-` を付ける。曲長を超えた位置は `-0:00`。 */
 export function formatRemainingTime(positionMs: number, durationMs: number): string {
-  return `-${clock(durationMs - positionMs, false)}`;
+  return `-${clock(durationMs - positionMs)}`;
 }
 
 /** バイト数を 1024 基準の単位で整形する (`0 B` / `12.3 MB`)。 */

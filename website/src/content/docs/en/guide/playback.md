@@ -157,7 +157,7 @@ The **Up Next** in the right rail is the queue of what will be played next.
 - **"次に再生" (Play Next)** in the context menu inserts the selected tracks (multiple supported, selection order preserved)
   right after the currently playing track.
 - The **"×"** that appears on row hover removes from the queue, and you can reorder with **drag and drop**.
-- The header shows the **count, total time, and a shuffle badge**. Once the total reaches an hour it is shown as `1:15:03` (h:mm:ss).
+- The header shows the **count, total time, and a shuffle badge**. Once the total reaches an hour it is shown as `1:15:03` (h:mm:ss); track lengths and the playback position use the same format.
 - The list shows the first **100 tracks**; the rest are summarized as "+N more" at the bottom (the header count covers the whole queue).
 - Shuffle precomputes the actual play order (a permutation), so Up Next reflects exactly what will play next.
   Toggling shuffle updates Up Next to the new order immediately.
