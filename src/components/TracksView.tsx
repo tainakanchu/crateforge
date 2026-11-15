@@ -40,8 +40,6 @@ interface TracksViewProps {
   onConvert: (trackIds: number[], mode?: ConvertMode) => void;
 }
 
-// 行キーはグリッド行の通し番号で決まるので項目キーは使われない (展開行が無い)。
-const trackKey = (t: Track) => String(t.id);
 
 export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert }: TracksViewProps) {
   const {
@@ -69,7 +67,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const [newTag, setNewTag] = useState("");
 
   const { cols, cardW } = gridMetrics(width);
-  const rows = useMemo(() => buildGridRows(tracks, cols, trackKey), [tracks, cols]);
+  const rows = useMemo(() => buildGridRows(tracks, cols), [tracks, cols]);
   const rowVirtualizer = useCardGridVirtualizer({
     rows,
     scrollRef: parentRef,
@@ -269,7 +267,6 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
         {items.map((vRow) => {
           const row = rows[vRow.index];
-          if (row.type !== "grid") return null;
           return (
             <div
               key={vRow.key}

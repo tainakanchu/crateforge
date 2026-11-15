@@ -13,6 +13,7 @@ import {
   GRID_GAP as GAP,
   GRID_META_H as META_H,
   GRID_PAD_X as PAD_X,
+  appendUniqueBy,
   buildGridRows,
   gridMetrics,
   isNearBottom,
@@ -84,10 +85,8 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   const bumpCache = useCallback(() => setCacheEpoch((e) => e + 1), []);
 
   // 追加ロードの offset 計算で使う (state の閉じ込みを避ける)。
-  const artistsRef = useRef<ArtistRow[]>([]);
-  useEffect(() => {
-    artistsRef.current = artists;
-  }, [artists]);
+  // サーバから受け取った行数 (重複を落とす前)。表示中の件数とは別に数える。
+  const fetchedCountRef = useRef(0);
   // 見出しの件数 (検索結果のアーティスト数) を Toolbar へ渡す。
   useEffect(() => {
     useArtistsResult.setState({ count: isLoading ? null : artists.length, hasMore });
@@ -115,7 +114,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
       loadingRef.current = true;
       setIsLoading(true);
       try {
-        const offset = reset ? 0 : artistsRef.current.length;
+        const offset = reset ? 0 : fetchedCountRef.current;
         const rows = await libraryApi.getArtists(
           artistSort,
           sortOrder,
@@ -124,7 +123,9 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
           combinedQuery || undefined,
         );
         if (seq !== reqSeq.current) return; // 古い応答は捨てる
-        setArtists((prev) => (reset ? rows : [...prev, ...rows]));
+        fetchedCountRef.current = offset + rows.length;
+        // 追加ページに既出のアーティストが混ざっても重ねない (名前は展開行の行キーになる)。
+        setArtists((prev) => appendUniqueBy(reset ? [] : prev, rows, artistKeyOf));
         setHasMore(rows.length === PAGE_SIZE);
       } catch (err) {
         if (seq !== reqSeq.current) return;

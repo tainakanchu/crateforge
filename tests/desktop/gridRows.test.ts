@@ -4,9 +4,11 @@ import {
   GRID_GAP,
   GRID_MIN_CARD,
   GRID_PAD_X,
+  appendUniqueBy,
   buildGridRows,
   gridMetrics,
   isNearBottom,
+  shouldRemeasureGrid,
 } from "../../src/lib/gridRows.ts";
 
 const keyOf = (s: string) => s;
@@ -91,4 +93,51 @@ test("isNearBottom: 末尾の手前 400px 以内で true", () => {
   assert.equal(isNearBottom({ scrollTop: 0, clientHeight: 500, scrollHeight: 2000 }), false);
   assert.equal(isNearBottom({ scrollTop: 1099, clientHeight: 500, scrollHeight: 2000 }), false);
   assert.equal(isNearBottom({ scrollTop: 1100, clientHeight: 500, scrollHeight: 2000 }), true);
+});
+
+test("buildGridRows: keyOf を省略するとグリッド行だけを返す (展開なしのグリッド)", () => {
+  const rows = buildGridRows(items, 3);
+  assert.deepEqual(
+    rows.map((r) => [r.type, r.key, r.items.length]),
+    [
+      ["grid", "g:3:0", 3],
+      ["grid", "g:3:1", 3],
+      ["grid", "g:3:2", 1],
+    ],
+  );
+});
+
+test("shouldRemeasureGrid: 初回は測る", () => {
+  assert.equal(shouldRemeasureGrid(null, { gridRowHeight: 214, cols: 5 }), true);
+});
+
+test("shouldRemeasureGrid: カード幅 (行の高さ) か列数が変わったら測り直す", () => {
+  const prev = { gridRowHeight: 214, cols: 5 };
+  assert.equal(shouldRemeasureGrid(prev, { gridRowHeight: 229, cols: 5 }), true);
+  assert.equal(shouldRemeasureGrid(prev, { gridRowHeight: 214, cols: 4 }), true);
+});
+
+test("shouldRemeasureGrid: 寸法が同じなら測り直さない (展開の開閉・追加ロードで呼ばれても)", () => {
+  // 展開行の重なりの回帰テスト: 判定の入力は寸法だけで、行リストや展開状態を含まない。
+  // 開閉や追加ロードのあとの再レンダーでは寸法が変わらないので、実測キャッシュは捨てられない。
+  const key = { gridRowHeight: 214, cols: 5 };
+  const closed = buildGridRows(items, 3, keyOf, null);
+  const opened = buildGridRows(items, 3, keyOf, "e");
+  assert.notEqual(closed.length, opened.length);
+  assert.equal(shouldRemeasureGrid(key, { ...key }), false);
+  assert.equal(shouldRemeasureGrid.length, 2);
+});
+
+test("appendUniqueBy: 既出のキーは足さず、順序を保つ", () => {
+  assert.deepEqual(appendUniqueBy(["a", "b"], ["b", "c", "a", "d"], keyOf), ["a", "b", "c", "d"]);
+  assert.deepEqual(appendUniqueBy([], ["a", "a", "b"], keyOf), ["a", "b"]);
+  assert.deepEqual(appendUniqueBy(["a"], [], keyOf), ["a"]);
+});
+
+test("appendUniqueBy: 追加後も展開行のキーが一意", () => {
+  const all = appendUniqueBy(["a", "b", "c"], ["c", "d"], keyOf);
+  for (const k of all) {
+    const expandRows = buildGridRows(all, 2, keyOf, k).filter((r) => r.type === "expand");
+    assert.equal(expandRows.length, 1);
+  }
 });

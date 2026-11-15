@@ -29,9 +29,9 @@ export function gridMetrics(width: number): GridMetrics {
   return { cols, cardW };
 }
 
-export type GridRow<T> =
-  | { type: "grid"; key: string; items: T[] }
-  | { type: "expand"; key: string; item: T };
+export type GridCardRow<T> = { type: "grid"; key: string; items: T[] };
+export type GridExpandRow<T> = { type: "expand"; key: string; item: T };
+export type GridRow<T> = GridCardRow<T> | GridExpandRow<T>;
 
 /**
  * items を cols 枚ずつのグリッド行に分け、expandedKey の項目を含む行の直後に展開行を差し込む。
@@ -42,11 +42,20 @@ export type GridRow<T> =
  * - グリッド行: `g:<cols>:<グリッド行の通し番号>` (展開行を数えない番号。同じ曲が複数回入る
  *   プレイリストでも一意)
  * - 展開行: `x:<項目キー>`
+ *
+ * 展開しないグリッド (TracksView) は keyOf / expandedKey を省略でき、グリッド行だけが返る。
  */
+export function buildGridRows<T>(items: readonly T[], cols: number): GridCardRow<T>[];
 export function buildGridRows<T>(
   items: readonly T[],
   cols: number,
   keyOf: (item: T) => string,
+  expandedKey: string | null,
+): GridRow<T>[];
+export function buildGridRows<T>(
+  items: readonly T[],
+  cols: number,
+  keyOf?: (item: T) => string,
   expandedKey: string | null = null,
 ): GridRow<T>[] {
   const n = Math.max(1, Math.floor(cols));
@@ -54,7 +63,7 @@ export function buildGridRows<T>(
   for (let i = 0; i < items.length; i += n) {
     const chunk = items.slice(i, i + n);
     out.push({ type: "grid", key: `g:${n}:${i / n}`, items: chunk });
-    if (expandedKey === null) continue;
+    if (!keyOf || expandedKey === null) continue;
     for (const it of chunk) {
       const k = keyOf(it);
       if (k === expandedKey) out.push({ type: "expand", key: `x:${k}`, item: it });
@@ -69,4 +78,44 @@ export function isNearBottom(
   threshold: number = GRID_LOAD_MORE_PX,
 ): boolean {
   return el.scrollTop + el.clientHeight >= el.scrollHeight - threshold;
+}
+
+/** 行の高さを左右する寸法。これが変わったときだけ実測キャッシュを捨てる。 */
+export interface GridMeasureKey {
+  /** グリッド行 1 行の高さの見積もり (カード幅・ラベル行数で決まる)。 */
+  gridRowHeight: number;
+  cols: number;
+}
+
+/**
+ * 仮想化の実測キャッシュを捨てて測り直すべきか。
+ *
+ * 引数に行リストや展開状態を取らないのは意図どおり: 展開の開閉・遅延取得・追加ロードで
+ * キャッシュを捨てると、展開行が見積もり高さに戻って次の行が重なる (行キーが安定なので不要)。
+ * 測り直すのは初回 (prev が null) と、カード幅/列数が変わってグリッド行の高さが変わるときだけ。
+ */
+export function shouldRemeasureGrid(prev: GridMeasureKey | null, next: GridMeasureKey): boolean {
+  return prev === null || prev.gridRowHeight !== next.gridRowHeight || prev.cols !== next.cols;
+}
+
+/**
+ * 追加ロードしたページを末尾に足す。既にあるキーの行は足さない。
+ *
+ * offset ページングは、取得の合間に並びが変わると同じ行が 2 ページにまたがって返りうる。
+ * 項目キーは展開行の行キー (`x:<項目キー>`) になるので、重複させない。
+ */
+export function appendUniqueBy<T>(
+  prev: readonly T[],
+  page: readonly T[],
+  keyOf: (item: T) => string,
+): T[] {
+  const seen = new Set(prev.map(keyOf));
+  const out = [...prev];
+  for (const it of page) {
+    const k = keyOf(it);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(it);
+  }
+  return out;
 }

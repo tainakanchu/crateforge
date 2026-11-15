@@ -1,9 +1,9 @@
-import { useCallback, useLayoutEffect } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 import type { RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Virtualizer } from "@tanstack/react-virtual";
-import { GRID_EXPAND_ESTIMATE } from "../lib/gridRows";
-import type { GridRow } from "../lib/gridRows";
+import { GRID_EXPAND_ESTIMATE, shouldRemeasureGrid } from "../lib/gridRows";
+import type { GridMeasureKey, GridRow } from "../lib/gridRows";
 
 interface CardGridVirtualizerOptions<T> {
   rows: GridRow<T>[];
@@ -39,13 +39,18 @@ export function useCardGridVirtualizer<T>({
     paddingEnd: 18,
   });
 
+  // 測り直すかどうかの判定は shouldRemeasureGrid (純関数・テストあり) に置く。
+  // 毎レンダー後に判定だけ行い、行リストや展開状態の変化では測り直さない。
+  const measuredRef = useRef<GridMeasureKey | null>(null);
   useLayoutEffect(() => {
+    const next: GridMeasureKey = { gridRowHeight, cols };
+    if (!shouldRemeasureGrid(measuredRef.current, next)) return;
+    measuredRef.current = next;
     virtualizer.measure();
     scrollRef.current
       ?.querySelectorAll<HTMLElement>(":scope > div > [data-index]")
       .forEach((el) => virtualizer.measureElement(el));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gridRowHeight, cols]);
+  });
 
   return virtualizer;
 }
