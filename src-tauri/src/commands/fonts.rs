@@ -1,17 +1,10 @@
 //! フォント関連の Tauri コマンド。
 
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
+use crate::commands::library::open_db;
 use crate::fonts;
 
-/// DB を開くヘルパー（library コマンドと同パターン）。
-fn get_db(app: &AppHandle) -> Result<crate::db::Database, String> {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    crate::db::Database::open(&app_dir).map_err(|e| format!("Failed to open database: {}", e))
-}
 
 /// CJK フォントの状態。
 #[derive(serde::Serialize)]
@@ -28,14 +21,14 @@ pub fn list_system_fonts() -> Result<Vec<String>, String> {
 /// 設定済みの UI フォントを返す。未設定なら `None`。
 #[tauri::command]
 pub fn get_ui_font(app: AppHandle) -> Result<Option<String>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_state("ui_font").map_err(|e| e.to_string())
 }
 
 /// UI フォントを設定する。`None` を渡すとデフォルトにリセット。
 #[tauri::command]
 pub fn set_ui_font(app: AppHandle, font: Option<String>) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     match font {
         Some(f) => db.set_state("ui_font", &f).map_err(|e| e.to_string()),
         None => db.set_state("ui_font", "").map_err(|e| e.to_string()),

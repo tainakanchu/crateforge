@@ -1941,8 +1941,7 @@ pub async fn stream_artwork(
 ) -> Result<Response, ApiError> {
     let db = state.db()?;
     let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
 
     let path_str = track.location_path.as_deref().unwrap_or("");
@@ -1995,8 +1994,7 @@ pub async fn set_track_artwork(
     }
     let db = state.db()?;
     let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
     let path_str = track.location_path.as_deref().unwrap_or("");
     if path_str.is_empty() {
@@ -2017,8 +2015,7 @@ pub async fn delete_track_artwork(
 ) -> Result<StatusCode, ApiError> {
     let db = state.db()?;
     let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
     let path_str = track.location_path.as_deref().unwrap_or("");
     if path_str.is_empty() {
@@ -2098,8 +2095,7 @@ pub async fn cast_media(
         .ok_or_else(|| ApiError::not_found("not found"))?;
     let db = state.db()?;
     let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         .ok_or_else(|| ApiError::not_found("not found"))?;
     let path_str = track.location_path.as_deref().unwrap_or("");
     let path = FsPath::new(path_str);
@@ -2354,8 +2350,7 @@ pub async fn stream_track(
 ) -> Result<Response, ApiError> {
     let db = state.db()?;
     let track = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
 
     let path_str = track.location_path.as_deref().unwrap_or("");
@@ -2493,8 +2488,7 @@ async fn play_by_id_for_remote(
     }
     let track = state
         .db()?
-        .get_track_by_track_id(track_id)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .get_track_by_track_id(track_id)?
         // リモート操作の失敗はモバイルにそのまま表示されうるので日本語にする (E9)。
         .ok_or_else(|| ApiError::not_found("曲が見つかりません"))?;
     if track.location_path.as_deref().unwrap_or("").is_empty() {
@@ -2914,8 +2908,7 @@ pub async fn set_track_rating(
 ) -> Result<StatusCode, ApiError> {
     let db = state.db()?;
     let rating = body.rating.clamp(0, 100);
-    db.set_rating(track_id, rating)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    db.set_rating(track_id, rating)?;
     state.notify_library_changed(None);
     Ok(StatusCode::NO_CONTENT)
 }

@@ -8,6 +8,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::db::sync::{SyncSelectionRecord, SyncSource};
+use crate::commands::library::open_db;
 use crate::db::Database;
 use crate::models::Playlist;
 use crate::sync::writeback::{ConflictResolution, WritebackPlan, WritebackSummary};
@@ -45,14 +46,6 @@ pub struct SyncRuntime {
 #[serde(rename_all = "camelCase")]
 pub struct ProvisionStarted {
     pub started: bool,
-}
-
-fn open_db(app: &AppHandle) -> Result<Database, String> {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("Failed to get app data dir: {err}"))?;
-    Database::open(&app_dir).map_err(|err| format!("Failed to open database: {err}"))
 }
 
 /// 母艦とのやり取りで出るエラーを利用者向けの日本語にする。

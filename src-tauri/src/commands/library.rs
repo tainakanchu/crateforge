@@ -16,7 +16,9 @@ use crate::models::{
     TrackEdit,
 };
 
-fn get_db(app: &AppHandle) -> Result<Database, String> {
+/// アプリのデータディレクトリにある DB を開く。Tauri コマンドはすべてこれを使う
+/// (開けなかったときの文言を 1 か所にするため)。
+pub(crate) fn open_db(app: &AppHandle) -> Result<Database, String> {
     let app_dir = app
         .path()
         .app_data_dir()
@@ -26,7 +28,7 @@ fn get_db(app: &AppHandle) -> Result<Database, String> {
 
 #[tauri::command]
 pub fn import_library(app: AppHandle, xml_path: String) -> Result<ImportResult, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     let (track_count, playlist_count, missing_files) = parser::import_library(&xml_path, &db)?;
 
     db.set_state("last_xml_path", &xml_path)
@@ -41,13 +43,13 @@ pub fn import_library(app: AppHandle, xml_path: String) -> Result<ImportResult, 
 
 #[tauri::command(async)]
 pub fn export_library(app: AppHandle, output_path: String) -> Result<ExportResult, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     writer::export_library(&db, &output_path)
 }
 
 #[tauri::command]
 pub fn import_files(app: AppHandle, paths: Vec<String>) -> Result<ImportFileResult, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     Ok(importer::import_files(&db, &paths))
 }
 
@@ -56,7 +58,7 @@ pub fn import_files(app: AppHandle, paths: Vec<String>) -> Result<ImportFileResu
 /// 進行状況は `import-progress` イベント (`{done, total}`) で通知する。
 #[tauri::command]
 pub fn import_folders(app: AppHandle, paths: Vec<String>) -> Result<ImportSummary, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     let roots: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     let event_app = app.clone();
     // 大量ファイルでイベントを流しすぎないよう、最初・最後・25件ごとだけ通知する。
@@ -97,7 +99,7 @@ pub async fn refresh_tech_metadata(app: AppHandle) -> Result<TechMetaRefreshSumm
     let worker_app = app.clone();
     let summary = tauri::async_runtime::spawn_blocking(move || {
         let _guard = RunningGuard(&TECH_META_REFRESH_RUNNING);
-        let db = get_db(&worker_app)?;
+        let db = open_db(&worker_app)?;
         let event_app = worker_app.clone();
         importer::refresh_missing_tech_meta(&db, move |done, total| {
             if done == 0 || done == total || done % 25 == 0 {
@@ -128,7 +130,7 @@ pub async fn rescan_file_existence(app: AppHandle) -> Result<FileCheckSummary, S
     let worker_app = app.clone();
     let summary = tauri::async_runtime::spawn_blocking(move || {
         let _guard = RunningGuard(&FILE_CHECK_RUNNING);
-        let db = get_db(&worker_app)?;
+        let db = open_db(&worker_app)?;
         let event_app = worker_app.clone();
         // stat は 1 件が軽いので、tech-meta (25 件ごと) より間引いて通知する。
         importer::rescan_file_existence(&db, move |done, total| {
@@ -158,7 +160,7 @@ pub async fn rescan_file_existence(app: AppHandle) -> Result<FileCheckSummary, S
 /// 更新後の Track を返し、`library-changed` を送る (一覧・ジャケットを再読み込みさせる)。
 #[tauri::command(async)]
 pub fn relocate_track_file(app: AppHandle, track_id: i64, path: String) -> Result<Track, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     let track = importer::relocate_track(&db, track_id, &path)?;
     // 参照先ファイルが変わり埋め込みアートワークも変わりうるので artworkChanged を立てる (#213)。
     let _ = app.emit(
@@ -176,7 +178,7 @@ pub fn get_tracks(
     sort_field: Option<String>,
     sort_order: Option<String>,
 ) -> Result<Vec<Track>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_tracks(
         limit.unwrap_or(500),
         offset.unwrap_or(0),
@@ -195,7 +197,7 @@ pub fn search_tracks(
     sort_field: Option<String>,
     sort_order: Option<String>,
 ) -> Result<Vec<Track>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.search_tracks(
         &query,
         limit.unwrap_or(500),
@@ -216,7 +218,7 @@ pub fn get_tracks_by_ids(app: AppHandle, track_ids: Vec<i64>) -> Result<Vec<Trac
         .iter()
         .any(|&id| crate::transient::is_transient_id(id))
     {
-        let db = get_db(&app)?;
+        let db = open_db(&app)?;
         return db.get_tracks_by_ids(&track_ids).map_err(|e| e.to_string());
     }
     let transient = app.state::<crate::transient::TransientTracks>();
@@ -228,7 +230,7 @@ pub fn get_tracks_by_ids(app: AppHandle, track_ids: Vec<i64>) -> Result<Vec<Trac
     let from_db: std::collections::HashMap<i64, Track> = if db_ids.is_empty() {
         Default::default()
     } else {
-        get_db(&app)?
+        open_db(&app)?
             .get_tracks_by_ids(&db_ids)
             .map_err(|e| e.to_string())?
             .into_iter()
@@ -250,7 +252,7 @@ pub fn get_tracks_by_ids(app: AppHandle, track_ids: Vec<i64>) -> Result<Vec<Trac
 
 #[tauri::command(async)]
 pub fn get_library_stats(app: AppHandle) -> Result<LibraryStats, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.library_stats().map_err(|e| e.to_string())
 }
 
@@ -261,7 +263,7 @@ pub fn get_library_stats(app: AppHandle) -> Result<LibraryStats, String> {
 /// (失敗は警告ログに留め、編集自体は確定させる)。
 #[tauri::command]
 pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     crate::library::edit::apply_track_edit(&db, track_id, &edits)
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -270,14 +272,14 @@ pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(
 /// 整理先 (ライブラリルート) を取得する。未設定なら `None`。
 #[tauri::command]
 pub fn get_library_root(app: AppHandle) -> Result<Option<String>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_state("library_root").map_err(|e| e.to_string())
 }
 
 /// 整理先 (ライブラリルート) を設定する。空文字を渡すと整理を無効化する。
 #[tauri::command]
 pub fn set_library_root(app: AppHandle, path: String) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.set_state("library_root", &path)
         .map_err(|e| e.to_string())
 }
@@ -286,14 +288,14 @@ pub fn set_library_root(app: AppHandle, path: String) -> Result<(), String> {
 /// 設定 UI の「自動検出」から呼ぶ(検出のみ。確定は呼び出し側で set_library_root)。
 #[tauri::command]
 pub fn detect_library_root(app: AppHandle) -> Result<Option<String>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.detect_library_root().map_err(|e| e.to_string())
 }
 
 /// 検索・スマプレの字体ゆれ吸収レベルを取得する。未設定なら "standard"。
 #[tauri::command]
 pub fn get_search_fold_level(app: AppHandle) -> Result<String, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     Ok(db
         .get_state("search_fold_level")
         .map_err(|e| e.to_string())?
@@ -309,20 +311,20 @@ pub fn set_search_fold_level(app: AppHandle, level: String) -> Result<(), String
         "light" => "light",
         _ => "standard",
     };
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.set_state("search_fold_level", v)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_track_rating(app: AppHandle, track_id: i64, rating: i64) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.set_rating(track_id, rating).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn add_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     for tid in track_ids {
         db.add_genre_tag(tid, &tag).map_err(|e| e.to_string())?;
     }
@@ -331,7 +333,7 @@ pub fn add_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result
 
 #[tauri::command]
 pub fn remove_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     for tid in track_ids {
         db.remove_genre_tag(tid, &tag).map_err(|e| e.to_string())?;
     }
@@ -340,28 +342,28 @@ pub fn remove_genre_tag(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Res
 
 #[tauri::command]
 pub fn get_all_genre_tags(app: AppHandle) -> Result<Vec<GenreTagCount>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_all_genre_tags().map_err(|e| e.to_string())
 }
 
 /// ライブラリ内の first-class Tags を頻度つきで返す。
 #[tauri::command]
 pub fn get_all_tags(app: AppHandle) -> Result<Vec<TagCount>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.list_all_tags().map_err(|e| e.to_string())
 }
 
 /// 1 曲に付いている first-class Tags。
 #[tauri::command]
 pub fn get_track_tags(app: AppHandle, track_id: i64) -> Result<Vec<Tag>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_track_tags(track_id).map_err(|e| e.to_string())
 }
 
 /// 複数曲に同じ first-class Tag を付与 (`mood:dreamy` / free は `bridge`)。
 #[tauri::command]
 pub fn add_track_tags(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.add_tag_to_tracks(&track_ids, &tag)
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -370,7 +372,7 @@ pub fn add_track_tags(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Resul
 /// 複数曲から同じ first-class Tag を除去。
 #[tauri::command]
 pub fn remove_track_tags(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Result<(), String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.remove_tag_from_tracks(&track_ids, &tag)
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -384,7 +386,7 @@ pub fn get_albums(
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> Result<Vec<AlbumRow>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_albums(
         sort_field.as_deref(),
         sort_order.as_deref(),
@@ -396,7 +398,7 @@ pub fn get_albums(
 
 #[tauri::command]
 pub fn get_album_tracks(app: AppHandle, album_key: String) -> Result<Vec<Track>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_album_tracks(&album_key).map_err(|e| e.to_string())
 }
 
@@ -411,7 +413,7 @@ pub fn get_artists(
     offset: Option<i64>,
     query: Option<String>,
 ) -> Result<Vec<ArtistRow>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     // query (検索ボックス + フィルタタグ) があれば一致する曲を持つアーティストだけ (D4)。
     db.get_artists_matching(
         sort_field.as_deref(),
@@ -426,7 +428,7 @@ pub fn get_artists(
 /// 指定アーティストのアルバム一覧 (Artists ビューの展開表示用)。
 #[tauri::command]
 pub fn get_artist_albums(app: AppHandle, name: String) -> Result<Vec<AlbumRow>, String> {
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     db.get_artist_albums(&name).map_err(|e| e.to_string())
 }
 
@@ -445,7 +447,7 @@ pub fn delete_tracks(
     if track_ids.is_empty() {
         return Ok(0);
     }
-    let db = get_db(&app)?;
+    let db = open_db(&app)?;
     let removed = crate::library::delete::remove_tracks(&db, &track_ids, delete_files)
         .map_err(|e| e.to_string())?;
 
@@ -493,8 +495,4 @@ pub fn reveal_in_file_manager(app: AppHandle, path: String) -> Result<(), String
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("ファイルマネージャを起動できませんでした: {}", e))
-}
-
-pub(crate) fn open_db(app: &AppHandle) -> Result<Database, String> {
-    get_db(app)
 }
