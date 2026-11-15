@@ -237,7 +237,7 @@ The **Inbox** in the sidebar collects freshly imported and unrated tracks (the c
 
 Auditioning in Triage counts as Preview, so it does not pollute play counts.
 
-Ratings use **half-star steps**. In the track list, the track editor, the context menu, and Triage, clicking the **left half of a star sets a half star** (e.g. the left half of the 4th star → 3.5) and the right half sets a whole star; clicking the current value clears it. Values are stored on the iTunes-compatible 0–100 scale (★1 = 20, half stars in steps of 10). Mobile / TV show the nearest whole star.
+Ratings use **half-star steps**. In the track list, the track editor, the context menu, and Triage, clicking the **left half of a star sets a half star** (e.g. the left half of the 4th star → 3.5) and the right half sets a whole star; clicking the current value clears it. Values are stored on the iTunes-compatible 0–100 scale (★1 = 20, half stars in steps of 10). Mobile also shows and sets ratings in half-star steps. TV does not display ratings.
 The done / later state is stored inside the app and requires no database schema changes.
 
 ## Now Playing (BPM / Key / Energy)

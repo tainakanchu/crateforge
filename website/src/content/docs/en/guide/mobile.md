@@ -16,7 +16,9 @@ From mobile, connect in one of the following ways.
 - **QR code** — scan the QR of the connection URL shown in settings to connect.
 - **Manual entry** — type in the connection URL and token.
 
-(Pairing is a feature for the Android TV client; the mobile app connects via QR / manual entry.)
+- **Pick a nearby desktop (pairing)** — choose a desktop found on the same LAN and the mobile app shows a confirmation code.
+  Enter that code in the desktop's "設定 → モバイル / API → 端末を承認" (Settings → Mobile / API → approve device) to connect without typing a token
+  (the same mechanism as the Android TV client; the list does not appear where discovery is unavailable).
 
 - If the token no longer matches (for example, it was changed on the desktop), the library / playlists / remote / settings
   screens show the reason and **"Re-enter token"** (the connect screen opens with the URL filled in and the old token cleared).
