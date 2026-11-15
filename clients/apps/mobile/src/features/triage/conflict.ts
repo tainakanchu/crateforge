@@ -1,6 +1,8 @@
 // オフライン編集の衝突判定（純粋関数）。テストしやすくするため I/O から切り離す。
 
-import { formatRatingStars, ratingToHalfStars } from "@crateforge/core";
+import { ratingToHalfStars } from "@crateforge/core";
+
+import { ratingLabel } from "./labels";
 
 /**
  * レーティング pending op をサーバ現在値と突き合わせた結果。
@@ -28,17 +30,15 @@ export function resolveRatingConflict(
 
 /**
  * 衝突表示用にローカル / サーバの星数を要約する。
- * 星数は core の半星規則（10 刻み = 0.5 星）。例: 70 → 3.5 / "★★★½"。
+ * 星数は core の半星規則（10 刻み = 0.5 星）。例: 70 → 3.5 / "★★★½"。表記は labels.ts の ratingLabel。
  */
 export function formatRatingConflict(
   localRating: number,
   serverRating: number | null,
 ): { localStars: number; serverStars: number; label: string } {
-  const localLabel = formatRatingStars(localRating) || "未設定";
-  const serverLabel = formatRatingStars(serverRating) || "未設定";
   return {
     localStars: ratingToHalfStars(localRating),
     serverStars: ratingToHalfStars(serverRating),
-    label: `端末 ${localLabel} / サーバ ${serverLabel}`,
+    label: `端末 ${ratingLabel(localRating)} / サーバ ${ratingLabel(serverRating)}`,
   };
 }

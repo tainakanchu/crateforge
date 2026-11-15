@@ -12,10 +12,11 @@ import { Ionicons } from "@expo/vector-icons";
 import Screen from "@/components/Screen";
 import { showActionSheet } from "@/components/ActionSheet";
 import { REAUTH_HREF, connectionLabel } from "@/lib/connectionStatus";
-import { type ArtistGrouping, type TrackMetaField, formatDuration, ratingToHalfStars, useConnection, useDownloads, useSettings } from "@crateforge/core";
+import { type ArtistGrouping, type TrackMetaField, formatDuration, useConnection, useDownloads, useSettings } from "@crateforge/core";
 import QualityPicker from "@/features/offline/QualityPicker";
 import { formatBytes } from "@/features/offline/format";
 import { formatRatingConflict } from "@/features/triage/conflict";
+import { describePendingOp } from "@/features/triage/labels";
 import { flushPending, keepMine, keepServer } from "@/features/triage/syncPending";
 import { usePendingEdits } from "@/store/pendingEdits";
 import { BRAND, PALETTE } from "@/constants/brand";
@@ -429,24 +430,6 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
       <View style={styles.rowValue}>{children}</View>
     </View>
   );
-}
-
-function describePendingOp(op: {
-  kind: string;
-  trackId: number;
-  trackName?: string | null;
-  rating?: number;
-  tag?: string;
-}): string {
-  const name = op.trackName || `#${op.trackId}`;
-  if (op.kind === "rating") {
-    // 半星（10 刻み）も保つ。例: 70 → ★3.5。
-    return `★${ratingToHalfStars(op.rating)} ← ${name}`;
-  }
-  if (op.kind === "tag-add") return `+${op.tag} ← ${name}`;
-  if (op.kind === "tag-remove") return `-${op.tag} ← ${name}`;
-  if (op.kind === "review-later") return `あとで ← ${name}`;
-  return `${op.kind} ← ${name}`;
 }
 
 const styles = StyleSheet.create({
