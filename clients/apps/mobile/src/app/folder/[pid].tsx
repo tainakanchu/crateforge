@@ -6,13 +6,12 @@ import { useMemo } from "react";
 import { FlatList, Text, View, StyleSheet } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
-import { type Playlist, useConnection, describeApiError } from "@crateforge/core";
+import { type Playlist, childrenOf, useConnection, describeApiError } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import BackButton from "@/components/BackButton";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import { usePlaylists } from "@/features/browse/hooks";
-import { childrenOf } from "@/features/browse/playlistTree";
 import PlaylistRow from "@/features/browse/PlaylistRow";
 
 export default function FolderScreen() {

@@ -2,6 +2,7 @@ export * from "./lib/types";
 export * from "./lib/format";
 export * from "./lib/album";
 export * from "./lib/search";
+export * from "./lib/playlistTree";
 export * from "./lib/api/client";
 export * from "./lib/api/errors";
 export * from "./store/connection";

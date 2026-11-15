@@ -1,6 +1,6 @@
 // プレイリスト一覧画面（10ft UI / D-pad 操作前提）。
 // core の ApiClient.playlists()（useConnection().client 経由）でフラットな全プレイリストを
-// 取得し、persistentId / parentPersistentId からフォルダ階層を再構成して縦リスト表示する。
+// 取得し、core の playlistTree（rootItems / childrenOf）でフォルダ階層を再構成して縦リスト表示する。
 //
 // 画面内ナビゲーション（新ルートを足さず 1 画面で完結）:
 //   - ルート/フォルダの一覧 → フォルダ選択で下階層へ、プレイリスト選択で詳細（曲一覧）へ。
@@ -17,7 +17,15 @@ import { useRouter } from "expo-router";
 import { View, Text, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { type Playlist, type Track, useConnection, usePlayer } from "@crateforge/core";
+import {
+  type Playlist,
+  type Track,
+  childrenOf,
+  playlistKey,
+  rootItems,
+  useConnection,
+  usePlayer,
+} from "@crateforge/core";
 import { Focusable } from "@/components/focus";
 import { TrackRow } from "@/components/library/TrackRow";
 import { LibraryList } from "@/components/library/LibraryList";
@@ -25,39 +33,6 @@ import { PALETTE, TV_FONT, TV_LAYOUT, FOCUS_RING } from "@/theme/palette";
 
 /** 大規模ライブラリでも全件取得（mobile の BROWSE_LIMIT と同値）。 */
 const BROWSE_LIMIT = 100000;
-
-// ---- プレイリスト階層ヘルパ（mobile features/browse/playlistTree.ts と同等のロジックを移植）----
-// API は全プレイリストをフラットに返すので、persistentId / parentPersistentId で木を再構成する。
-// フォルダは曲を持たない（trackCount 0）が子を含むため、trackCount で落としてはいけない。
-
-/** persistentId（無ければ playlistId 文字列）。親子の突き合わせキーとして使う。 */
-function keyOf(p: Playlist): string {
-  return p.persistentId ?? String(p.playlistId);
-}
-
-/** フォルダ優先 → 名前の昇順で並べる。 */
-function sortItems(items: Playlist[]): Playlist[] {
-  return [...items].sort((a, b) => {
-    if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-}
-
-/** parentPersistentId が parentPid に一致する子を、フォルダ優先・名前順で返す。 */
-function childrenOf(all: Playlist[], parentPid: string | null): Playlist[] {
-  return sortItems(all.filter((p) => (p.parentPersistentId ?? null) === parentPid));
-}
-
-/** ルート（最上位）に置く項目。親が無い/空、または親が一覧に存在しない（=孤児）ものを採用。 */
-function rootItems(all: Playlist[]): Playlist[] {
-  const present = new Set(all.map(keyOf));
-  const roots = all.filter((p) => {
-    const parent = p.parentPersistentId;
-    if (parent == null || parent === "") return true;
-    return !present.has(parent);
-  });
-  return sortItems(roots);
-}
 
 /** フォルダ階層のパンくず 1 段。 */
 type FolderCrumb = { pid: string; name: string };
@@ -102,7 +77,7 @@ export default function PlaylistsScreen() {
   // 行選択（一覧）: フォルダは下階層へ、プレイリストは詳細（曲一覧）へ。
   const onSelectRow = (p: Playlist) => {
     if (p.isFolder) {
-      setFolderStack((s) => [...s, { pid: keyOf(p), name: p.name }]);
+      setFolderStack((s) => [...s, { pid: playlistKey(p), name: p.name }]);
     } else {
       setOpenPlaylist(p);
     }

@@ -2,10 +2,10 @@
 // API は全プレイリストをフラットに返すので、persistentId / parentPersistentId で木を再構成する。
 // フォルダは曲を持たない（trackCount 0）が子を含むため、trackCount で落としてはいけない。
 
-import { type Playlist } from "@crateforge/core";
+import type { Playlist } from "./types";
 
 /** persistentId（無ければ playlistId 文字列）。親子の突き合わせキーとして使う。 */
-function keyOf(p: Playlist): string {
+export function playlistKey(p: Playlist): string {
   return p.persistentId ?? String(p.playlistId);
 }
 
@@ -28,7 +28,7 @@ export function childrenOf(all: Playlist[], parentPid: string | null): Playlist[
  * parentPersistentId が null/空、または親 persistentId が一覧に存在しない（=孤児）ものを採用。
  */
 export function rootItems(all: Playlist[]): Playlist[] {
-  const present = new Set(all.map(keyOf));
+  const present = new Set(all.map(playlistKey));
   const roots = all.filter((p) => {
     const parent = p.parentPersistentId;
     if (parent == null || parent === "") return true;

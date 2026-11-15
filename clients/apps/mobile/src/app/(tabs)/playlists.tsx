@@ -8,13 +8,12 @@ import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "rea
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
-import { type DownloadedPlaylist, type Playlist, useConnection, useDownloads, describeApiError } from "@crateforge/core";
+import { type DownloadedPlaylist, type Playlist, rootItems, useConnection, useDownloads, describeApiError } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
 import ConnectionNotice from "@/components/ConnectionNotice";
 import { usePlaylists } from "@/features/browse/hooks";
-import { rootItems } from "@/features/browse/playlistTree";
 import PlaylistRow from "@/features/browse/PlaylistRow";
 import { LIGHT_LIST_FRESH_MS, usePullToRefresh, useRefetchStaleOnFocus } from "@/hooks/use-refresh";
 
