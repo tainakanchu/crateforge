@@ -8,10 +8,12 @@ import {
   playQueueFrom,
   playTracks,
   playableIds,
+  TRACK_ACTION_FAILURE_LABEL,
   runTrackAction,
   setRatingForTracks,
   trackActionFailureMessage,
 } from "../../src/lib/trackActions.ts";
+import type { TrackActionKind } from "../../src/lib/trackActions.ts";
 
 /** 呼び出しを記録するフェイク API。enqueueTrackNext は実装と同じく「現在曲の直後」へ挿入する。 */
 function fakeApi(opts: { failOn?: string } = {}) {
@@ -174,19 +176,8 @@ test("runTrackAction: 実 API の手順と組み合わせると、途中の失�
 });
 
 test("trackActionFailureMessage: どの操作にも文言があり、理由が付く", () => {
-  const kinds = [
-    "play",
-    "enqueue",
-    "playNext",
-    "rating",
-    "addToPlaylist",
-    "removeFromPlaylist",
-    "addTag",
-    "removeTag",
-    "saveGenre",
-    "analyze",
-    "reveal",
-  ] as const;
+  const kinds = Object.keys(TRACK_ACTION_FAILURE_LABEL) as TrackActionKind[];
+  assert.ok(kinds.length >= 13);
   const seen = new Set<string>();
   for (const kind of kinds) {
     const msg = trackActionFailureMessage(kind, "理由");

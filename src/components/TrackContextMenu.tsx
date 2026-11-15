@@ -207,7 +207,7 @@ export function TrackContextMenu({
   const ratingValue = ratingPreview ?? ratingStars;
 
   // ── 各種操作（実行後メニューを閉じる）──
-  const run = useCallback(
+  const runAndClose = useCallback(
     (fn: () => void) => () => {
       fn();
       onClose();
@@ -229,29 +229,29 @@ export function TrackContextMenu({
 
   const activateId = useCallback(
     (id: string) => {
-      if (id === "play") return run(onPlay)();
-      if (id === "crate") return run(onAddToCrate)();
-      if (id === "playnext") return run(onPlayNext)();
-      if (id === "queue") return run(onEnqueue)();
-      if (id === "analyze") return run(onAnalyze)();
-      if (id === "similar") return run(onFindSimilar)();
-      if (id === "convert") return run(onConvert)();
-      if (id === "convertReplace") return run(onConvertReplace)();
-      if (id === "info") return run(onGetInfo)();
-      if (id === "remove") return run(onRemoveFromPlaylist)();
-      if (id === "reveal") return run(onReveal)();
-      if (id === "relocate") return run(onRelocate)();
+      if (id === "play") return runAndClose(onPlay)();
+      if (id === "crate") return runAndClose(onAddToCrate)();
+      if (id === "playnext") return runAndClose(onPlayNext)();
+      if (id === "queue") return runAndClose(onEnqueue)();
+      if (id === "analyze") return runAndClose(onAnalyze)();
+      if (id === "similar") return runAndClose(onFindSimilar)();
+      if (id === "convert") return runAndClose(onConvert)();
+      if (id === "convertReplace") return runAndClose(onConvertReplace)();
+      if (id === "info") return runAndClose(onGetInfo)();
+      if (id === "remove") return runAndClose(onRemoveFromPlaylist)();
+      if (id === "reveal") return runAndClose(onReveal)();
+      if (id === "relocate") return runAndClose(onRelocate)();
       // 削除は確認モーダルを開くだけなので、メニューは閉じずに呼び出し側へ委ねる。
-      if (id === "delete") return run(onDelete)();
-      if (id === "addtag") return run(onAddTag)();
+      if (id === "delete") return runAndClose(onDelete)();
+      if (id === "addtag") return runAndClose(onAddTag)();
       if (id.startsWith("recent:")) {
-        return run(() => onAddToPlaylist(Number(id.slice(7))))();
+        return runAndClose(() => onAddToPlaylist(Number(id.slice(7))))();
       }
       if (id.startsWith("tag:")) {
-        return run(() => onRemoveTag(id.slice(4)))();
+        return runAndClose(() => onRemoveTag(id.slice(4)))();
       }
     },
-    [run, onPlay, onAddToCrate, onPlayNext, onEnqueue, onAnalyze, onFindSimilar, onConvert, onConvertReplace, onGetInfo, onRemoveFromPlaylist, onReveal, onRelocate, onDelete, onAddTag, onAddToPlaylist, onRemoveTag],
+    [runAndClose, onPlay, onAddToCrate, onPlayNext, onEnqueue, onAnalyze, onFindSimilar, onConvert, onConvertReplace, onGetInfo, onRemoveFromPlaylist, onReveal, onRelocate, onDelete, onAddTag, onAddToPlaylist, onRemoveTag],
   );
 
   // フライアウトの位置を「プレイリストに追加…」項目の現在位置に合わせる。
@@ -315,7 +315,7 @@ export function TrackContextMenu({
             return;
           case "Enter":
             e.preventDefault();
-            if (subNavIds[safeSub] != null) run(() => onAddToPlaylist(subNavIds[safeSub]))();
+            if (subNavIds[safeSub] != null) runAndClose(() => onAddToPlaylist(subNavIds[safeSub]))();
             return;
           case "ArrowLeft":
           case "Escape":
@@ -378,7 +378,7 @@ export function TrackContextMenu({
           }
       }
     },
-    [submenuOpen, subNavIds, safeSub, navIds, activeId, ratingValue, run, onAddToPlaylist, closeSubmenu, openSubmenu, applyRating, activateId, onClose],
+    [submenuOpen, subNavIds, safeSub, navIds, activeId, ratingValue, runAndClose, onAddToPlaylist, closeSubmenu, openSubmenu, applyRating, activateId, onClose],
   );
 
   // メニュー (とサブメニュー) の外を押したら閉じる。Esc はフォーカスがメニュー外に
@@ -472,7 +472,7 @@ export function TrackContextMenu({
     >
       <div className="context-menu-header">{headerLabel}</div>
 
-      <div {...itemProps("play")} onClick={run(onPlay)}>
+      <div {...itemProps("play")} onClick={runAndClose(onPlay)}>
         <Icon name="play" size={14} /> 再生
       </div>
 
@@ -491,7 +491,7 @@ export function TrackContextMenu({
         <Stars value={ratingValue} size={15} onSet={(n) => applyRating(n)} />
       </div>
 
-      <div {...itemProps("crate")} onClick={run(onAddToCrate)}>
+      <div {...itemProps("crate")} onClick={runAndClose(onAddToCrate)}>
         <Icon name="layers" size={14} /> Crate に追加
       </div>
       {/* プレイリストへ追加（B：サブメニュー）。よく使うので Crate の直下に置く (D5)。 */}
@@ -507,30 +507,30 @@ export function TrackContextMenu({
         <span className="ell">プレイリストに追加…</span>
         <Icon name="chevronR" size={14} className="ctx-sub-caret" />
       </div>
-      <div {...itemProps("playnext")} onClick={run(onPlayNext)}>
+      <div {...itemProps("playnext")} onClick={runAndClose(onPlayNext)}>
         <Icon name="next" size={14} /> 次に再生
       </div>
-      <div {...itemProps("queue")} onClick={run(onEnqueue)}>
+      <div {...itemProps("queue")} onClick={runAndClose(onEnqueue)}>
         <Icon name="queue" size={14} /> キューに追加
       </div>
-      <div {...itemProps("analyze")} onClick={run(onAnalyze)}>
+      <div {...itemProps("analyze")} onClick={runAndClose(onAnalyze)}>
         <Icon name="sliders" size={14} /> 解析 (BPM / Key / Energy)
       </div>
-      <div {...itemProps("similar")} onClick={run(onFindSimilar)}>
+      <div {...itemProps("similar")} onClick={runAndClose(onFindSimilar)}>
         <Icon name="layers" size={14} /> 似た曲を探す
       </div>
-      <div {...itemProps("convert")} onClick={run(onConvert)}>
+      <div {...itemProps("convert")} onClick={runAndClose(onConvert)}>
         <Icon name="settings" size={14} /> 形式を変換…
       </div>
-      <div {...itemProps("convertReplace")} onClick={run(onConvertReplace)}>
+      <div {...itemProps("convertReplace")} onClick={runAndClose(onConvertReplace)}>
         <Icon name="settings" size={14} /> 変換して置き換え…
       </div>
-      <div {...itemProps("info")} onClick={run(onGetInfo)}>
+      <div {...itemProps("info")} onClick={runAndClose(onGetInfo)}>
         <Icon name="info" size={14} /> 情報を見る / 編集
       </div>
       {/* Finder / エクスプローラーで表示（単曲・ファイルがある場合のみ有効） */}
       {revealPath ? (
-        <div {...itemProps("reveal")} onClick={run(onReveal)}>
+        <div {...itemProps("reveal")} onClick={runAndClose(onReveal)}>
           <Icon name="folderOpen" size={14} /> {REVEAL_LABEL}
         </div>
       ) : (
@@ -542,7 +542,7 @@ export function TrackContextMenu({
       {relocateTrack && (
         <div
           {...itemProps("relocate")}
-          onClick={run(onRelocate)}
+          onClick={runAndClose(onRelocate)}
           title={
             relocateTrack.fileExists
               ? "この曲のファイルを別の場所のファイルに付け替える"
@@ -554,7 +554,7 @@ export function TrackContextMenu({
         </div>
       )}
       {showRemoveFromPlaylist && (
-        <div {...itemProps("remove")} onClick={run(onRemoveFromPlaylist)}>
+        <div {...itemProps("remove")} onClick={runAndClose(onRemoveFromPlaylist)}>
           <Icon name="minus" size={14} /> このプレイリストから外す
         </div>
       )}
@@ -566,7 +566,7 @@ export function TrackContextMenu({
           <div
             {...itemProps("delete")}
             className={"context-menu-item danger" + (activeId === "delete" ? " active" : "")}
-            onClick={run(onDelete)}
+            onClick={runAndClose(onDelete)}
           >
             <Icon name="trash" size={14} />
             <span className="ell">
@@ -587,7 +587,7 @@ export function TrackContextMenu({
             <div
               key={p.playlistId}
               {...itemProps(`recent:${p.playlistId}`)}
-              onClick={run(() => onAddToPlaylist(p.playlistId))}
+              onClick={runAndClose(() => onAddToPlaylist(p.playlistId))}
             >
               <Icon name="music" size={14} />
               <span className="ell">{p.name}</span>
@@ -599,14 +599,14 @@ export function TrackContextMenu({
 
       {/* ジャンルタグ */}
       <div className="context-menu-section">ジャンルタグ</div>
-      <div {...itemProps("addtag")} onClick={run(onAddTag)}>
+      <div {...itemProps("addtag")} onClick={runAndClose(onAddTag)}>
         <Icon name="plus" size={14} /> タグを追加…
       </div>
       {genreTags.map((tag) => (
         <div
           key={tag}
           {...itemProps(`tag:${tag}`)}
-          onClick={run(() => onRemoveTag(tag))}
+          onClick={runAndClose(() => onRemoveTag(tag))}
         >
           <Icon name="minus" size={14} /> 「{tag}」を外す
         </div>
@@ -648,7 +648,7 @@ export function TrackContextMenu({
                       className={"context-menu-item" + (idx === safeSub ? " active" : "")}
                       data-active={idx === safeSub || undefined}
                       onMouseEnter={() => setSubIndex(idx)}
-                      onClick={run(() => onAddToPlaylist(p.playlistId))}
+                      onClick={runAndClose(() => onAddToPlaylist(p.playlistId))}
                     >
                       <Icon name="music" size={14} />
                       <span className="ell">{p.name}</span>

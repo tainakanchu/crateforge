@@ -132,7 +132,8 @@ export type TrackActionKind =
   | "loadTracks"
   | "loadAlbums";
 
-const FAILURE_LABEL: Record<TrackActionKind, string> = {
+/** 操作ごとの失敗トーストの文言 (理由の前に付く部分)。 */
+export const TRACK_ACTION_FAILURE_LABEL: Record<TrackActionKind, string> = {
   play: "再生に失敗しました",
   enqueue: "キューへの追加に失敗しました",
   playNext: "「次に再生」への追加に失敗しました",
@@ -159,7 +160,7 @@ export function trackActionFailureMessage(
   trackName?: string,
 ): string {
   const what =
-    kind === "play" && trackName ? `『${trackName}』を再生できませんでした` : FAILURE_LABEL[kind];
+    kind === "play" && trackName ? `『${trackName}』を再生できませんでした` : TRACK_ACTION_FAILURE_LABEL[kind];
   return `${what}: ${errorMessage(error)}`;
 }
 

@@ -10,7 +10,7 @@ interface CovTrackRowProps {
   inCrate: boolean;
   /** 曲名の後ろに曲のアーティストを添えるか (アルバム/アーティスト名と違うときだけ出す)。 */
   showArtist: boolean;
-  /** 長さの表示 (整形は呼び出し元。ビューごとに現行の書式が違う)。 */
+  /** 長さの表示 (呼び出し元が `formatTrackTime` で整形した文字列)。 */
   time: string;
   /** 曲名と長さの間に置く追加セル (AlbumsView の BPM・星)。ArtistsView は渡さない (ui-spec 3.2)。 */
   extra?: ReactNode;
