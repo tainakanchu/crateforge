@@ -15,7 +15,10 @@ interface ModalFrameProps {
   /** オーバーレイに足す属性 (外側クリックで閉じる、など)。 */
   overlayProps?: Omit<HTMLAttributes<HTMLDivElement>, "className" | "children">;
   /** ダイアログ本体に足す属性 (style / tabIndex / キー操作など)。 */
-  dialogProps?: Omit<HTMLAttributes<HTMLDivElement>, "className" | "children" | "role">;
+  dialogProps?: Omit<
+    HTMLAttributes<HTMLDivElement>,
+    "className" | "children" | "role" | "aria-modal" | "aria-labelledby"
+  >;
   dialogRef?: Ref<HTMLDivElement>;
   /** `.modal-body` / `.modal-footer` など、ヘッダーより下の中身。 */
   children: ReactNode;
@@ -40,18 +43,19 @@ export function ModalFrame({
   children,
 }: ModalFrameProps) {
   return (
-    <div className="modal-overlay" {...overlayProps}>
+    <div {...overlayProps} className="modal-overlay">
       <div
+        // dialogProps を先に展開する: 枠が決める属性 (class / role / aria-*) は上書きさせない。
+        {...dialogProps}
         ref={dialogRef}
         className={className ? `modal ${className}` : "modal"}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        {...dialogProps}
       >
         <div className="modal-header">
           <h2 id={titleId}>{title}</h2>
-          <button className="modal-close" onClick={onClose} {...closeButtonProps}>
+          <button {...closeButtonProps} className="modal-close" onClick={onClose}>
             <Icon name="x" size={16} />
           </button>
         </div>
