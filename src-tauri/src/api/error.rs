@@ -38,12 +38,13 @@ impl From<String> for ApiError {
     }
 }
 
-/// 曲の編集 (`library::edit`) のエラー。入力の誤り (不正な Camelot キー) は 400、DB 障害は 500。
+/// 曲の編集 (`library::edit`) のエラー。入力の誤り (不正な Camelot キー・範囲外の rating) は 400、
+/// DB 障害は 500。
 impl From<crate::library::edit::EditError> for ApiError {
     fn from(e: crate::library::edit::EditError) -> Self {
         use crate::library::edit::EditError;
         let status = match &e {
-            EditError::InvalidKey(_) => StatusCode::BAD_REQUEST,
+            EditError::InvalidKey(_) | EditError::InvalidRating(_) => StatusCode::BAD_REQUEST,
             EditError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         ApiError::new(status, e.to_string())

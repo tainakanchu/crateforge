@@ -1417,14 +1417,6 @@ impl Database {
                 }
             };
         }
-        macro_rules! set_int_opt {
-            ($field:ident, $col:literal) => {
-                if let Some(v) = edits.$field {
-                    sets.push(concat!($col, " = ?"));
-                    values.push(rusqlite::types::Value::Integer(v));
-                }
-            };
-        }
         macro_rules! set_int_clear {
             // For nullable numeric fields: Some(Some(v)) sets, Some(None) clears, None keeps.
             ($field:ident, $col:literal) => {
@@ -1460,7 +1452,7 @@ impl Database {
             || edits.comments.is_some();
         set_int_clear!(year, "year");
         set_int_clear!(bpm, "bpm");
-        set_int_opt!(rating, "rating");
+        // rating はここには入れない (下で別 UPDATE。date_modified を進めないため)。
         set_int_clear!(track_number, "track_number");
         set_int_clear!(track_count, "track_count");
         set_int_clear!(disc_number, "disc_number");
@@ -1490,6 +1482,15 @@ impl Database {
             tx.execute(
                 "UPDATE tracks SET key_camelot_user = ?1 WHERE track_id = ?2",
                 params![value, track_id],
+            )?;
+        }
+        // rating も `set_rating` と同じ規則: XML インポートの更新対象外の保護フィールドなので
+        // date_modified は進めない (rating だけの編集で LWW 時計が進むと、XML 側の正当な
+        // 更新まで止まる)。値は CheckedTrackEdit が 0..=100 と確認済み。
+        if let Some(rating) = edits.rating {
+            tx.execute(
+                "UPDATE tracks SET rating = ?1 WHERE track_id = ?2",
+                params![rating, track_id],
             )?;
         }
 
@@ -1581,7 +1582,7 @@ impl Database {
     /// 同期の書き戻しでは rating 衝突の新旧を判定できず、既定は手元の値になる。
     pub fn set_rating(&self, track_id: i64, rating: i64) -> Result<()> {
         // iTunes 互換の 0-100 に収める (半星 #172 は 10 刻みの値でそのまま保存)。
-        let rating = rating.clamp(0, 100);
+        let rating = crate::rating::clamp_rating(rating);
         // date_modified は XML メタデータの LWW 時計なので、保護フィールドの rating では進めない。
         self.conn.execute(
             "UPDATE tracks SET rating = ?1 WHERE track_id = ?2",
@@ -2258,12 +2259,15 @@ pub fn delete_track_cascade(conn: &Connection, track_id: i64) -> Result<bool> {
 pub enum InvalidTrackEdit {
     /// Key の手動上書き (`key_camelot_user`) が Camelot として解釈できない。
     Key(String),
+    /// rating が 0..=100 の外。
+    Rating(i64),
 }
 
 impl std::fmt::Display for InvalidTrackEdit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InvalidTrackEdit::Key(raw) => write!(f, "invalid Camelot key: {raw}"),
+            InvalidTrackEdit::Rating(v) => write!(f, "rating must be between 0 and 100: {v}"),
         }
     }
 }
@@ -2271,7 +2275,7 @@ impl std::fmt::Display for InvalidTrackEdit {
 /// 検証・正規化済みの [`TrackEdit`]。[`Database::update_track`] はこれだけを受け取る。
 ///
 /// 作る方法は [`CheckedTrackEdit::new`] のみ。Key の手動上書きは正規形
-/// (`Some(Some("8A"))`) か解除 (`Some(None)`) になっている。
+/// (`Some(Some("8A"))`) か解除 (`Some(None)`)、rating は 0..=100 になっている。
 #[derive(Debug, Clone)]
 pub struct CheckedTrackEdit(TrackEdit);
 
@@ -2281,6 +2285,11 @@ impl CheckedTrackEdit {
         let mut edit = edit.clone();
         if let Some(key) = &edit.key_camelot_user {
             edit.key_camelot_user = Some(normalize_key_override(key.as_deref())?);
+        }
+        if let Some(rating) = edit.rating {
+            if !crate::rating::RATING_RANGE.contains(&rating) {
+                return Err(InvalidTrackEdit::Rating(rating));
+            }
         }
         Ok(Self(edit))
     }
@@ -2414,6 +2423,63 @@ mod tests {
             super::CheckedTrackEdit::new(&bad).unwrap_err().to_string(),
             "invalid Camelot key: nope"
         );
+    }
+
+    /// rating だけの編集は date_modified を進めない (set_rating と同じ規則)。
+    /// ほかの項目と一緒なら、その項目のぶん date_modified は進む。範囲外は検証で弾く。
+    #[test]
+    fn update_track_rating_does_not_touch_date_modified() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, rating, file_exists, date_modified)
+                 VALUES (1, 'Song', 20, 1, '2020-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        let get = || db.get_track_by_track_id(1).unwrap().unwrap();
+
+        let rating_only = crate::models::TrackEdit {
+            rating: Some(70),
+            ..Default::default()
+        };
+        db.update_track(1, &checked(&rating_only)).unwrap();
+        assert_eq!(get().rating, Some(70));
+        assert_eq!(get().date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+
+        // set_rating も同じ (範囲外は 0..=100 に収める)。
+        db.set_rating(1, 250).unwrap();
+        assert_eq!(get().rating, Some(100));
+        db.set_rating(1, -3).unwrap();
+        assert_eq!(get().rating, Some(0));
+        assert_eq!(get().date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+
+        let with_name = crate::models::TrackEdit {
+            name: Some("Renamed".into()),
+            rating: Some(40),
+            ..Default::default()
+        };
+        db.update_track(1, &checked(&with_name)).unwrap();
+        assert_eq!(get().rating, Some(40));
+        assert_ne!(get().date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));
+
+        for bad in [-1, 101, 250] {
+            let edit = crate::models::TrackEdit {
+                rating: Some(bad),
+                ..Default::default()
+            };
+            assert_eq!(
+                super::CheckedTrackEdit::new(&edit).unwrap_err(),
+                super::InvalidTrackEdit::Rating(bad)
+            );
+        }
+        for ok in [0, 100] {
+            let edit = crate::models::TrackEdit {
+                rating: Some(ok),
+                ..Default::default()
+            };
+            assert!(super::CheckedTrackEdit::new(&edit).is_ok());
+        }
     }
 
     /// 別名付きの列リストは、別名なしの各列に `t.` を付けたものと一致すること。

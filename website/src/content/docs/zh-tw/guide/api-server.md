@@ -65,6 +65,7 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 
 - `PATCH /api/tracks/{id}` — 部分更新 name / artist / album / genre / year / bpm / rating / composer / comments 等。
   name / artist / album / genre / year / composer / comments 會寫回實際檔案的標籤，`rating` / `disabled` / `playCount` / `skipCount` 僅寫入 DB。
+  `rating` 為 0〜100，超出範圍會回傳 `400`（不會更新任何內容）。只更新 `rating` 時不會推進 `dateModified`。
 - `PATCH /api/tracks`（`{trackIds, edit}`） — 多曲一次更新。
 - `POST /api/tracks/genre-tags/add` / `/remove` — 對類型標籤在尾端批次增減。
 

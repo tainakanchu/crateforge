@@ -66,6 +66,7 @@ When the client sends `Accept-Encoding: gzip`, large JSON responses (such as the
 
 - `PATCH /api/tracks/{id}` — partially update name / artist / album / genre / year / bpm / rating / composer / comments, etc.
   name / artist / album / genre / year / composer / comments are also reflected in the actual file's tags, while `rating` / `disabled` / `playCount` / `skipCount` are DB-only.
+  `rating` is 0–100; a value outside that range returns `400` (nothing is updated). Updating only `rating` does not advance `dateModified`.
 - `PATCH /api/tracks` (`{trackIds, edit}`) — bulk-update multiple tracks.
 - `POST /api/tracks/genre-tags/add` / `/remove` — add or remove genre tags at the end in bulk.
 

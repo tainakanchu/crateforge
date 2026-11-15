@@ -366,6 +366,10 @@ viewMode により切替:
 - `PlaybackState`: isPlaying / currentTrackId / positionMs / durationMs / shuffle / repeat / volume
 - `QueueState`: trackIds / currentIndex / shuffle / repeat / volume
 - `Rating`: 0〜100 の整数 (UI 上では 0〜5 ★、`stars = round(rating / 20)`)
+  - どの経路 (★クリック / Get Info / API) でも 0〜100 に収まる。GUI と `POST /api/tracks/{id}/rating` は
+    範囲外を 0〜100 に丸め、`PATCH /api/tracks*` は範囲外を `400` で拒否する。
+  - rating だけを変えても `dateModified` は進めない (rating は iTunes XML 取り込みの更新対象外の
+    保護フィールド。`dateModified` は XML メタデータの新旧判定に使うので、進めると XML 側の更新が止まる)。
 
 ---
 

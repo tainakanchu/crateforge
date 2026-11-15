@@ -263,8 +263,10 @@ pub fn get_library_stats(app: AppHandle) -> Result<LibraryStats, String> {
 /// GUI では、対象の曲が無くても、タグ書き戻し・移動に失敗しても成功として返す
 /// (失敗は警告ログに留め、編集自体は確定させる)。
 #[tauri::command]
-pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(), String> {
+pub fn update_track(app: AppHandle, track_id: i64, mut edits: TrackEdit) -> Result<(), String> {
     let db = open_db(&app)?;
+    // rating は星クリック (set_track_rating) と同じく 0..=100 に収める (GUI は範囲外を送らない)。
+    edits.rating = edits.rating.map(crate::rating::clamp_rating);
     crate::library::edit::apply_track_edit(&db, track_id, &edits)
         .map(|_| ())
         .map_err(|e| e.to_string())

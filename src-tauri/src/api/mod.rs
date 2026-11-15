@@ -2226,6 +2226,83 @@ mod tests {
         assert_eq!(body["track"]["keyCamelotUser"], "8A");
     }
 
+    // ===== メタデータ書き込み: 範囲外の rating は 400、rating だけの PATCH は dateModified を進めない =====
+    #[tokio::test]
+    async fn case_patch_rating_range_and_date_modified() {
+        let (dir, app) = setup();
+        {
+            let db = crate::db::Database::open(dir.path()).unwrap();
+            db.conn
+                .execute(
+                    "UPDATE tracks SET date_modified = '2020-01-01T00:00:00Z' WHERE track_id IN (1, 2)",
+                    [],
+                )
+                .unwrap();
+        }
+
+        for bad in [-1, 101, 250] {
+            let edit = json!({ "name": "Renamed", "rating": bad });
+            let (status, body) =
+                req(app.clone(), "PATCH", "/api/tracks/1", Some(edit.clone())).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "rating {bad}");
+            assert_eq!(
+                body["error"],
+                format!("rating must be between 0 and 100: {bad}")
+            );
+            // 一括も、trackIds が空でも 400。
+            for ids in [json!([1, 2]), json!([])] {
+                let (status, _) = req(
+                    app.clone(),
+                    "PATCH",
+                    "/api/tracks",
+                    Some(json!({ "trackIds": ids, "edit": edit })),
+                )
+                .await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "bulk rating {bad}");
+            }
+        }
+        // 何も書かれていない (seed: track 1 は rating 80)。
+        let (_, track) = req(app.clone(), "GET", "/api/tracks/1", None).await;
+        assert_eq!(track["name"], "Sunrise");
+        assert_eq!(track["rating"], 80);
+
+        // rating だけの PATCH: 値は入り、dateModified は進まない (単体・一括とも)。
+        let (status, body) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "rating": 100 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["track"]["rating"], 100);
+        assert_eq!(body["track"]["dateModified"], "2020-01-01T00:00:00Z");
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks",
+            Some(json!({ "trackIds": [2], "edit": { "rating": 0 } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, track) = req(app.clone(), "GET", "/api/tracks/2", None).await;
+        assert_eq!(track["rating"], 0);
+        assert_eq!(track["dateModified"], "2020-01-01T00:00:00Z");
+
+        // POST .../rating は従来どおり範囲外を収める。
+        let (status, _) = req(
+            app.clone(),
+            "POST",
+            "/api/tracks/1/rating",
+            Some(json!({ "rating": 250 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, track) = req(app, "GET", "/api/tracks/1", None).await;
+        assert_eq!(track["rating"], 100);
+        assert_eq!(track["dateModified"], "2020-01-01T00:00:00Z");
+    }
+
     // ===== メタデータ書き込み: 整理先が設定されていれば PATCH でも移動 + リネーム =====
     // GUI の update_track と同じく、編集後のメタデータで整理先へ移動し、
     // レスポンスの locationPath / locationRaw も新パスになる。単体・一括の両方を確認する。

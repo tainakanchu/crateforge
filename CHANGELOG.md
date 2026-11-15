@@ -26,8 +26,11 @@ Each release is documented in both Japanese and English.
 
 - **同期で退避した曲が再生キューに残る問題を修正**: 同期の「退避」でライブラリから消えた曲が、再生キューや再生中の曲に残ったままになっていた。ライブラリから曲を削除したときと同じく、退避した曲はキューから外し、再生中なら止める。途中の曲でエラーが起きても、それまでに退避した曲は同じように外す。
 - **仕様変更: 右クリックのジャンルタグ追加・削除も音声ファイルに書き戻す**: 曲の右クリック「Genre tags」（と Get Info で複数曲のジャンルタグを足し引きしたとき）は、これまでライブラリ（DB）だけを更新し、ファイルのタグは古いままだった。Get Info での編集や API と同じく、ファイルのジャンルタグにも書き戻す（ほかのタグ項目は触らない。ファイルが見つからない曲はライブラリだけ更新する）。
+- **仕様変更: Get Info でレーティングだけを変えても更新日時を進めない**: Get Info でレーティングを変えると曲の更新日時（`dateModified`）が進んでいたが、星をクリックして変えたときは進まず、経路で食い違っていた。レーティングは iTunes XML の取り込みで上書きされない項目で、更新日時は XML とどちらが新しいかの判定に使うため、レーティングだけの変更では進めないように統一した（ほかの項目も一緒に変えたときは進む）。
 
 #### API
+- **仕様変更: `PATCH /api/tracks*` の `rating` は 0〜100 のみ（範囲外は `400`）**: これまでは範囲外の値（`250` や `-1`）もそのまま保存されていた。`400`（`rating must be between 0 and 100: <値>`）を返し、そのリクエストでは何も更新しない。`POST /api/tracks/{trackId}/rating` はこれまでどおり範囲外を 0〜100 に丸める。
+- **仕様変更: `PATCH /api/tracks*` で `rating` だけを変えても `dateModified` を進めない**: デスクトップの星クリック・`POST /api/tracks/{trackId}/rating` と同じ規則にした。
 - **仕様変更: `PATCH /api/tracks/{trackId}`・`PATCH /api/tracks` の不正な `keyCamelotUser` は `400`**: Camelot として解釈できない値を送ると、これまでは `500` が返っていた。入力の誤りなので `400`（`invalid Camelot key: <値>`）を返す。そのリクエストでは何も更新されない（一括で `trackIds` が空でも `400`、曲が存在しない場合も `404` より先に `400`）。Key の上書きとほかの項目の更新は 1 つのトランザクションで確定する。
 - **仕様変更: `POST /api/playlists/{playlistId}/tracks` は負の `trackId` を追加しない**: ライブラリ外の一時再生曲（負の `trackId`）を送ると、これまでは曲一覧に出ない行としてプレイリストに入り、`trackCount` とレスポンスの `added` だけが増えていた。デスクトップと同じく追加せず、`added` は実際に追加した件数を返す。
 
@@ -51,8 +54,11 @@ Each release is documented in both Japanese and English.
 
 - **Fixed tracks evicted by sync staying in the play queue**: tracks removed from the library by sync eviction used to remain in the play queue or keep playing. As with deleting tracks from the library, evicted tracks are now removed from the queue and playback stops if one of them is playing. If an error occurs partway through, the tracks evicted up to that point are still removed.
 - **Behavior change: adding/removing genre tags from the right-click menu now writes back to the audio file**: the track context menu's "Genre tags" (and adding/removing genre tags for multiple tracks in Get Info) used to update only the library (DB), leaving the file's tags stale. Like editing in Get Info or through the API, the genre is now written back to the file's tags as well (other tag fields are left alone; tracks whose file cannot be found are updated in the library only).
+- **Behavior change: changing only the rating in Get Info no longer advances the modified date**: changing the rating in Get Info used to advance the track's modified date (`dateModified`), while clicking the stars did not. The rating is not overwritten by iTunes XML imports, and the modified date decides whether the XML or the library is newer, so a rating-only change no longer advances it on any path (it still advances when other fields change too).
 
 #### API
+- **Behavior change: `rating` in `PATCH /api/tracks*` must be 0–100 (out of range is `400`)**: out-of-range values (`250`, `-1`) used to be stored as they were. They now return `400` (`rating must be between 0 and 100: <value>`) and nothing is updated by that request. `POST /api/tracks/{trackId}/rating` still clamps to 0–100 as before.
+- **Behavior change: `PATCH /api/tracks*` no longer advances `dateModified` when only `rating` changes**: the same rule as clicking the stars in the desktop app and `POST /api/tracks/{trackId}/rating`.
 - **Behavior change: an invalid `keyCamelotUser` in `PATCH /api/tracks/{trackId}` / `PATCH /api/tracks` is now `400`**: sending a value that cannot be read as a Camelot key used to return `500`. Since it is an input error it now returns `400` (`invalid Camelot key: <value>`), and nothing is updated by that request (also `400` for a bulk request with an empty `trackIds`, and `400` takes precedence over `404` when the track does not exist). The key override and the other fields are now committed in a single transaction.
 - **Behavior change: `POST /api/playlists/{playlistId}/tracks` no longer adds negative `trackId`s**: sending a temporary track that is not in the library (a negative `trackId`) used to insert a row that never shows up in the track list, while `trackCount` and the response's `added` still went up. As in the desktop app it is no longer added, and `added` is the number of tracks actually added.
 

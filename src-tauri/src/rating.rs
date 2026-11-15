@@ -11,6 +11,16 @@
 //! | [`rating_to_whole_stars`] | USB エクスポート (整数星) | 半星は切り上げ → 3 |
 //! | [`star_bucket`] / [`parse_star_range`] | 検索構文 `rating:` | 区間 (`rating:3` = 60〜79) |
 
+/// rating 列に入れてよい値の範囲 (iTunes 互換)。
+pub const RATING_RANGE: std::ops::RangeInclusive<i64> = 0..=100;
+
+/// rating を [`RATING_RANGE`] に収める。星クリック (`set_rating`)・
+/// `POST /api/tracks/{id}/rating`・GUI の Get Info が使う。`PATCH /api/tracks*` は収めずに
+/// 範囲外を 400 で返す (`db::tracks::CheckedTrackEdit`)。
+pub fn clamp_rating(rating: i64) -> i64 {
+    rating.clamp(*RATING_RANGE.start(), *RATING_RANGE.end())
+}
+
 /// 0-100 の rating を 0..5 の星 (0.5 刻み) に **最寄りの半星へ丸める**。
 /// フロントの `ratingToStars` と同じ式。スマートプレイリストの条件評価が使う。
 pub fn rating_to_stars_nearest_half(r: i64) -> f64 {

@@ -206,7 +206,7 @@ crate-api.sh POST /api/tracks/genre-tags/add '{"trackIds":[12,7],"tag":"台語"}
 ### `PATCH /api/tracks/{trackId}`
 ボディ = 更新したいフィールドだけ（camelCase, **部分更新**＝未指定は据え置き）。
 - 文字列: `name` / `artist` / `albumArtist` / `composer` / `album` / `genre` / `comments`（`""` で空にする）。
-- 数値: `year` / `bpm` / `trackNumber` / `trackCount` / `discNumber` / `discCount` / `playCount` / `skipCount`（`null` で値をクリア）。`rating`(0-100)。
+- 数値: `year` / `bpm` / `trackNumber` / `trackCount` / `discNumber` / `discCount` / `playCount` / `skipCount`（`null` で値をクリア）。`rating`(0-100。**範囲外は `400`** でそのリクエストでは何も更新されない。一括 `PATCH /api/tracks` も同じ)。`rating` だけを変えた場合 `dateModified` は進まない。
 - 真偽: `compilation` / `disabled`。
 - `keyCamelotUser` — Key の手動上書き（Camelot 表記, 例 `"8A"`）。`null` で解除（解析値に戻る）。Camelot として解釈できない値は `400`（そのリクエストでは何も更新されない。一括 `PATCH /api/tracks` も同じ）。
 - ファイルタグへ書き戻すのは、更新後の 曲名・artist・albumArtist・composer・album・genre・comments・year・トラック/ディスク番号と総数・compilation・BPM（曲の BPM、未設定なら解析 BPM）・Key（実効キーを `Am` 等の音楽表記で）。**`rating` / `disabled` / `playCount` / `skipCount` はファイルには書かれない**（DB のみ）。

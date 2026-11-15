@@ -66,6 +66,7 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 
 - `PATCH /api/tracks/{id}` — name / artist / album / genre / year / bpm / rating / composer / comments などを部分更新。
   name / artist / album / genre / year / composer / comments などは実ファイルのタグへ書き戻し、`rating` / `disabled` / `playCount` / `skipCount` は DB のみ。
+  `rating` は 0〜100 で、範囲外は `400`（何も更新されません）。`rating` だけの更新では `dateModified` は進みません。
 - `PATCH /api/tracks`（`{trackIds, edit}`） — 複数曲の一括更新。
 - `POST /api/tracks/genre-tags/add` / `/remove` — ジャンルタグを末尾に一括で増減。
 

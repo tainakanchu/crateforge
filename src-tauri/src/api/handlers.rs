@@ -2866,8 +2866,7 @@ pub async fn set_track_rating(
     ExtractJson(body): ExtractJson<SetRatingBody>,
 ) -> Result<StatusCode, ApiError> {
     let db = state.db()?;
-    let rating = body.rating.clamp(0, 100);
-    db.set_rating(track_id, rating)?;
+    db.set_rating(track_id, crate::rating::clamp_rating(body.rating))?;
     state.notify_library_changed(None);
     Ok(StatusCode::NO_CONTENT)
 }
