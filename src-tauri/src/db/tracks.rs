@@ -2071,14 +2071,15 @@ impl Database {
     }
 
     /// 複数トラックをライブラリから完全に削除する (依存行ごと)。
-    /// 実際に消えた曲数を返す (存在しない track_id は 0 件として無視)。
+    /// 実際に消えた曲の track_id を入力順で返す (存在しない track_id と、入力内で
+    /// 2 回目以降の重複は含まない)。
     /// 1 トランザクションにまとめるので、途中で失敗しても中途半端に消えない。
-    pub fn delete_tracks(&self, track_ids: &[i64]) -> Result<usize> {
+    pub fn delete_tracks(&self, track_ids: &[i64]) -> Result<Vec<i64>> {
         let tx = self.conn.unchecked_transaction()?;
-        let mut deleted = 0usize;
+        let mut deleted = Vec::new();
         for &track_id in track_ids {
             if delete_track_cascade(&tx, track_id)? {
-                deleted += 1;
+                deleted.push(track_id);
             }
         }
         tx.commit()?;
@@ -2567,7 +2568,7 @@ mod tests {
         }
 
         // 存在しない ID を混ぜても件数は実際に消えた分だけ。
-        assert_eq!(db.delete_tracks(&[1, 999]).unwrap(), 1);
+        assert_eq!(db.delete_tracks(&[1, 999]).unwrap().len(), 1);
 
         let count = |sql: &str| -> i64 { db.conn.query_row(sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(count("SELECT COUNT(*) FROM tracks WHERE track_id = 1"), 0);
@@ -2623,7 +2624,7 @@ mod tests {
         db.add_tag_to_tracks(&[1, 2], "bridge").unwrap();
         db.add_tag_to_tracks(&[1], "mood:dreamy").unwrap();
 
-        assert_eq!(db.delete_tracks(&[1]).unwrap(), 1);
+        assert_eq!(db.delete_tracks(&[1]).unwrap().len(), 1);
 
         let count = |sql: &str| -> i64 { db.conn.query_row(sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(
@@ -2654,7 +2655,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert_eq!(db.delete_tracks(&[7]).unwrap(), 1);
+        assert_eq!(db.delete_tracks(&[7]).unwrap().len(), 1);
         let left: i64 = db
             .conn
             .query_row("SELECT COUNT(*) FROM track_analysis", [], |r| r.get(0))

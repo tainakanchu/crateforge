@@ -10,6 +10,7 @@
 //!   写像はアダプタ側で行う。
 //! - 再生キューの掃除・UI への通知など DB の外の後始末は、結果の値を見てアダプタが行う。
 
+pub mod delete;
 pub mod edit;
 pub mod playlists;
 pub mod similar;
