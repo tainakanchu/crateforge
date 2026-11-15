@@ -1400,7 +1400,11 @@ impl Database {
 
     /// 編集可能フィールドの部分更新。None のフィールドは触らない。
     #[allow(clippy::too_many_arguments)]
-    pub fn update_track(&self, track_id: i64, edits: &TrackEdit) -> Result<()> {
+    ///
+    /// 受け取るのは検証・正規化済みの [`CheckedTrackEdit`] だけ。不正な入力をどう返すか
+    /// (API は 400) は検証した側が決め、DB 層は不正な値を見ない。
+    pub fn update_track(&self, track_id: i64, edits: &CheckedTrackEdit) -> Result<()> {
+        let edits = &edits.0;
         // We build the SET clause dynamically so unset fields stay untouched.
         let mut sets: Vec<&str> = Vec::new();
         let mut values: Vec<rusqlite::types::Value> = Vec::new();
@@ -1476,20 +1480,13 @@ impl Database {
 
         // Key の手動上書き (#172)。アプリ管轄フィールドなので rating と同様に
         // XML メタデータの LWW 時計 (date_modified) は進めず、別 UPDATE で確定させる。
-        //
-        // 不正な値はどの UPDATE よりも前に弾く。`library::edit` は先に同じ関数で検証して
-        // `EditError::InvalidKey` (API は 400) にするので、ここに来るのは DB 層を直接呼ぶ経路だけ。
-        let key_override = match &edits.key_camelot_user {
-            Some(opt) => Some(normalize_key_override(opt.as_deref()).map_err(|e| {
-                rusqlite::Error::ToSqlConversionFailure(e.to_string().into())
-            })?),
-            None => None,
-        };
+        // 値は CheckedTrackEdit が正規化済み (`Some(None)` = 上書き解除)。
+        let key_override = &edits.key_camelot_user;
 
         // Key の UPDATE と本体の UPDATE (+ search_text の再計算) は 1 トランザクションにまとめる。
         // 本体が失敗したのに Key だけ書き換わった、という中途半端な状態を残さないため。
         let tx = self.conn.unchecked_transaction()?;
-        if let Some(value) = &key_override {
+        if let Some(value) = key_override {
             tx.execute(
                 "UPDATE tracks SET key_camelot_user = ?1 WHERE track_id = ?2",
                 params![value, track_id],
@@ -2256,25 +2253,48 @@ pub fn delete_track_cascade(conn: &Connection, track_id: i64) -> Result<bool> {
     Ok(conn.execute("DELETE FROM tracks WHERE track_id = ?1", params![track_id])? > 0)
 }
 
-/// Key の手動上書き (`TrackEdit::key_camelot_user`) に Camelot として解釈できない値が来た。
+/// [`TrackEdit`] の入力の誤り (何も書き換える前に見つける)。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidKeyOverride(pub String);
+pub enum InvalidTrackEdit {
+    /// Key の手動上書き (`key_camelot_user`) が Camelot として解釈できない。
+    Key(String),
+}
 
-impl std::fmt::Display for InvalidKeyOverride {
+impl std::fmt::Display for InvalidTrackEdit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid Camelot key: {}", self.0)
+        match self {
+            InvalidTrackEdit::Key(raw) => write!(f, "invalid Camelot key: {raw}"),
+        }
+    }
+}
+
+/// 検証・正規化済みの [`TrackEdit`]。[`Database::update_track`] はこれだけを受け取る。
+///
+/// 作る方法は [`CheckedTrackEdit::new`] のみ。Key の手動上書きは正規形
+/// (`Some(Some("8A"))`) か解除 (`Some(None)`) になっている。
+#[derive(Debug, Clone)]
+pub struct CheckedTrackEdit(TrackEdit);
+
+impl CheckedTrackEdit {
+    /// 入力を検証して正規化する。不正なら何も書かないまま [`InvalidTrackEdit`]。
+    pub fn new(edit: &TrackEdit) -> std::result::Result<Self, InvalidTrackEdit> {
+        let mut edit = edit.clone();
+        if let Some(key) = &edit.key_camelot_user {
+            edit.key_camelot_user = Some(normalize_key_override(key.as_deref())?);
+        }
+        Ok(Self(edit))
     }
 }
 
 /// Key の手動上書きの入力を DB に入れる値へ正規化する (規則はここ 1 か所)。
 /// `None` / 空白のみ → `None` (上書き解除)、Camelot 表記 → 正規形 ("08a" → "8A")、
 /// それ以外はエラー。
-pub fn normalize_key_override(raw: Option<&str>) -> Result<Option<String>, InvalidKeyOverride> {
+fn normalize_key_override(raw: Option<&str>) -> std::result::Result<Option<String>, InvalidTrackEdit> {
     match raw.map(str::trim) {
         None | Some("") => Ok(None),
         Some(raw) => crate::analyzer::similarity::normalize_camelot(raw)
             .map(Some)
-            .ok_or_else(|| InvalidKeyOverride(raw.to_string())),
+            .ok_or_else(|| InvalidTrackEdit::Key(raw.to_string())),
     }
 }
 
@@ -2342,6 +2362,10 @@ mod tests {
     };
     use crate::db::Database;
 
+    fn checked(edit: &crate::models::TrackEdit) -> super::CheckedTrackEdit {
+        super::CheckedTrackEdit::new(edit).unwrap()
+    }
+
     /// update_track は Key の UPDATE と本体の UPDATE を 1 トランザクションで行う。
     /// 本体の UPDATE が失敗したら、先に実行した Key の上書きも残らない。
     #[test]
@@ -2365,7 +2389,7 @@ mod tests {
             key_camelot_user: Some(Some("8A".into())),
             ..Default::default()
         };
-        assert!(db.update_track(1, &edit).is_err());
+        assert!(db.update_track(1, &checked(&edit)).is_err());
         let t = db.get_track_by_track_id(1).unwrap().unwrap();
         assert_eq!(t.name.as_deref(), Some("Song"));
         assert_eq!(t.key_camelot_user, None, "Key だけ書き換わっていないこと");
@@ -2376,18 +2400,18 @@ mod tests {
             key_camelot_user: Some(Some("08a".into())),
             ..Default::default()
         };
-        db.update_track(1, &key_only).unwrap();
+        db.update_track(1, &checked(&key_only)).unwrap();
         let t = db.get_track_by_track_id(1).unwrap().unwrap();
         assert_eq!(t.key_camelot_user.as_deref(), Some("8A"));
         assert_eq!(t.date_modified, None);
 
-        // DB 層を直接呼んだ場合の不正キーは従来と同じメッセージのエラー。
+        // 不正キーは DB 層に届く前 (CheckedTrackEdit::new) で弾かれる。
         let bad = crate::models::TrackEdit {
             key_camelot_user: Some(Some("nope".into())),
             ..Default::default()
         };
         assert_eq!(
-            db.update_track(1, &bad).unwrap_err().to_string(),
+            super::CheckedTrackEdit::new(&bad).unwrap_err().to_string(),
             "invalid Camelot key: nope"
         );
     }
@@ -2679,7 +2703,7 @@ mod tests {
             name: Some("みどり".to_string()),
             ..Default::default()
         };
-        db.update_track(1, &edit).unwrap();
+        db.update_track(1, &checked(&edit)).unwrap();
         // カタカナで検索 → 更新後の名前にヒット。
         assert_eq!(
             db.search_tracks("ミドリ", 100, 0, None, None)
@@ -3134,16 +3158,20 @@ mod tests {
         let set = |id: i64, v: Option<&str>| {
             db.update_track(
                 id,
-                &TrackEdit {
+                &checked(&TrackEdit {
                     key_camelot_user: Some(v.map(str::to_string)),
                     ..Default::default()
-                },
+                }),
             )
         };
-        // 小文字・空白は正規化して保存。不正値はエラーで何も書かない。
+        // 小文字・空白は正規化して保存。不正値は DB 層に届く前に弾かれる。
         set(1, Some(" 3b ")).unwrap();
         set(2, Some("8A")).unwrap();
-        assert!(set(2, Some("Am")).is_err());
+        assert!(super::CheckedTrackEdit::new(&TrackEdit {
+            key_camelot_user: Some(Some("Am".into())),
+            ..Default::default()
+        })
+        .is_err());
         let t1 = db.get_track_by_track_id(1).unwrap().unwrap();
         assert_eq!(t1.key_camelot_user.as_deref(), Some("3B"));
         assert_eq!(t1.date_modified.as_deref(), Some("2020-01-01T00:00:00Z"));

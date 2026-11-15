@@ -25,8 +25,8 @@ use tauri::Manager;
 use super::error::ApiError;
 use super::ApiState;
 use crate::analyzer::similarity::SimilarOpts;
-use crate::library::similar::{similar_hits, DEFAULT_SIMILAR_LIMIT};
 use crate::db::tracks::{AlbumInfo, ArtistInfo};
+use crate::library::similar::{similar_hits, DEFAULT_SIMILAR_LIMIT};
 use crate::models::{
     GenreTagCount, LibraryStats, Playlist, SimilarHit, Tag, TagCount, Track, TrackAnalysis,
 };
@@ -1308,10 +1308,11 @@ pub async fn get_similar_tracks(
         energy_tol: q.energy_tol,
     };
     let limit = q.limit.unwrap_or(DEFAULT_SIMILAR_LIMIT);
-    let (mut tracks, distances): (Vec<Track>, Vec<f64>) = similar_hits(&db, track_id, &opts, limit)?
-        .into_iter()
-        .map(|hit| (hit.track, hit.distance))
-        .unzip();
+    let (mut tracks, distances): (Vec<Track>, Vec<f64>) =
+        similar_hits(&db, track_id, &opts, limit)?
+            .into_iter()
+            .map(|hit| (hit.track, hit.distance))
+            .unzip();
     // 実効 BPM (タグ ?? 解析値) にそろえる (D3)。HTTP だけの規則なのでここで行う。
     apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
     let hits = tracks
@@ -2934,8 +2935,10 @@ pub async fn patch_tracks_bulk(
     let mut file_write_failed: Vec<i64> = Vec::new();
     let mut relocate_failed: Vec<i64> = Vec::new();
     let mut not_found: Vec<i64> = Vec::new();
+    // 入力の検証は 1 回だけ、どの曲にも書く前に行う (trackIds が空でも不正な入力は 400)。
+    let edit = crate::library::edit::check_edit(&body.edit)?;
     for &id in &body.track_ids {
-        match crate::library::edit::apply_track_edit(&db, id, &body.edit)? {
+        match crate::library::edit::apply_checked_edit(&db, id, &edit)? {
             Some(r) => {
                 updated += 1;
                 if r.file_write_failed {

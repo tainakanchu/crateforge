@@ -42,10 +42,11 @@ impl From<String> for ApiError {
 impl From<crate::library::edit::EditError> for ApiError {
     fn from(e: crate::library::edit::EditError) -> Self {
         use crate::library::edit::EditError;
-        match e {
-            EditError::InvalidKey(e) => ApiError::new(StatusCode::BAD_REQUEST, e.to_string()),
-            EditError::Db(e) => e.into(),
-        }
+        let status = match &e {
+            EditError::InvalidKey(_) => StatusCode::BAD_REQUEST,
+            EditError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        ApiError::new(status, e.to_string())
     }
 }
 

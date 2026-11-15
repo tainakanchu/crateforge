@@ -2188,6 +2188,24 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
+        // 対象の曲が無くても入力の誤りが先 (404 ではなく 400)。trackIds が空の一括も 400。
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/99999",
+            Some(edit.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks",
+            Some(json!({ "trackIds": [], "edit": edit })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
         // 同じリクエストの他の項目 (name) も書かれていない。
         let db = crate::db::Database::open(dir.path()).unwrap();
         for id in [1, 2] {

@@ -774,11 +774,12 @@ mod tests {
         db.set_rating(a, 70).unwrap();
         db.update_track(
             b,
-            &crate::models::TrackEdit {
+            &crate::db::tracks::CheckedTrackEdit::new(&crate::models::TrackEdit {
                 key_camelot_user: Some(Some("11A".into())),
                 comments: Some("hi".into()),
                 ..Default::default()
-            },
+            })
+            .unwrap(),
         )
         .unwrap();
         // a は解析キー 8A を持つ。

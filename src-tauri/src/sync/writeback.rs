@@ -1853,10 +1853,11 @@ mod tests {
         slave
             .update_track(
                 local_tracks[0].track_id,
-                &TrackEdit {
+                &crate::db::tracks::CheckedTrackEdit::new(&TrackEdit {
                     name: Some("Local Title".to_string()),
                     ..TrackEdit::default()
-                },
+                })
+                .unwrap(),
             )
             .unwrap();
         let provisioned_playlist = slave
@@ -1884,11 +1885,12 @@ mod tests {
         master
             .update_track(
                 1,
-                &TrackEdit {
+                &crate::db::tracks::CheckedTrackEdit::new(&TrackEdit {
                     name: Some("Master Title".to_string()),
                     album: Some("Master Album".to_string()),
                     ..TrackEdit::default()
-                },
+                })
+                .unwrap(),
             )
             .unwrap();
         master

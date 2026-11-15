@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::db::tracks::{CheckedTrackEdit, InvalidTrackEdit};
 use crate::db::Database;
 use crate::models::{Track, TrackEdit};
 use crate::organizer;
@@ -10,7 +11,7 @@ use crate::organizer;
 #[derive(Debug)]
 pub enum EditError {
     /// Key の手動上書きが Camelot 表記として解釈できない (入力の誤り。何も書き換えていない)。
-    InvalidKey(crate::db::tracks::InvalidKeyOverride),
+    InvalidKey(String),
     /// DB の読み書きに失敗した。
     Db(rusqlite::Error),
 }
@@ -18,13 +19,21 @@ pub enum EditError {
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EditError::InvalidKey(e) => e.fmt(f),
+            EditError::InvalidKey(raw) => write!(f, "{}", InvalidTrackEdit::Key(raw.clone())),
             EditError::Db(e) => e.fmt(f),
         }
     }
 }
 
 impl std::error::Error for EditError {}
+
+impl From<InvalidTrackEdit> for EditError {
+    fn from(e: InvalidTrackEdit) -> Self {
+        match e {
+            InvalidTrackEdit::Key(raw) => EditError::InvalidKey(raw),
+        }
+    }
+}
 
 impl From<rusqlite::Error> for EditError {
     fn from(e: rusqlite::Error) -> Self {
@@ -58,9 +67,22 @@ pub fn apply_track_edit(
     track_id: i64,
     edit: &TrackEdit,
 ) -> Result<Option<TrackEditOutcome>, EditError> {
-    if let Some(key) = &edit.key_camelot_user {
-        crate::db::tracks::normalize_key_override(key.as_deref()).map_err(EditError::InvalidKey)?;
-    }
+    apply_checked_edit(db, track_id, &check_edit(edit)?)
+}
+
+/// 編集内容を検証・正規化する (手順 0)。複数曲に同じ編集を当てるときは、これを **1 回だけ**
+/// 先に呼んでから [`apply_checked_edit`] を曲ごとに呼ぶ。対象が 0 曲でも入力の誤りを返せ、
+/// 途中の曲まで書いてから失敗することもない。
+pub fn check_edit(edit: &TrackEdit) -> Result<CheckedTrackEdit, EditError> {
+    Ok(CheckedTrackEdit::new(edit)?)
+}
+
+/// 検証済みの編集を 1 曲に適用する ([`apply_track_edit`] の手順 1 以降)。
+pub fn apply_checked_edit(
+    db: &Database,
+    track_id: i64,
+    edit: &CheckedTrackEdit,
+) -> Result<Option<TrackEditOutcome>, EditError> {
     db.update_track(track_id, edit)?;
     // 更新後の Track を取得。存在しない id は 0 行更新なので空 → None。
     let Some(mut track) = db.get_tracks_by_ids(&[track_id])?.into_iter().next() else {
