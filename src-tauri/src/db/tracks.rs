@@ -858,6 +858,10 @@ pub(super) fn build_order_by(
     order
 }
 
+/// ライブラリ / 検索の一覧の既定の並び (sort_field が無い・無効なとき)。同名の曲の相対順が
+/// 決まらないとページ間で重複・取りこぼしが起きるので、track_id で一意にする。
+const LIBRARY_DEFAULT_ORDER: &str = "name COLLATE NATSORT ASC, track_id ASC";
+
 /// アルバム表示の対象範囲。既定 (どちらも None) はライブラリ全体。
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AlbumScope<'a> {
@@ -1324,15 +1328,7 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
-        let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NATSORT ASC");
-        let sql = format!(
-            "SELECT {TRACK_COLUMNS}
-             FROM tracks ORDER BY {} LIMIT ?1 OFFSET ?2",
-            order_by
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![limit, offset], row_to_track)?;
-        rows.collect()
+        self.search_tracks_with_genre("", None, limit, offset, sort_field, sort_order)
     }
 
     /// 空白区切りの各トークンを AND で結合した検索。
@@ -1363,23 +1359,34 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
-        use rusqlite::types::Value;
+        // ID 先行: 並べ替えは (並びのキー, track_id) だけで行い、そのページの ID を決めてから行を引く。
+        // 全列を並べ替えると、深い OFFSET のページほど遅くなる。表示順の ID 列は書き込みがあるまで
+        // 使い回すので、2 ページ目以降は並べ替えもしない (docs/library-list/design.md §3)。
+        let ids = self.ordered_track_ids(query, genre_tags, sort_field, sort_order)?;
+        self.get_tracks_by_ids(super::list_cache::page(&ids, limit, offset))
+    }
 
-        let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NATSORT ASC");
-        let (where_sql, mut bind) = self.search_where(query, genre_tags);
-        bind.push(Value::Integer(limit));
-        bind.push(Value::Integer(offset));
-
-        let sql = format!(
-            "SELECT {TRACK_COLUMNS}
-             FROM tracks
-             WHERE {}
-             ORDER BY {} LIMIT ? OFFSET ?",
-            where_sql, order_by
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), row_to_track)?;
-        rows.collect()
+    /// ライブラリ / 検索の一覧の track_id を表示順で全件返す (プロセス内キャッシュつき)。
+    ///
+    /// ページ取得 ([`Self::search_tracks_with_genre`]) と ID 列 ([`Self::get_track_ids`]) は
+    /// どちらもここを通す (同じ WHERE・同じ ORDER BY)。並びは必ず track_id で一意にする。
+    fn ordered_track_ids(
+        &self,
+        query: &str,
+        genre_tags: Option<&str>,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<std::sync::Arc<Vec<i64>>> {
+        let list = format!("library\u{1f}{query}\u{1f}{genre_tags:?}\u{1f}{sort_field:?}\u{1f}{sort_order:?}");
+        self.cached_list_ids(&list, || {
+            let order_by = build_order_by(sort_field, sort_order, "", LIBRARY_DEFAULT_ORDER);
+            let (where_sql, bind) = self.search_where(query, genre_tags);
+            let sql =
+                format!("SELECT track_id FROM tracks WHERE {where_sql} ORDER BY {order_by}");
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), |r| r.get(0))?;
+            rows.collect()
+        })
     }
 
     /// ライブラリ検索の WHERE 句 (`FROM tracks` 用) とバインド値。`query` が空なら全曲 (`1=1`)。
@@ -1439,12 +1446,8 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<i64>> {
-        let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NATSORT ASC");
-        let (where_sql, bind) = self.search_where(query.unwrap_or(""), None);
-        let sql = format!("SELECT track_id FROM tracks WHERE {where_sql} ORDER BY {order_by}");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), |r| r.get(0))?;
-        rows.collect()
+        self.ordered_track_ids(query.unwrap_or(""), None, sort_field, sort_order)
+            .map(|ids| ids.to_vec())
     }
 
     /// 検索クエリ (search_tracks と同じ DSL) にマッチする track_id の集合を返す。
@@ -1708,6 +1711,20 @@ impl Database {
             params![rating, track_id],
         )?;
         Ok(())
+    }
+
+    /// 複数曲に同じ rating を付ける ([`Self::set_rating`] と同じ規則)。1 トランザクションで行い、
+    /// 途中で失敗したらどの曲も変わらない。存在しない id は無視する。
+    pub fn set_rating_many(&self, track_ids: &[i64], rating: i64) -> Result<()> {
+        let rating = crate::rating::clamp_rating(rating);
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare("UPDATE tracks SET rating = ?1 WHERE track_id = ?2")?;
+            for &track_id in track_ids {
+                stmt.execute(params![rating, track_id])?;
+            }
+        }
+        tx.commit()
     }
 
     /// アプリ内再生で「1回聴いた」と判定されたとき、play_count を +1 し

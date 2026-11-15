@@ -354,6 +354,14 @@ pub fn set_track_rating(app: AppHandle, track_id: i64, rating: i64) -> Result<()
     db.set_rating(track_id, rating).map_err(|e| e.to_string())
 }
 
+/// 複数曲に同じ rating を付ける (全選択でも 1 回の呼び出し・1 トランザクション)。
+#[tauri::command]
+pub fn set_tracks_rating(app: AppHandle, track_ids: Vec<i64>, rating: i64) -> Result<(), String> {
+    let db = open_db(&app)?;
+    db.set_rating_many(&track_ids, rating)
+        .map_err(|e| e.to_string())
+}
+
 /// `add_genre_tag` / `remove_genre_tag` の結果 (`POST /api/tracks/genre-tags/*` と同じ形)。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -555,6 +563,19 @@ pub fn count_artists(app: AppHandle, query: Option<String>) -> Result<i64, Strin
 pub fn get_artist_albums(app: AppHandle, name: String) -> Result<Vec<AlbumRow>, String> {
     let db = open_db(&app)?;
     db.get_artist_albums(&name).map_err(|e| e.to_string())
+}
+
+/// 削除の確認ダイアログ用: 対象の件数・先頭の数曲・ライブラリルート (`root`) の外にある
+/// ファイルの数。対象の曲を全部フロントへ送らずに確認を出せる (全選択で数万曲でも軽い)。
+#[tauri::command(async)]
+pub fn preview_delete_tracks(
+    app: AppHandle,
+    track_ids: Vec<i64>,
+    root: Option<String>,
+) -> Result<crate::library::delete::RemovalPreview, String> {
+    let db = open_db(&app)?;
+    crate::library::delete::preview_removal(&db, &track_ids, root.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 /// 指定トラックをライブラリから削除する。実際に消えた曲数を返す。

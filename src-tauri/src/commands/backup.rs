@@ -113,6 +113,15 @@ pub fn backup_library(app: AppHandle, dest: Option<String>) -> Result<String, St
 /// だけでは反映されない箇所がある。安全側に倒して常に再起動を促す)。
 #[tauri::command]
 pub fn restore_library(app: AppHandle, src: String) -> Result<bool, String> {
+    // DB ファイルを差し替えるので、終わったら (成功・失敗によらず) 一覧の ID 列キャッシュを捨てる。
+    // ファイルの差し替えはコミットを経ないので、commit hook では拾えない。
+    struct InvalidateListCache;
+    impl Drop for InvalidateListCache {
+        fn drop(&mut self) {
+            crate::db::list_cache::invalidate();
+        }
+    }
+    let _invalidate = InvalidateListCache;
     let src_path = PathBuf::from(&src);
     if !src_path.is_file() {
         return Err("バックアップファイルが見つかりません".to_string());

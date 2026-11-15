@@ -1,6 +1,7 @@
 pub mod analysis;
 pub mod backup;
 pub mod duplicates;
+pub(crate) mod list_cache;
 pub mod playback;
 pub mod playlists;
 pub mod schema;
@@ -49,6 +50,9 @@ pub struct Database {
     pub(crate) conn: Connection,
     #[allow(dead_code)]
     pub path: String,
+    /// 一覧の ID 列キャッシュ ([`list_cache`]) で、この DB のエントリを見分ける名前。
+    /// ファイルの DB はパス (どのコネクションからも同じ)、テスト用のインメモリ DB は個体ごとに別。
+    list_scope: String,
 }
 
 impl Database {
@@ -67,8 +71,10 @@ impl Database {
         )?;
         let db = Database {
             conn,
+            list_scope: path_str.clone(),
             path: path_str,
         };
+        db.watch_commits();
         register_functions(&db.conn)?;
         {
             let mut done = migrated_paths().lock().unwrap_or_else(|e| e.into_inner());
@@ -143,15 +149,39 @@ fn register_functions(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+impl Database {
+    /// 書き込みトランザクションのコミットで、一覧の ID 列キャッシュを無効にする。
+    fn watch_commits(&self) {
+        self.conn.commit_hook(Some(|| {
+            list_cache::invalidate();
+            false // コミットは止めない
+        }));
+    }
+
+    /// 一覧 `list` (スコープ・検索語・並び順を表す文字列) の表示順の track_id 列。
+    /// 書き込みがあるまでプロセス内で使い回す ([`list_cache`])。
+    pub(crate) fn cached_list_ids(
+        &self,
+        list: &str,
+        compute: impl FnOnce() -> Result<Vec<i64>>,
+    ) -> Result<std::sync::Arc<Vec<i64>>> {
+        list_cache::get_or_compute(format!("{}\u{1f}{list}", self.list_scope), compute)
+    }
+}
+
 #[cfg(test)]
 impl Database {
     /// テスト用のインメモリ DB (スキーマ + マイグレーション適用済み)。
     pub fn open_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let db = Database {
             conn,
             path: ":memory:".to_string(),
+            list_scope: format!(":memory:{n}"),
         };
+        db.watch_commits();
         register_functions(&db.conn)?;
         schema::create_tables(&db.conn)?;
         migrate(&db.conn)?;

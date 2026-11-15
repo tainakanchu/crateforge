@@ -363,3 +363,184 @@ fn windowed_list_artists_count_matches_pages() {
     assert_eq!(db.count_artists_matching(None).unwrap(), 7);
     assert_eq!(db.artist_count().unwrap(), 7);
 }
+
+/// 並びのキーが同値の行があっても、ページと ID 列の並びが一致する (L1)。
+/// 既定の並び (曲名) は track_id、プレイリストの手動順は rowid で一意にしている。
+#[test]
+fn windowed_list_ties_are_ordered_deterministically() {
+    let db = Database::open_memory().unwrap();
+    // 全曲が同じ曲名。プレイリスト 10 は全行が同じ sort_index。
+    for id in 1..=23 {
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, file_exists) VALUES (?1, 'Same', 1)",
+                [id],
+            )
+            .unwrap();
+    }
+    db.conn
+        .execute_batch(
+            "INSERT INTO playlists (playlist_id, persistent_id, name, is_folder, sort_order)
+               VALUES (10, 'P010', 'Ties', 0, 1);",
+        )
+        .unwrap();
+    for id in [9, 3, 17, 3, 21, 1, 12, 5, 9, 2] {
+        db.conn
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, sort_index) VALUES (10, ?1, 0)",
+                [id],
+            )
+            .unwrap();
+    }
+    for (field, order) in [(None, None), (Some("bogus"), None), (Some("name"), Some("desc"))] {
+        let paged: Vec<i64> = all_pages(|limit, offset| db.get_tracks(limit, offset, field, order).unwrap())
+            .into_iter()
+            .map(|t| t.track_id)
+            .collect();
+        assert_eq!(paged, (1..=23).collect::<Vec<i64>>(), "{field:?}");
+        assert_eq!(db.get_track_ids(None, field, order).unwrap(), paged, "{field:?}");
+    }
+    // 手動順で同じ sort_index なら、入れた順 (rowid)。
+    let paged: Vec<i64> = all_pages(|limit, offset| {
+        db.get_playlist_tracks_filtered(10, None, limit, offset, None, None)
+            .unwrap()
+    })
+    .into_iter()
+    .map(|t| t.track_id)
+    .collect();
+    assert_eq!(paged, vec![9, 3, 17, 3, 21, 1, 12, 5, 9, 2]);
+    assert_eq!(
+        db.get_playlist_track_ids_filtered(10, None, None, None).unwrap(),
+        paged
+    );
+}
+
+/// ID 列のキャッシュ: 読み取りだけなら覚えた列を使い回し、書き込みがあれば捨てる。
+/// (SQLite の commit hook は読み取りでは呼ばれず、書き込みトランザクションのコミットで呼ばれる。)
+#[test]
+fn windowed_list_id_cache_survives_reads_and_drops_on_write() {
+    use std::cell::Cell;
+    let db = db();
+    let computes = Cell::new(0);
+    let probe = || {
+        db.cached_list_ids("probe", || {
+            computes.set(computes.get() + 1);
+            Ok(vec![1, 2, 3])
+        })
+        .unwrap()
+    };
+    // ほかのテスト (別スレッド) の書き込みでも無効になるので、成立するまで何度か試す。
+    let mut reused = false;
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        computes.set(0);
+        probe();
+        // 読み取り (件数・ページ・ID 列・スマートプレイリストの評価) ではキャッシュを捨てない。
+        db.count_tracks(Some("house")).unwrap();
+        db.get_tracks(PAGE, 0, Some("name"), Some("asc")).unwrap();
+        db.get_playlist_track_ids_filtered(30, None, None, None).unwrap();
+        probe();
+        if computes.get() == 1 {
+            reused = true;
+            break;
+        }
+    }
+    assert!(reused, "読み取りだけなのにキャッシュが使い回されなかった");
+
+    // 書き込みのあとは、一覧が新しい内容になる (古い ID 列を返さない)。
+    let before = db.get_track_ids(None, Some("name"), Some("asc")).unwrap();
+    db.conn
+        .execute("UPDATE tracks SET name = 'Aaa' WHERE track_id = 14", [])
+        .unwrap();
+    let after = db.get_track_ids(None, Some("name"), Some("asc")).unwrap();
+    assert_ne!(before, after);
+    assert_eq!(after[0], 14);
+    // スマートプレイリストも同じ: 条件から外れた曲が消える。
+    assert_eq!(db.count_playlist_tracks_filtered(30, None).unwrap(), 8);
+    db.conn
+        .execute("UPDATE tracks SET genre = 'Ambient' WHERE track_id = 1", [])
+        .unwrap();
+    assert_eq!(db.count_playlist_tracks_filtered(30, None).unwrap(), 7);
+}
+
+/// 複数曲のレーティングは 1 回で全部変わる (全選択でも 1 トランザクション)。値は 0〜100 に収める。
+#[test]
+fn set_rating_many_updates_all_in_one_transaction() {
+    let db = db();
+    let ids: Vec<i64> = (1..=14).collect();
+    db.set_rating_many(&ids, 80).unwrap();
+    assert!(db.get_tracks_by_ids(&ids).unwrap().iter().all(|t| t.rating == Some(80)));
+    db.set_rating_many(&[1, 2, 999], 250).unwrap();
+    let t = db.get_tracks_by_ids(&[1, 2, 3]).unwrap();
+    assert_eq!(
+        t.iter().map(|t| t.rating).collect::<Vec<_>>(),
+        vec![Some(100), Some(100), Some(80)]
+    );
+    // rating だけの変更では date_modified を進めない (set_rating と同じ)。
+    assert!(t.iter().all(|t| t.date_modified.is_none()));
+    db.set_rating_many(&[], 0).unwrap();
+}
+
+/// 計測用 (通常のテストでは走らせない):
+/// `cargo test --release windowed_list_bench -- --ignored --nocapture`
+///
+/// 37,082 曲の DB で、深い OFFSET のページ取得を「全列を並べ替える」(v0.21.0 までの SQL) と
+/// 「ID 先行」(現在) で比べる。結果は docs/library-list/design.md §3 に記録する。
+#[test]
+#[ignore]
+fn windowed_list_bench_deep_offset_page() {
+    use std::time::Instant;
+    let db = Database::open_memory().unwrap();
+    db.conn.execute_batch("BEGIN").unwrap();
+    for id in 1..=37_082i64 {
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, artist, album, genre, bpm, location_path, file_exists)
+                 VALUES (?1, ?2, ?3, ?4, 'House Techno', ?5, ?6, 1)",
+                rusqlite::params![
+                    id,
+                    format!("Track {} of the {} mix", (id * 7919) % 37_082, id % 97),
+                    format!("Artist {}", (id * 31) % 3152),
+                    format!("Album {}", (id * 17) % 5210),
+                    100 + id % 60,
+                    format!("/music/artist {}/album {}/{id}.flac", id % 3152, id % 5210),
+                ],
+            )
+            .unwrap();
+    }
+    db.conn.execute_batch("COMMIT").unwrap();
+
+    let time = |label: &str, f: &dyn Fn() -> usize| {
+        let mut best = f64::MAX;
+        let mut n = 0;
+        for _ in 0..5 {
+            let t = Instant::now();
+            n = f();
+            best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        println!("{label}: {best:.1} ms ({n} rows)");
+    };
+    for (field, offset) in [(Some("name"), 0), (Some("name"), 36_800), (Some("artist"), 36_800)] {
+        let order = super::tracks::build_order_by(field, Some("asc"), "", "name");
+        let old_sql = format!(
+            "SELECT {} FROM tracks ORDER BY {order} LIMIT 200 OFFSET {offset}",
+            super::tracks::TRACK_COLUMNS
+        );
+        time(&format!("全列を並べ替え (v0.21.0)      sort={field:?} offset={offset}"), &|| {
+            let mut stmt = db.conn.prepare(&old_sql).unwrap();
+            let rows = stmt.query_map([], super::tracks::row_to_track).unwrap();
+            rows.count()
+        });
+        // 書き込みの直後 (ID 列を並べ替え直す = 一覧を開いた最初の 1 回)。
+        time(&format!("ID 先行・最初の 1 回 (並べ替え) sort={field:?} offset={offset}"), &|| {
+            super::list_cache::invalidate();
+            db.get_tracks(200, offset, field, Some("asc")).unwrap().len()
+        });
+        // 2 ページ目以降 (覚えた ID 列から切り出して行を引くだけ)。
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        db.get_tracks(200, 0, field, Some("asc")).unwrap();
+        time(&format!("ID 先行・2 ページ目以降       sort={field:?} offset={offset}"), &|| {
+            db.get_tracks(200, offset, field, Some("asc")).unwrap().len()
+        });
+    }
+}

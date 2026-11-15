@@ -158,6 +158,83 @@ pub fn remove_tracks(
     Ok(removed)
 }
 
+/// 削除の確認ダイアログに出す内容 ([`preview_removal`])。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovalPreview {
+    /// ライブラリにある対象曲の数 (重複・存在しない id を除く)。
+    pub count: usize,
+    /// 先頭の数曲 (渡した順。曲名の表示用)。
+    pub sample: Vec<crate::models::Track>,
+    /// 実ファイルがあり、`root` の外にある曲の数 (`root` が None なら 0)。
+    /// 1 つでもあると「ファイルも削除する」は選べない。
+    pub outside_root: usize,
+}
+
+/// 確認ダイアログの先頭に出す曲数。
+const PREVIEW_SAMPLE: usize = 5;
+
+/// 削除対象 `track_ids` の件数・先頭の数曲・ルート外のファイル数を返す。
+///
+/// 確認ダイアログは対象の曲をすべて読み込まずに済む (全選択で数万曲でも、返すのは数曲だけ)。
+/// ルート内かどうかはパス文字列の前方一致で見る表示用のヒントで、実際の安全判定は
+/// [`remove_tracks`] (canonicalize して検証) が行う。
+pub fn preview_removal(
+    db: &Database,
+    track_ids: &[i64],
+    root: Option<&str>,
+) -> rusqlite::Result<RemovalPreview> {
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<i64> = track_ids.iter().copied().filter(|id| seen.insert(*id)).collect();
+    let json = serde_json::to_string(&ids)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+    let mut count = 0usize;
+    let mut outside_root = 0usize;
+    {
+        let mut stmt = db.conn.prepare(
+            "SELECT location_path, file_exists FROM tracks
+             WHERE track_id IN (SELECT value FROM json_each(?1))",
+        )?;
+        let rows = stmt.query_map([&json], |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)? != 0))
+        })?;
+        for row in rows {
+            let (path, exists) = row?;
+            count += 1;
+            if let (Some(root), Some(path)) = (root, path.filter(|p| !p.is_empty())) {
+                if exists && !is_inside_root_hint(&path, root) {
+                    outside_root += 1;
+                }
+            }
+        }
+    }
+
+    // 先頭の数曲: 存在しない id が混ざっていても埋まるよう、少し多めに引く。
+    let head = &ids[..ids.len().min(PREVIEW_SAMPLE * 10)];
+    let mut sample = db.get_tracks_by_ids(head)?;
+    sample.truncate(PREVIEW_SAMPLE);
+    Ok(RemovalPreview {
+        count,
+        sample,
+        outside_root,
+    })
+}
+
+/// パスが root 配下かを文字列で判定する (表示用のヒント)。区切りは `/` に寄せ、末尾に区切りを
+/// 足して `/Music` が `/MusicOld` に前方一致しないようにする。
+fn is_inside_root_hint(path: &str, root: &str) -> bool {
+    let norm = |p: &str| {
+        let mut s = p.replace('\\', "/");
+        while s.ends_with('/') {
+            s.pop();
+        }
+        s.push('/');
+        s
+    };
+    norm(path).starts_with(&norm(root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +336,42 @@ mod tests {
         let err = remove_tracks(&db, &[1], true).unwrap_err();
         assert!(matches!(err, DeleteError::LibraryRootNotSet), "{err:?}");
         assert_eq!(remaining(&db), vec![1]);
+    }
+
+    /// 確認ダイアログ用の集計: 重複・存在しない id を除いた件数、先頭の数曲、ルート外の数。
+    #[test]
+    fn preview_counts_without_loading_all_tracks() {
+        let db = Database::open_memory().unwrap();
+        for id in 1..=40 {
+            let path = if id % 2 == 0 {
+                format!("/music/lib/{id}.mp3")
+            } else {
+                format!("/music/library-old/{id}.mp3")
+            };
+            add_track(&db, id, Some(Path::new(&path)));
+        }
+        add_track(&db, 41, None);
+        // 41 はパスなし、42 はファイルが無い (ルート外でも数えない)。
+        add_track(&db, 42, Some(Path::new("/elsewhere/42.mp3")));
+        db.conn
+            .execute("UPDATE tracks SET file_exists = 0 WHERE track_id = 42", [])
+            .unwrap();
+
+        let mut ids: Vec<i64> = (1..=42).collect();
+        ids.extend([1, 2, 999]);
+        let p = preview_removal(&db, &ids, Some("/music/lib")).unwrap();
+        assert_eq!(p.count, 42);
+        assert_eq!(p.outside_root, 20, "library-old は lib の外 (前方一致で誤判定しない)");
+        assert_eq!(
+            p.sample.iter().map(|t| t.track_id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+        // ルート未設定なら外かどうかは数えない。
+        assert_eq!(preview_removal(&db, &ids, None).unwrap().outside_root, 0);
+        // Windows の区切りと末尾の区切り。
+        assert!(is_inside_root_hint("C:\\Music\\a.mp3", "C:/Music/"));
+        assert!(!is_inside_root_hint("C:\\MusicOld\\a.mp3", "C:\\Music"));
+        let empty = preview_removal(&db, &[], Some("/music/lib")).unwrap();
+        assert_eq!((empty.count, empty.sample.len()), (0, 0));
     }
 }
