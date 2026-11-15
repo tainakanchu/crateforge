@@ -18,7 +18,7 @@ import type { LayoutChangeEvent, GestureResponderEvent } from "react-native";
 import { useRouter } from "expo-router";
 
 import { BRAND, PALETTE } from "@/constants/brand";
-import { ApiError, type SimilarHit, type Track, formatDuration, isNativePlaybackActive, ratingToHalfStars, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
+import { ApiError, type SimilarHit, type Track, formatDuration, isNativePlaybackActive, ratingToHalfStars, starsToRating, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
 import ModeToggleButton from "@/components/ModeToggleButton";
@@ -529,7 +529,7 @@ function RatingControl({ track }: { track: Track }) {
 
   const handleChange = (next: number) => {
     const prev = rating;
-    const value = Math.round(next * 20);
+    const value = starsToRating(next);
     setRatingValue(value); // 楽観的更新
     setRating.mutate(
       {

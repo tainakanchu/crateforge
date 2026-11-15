@@ -12,7 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import Screen from "@/components/Screen";
 import { showActionSheet } from "@/components/ActionSheet";
 import { REAUTH_HREF, connectionLabel } from "@/lib/connectionStatus";
-import { type ArtistGrouping, type TrackMetaField, formatDuration, useConnection, useDownloads, useSettings } from "@crateforge/core";
+import { type ArtistGrouping, type TrackMetaField, formatDuration, ratingToHalfStars, useConnection, useDownloads, useSettings } from "@crateforge/core";
 import QualityPicker from "@/features/offline/QualityPicker";
 import { formatBytes } from "@/features/offline/format";
 import { formatRatingConflict } from "@/features/triage/conflict";
@@ -440,8 +440,8 @@ function describePendingOp(op: {
 }): string {
   const name = op.trackName || `#${op.trackId}`;
   if (op.kind === "rating") {
-    const stars = Math.round((op.rating ?? 0) / 20);
-    return `★${stars} ← ${name}`;
+    // 半星（10 刻み）も保つ。例: 70 → ★3.5。
+    return `★${ratingToHalfStars(op.rating)} ← ${name}`;
   }
   if (op.kind === "tag-add") return `+${op.tag} ← ${name}`;
   if (op.kind === "tag-remove") return `-${op.tag} ← ${name}`;

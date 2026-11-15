@@ -34,6 +34,13 @@ describe("formatRatingConflict", () => {
     expect(s.label).toContain("★★★");
   });
 
+  it("半星を保つ（70 → 3.5 / ★★★½）", () => {
+    const s = formatRatingConflict(70, 50);
+    expect(s.localStars).toBe(3.5);
+    expect(s.serverStars).toBe(2.5);
+    expect(s.label).toBe("端末 ★★★½ / サーバ ★★½");
+  });
+
   it("未設定を扱う", () => {
     const s = formatRatingConflict(0, null);
     expect(s.localStars).toBe(0);

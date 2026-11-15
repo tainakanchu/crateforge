@@ -3,7 +3,7 @@ import {
   artistLabel,
   formatDuration,
   formatSeconds,
-  ratingToStars,
+  starsToRating,
   ratingToHalfStars,
   formatRatingStars,
   trackArtist,
@@ -37,20 +37,6 @@ describe("formatSeconds", () => {
     expect(formatSeconds(0)).toBe("0:00");
     expect(formatSeconds(65.4)).toBe("1:05");
     expect(formatSeconds(null)).toBe("0:00");
-  });
-});
-
-describe("ratingToStars", () => {
-  it("maps 0-100 to 0-5 stars", () => {
-    expect(ratingToStars(0)).toBe(0);
-    expect(ratingToStars(80)).toBe(4);
-    expect(ratingToStars(100)).toBe(5);
-    expect(ratingToStars(50)).toBe(3); // 2.5 -> round -> 3 (banker? Math.round -> 3)
-  });
-  it("guards null and clamps", () => {
-    expect(ratingToStars(null)).toBe(0);
-    expect(ratingToStars(200)).toBe(5);
-    expect(ratingToStars(-10)).toBe(0);
   });
 });
 
@@ -145,7 +131,29 @@ describe("半星表示", () => {
     expect(ratingToHalfStars(null)).toBe(0);
     expect(ratingToHalfStars(250)).toBe(5);
   });
+  it("ratingToHalfStars は 10 刻みに四捨五入する（半端な値）", () => {
+    expect(ratingToHalfStars(4)).toBe(0);
+    expect(ratingToHalfStars(5)).toBe(0.5);
+    expect(ratingToHalfStars(64)).toBe(3);
+    expect(ratingToHalfStars(65)).toBe(3.5);
+    expect(ratingToHalfStars(75)).toBe(4);
+    expect(ratingToHalfStars(-10)).toBe(0);
+    expect(ratingToHalfStars(Number.NaN)).toBe(0);
+  });
+  it("starsToRating は星数 × 20（ratingToHalfStars の逆）", () => {
+    expect(starsToRating(0)).toBe(0);
+    expect(starsToRating(0.5)).toBe(10);
+    expect(starsToRating(3.5)).toBe(70);
+    expect(starsToRating(5)).toBe(100);
+    expect(starsToRating(9)).toBe(100);
+    expect(starsToRating(-1)).toBe(0);
+    expect(starsToRating(null)).toBe(0);
+    for (const half of [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5]) {
+      expect(ratingToHalfStars(starsToRating(half))).toBe(half);
+    }
+  });
   it("formatRatingStars は ½ を付ける", () => {
+    expect(formatRatingStars(65)).toBe("★★★½");
     expect(formatRatingStars(70)).toBe("★★★½");
     expect(formatRatingStars(10)).toBe("½");
     expect(formatRatingStars(80)).toBe("★★★★");
