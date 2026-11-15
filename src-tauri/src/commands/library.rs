@@ -15,7 +15,6 @@ use crate::models::{
     ImportResult, ImportSummary, LibraryStats, Tag, TagCount, TechMetaRefreshSummary, Track,
     TrackEdit,
 };
-use crate::organizer;
 
 fn get_db(app: &AppHandle) -> Result<Database, String> {
     let app_dir = app
@@ -255,106 +254,17 @@ pub fn get_library_stats(app: AppHandle) -> Result<LibraryStats, String> {
     db.library_stats().map_err(|e| e.to_string())
 }
 
-/// `Option<Option<i64>>` のパッチを最終値へ解決する。
-/// `Some(Some(v))`=設定 / `Some(None)`=クリア / `None`=旧値を維持。
-fn resolve_int(edit: &Option<Option<i64>>, before: Option<i64>) -> Option<i64> {
-    match edit {
-        Some(v) => *v,
-        None => before,
-    }
-}
-
+/// 曲のメタデータを編集する (Get Info)。手順は HTTP API の `PATCH /api/tracks/:id` と共通の
+/// [`crate::library::edit::apply_track_edit`] (DB 更新 → タグ書き戻し → 整理)。
+///
+/// GUI では、対象の曲が無くても、タグ書き戻し・移動に失敗しても成功として返す
+/// (失敗は警告ログに留め、編集自体は確定させる)。
 #[tauri::command]
 pub fn update_track(app: AppHandle, track_id: i64, edits: TrackEdit) -> Result<(), String> {
     let db = get_db(&app)?;
-
-    // 1. 編集前のトラックを取得 (旧 location / 非編集フィールドの保持に使う)。
-    let before = db
-        .get_track_by_track_id(track_id)
-        .map_err(|e| e.to_string())?;
-
-    // 2. DB を更新 (ここまでは必ず確定させる)。
-    db.update_track(track_id, &edits)
-        .map_err(|e| e.to_string())?;
-
-    // 3. 書き戻しのガード: 旧トラックや実ファイルが無いなら DB 更新だけで終了。
-    //    タグ書き戻し・移動の失敗は警告に留め、編集自体は成功扱いとする。
-    let Some(before) = before else { return Ok(()) };
-    let loc = before.location_path.clone();
-
-    // 4. 最終値を確定 (edits 優先、来なかった項目は旧値)。
-    let name = edits.name.clone().or(before.name.clone());
-    let artist = edits.artist.clone().or(before.artist.clone());
-    let album_artist = edits.album_artist.clone().or(before.album_artist.clone());
-    let composer = edits.composer.clone().or(before.composer.clone());
-    let album = edits.album.clone().or(before.album.clone());
-    let genre = edits.genre.clone().or(before.genre.clone());
-    let comments = edits.comments.clone().or(before.comments.clone());
-    let year = resolve_int(&edits.year, before.year);
-    let track_number = resolve_int(&edits.track_number, before.track_number);
-    let track_count = resolve_int(&edits.track_count, before.track_count);
-    let disc_number = resolve_int(&edits.disc_number, before.disc_number);
-    let disc_count = resolve_int(&edits.disc_count, before.disc_count);
-    // Compilation は編集された場合は新値、なければ旧値を引き継ぐ。
-    let compilation = edits.compilation.unwrap_or(before.compilation);
-
-    // BPM / Key もファイルタグへ書く (#164)。
-    // BPM はトラック自身の値 (ユーザーが編集した可能性がある) を優先し、
-    // 未設定なら解析結果へフォールバックする。Key は実効キー
-    // (手動上書き ?? 解析結果, #172)。上書きは DB 側で正規化済みの値を読み直す。
-    let analysis = db.get_analysis(track_id).ok().flatten();
-    let bpm = resolve_int(&edits.bpm, before.bpm)
-        .filter(|n| *n > 0)
-        .map(|n| n as f64)
-        .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
-    let key_user = if edits.key_camelot_user.is_some() {
-        db.get_track_by_track_id(track_id)
-            .ok()
-            .flatten()
-            .and_then(|t| t.key_camelot_user)
-    } else {
-        before.key_camelot_user.clone()
-    };
-    let key = organizer::effective_initial_key(key_user.as_deref(), analysis.as_ref());
-
-    // 5. 実ファイルのタグを書き戻す (他アプリでも編集内容が見えるように)。
-    //    #163: これは整理先フォルダの設定とは無関係に常に行う。
-    //    HTTP API (PATCH /api/tracks/:id) と同じ organizer 側の関数を使う。
-    let w = organizer::TagWrite {
-        title: name.as_deref(),
-        artist: artist.as_deref(),
-        album_artist: album_artist.as_deref(),
-        composer: composer.as_deref(),
-        album: album.as_deref(),
-        genre: genre.as_deref(),
-        comments: comments.as_deref(),
-        year,
-        track_number,
-        track_count,
-        disc_number,
-        disc_count,
-        compilation: Some(compilation),
-        bpm,
-        key,
-    };
-    organizer::write_tags_to_location(loc.as_deref(), &w);
-
-    // 6. 整理 (フォルダ分け + iTunes 準拠リネーム) は整理先ルートが設定されている
-    //    ときだけ行う。未設定なら移動しない (タグは 5 で書き戻し済み)。
-    //    移動 + DB location 追従は HTTP API の PATCH と共通の関数で行う。
-    let meta = organizer::TrackMeta {
-        title: name.as_deref(),
-        artist: artist.as_deref(),
-        album_artist: album_artist.as_deref(),
-        album: album.as_deref(),
-        compilation,
-        track_number,
-        disc_number,
-        disc_count,
-    };
-    organizer::relocate_after_edit(&db, track_id, loc.as_deref(), &meta)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::library::edit::apply_track_edit(&db, track_id, &edits)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// 整理先 (ライブラリルート) を取得する。未設定なら `None`。

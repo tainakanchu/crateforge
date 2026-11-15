@@ -38,6 +38,16 @@ impl From<String> for ApiError {
     }
 }
 
+/// 曲の編集 (`library::edit`) のエラー。DB 障害は 500。
+impl From<crate::library::edit::EditError> for ApiError {
+    fn from(e: crate::library::edit::EditError) -> Self {
+        use crate::library::edit::EditError;
+        match e {
+            EditError::Db(e) => e.into(),
+        }
+    }
+}
+
 /// rusqlite のエラーも 500 にマップする (DB 障害は内部エラー)。
 impl From<rusqlite::Error> for ApiError {
     fn from(e: rusqlite::Error) -> Self {

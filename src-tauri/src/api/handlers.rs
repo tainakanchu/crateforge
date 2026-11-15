@@ -2898,100 +2898,6 @@ pub async fn remote_repeat(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `apply_track_edit` の結果。
-struct TrackEditResult {
-    /// 更新後 (整理による移動後) の Track。
-    track: Track,
-    /// タグの書き込みを試みて失敗したか。
-    file_failed: bool,
-    /// 整理 (フォルダ移動 + リネーム) を試みて失敗したか。
-    relocate_failed: bool,
-}
-
-/// 1 曲に編集を適用するコア処理 (PATCH 単体・一括の両方から呼ぶ)。
-/// DB を更新し、更新後の現在値を実ファイルのタグへ書き戻したうえで、
-/// 整理先ルートが設定されていれば GUI の update_track と同じ規則で移動 + リネームする。
-/// 対象が存在しない場合 (0 行更新) は `None`。
-fn apply_track_edit(
-    db: &crate::db::Database,
-    track_id: i64,
-    edit: &crate::models::TrackEdit,
-) -> Result<Option<TrackEditResult>, ApiError> {
-    db.update_track(track_id, edit)?;
-    // 更新後の Track を取得。存在しない id は 0 行更新なので空 → None。
-    let track: Track = match db.get_tracks_by_ids(&[track_id])?.into_iter().next() {
-        Some(t) => t,
-        None => return Ok(None),
-    };
-    // BPM / Key もファイルタグへ書く (#164)。BPM はトラック自身の値を優先し、
-    // 未設定なら解析結果へフォールバックする。Key は実効キー (手動上書き ?? 解析値, #172)
-    // を DJ ソフトが読む音楽表記 ("Am" 等) に変換して InitialKey へ書く。
-    let analysis = db.get_analysis(track_id).ok().flatten();
-    let bpm = track
-        .bpm
-        .filter(|n| *n > 0)
-        .map(|n| n as f64)
-        .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
-    let key = crate::organizer::effective_initial_key(
-        track.key_camelot_user.as_deref(),
-        analysis.as_ref(),
-    );
-
-    // 現在の DB 値を実ファイルのタグへ書き戻す (GUI の update_track と同様、他アプリにも反映)。
-    let file_failed = {
-        let w = crate::organizer::TagWrite {
-            title: track.name.as_deref(),
-            artist: track.artist.as_deref(),
-            album_artist: track.album_artist.as_deref(),
-            composer: track.composer.as_deref(),
-            album: track.album.as_deref(),
-            genre: track.genre.as_deref(),
-            comments: track.comments.as_deref(),
-            year: track.year,
-            track_number: track.track_number,
-            track_count: track.track_count,
-            disc_number: track.disc_number,
-            disc_count: track.disc_count,
-            compilation: Some(track.compilation),
-            bpm,
-            key,
-        };
-        writeback(track.location_path.as_deref(), &w)
-    };
-
-    // 整理 (フォルダ分け + iTunes 準拠リネーム) と DB location の追従。
-    // GUI の update_track と共通の関数を使う (整理先未設定 / 無効なら移動しない)。
-    // 移動失敗は編集自体の失敗にはせず relocateFailed で知らせる。
-    let meta = crate::organizer::TrackMeta {
-        title: track.name.as_deref(),
-        artist: track.artist.as_deref(),
-        album_artist: track.album_artist.as_deref(),
-        album: track.album.as_deref(),
-        compilation: track.compilation,
-        track_number: track.track_number,
-        disc_number: track.disc_number,
-        disc_count: track.disc_count,
-    };
-    let outcome = crate::organizer::relocate_after_edit(
-        db,
-        track_id,
-        track.location_path.as_deref(),
-        &meta,
-    )?;
-    let relocate_failed = outcome == crate::organizer::RelocateOutcome::Failed;
-    // 移動した場合はレスポンスの locationPath / locationRaw を DB に書いた新パスへ揃える。
-    let mut track = track;
-    if let crate::organizer::RelocateOutcome::Moved { path, url } = outcome {
-        track.location_path = Some(path);
-        track.location_raw = Some(url);
-    }
-    Ok(Some(TrackEditResult {
-        track,
-        file_failed,
-        relocate_failed,
-    }))
-}
-
 /// `PATCH /api/tracks/:trackId` — 指定フィールドを置換 (未指定は据え置き)、
 /// 更新後の現在値を実ファイルのタグへも書き戻し、整理先ルートが設定されていれば
 /// GUI の編集と同じくフォルダ移動 + リネームする。対象が存在しなければ 404。
@@ -3005,7 +2911,7 @@ pub async fn patch_track(
     ExtractJson(edit): ExtractJson<crate::models::TrackEdit>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
-    let mut r = match apply_track_edit(&db, track_id, &edit)? {
+    let mut r = match crate::library::edit::apply_track_edit(&db, track_id, &edit)? {
         Some(r) => r,
         None => return Err(ApiError::not_found("track not found")),
     };
@@ -3016,7 +2922,7 @@ pub async fn patch_track(
     state.notify_library_changed(None);
     Ok(Json(json!({
         "track": track_val,
-        "fileWriteFailed": r.file_failed,
+        "fileWriteFailed": r.file_write_failed,
         "relocateFailed": r.relocate_failed,
     })))
 }
@@ -3067,10 +2973,10 @@ pub async fn patch_tracks_bulk(
     let mut relocate_failed: Vec<i64> = Vec::new();
     let mut not_found: Vec<i64> = Vec::new();
     for &id in &body.track_ids {
-        match apply_track_edit(&db, id, &body.edit)? {
+        match crate::library::edit::apply_track_edit(&db, id, &body.edit)? {
             Some(r) => {
                 updated += 1;
-                if r.file_failed {
+                if r.file_write_failed {
                     file_write_failed.push(id);
                 }
                 if r.relocate_failed {

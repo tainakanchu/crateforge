@@ -11,6 +11,7 @@ mod devices;
 mod ffmpeg;
 mod fonts;
 mod importer;
+mod library;
 mod itunes_xml;
 mod library_match;
 mod logging;
