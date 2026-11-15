@@ -40,7 +40,7 @@ export default function ArtistScreen() {
   const albums = useArtistAlbums(artistParam, artistGrouping);
 
   // 全曲（オンライン）。オフライン時は DL 済み entries からアーティストで絞る。
-  const query = useArtistTracks(artistParam, artistGrouping);
+  const query = useArtistTracks(artistParam, { grouping: artistGrouping });
   const { refreshing, onRefresh } = usePullToRefresh(query.refetch);
   const entries = useDownloads((s) => s.entries);
   const offlineTracks = useMemo(() => {

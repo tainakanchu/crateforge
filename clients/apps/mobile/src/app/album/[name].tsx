@@ -55,7 +55,7 @@ export default function AlbumScreen() {
   // 不明なアルバム（album=""）も albumExact で album が空の曲を引ける。
   // アーティストの不明なアルバムはアーティストの曲から album 空を抽出する。
   const albumQuery = useAlbumTracks(isNoAlbum ? null : albumParam);
-  const artistQuery = useArtistTracks(isNoAlbum ? artist : null, grouping);
+  const artistQuery = useArtistTracks(isNoAlbum ? artist : null, { grouping });
   const query = isNoAlbum ? artistQuery : albumQuery;
   const { refreshing, onRefresh } = usePullToRefresh(query.refetch);
   const currentTrackId = usePlayer((s) => s.current()?.trackId ?? null);

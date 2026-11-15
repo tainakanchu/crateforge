@@ -94,11 +94,11 @@ export default function LibraryScreen() {
       sort: trackSort.field,
       order: trackSort.order,
     },
-    mode === "tracks",
+    { enabled: mode === "tracks" },
   );
   const genresQuery = useGenres();
-  const albumsQuery = useAlbums(mode === "albums");
-  const artistsQuery = useArtists(mode === "artists");
+  const albumsQuery = useAlbums({ enabled: mode === "albums" });
+  const artistsQuery = useArtists({ enabled: mode === "artists" });
 
   // プル更新（表示中モードの一覧 + ジャンル）と、タブに戻ったときの再取得（stale のみ）。
   const refetchActive = useCallback(

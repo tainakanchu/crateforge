@@ -37,14 +37,14 @@ export default function ArtistsScreen() {
   const [selected, setSelected] = useState<string | null>(null);
 
   // アーティスト一覧（サーバ側 /api/artists で集計）。
-  const artistsQuery = useArtists(true, grouping);
+  const artistsQuery = useArtists({ grouping });
   const artists = artistsQuery.data ?? [];
 
   // フォーカス未確定でも先頭アーティストを既定選択にして詳細ペインを埋める。
   const activeArtist = selected ?? artists[0]?.artist ?? null;
 
   // 選択中アーティストの全曲（grouping に応じて artist / albumArtist でフィルタ）。
-  const tracksQuery = useArtistTracks(activeArtist, grouping);
+  const tracksQuery = useArtistTracks(activeArtist, { grouping });
   const tracks = tracksQuery.data ?? [];
 
   // 曲行選択: 選択中アーティストの全曲でキューを差し替え、その index から再生して Now Playing へ。

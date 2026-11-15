@@ -14,6 +14,7 @@ import {
   artistTracksQuery,
   browseKeys,
   useAlbums as useAlbumsUnsorted,
+  useTracks as useTracksQuery,
 } from "@crateforge/core";
 import {
   createQueryWrapper,
@@ -207,8 +208,8 @@ describe("browseKeys（キャッシュ・永続化と同じ形を保つ）", () 
         usePlaylistTracks(100);
         useAlbums();
         useAlbumTracks("Dawn");
-        useArtists(true, "artist");
-        useArtistTracks("ABBA", "albumArtist");
+        useArtists({ grouping: "artist" });
+        useArtistTracks("ABBA", { grouping: "albumArtist" });
       },
       { wrapper },
     );
@@ -228,7 +229,34 @@ describe("browseKeys（キャッシュ・永続化と同じ形を保つ）", () 
 });
 
 describe("useTracks の staleTime", () => {
-  // 絞り込み無しの全曲取得だけ 5 分。それ以外は QueryClient の既定（アプリごとの値）に従う。
+  // mobile: 絞り込み無しの全曲取得だけ 5 分。それ以外は QueryClient の既定に従う。
+  // core の useTracks 自体は staleTime を決めない（options.staleTime で渡されたときだけ上書き）。
+  test("core: 指定しなければ絞り込み無しでも既定の staleTime、options.staleTime で上書きできる", async () => {
+    setTestConnection();
+    mockFetch({ body: [] });
+    const plain = await renderHook(() => useTracksQuery({ limit: BROWSE_LIMIT }), {
+      wrapper: wrapperWithClient(0).wrapper,
+    });
+    await waitFor(() => expect(plain.result.current.isSuccess).toBe(true));
+    expect(plain.result.current.isStale).toBe(true);
+
+    const long = await renderHook(() => useTracksQuery({ limit: BROWSE_LIMIT }, { staleTime: 60_000 }), {
+      wrapper: wrapperWithClient(0).wrapper,
+    });
+    await waitFor(() => expect(long.result.current.isSuccess).toBe(true));
+    expect(long.result.current.isStale).toBe(false);
+  });
+
+  test("enabled: false なら取得しない", async () => {
+    setTestConnection();
+    const fetchMock = mockFetch({ body: [] });
+    const { result } = await renderHook(() => useTracks({ q: "abc" }, { enabled: false }), {
+      wrapper: createQueryWrapper(),
+    });
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   async function staleAfterFetch(query: Parameters<typeof useTracks>[0]) {
     setTestConnection();
     mockFetch({ body: [] });
@@ -342,7 +370,7 @@ describe("useArtistTracks", () => {
   test("grouping=albumArtist なら ?albumArtist= で引く", async () => {
     setTestConnection();
     const fetchMock = mockFetch({ body: [makeTrack()] });
-    const { result } = await renderHook(() => useArtistTracks("ABBA", "albumArtist"), {
+    const { result } = await renderHook(() => useArtistTracks("ABBA", { grouping: "albumArtist" }), {
       wrapper: createQueryWrapper(),
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -354,7 +382,7 @@ describe("useArtistTracks", () => {
   test("artist が null なら取得しない", async () => {
     setTestConnection();
     const fetchMock = mockFetch({ body: [] });
-    const { result } = await renderHook(() => useArtistTracks(null, "artist"), {
+    const { result } = await renderHook(() => useArtistTracks(null, { grouping: "artist" }), {
       wrapper: createQueryWrapper(),
     });
     expect(result.current.fetchStatus).toBe("idle");

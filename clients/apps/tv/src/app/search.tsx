@@ -44,7 +44,7 @@ export default function SearchScreen() {
   const searching = term != null;
 
   // q は曲名・アーティストの両方に効く。名前昇順で取得。
-  const query = useTracks({ q: term, limit: BROWSE_LIMIT, sort: "name", order: "asc" }, searching);
+  const query = useTracks({ q: term, limit: BROWSE_LIMIT, sort: "name", order: "asc" }, { enabled: searching });
 
   // 検索語が無いときは結果を出さない（前回結果が残らないよう空配列に倒す）。
   const tracks = searching ? (query.data ?? []) : [];

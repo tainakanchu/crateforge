@@ -1,6 +1,7 @@
 // Browse スライスの React Query フック群（mobile 固有分）。
-// 読み取りの共通フック（useTracks / usePlaylists / usePlaylistTracks / useAlbumTracks /
-// useArtists / useArtistTracks）は core/src/hooks/browse.ts にあり、ここから再エクスポートする。
+// 読み取りの共通フック（usePlaylists / usePlaylistTracks / useAlbumTracks / useArtists /
+// useArtistTracks）は core/src/hooks/browse.ts にあり、ここから再エクスポートする。
+// useTracks / useAlbums は core のフックに mobile の staleTime・並び順を足した薄いラッパ。
 // ここに残すのは mobile だけが使うもの: アルバムの並び順、オフライン（DL 済み）からの導出、書き込み。
 // 全フックは useConnection().client（接続中のみ非 null）を読み、enabled: !!client。
 
@@ -14,6 +15,7 @@ import {
   type PlaylistDetail,
   type SimilarHit,
   type Track,
+  type TracksQuery,
   BROWSE_LIMIT,
   artistTracksQuery,
   browseKeys,
@@ -21,6 +23,7 @@ import {
   trackArtistKey,
   trackAlbumArtistKey,
   useAlbums as useAlbumsUnsorted,
+  useTracks as useTracksQuery,
   useConnection,
   useDownloads,
   useSettings,
@@ -35,8 +38,22 @@ export {
   useArtists,
   usePlaylistTracks,
   usePlaylists,
-  useTracks,
 } from "@crateforge/core";
+
+/** 絞り込み無しの全曲取得（数万件）をフォーカス/前面復帰のたびに取り直さないための staleTime。 */
+export const UNFILTERED_TRACKS_STALE_MS = 5 * 60 * 1000;
+
+/**
+ * 曲一覧（core の useTracks）。絞り込み無しの全曲取得は重いので、mobile の既定（1 分）より
+ * 長い staleTime にする。検索・ジャンル絞り込みは既定のまま。最新化はプル更新で行える。
+ */
+export function useTracks(query?: TracksQuery, options?: { enabled?: boolean }) {
+  const unfiltered = !query?.q && !query?.genre;
+  return useTracksQuery(query, {
+    enabled: options?.enabled,
+    ...(unfiltered ? { staleTime: UNFILTERED_TRACKS_STALE_MS } : {}),
+  });
+}
 
 /** トラック配列から「アルバム名 → 代表年(MIN)」のマップを作る（year を持つ曲のみ集計）。 */
 export function albumYearMap(tracks: Track[]): Map<string, number> {
@@ -76,10 +93,10 @@ export function usePlaylist(playlistId: number) {
  * 既にあれば代表年(MIN)を引いて年順まで効かせる。無ければ（＝重い全曲取得を
  * わざわざ誘発しないため取得はしない）「アーティスト → アルバム名」までで安定ソート。
  */
-export function useAlbums(enabled = true) {
+export function useAlbums(options?: { enabled?: boolean }) {
   const queryClient = useQueryClient();
   return useAlbumsUnsorted({
-    enabled,
+    enabled: options?.enabled,
     select: (albums) => {
       // 既にキャッシュ済みの全曲があれば年マップを引く（無ければ空＝年順はスキップ）。
       const tracks =
