@@ -188,6 +188,7 @@ viewMode により切替:
 - Name / Artist / Album Artist / Album / Composer
 - Genre (空白区切りタグ、プレースホルダ: `e.g. House Techno Electronic`)。複数語のジャンルは空白なしで書く (`DeepHouse`)。
   ジャンルのモデル・編集・検索の規則は `docs/genre/design.md`
+  (検索の `genre:House` はタグ単位の完全一致で、`DeepHouse` だけの曲には一致しない)
 - Year (number) / BPM (number) — 横並び
 - Track # / Of / Disc # / Of — 横並び
 - Rating (★×5 + ✕ クリア)

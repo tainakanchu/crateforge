@@ -175,6 +175,41 @@ pub(crate) fn split_genre_tags(genre: &str) -> Vec<&str> {
         .collect()
 }
 
+/// 曲の `genre` が、`wanted` に書かれたタグを **すべて** 持つか (タグ単位の完全一致)。
+/// 検索構文 `genre:` と API `?genre=` の判定はこれ 1 つ (SQL からは `has_genre_tag`)。
+/// 規則は docs/genre/design.md §3、挙動は `tests/vectors/genre-match.json` で固定する。
+///
+/// - `genre` も `wanted` も [`split_genre_tags`] でタグに分ける (`/` は区切らない)。
+///   名前が重なるだけの別ジャンル (`House` と `DeepHouse`) は一致しない。
+/// - `wanted` が複数タグ (`"House Techno"`) なら全部を持つ曲だけ。タグを 1 つも含まなければ false。
+/// - 大文字小文字・全角半角などの揺れは、他の検索と同じ fold レベルで無視する
+///   (Off でも ASCII の大文字小文字は無視する。SQLite の LIKE / NOCASE と同じ)。
+pub(crate) fn genre_has_tags(genre: &str, wanted: &str, level: crate::text_fold::FoldLevel) -> bool {
+    let normalize = |tag: &str| match level {
+        crate::text_fold::FoldLevel::Off => tag.to_ascii_lowercase(),
+        _ => crate::text_fold::fold(tag, level),
+    };
+    let wanted: Vec<String> = split_genre_tags(wanted).into_iter().map(normalize).collect();
+    if wanted.is_empty() {
+        return false;
+    }
+    let have: HashSet<String> = split_genre_tags(genre).into_iter().map(normalize).collect();
+    wanted.iter().all(|tag| have.contains(tag))
+}
+
+/// `genre` 列に対するタグ単位一致の SQL 句 (`has_genre_tag` は `db::register_functions` で登録)。
+/// `prefix` は tracks の別名 + ドット。値は必ずバインドする。
+fn genre_tag_clause(
+    prefix: &str,
+    value: &str,
+    level: crate::text_fold::FoldLevel,
+) -> (String, rusqlite::types::Value) {
+    (
+        format!("has_genre_tag({prefix}genre, ?, {})", level.as_i64()),
+        rusqlite::types::Value::Text(value.to_string()),
+    )
+}
+
 /// タグを genre 文字列へ戻すときの区切り (フロントの GENRE_JOIN と同じ)。
 const GENRE_JOIN: &str = " ";
 
@@ -376,15 +411,15 @@ fn row_to_album_row(r: &rusqlite::Row) -> rusqlite::Result<AlbumRow> {
     })
 }
 
-/// フィールド検索で使える「テキスト列」の別名 → 実カラム名。
+/// フィールド検索で使える「テキスト列」(部分一致) の別名 → 実カラム名。
 /// ここに無いキーは通常のフリーテキストとして扱う。列名はこの表の右辺 (固定文字列) しか
 /// SQL に埋めないため、インジェクションの余地は無い。
-const TEXT_FIELDS: [(&str, &str); 6] = [
+/// `genre:` はここに入れない: 部分一致ではなくタグ単位の一致 ([`genre_has_tags`])。
+const TEXT_FIELDS: [(&str, &str); 5] = [
     ("artist", "artist"),
     ("album", "album"),
     ("albumartist", "album_artist"),
     ("album_artist", "album_artist"),
-    ("genre", "genre"),
     ("comment", "comments"),
 ];
 
@@ -535,6 +570,15 @@ fn parse_field_filter(
         return Some((clause, vec![bind]));
     }
     match kind.as_str() {
+        // ジャンルはタグ単位の完全一致 (docs/genre/design.md §3)。タグを含まない値は
+        // フィールド指定として扱わない (ほかのテキスト項目の空の値と同じ)。
+        "genre" => {
+            if split_genre_tags(val).is_empty() {
+                return None;
+            }
+            let (clause, bind) = genre_tag_clause(prefix, val, level);
+            Some((clause, vec![bind]))
+        }
         "bpm" => {
             let (lo, hi) = parse_range(val, 2.0)?;
             Some((
@@ -1281,6 +1325,21 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
+        self.search_tracks_with_genre(query, None, limit, offset, sort_field, sort_order)
+    }
+
+    /// [`Self::search_tracks`] に、ジャンルのタグ単位一致 (`genre_tags` のタグをすべて持つ曲) を
+    /// AND で足したもの。API の `?genre=` 用で、検索構文の `genre:` と同じ判定
+    /// (`has_genre_tag`) を使う。`query` が空ならジャンルだけで絞る。
+    pub fn search_tracks_with_genre(
+        &self,
+        query: &str,
+        genre_tags: Option<&str>,
+        limit: i64,
+        offset: i64,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<Vec<Track>> {
         use rusqlite::types::Value;
 
         let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NATSORT ASC");
@@ -1295,8 +1354,13 @@ impl Database {
 
         // 各トークンを AND 結合。句とバインド値の組み立ては build_search_clauses に集約し、
         // プレイリスト内検索と同じ構文を共有する (ここは FROM tracks なので prefix は "tracks.")。
-        let (clauses, mut bind): (Vec<String>, Vec<Value>) =
+        let (mut clauses, mut bind): (Vec<String>, Vec<Value>) =
             build_search_clauses(query, level, "tracks.");
+        if let Some(genre_tags) = genre_tags {
+            let (clause, value) = genre_tag_clause("tracks.", genre_tags, level);
+            clauses.push(clause);
+            bind.push(value);
+        }
         let where_sql = if clauses.is_empty() {
             "1=1".to_string()
         } else {
@@ -2423,6 +2487,85 @@ mod tests {
             super::CheckedTrackEdit::new(&bad).unwrap_err().to_string(),
             "invalid Camelot key: nope"
         );
+    }
+
+    /// ジャンルのタグ単位一致は共通テストベクタ (tests/vectors/genre-match.json) で固定する。
+    /// 純関数 `genre_has_tags` と、SQL 経由 (`genre:` 検索 = `has_genre_tag`) の両方が同じ結果になること。
+    #[test]
+    fn genre_match_vectors() {
+        use crate::text_fold::FoldLevel;
+
+        let json: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/vectors/genre-match.json")).unwrap();
+        let cases = json["cases"].as_array().unwrap();
+        assert!(cases.len() >= 20, "ベクタが読めていない");
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let genre = case["genre"].as_str();
+            let query = case["query"].as_str().unwrap();
+            let level_name = case["level"].as_str().unwrap_or("standard");
+            let level = FoldLevel::from_state(Some(level_name));
+            assert_eq!(level.as_str(), level_name, "{name}: 未知の level");
+            let want = case["match"].as_bool().unwrap();
+
+            // 純関数 (genre が NULL の曲は一致しない)。
+            let got = genre.is_some_and(|g| super::genre_has_tags(g, query, level));
+            assert_eq!(got, want, "genre_has_tags: {name}");
+
+            // SQL 関数 (検索構文・API が使う経路)。
+            let db = Database::open_memory().unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, genre, file_exists) VALUES (1, 'T', ?1, 1)",
+                    params![genre],
+                )
+                .unwrap();
+            let got: bool = db
+                .conn
+                .query_row(
+                    "SELECT has_genre_tag(genre, ?1, ?2) FROM tracks",
+                    params![query, level.as_i64()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(got, want, "has_genre_tag: {name}");
+
+            // API の ?genre= 経路 (search_tracks_with_genre)。fold レベルは DB の設定から読む。
+            db.set_state("search_fold_level", level_name).unwrap();
+            let hits = db
+                .search_tracks_with_genre("", Some(query), 10, 0, None, None)
+                .unwrap();
+            assert_eq!(!hits.is_empty(), want, "search_tracks_with_genre: {name}");
+        }
+    }
+
+    /// 検索構文の `genre:` はタグ単位の完全一致 (部分一致ではない)。フリーテキストは従来どおり部分一致。
+    #[test]
+    fn genre_field_is_tag_exact() {
+        let db = Database::open_memory().unwrap();
+        for (id, genre) in [
+            (1, Some("House")),
+            (2, Some("DeepHouse")),
+            (3, Some("House Techno")),
+            (4, Some("Electronic/Dance")),
+            (5, None),
+        ] {
+            db.conn
+                .execute(
+                    "INSERT INTO tracks (track_id, name, genre, file_exists) VALUES (?1, ?2, ?3, 1)",
+                    params![id, format!("T{id}"), genre],
+                )
+                .unwrap();
+            db.recompute_search_text(id).unwrap();
+        }
+        assert_eq!(ids(&db, "genre:house"), vec![1, 3]);
+        assert_eq!(ids(&db, "genre:deephouse"), vec![2]);
+        assert_eq!(ids(&db, "genre:\"House Techno\""), vec![3]);
+        assert_eq!(ids(&db, "genre:house genre:techno"), vec![3]);
+        assert!(ids(&db, "genre:electronic").is_empty());
+        assert_eq!(ids(&db, "genre:Electronic/Dance"), vec![4]);
+        // フィールド指定なしは部分一致のまま (DeepHouse も拾う)。
+        assert_eq!(ids(&db, "house"), vec![1, 2, 3]);
     }
 
     /// rating だけの編集は date_modified を進めない (set_rating と同じ規則)。

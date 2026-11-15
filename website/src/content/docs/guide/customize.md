@@ -75,7 +75,7 @@ description: 列の追加 / 並べ替え / 幅、行高・カバー・右ペイ�
 | `artist:daft` / `artist:"daft punk"` | アーティスト名の部分一致 |
 | `album:discovery` | アルバム名の部分一致 |
 | `albumartist:aphex`（`album_artist:` も可） | アルバムアーティストの部分一致 |
-| `genre:house` | ジャンルの部分一致 |
+| `genre:house` / `genre:"house techno"` | ジャンルタグの完全一致（`House` タグを持つ曲。`DeepHouse` だけの曲は一致しない）。空白で並べると、すべてのタグを持つ曲。大文字小文字は区別しない |
 | `comment:classic` | コメントの部分一致 |
 | `year:2018` / `year:2015-2020` | 発売年（単一 / 範囲） |
 | `rating:5` / `rating:4-5` / `rating:0` | 星 0〜5（`rating:0` は未評価。整数 `n` は n〜n.5 星を含む） |

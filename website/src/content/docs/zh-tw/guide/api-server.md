@@ -39,7 +39,7 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 ### 讀取
 
 - `GET /api/health` — 伺服器資訊 + 目前曲目數
-- `GET /api/tracks`（`?q` 搜尋、`?album` / `?genre` 部分比對、offset/limit）。加上 `?albumExact=true` 可讓 `album` 完全比對
+- `GET /api/tracks`（`?q` 搜尋、`?album` 部分比對、`?genre` 類型標籤完全比對、offset/limit）。加上 `?albumExact=true` 可讓 `album` 完全比對
 - `GET /api/tracks/{id}` / `POST /api/tracks/by-ids`（ID 列 → 曲目。屬唯讀查詢，LAN 端帶權杖也可使用）
 - `GET /api/tracks/{id}/stream` — 音訊串流（`?native=true` 裝置可播放的格式不轉檔 / `?original=true` 原始檔 / `?fmt=aac&br=192` 轉為 AAC）
 - `GET /api/tracks/{id}/analysis` — 解析結果（未解析時為 null）

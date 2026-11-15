@@ -40,7 +40,7 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
 ### 読み取り
 
 - `GET /api/health` — サーバーの素性 + 現在の曲数
-- `GET /api/tracks`（`?q` 検索、`?album` / `?genre` 部分一致、offset/limit）。`?albumExact=true` を付けると `album` を完全一致で絞ります
+- `GET /api/tracks`（`?q` 検索、`?album` 部分一致、`?genre` ジャンルタグの完全一致、offset/limit）。`?albumExact=true` を付けると `album` を完全一致で絞ります
 - `GET /api/tracks/{id}` / `POST /api/tracks/by-ids`（ID 列 → 曲。読み取り専用なので LAN からもトークン付きで使えます）
 - `GET /api/tracks/{id}/stream` — 音源の配信（`?native=true` 端末で再生できる形式は無変換 / `?original=true` 原本 / `?fmt=aac&br=192` AAC 変換）
 - `GET /api/tracks/{id}/analysis` — 解析結果（未解析なら null）

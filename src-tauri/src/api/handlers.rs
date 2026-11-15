@@ -254,7 +254,7 @@ pub async fn list_tracks(
     let order = q.order.as_deref();
     let has_query = matches!(q.q.as_deref(), Some(s) if !s.trim().is_empty());
 
-    // 追加フィルタ (rating/genre/album/year/analyzed) は後段で Rust 側 retain している。
+    // 追加フィルタ (rating/album/year/analyzed) は後段で Rust 側 retain している (genre だけは SQL 側)。
     // これらが付いていると DB 側 LIMIT で打ち切ると取りこぼすため、上限は使えない。
     // そこで「q 指定 かつ 追加フィルタ無し」のときだけ DB へ limit/offset を委譲して
     // 全件転送を避ける (保守的対応)。フィルタがある場合・q 無しの全件取得は従来どおり。
@@ -281,10 +281,18 @@ pub async fn list_tracks(
         (ALL_ROWS, 0)
     };
 
-    let mut tracks = match q.q.as_deref() {
-        Some(query) if !query.trim().is_empty() => {
-            db.search_tracks(query, db_limit, db_offset, sort, order)?
+    // genre: タグ単位の完全一致 (docs/genre/design.md §3)。検索構文の `genre:` と同じ判定を
+    // SQL 側 (has_genre_tag) で行う。タグを含まない値 (`genre=` 空・空白のみ) は絞り込まない。
+    let genre_tags = q
+        .genre
+        .as_deref()
+        .filter(|g| !crate::db::tracks::split_genre_tags(g).is_empty());
+
+    let mut tracks = match (q.q.as_deref(), genre_tags) {
+        (Some(query), _) if !query.trim().is_empty() => {
+            db.search_tracks_with_genre(query, genre_tags, db_limit, db_offset, sort, order)?
         }
+        (_, Some(_)) => db.search_tracks_with_genre("", genre_tags, ALL_ROWS, 0, sort, order)?,
         _ => db.get_tracks(ALL_ROWS, 0, sort, order)?,
     };
 
@@ -296,17 +304,8 @@ pub async fn list_tracks(
     if let Some(max) = q.rating_max {
         tracks.retain(|t| t.rating.unwrap_or(0) <= max);
     }
-    // genre: 小文字化して部分一致。
-    if let Some(genre) = q.genre.as_deref() {
-        let needle = genre.to_lowercase();
-        tracks.retain(|t| {
-            t.genre
-                .as_deref()
-                .map(|g| g.to_lowercase().contains(&needle))
-                .unwrap_or(false)
-        });
-    }
-    // album: genre と同様に小文字化して部分一致。albumExact=true なら完全一致
+    // (genre は取得時に SQL 側で絞り込み済み。)
+    // album: 小文字化して部分一致。albumExact=true なら完全一致
     // (/api/albums の GROUP BY album と同じ粒度。前後空白だけは無視する)。
     // `album=&albumExact=true` (空) は album が NULL / 空白のみの曲 (= /api/albums の
     // `album: ""`「不明なアルバム」) に一致する。

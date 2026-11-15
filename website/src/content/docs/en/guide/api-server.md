@@ -40,7 +40,7 @@ It exposes a REST API for reading and writing the library, analysis data, and pl
 ### Read
 
 - `GET /api/health` — server identity + current track count
-- `GET /api/tracks` (`?q` search, `?album` / `?genre` partial match, offset/limit). Add `?albumExact=true` to match `album` exactly
+- `GET /api/tracks` (`?q` search, `?album` partial match, `?genre` exact match on a genre tag, offset/limit). Add `?albumExact=true` to match `album` exactly
 - `GET /api/tracks/{id}` / `POST /api/tracks/by-ids` (IDs → tracks; read-only, so it also works from the LAN with a token)
 - `GET /api/tracks/{id}/stream` — audio streaming (`?native=true` serves device-playable formats as-is / `?original=true` original bytes / `?fmt=aac&br=192` AAC transcode)
 - `GET /api/tracks/{id}/analysis` — analysis results (null if not analyzed)

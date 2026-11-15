@@ -1210,18 +1210,54 @@ mod tests {
         assert!(ids.contains(&2));
     }
 
-    // ===== ケース 5: genre 部分一致 =====
+    // ===== ケース 5: genre はタグ単位の完全一致 (docs/genre/design.md §3) =====
     #[tokio::test]
     async fn case05_tracks_genre() {
-        let (_dir, app) = setup();
-        let (status, body) = req(app, "GET", "/api/tracks?genre=House", None).await;
-        assert_eq!(status, StatusCode::OK);
-        let arr = body.as_array().unwrap();
-        // "House" と "DeepHouse" の 2 件 (部分一致, 大小無視)。
-        let ids: Vec<i64> = arr.iter().map(|t| t["trackId"].as_i64().unwrap()).collect();
-        assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&1));
-        assert!(ids.contains(&3));
+        let (dir, app) = setup();
+        let ids_of = |body: &Value| -> Vec<i64> {
+            body.as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["trackId"].as_i64().unwrap())
+                .collect()
+        };
+
+        // seed: 1 = "House", 3 = "DeepHouse"。House タグを持つのは 1 だけ (大小無視)。
+        for uri in ["/api/tracks?genre=House", "/api/tracks?genre=house"] {
+            let (status, body) = req(app.clone(), "GET", uri, None).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(ids_of(&body), vec![1], "{uri}");
+        }
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?genre=DeepHouse", None).await;
+        assert_eq!(ids_of(&body), vec![3]);
+
+        // 値に空白を含めると全タグ必須。
+        {
+            let db = crate::db::Database::open(dir.path()).unwrap();
+            db.conn
+                .execute("UPDATE tracks SET genre = 'House Techno' WHERE track_id = 4", [])
+                .unwrap();
+        }
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?genre=House&sort=trackNumber", None).await;
+        let mut ids = ids_of(&body);
+        ids.sort();
+        assert_eq!(ids, vec![1, 4]);
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?genre=Techno%20House", None).await;
+        assert_eq!(ids_of(&body), vec![4]);
+
+        // q / ほかの構造化フィルタ / offset・limit との組み合わせ。
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?genre=House&q=Sunrise", None).await;
+        assert_eq!(ids_of(&body), vec![1]);
+        let (_, body) = req(app.clone(), "GET", "/api/tracks?genre=House&ratingMin=60", None).await;
+        assert_eq!(ids_of(&body), vec![1]);
+        let (_, all) = req(app.clone(), "GET", "/api/tracks?genre=House", None).await;
+        let (_, page) = req(app.clone(), "GET", "/api/tracks?genre=House&offset=1&limit=1", None).await;
+        assert_eq!(ids_of(&page), ids_of(&all)[1..2].to_vec());
+
+        // タグを含まない値は絞り込まない (全曲)。
+        let (_, everything) = req(app.clone(), "GET", "/api/tracks", None).await;
+        let (_, blank) = req(app, "GET", "/api/tracks?genre=", None).await;
+        assert_eq!(ids_of(&blank), ids_of(&everything));
     }
 
     // ===== 追加: album 部分一致フィルタ =====

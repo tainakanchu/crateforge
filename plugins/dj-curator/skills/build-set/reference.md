@@ -25,7 +25,7 @@ GET/DELETE では `<path>` の後ろに `key=value` を並べると `curl -G --d
 候補集めの主力。クエリ（すべて任意, camelCase）:
 - `q` — 検索クエリ（下記「`q` の検索構文」）。日本語・中国語など非 ASCII や空白を含む値は **`key=value` 形式**（`crate-api.sh GET /api/tracks q="..."`）で渡す（自動 URL エンコード）。
 - `ratingMin` / `ratingMax` — 0–100。例: ★3 以上は `ratingMin=60`。rating 未設定の曲は 0 扱い。
-- `genre` — ジャンル部分一致（大小無視）。
+- `genre` — **ジャンルタグの完全一致**（大小・全角半角は無視）。`genre=House` は `House` タグを持つ曲で、`DeepHouse` だけの曲は一致しない（別ジャンル。両方欲しければ 2 回引く）。値に空白を含めると全タグ必須（`genre=House Techno` = House かつ Techno）。`/` は区切らない（`Electronic/Dance` は 1 タグ）。タグ名は `GET /api/genres` が返すものをそのまま使える。空の値は絞り込まない。
 - `album` — アルバム名部分一致（大小無視）。
 - `artist` — 表示アーティスト名（`artist`、空なら `albumArtist`、どちらも無ければ `"Unknown Artist"`）と**完全一致**。`GET /api/artists` の `artist` 値をそのまま渡せる。
 - `albumArtist` — 表示アルバムアーティスト名（`albumArtist`、空なら `artist`、どちらも無ければ `"Unknown Artist"`）と**完全一致**。`GET /api/artists?grouping=albumArtist` の値と対応。
@@ -40,7 +40,8 @@ GET/DELETE では `<path>` の後ろに `key=value` を並べると `curl -G --d
 - 空白区切りのトークンは **AND**。値に空白を含めたいときは二重引用符で囲む（`artist:"daft punk"`）。
 - フィールド指定の無いトークンは、テキスト 6 列（name / artist / album / albumArtist / genre / comments）のいずれかへの部分一致（OR）。
 - フィールド指定トークン（解釈できない値はフリーテキスト扱いに落ちる）:
-  - `artist:` `album:` `albumartist:`（`album_artist:` も可）`genre:` `comment:` — その列の部分一致。
+  - `artist:` `album:` `albumartist:`（`album_artist:` も可）`comment:` — その列の部分一致。
+  - `genre:` — ジャンルタグの完全一致（クエリパラメータ `genre` と同じ規則。`genre:House` は `DeepHouse` に一致しない。`genre:"House Techno"` は両方のタグを持つ曲）。ジャンル名の部分一致で探したいときはフィールド指定なしのトークン（`house`）を使う。
   - `year:2015` / `year:2010-2019` — 年（範囲は両端含む）。
   - `rating:` — **★（0〜5、0.5 刻み）で指定**（0–100 ではない）。`rating:4`（rating 80〜99）、`rating:3.5-5`、`rating:>=3`、`rating:<2`、`rating:0`（rating 0〜19。未評価も含む）。
   - `bpm:120-128` / `bpm:124`（単一値は ±2）。解析 BPM があればそれを、無ければ曲の BPM タグを見る。

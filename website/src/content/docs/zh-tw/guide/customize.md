@@ -72,7 +72,7 @@ description: 欄的新增 / 排序 / 寬度，列高、封面、右側欄的調�
 | `artist:daft` / `artist:"daft punk"` | 演出者名稱的部分比對 |
 | `album:discovery` | 專輯名稱的部分比對 |
 | `albumartist:aphex`（也可用 `album_artist:`） | 專輯演出者的部分比對 |
-| `genre:house` | 類型的部分比對 |
+| `genre:house` / `genre:"house techno"` | 類型標籤的完全比對（擁有 `House` 標籤的曲目；只有 `DeepHouse` 的曲目不符合）。以空白並列多個標籤時，須擁有全部標籤。不分大小寫 |
 | `comment:classic` | 註解的部分比對 |
 | `year:2018` / `year:2015-2020` | 發行年（單一 / 範圍） |
 | `rating:5` / `rating:4-5` / `rating:0` | 星等 0〜5（`rating:0` 為未評分；整數 `n` 包含 n〜n.5 星） |

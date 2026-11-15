@@ -73,7 +73,7 @@ To include spaces in a value, wrap it in double quotes, as in `artist:"daft punk
 | `artist:daft` / `artist:"daft punk"` | Partial match on the artist name |
 | `album:discovery` | Partial match on the album |
 | `albumartist:aphex` (`album_artist:` also works) | Partial match on the album artist |
-| `genre:house` | Partial match on the genre |
+| `genre:house` / `genre:"house techno"` | Exact match on a genre tag (tracks that have the `House` tag; a track tagged only `DeepHouse` does not match). Several tags separated by spaces match tracks that have all of them. Case-insensitive |
 | `comment:classic` | Partial match on the comments |
 | `year:2018` / `year:2015-2020` | Release year (single / range) |
 | `rating:5` / `rating:4-5` / `rating:0` | Stars 0–5 (`rating:0` is unrated; a whole number `n` covers n to n.5 stars) |
