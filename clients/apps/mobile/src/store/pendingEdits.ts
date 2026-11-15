@@ -4,6 +4,8 @@
 import * as SecureStore from "expo-secure-store";
 import { create } from "zustand";
 
+import { REVIEW_LATER_TAG } from "@/features/triage/commonTags";
+
 const KEY_OPS = "crateforge.pendingEdits";
 const KEY_CONFLICTS = "crateforge.pendingEditConflicts";
 
@@ -190,9 +192,16 @@ export const usePendingEdits = create<PendingEditsState>((set, get) => ({
             ),
         );
       }
-      // review-later は曲ごとに 1 件。
+      // review-later は曲ごとに 1 件。以前の版がタグメニュー経由で積んだ tag-add(review:later) も
+      // 同じ内容（同期時はどちらも review:later タグの追加）なので、まとめて置き換える。
       if (op.kind === "review-later") {
-        next = next.filter((o) => !(o.kind === "review-later" && o.trackId === op.trackId));
+        next = next.filter(
+          (o) =>
+            !(
+              o.trackId === op.trackId &&
+              (o.kind === "review-later" || (o.kind === "tag-add" && o.tag === REVIEW_LATER_TAG))
+            ),
+        );
       }
       const ops = [...next, op];
       persistOps(ops);

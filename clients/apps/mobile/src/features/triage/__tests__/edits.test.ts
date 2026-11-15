@@ -1,4 +1,4 @@
-// 評価・タグ書き込み（writeRating / writeTag / writeReviewLater）のテスト。ApiClient はモック。
+// 評価・タグ書き込み（writeRating / writeTag）のテスト。ApiClient はモック。
 
 import { QueryClient } from "@tanstack/react-query";
 
@@ -10,7 +10,6 @@ import {
   invalidateRatingQueries,
   queueReviewLater,
   writeRating,
-  writeReviewLater,
   writeTag,
 } from "../edits";
 
@@ -96,6 +95,12 @@ describe("writeTag", () => {
 });
 
 describe("writeTag: review:later", () => {
+  it("ホストがタグ未対応なら unsupported（退避するかは呼び出し側）", async () => {
+    connect({ addTrackTags: jest.fn(async () => Promise.reject(new ApiError(404, "nope"))) });
+    await expect(writeTag({ trackId: 4, tag: "review:later" })).resolves.toBe("unsupported");
+    expect(queuedOps()).toEqual([]);
+  });
+
   it("オフラインは tag-add ではなく review-later としてキューに積む（どの経路でも同じ種別）", async () => {
     await expect(writeTag({ trackId: 4, tag: "review:later", trackName: "D" })).resolves.toBe("queued");
     expect(queuedOps()).toEqual([{ kind: "review-later", trackId: 4, trackName: "D" }]);
@@ -108,24 +113,7 @@ describe("writeTag: review:later", () => {
   });
 });
 
-describe("writeReviewLater", () => {
-  it("オンラインは review:later タグを付けて applied", async () => {
-    const client = connect();
-    await expect(writeReviewLater({ trackId: 4, trackName: "D" })).resolves.toBe("applied");
-    expect(client.addTrackTags).toHaveBeenCalledWith([4], "review:later");
-  });
-
-  it("ホストがタグ未対応なら unsupported（退避するかは呼び出し側）", async () => {
-    connect({ addTrackTags: jest.fn(async () => Promise.reject(new ApiError(404, "nope"))) });
-    await expect(writeReviewLater({ trackId: 4 })).resolves.toBe("unsupported");
-    expect(queuedOps()).toEqual([]);
-  });
-
-  it("オフラインは review-later としてキューに積んで queued", async () => {
-    await expect(writeReviewLater({ trackId: 4, trackName: "D" })).resolves.toBe("queued");
-    expect(queuedOps()).toEqual([{ kind: "review-later", trackId: 4, trackName: "D" }]);
-  });
-
+describe("queueReviewLater", () => {
   it("queueReviewLater は接続中でも端末側のキューにだけ記録する", () => {
     const client = connect();
     queueReviewLater({ trackId: 5 });

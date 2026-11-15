@@ -91,11 +91,6 @@ export function writeTag(edit: TagEdit): Promise<EditOutcome> {
   });
 }
 
-/** 「あとで聴く」(`review:later` タグ) を付ける。writeTag に review:later を渡すのと同じ。 */
-export function writeReviewLater(edit: ReviewLaterEdit): Promise<EditOutcome> {
-  return writeTag({ ...edit, tag: REVIEW_LATER_TAG });
-}
-
 /** 「あとで聴く」を端末側のキューにだけ記録する（デスクトップがタグ未対応のときの退避にも使う）。 */
 export function queueReviewLater(edit: ReviewLaterEdit): void {
   usePendingEdits.getState().enqueue({
