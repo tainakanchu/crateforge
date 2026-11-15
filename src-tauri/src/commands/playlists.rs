@@ -102,6 +102,39 @@ pub fn get_playlist_tracks(
     .map_err(|e| e.to_string())
 }
 
+/// プレイリスト (スマート含む) の一覧の件数。`get_playlist_tracks` /
+/// `get_smart_playlist_tracks` の全ページぶん (`query` はプレイリスト内検索)。
+#[tauri::command(async)]
+pub fn count_playlist_tracks(
+    app: AppHandle,
+    playlist_id: i64,
+    query: Option<String>,
+) -> Result<i64, String> {
+    let db = open_db(&app)?;
+    db.count_playlist_tracks_filtered(playlist_id, query.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// プレイリスト (スマート含む) の一覧の track_id を表示順で全件返す。
+/// `sort_field` を省くと通常プレイリストは手動順 (sort_index)、スマートは criteria の並び。
+#[tauri::command(async)]
+pub fn get_playlist_track_ids(
+    app: AppHandle,
+    playlist_id: i64,
+    query: Option<String>,
+    sort_field: Option<String>,
+    sort_order: Option<String>,
+) -> Result<Vec<i64>, String> {
+    let db = open_db(&app)?;
+    db.get_playlist_track_ids_filtered(
+        playlist_id,
+        query.as_deref(),
+        sort_field.as_deref(),
+        sort_order.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn create_playlist(
     app: AppHandle,

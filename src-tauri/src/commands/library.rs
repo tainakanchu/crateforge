@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::AudioPlayer;
 
+use crate::db::tracks::AlbumScope;
 use crate::db::Database;
 use crate::importer;
 use crate::itunes_xml::{parser, writer};
@@ -203,6 +204,33 @@ pub fn search_tracks(
         &query,
         limit.unwrap_or(500),
         offset.unwrap_or(0),
+        sort_field.as_deref(),
+        sort_order.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// ライブラリ / 検索の一覧の件数 (`get_tracks` / `search_tracks` の全ページぶん)。
+/// `query` が無い・空なら全曲数。スクロール範囲を最初から全件ぶん確保するために使う
+/// (`docs/library-list/design.md`)。
+#[tauri::command(async)]
+pub fn count_tracks(app: AppHandle, query: Option<String>) -> Result<i64, String> {
+    let db = open_db(&app)?;
+    db.count_tracks(query.as_deref()).map_err(|e| e.to_string())
+}
+
+/// ライブラリ / 検索の一覧の track_id を表示順で全件返す (曲の情報は返さない)。
+/// 全選択・範囲選択・「ここから再生」が読み込んでいない行をまたいで動くためのもの。
+#[tauri::command(async)]
+pub fn get_track_ids(
+    app: AppHandle,
+    query: Option<String>,
+    sort_field: Option<String>,
+    sort_order: Option<String>,
+) -> Result<Vec<i64>, String> {
+    let db = open_db(&app)?;
+    db.get_track_ids(
+        query.as_deref(),
         sort_field.as_deref(),
         sort_order.as_deref(),
     )
@@ -429,16 +457,24 @@ pub fn remove_track_tags(app: AppHandle, track_ids: Vec<i64>, tag: String) -> Re
     Ok(())
 }
 
-#[tauri::command]
+/// アルバム表示の集約。`query` (検索ボックス + フィルタタグ) / `playlist_id` があれば、
+/// その範囲の曲だけでアルバムを束ねる (曲数・カバーなどもその範囲で数える)。
+#[tauri::command(async)]
 pub fn get_albums(
     app: AppHandle,
     sort_field: Option<String>,
     sort_order: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
+    query: Option<String>,
+    playlist_id: Option<i64>,
 ) -> Result<Vec<AlbumRow>, String> {
     let db = open_db(&app)?;
-    db.get_albums(
+    db.get_albums_scoped(
+        AlbumScope {
+            query: query.as_deref(),
+            playlist_id,
+        },
         sort_field.as_deref(),
         sort_order.as_deref(),
         limit.unwrap_or(500),
@@ -447,15 +483,44 @@ pub fn get_albums(
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn get_album_tracks(app: AppHandle, album_key: String) -> Result<Vec<Track>, String> {
+/// `get_albums` と同じ範囲のアルバム数 (全ページぶん)。
+#[tauri::command(async)]
+pub fn count_albums(
+    app: AppHandle,
+    query: Option<String>,
+    playlist_id: Option<i64>,
+) -> Result<i64, String> {
     let db = open_db(&app)?;
-    db.get_album_tracks(&album_key).map_err(|e| e.to_string())
+    db.count_albums(AlbumScope {
+        query: query.as_deref(),
+        playlist_id,
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// アルバムの曲 (disc → track 順)。`query` / `playlist_id` は `get_albums` と同じ範囲指定で、
+/// 指定すればその範囲の曲だけを返す (Artists ビューの展開は範囲なしで呼ぶ)。
+#[tauri::command(async)]
+pub fn get_album_tracks(
+    app: AppHandle,
+    album_key: String,
+    query: Option<String>,
+    playlist_id: Option<i64>,
+) -> Result<Vec<Track>, String> {
+    let db = open_db(&app)?;
+    db.get_album_tracks_scoped(
+        &album_key,
+        AlbumScope {
+            query: query.as_deref(),
+            playlist_id,
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Artists ビュー用のサーバ集約。sort_field は name / trackCount / albumCount のみ有効で、
 /// それ以外は name に倒す (db 側 artist_order_by)。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_artists(
     app: AppHandle,
     sort_field: Option<String>,
@@ -474,6 +539,14 @@ pub fn get_artists(
         query.as_deref(),
     )
     .map_err(|e| e.to_string())
+}
+
+/// `get_artists` と同じ検索条件のアーティスト数 (全ページぶん)。
+#[tauri::command(async)]
+pub fn count_artists(app: AppHandle, query: Option<String>) -> Result<i64, String> {
+    let db = open_db(&app)?;
+    db.count_artists_matching(query.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 /// 指定アーティストのアルバム一覧 (Artists ビューの展開表示用)。

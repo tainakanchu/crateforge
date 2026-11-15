@@ -9,6 +9,8 @@ pub mod stats;
 pub mod sync;
 pub mod tags;
 pub mod tracks;
+#[cfg(test)]
+mod windowed_list_tests;
 
 use std::collections::HashSet;
 use std::path::Path;
