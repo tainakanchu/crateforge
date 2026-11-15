@@ -93,6 +93,7 @@ crate-api.sh GET /api/tracks q="key:compat:8A rating:>=3" limit=200
 
 ### `GET /api/genres`
 `{ "tag": "House", "count": 42 }[]`（ジャンルタグの頻度）。
+集計は**表記どおり**（`House` と `house`、全角・半角の違いは別の行になる）。一方 `GET /api/tracks` の `genre` は大小・全角半角を無視して一致させるので、`genre=House` の件数は `House` と `house` の行の合計になりうる。
 
 ### `GET /api/tags`
 first-class Tag（Genre とは独立した、DB のみのタグ。`mood:dreamy` のような `namespace:value` か、`bridge` のような free tag）の一覧。

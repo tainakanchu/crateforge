@@ -1256,8 +1256,28 @@ mod tests {
 
         // タグを含まない値は絞り込まない (全曲)。
         let (_, everything) = req(app.clone(), "GET", "/api/tracks", None).await;
-        let (_, blank) = req(app, "GET", "/api/tracks?genre=", None).await;
+        let (_, blank) = req(app.clone(), "GET", "/api/tracks?genre=", None).await;
         assert_eq!(ids_of(&blank), ids_of(&everything));
+
+        // 空の genre= は「指定なし」なので、q だけのときの 1000 件上限も外さない。
+        {
+            let db = crate::db::Database::open(dir.path()).unwrap();
+            let tx = db.conn.unchecked_transaction().unwrap();
+            for i in 0..1100 {
+                tx.execute(
+                    "INSERT INTO tracks (track_id, name, file_exists) VALUES (?1, ?2, 1)",
+                    rusqlite::params![10_000 + i, format!("Bulk {i}")],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let (_, capped) = req(app.clone(), "GET", "/api/tracks?q=Bulk", None).await;
+        assert_eq!(capped.as_array().unwrap().len(), 1000);
+        for uri in ["/api/tracks?q=Bulk&genre=", "/api/tracks?q=Bulk&genre=%20%20"] {
+            let (_, body) = req(app.clone(), "GET", uri, None).await;
+            assert_eq!(body.as_array().unwrap().len(), 1000, "{uri}");
+        }
     }
 
     // ===== 追加: album 部分一致フィルタ =====

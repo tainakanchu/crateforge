@@ -1,5 +1,5 @@
 {
-  "description": "ジャンルのタグ単位一致 (検索構文 genre: と API ?genre=) の共通テストベクタ。規則は docs/genre/design.md §3。genre = 曲の genre 文字列 (null は未設定)、query = 検索値、level = 字体ゆれの吸収レベル (off / light / standard。省略時 standard)、match = その曲が一致するか。",
+  "description": "ジャンルのタグ単位一致 (検索構文 genre: と API ?genre=) の共通テストベクタ。規則は docs/genre/design.md §3。genre = 曲の genre 文字列 (null は未設定)、query = 検索値、level = 字体ゆれの吸収レベル (off / light / standard。省略時 standard)、match = その曲が一致するか。これは判定関数 (has_genre_tag) の規則で、タグを 1 つも含まない値はどの曲にも一致しない。API の ?genre= は、空・空白のみの値を関数に渡さず「指定なし」(絞り込まない) として扱う。検索構文の genre: も、値が空ならフィールド指定とみなさない。",
   "cases": [
     { "name": "タグが一致する", "genre": "House", "query": "House", "match": true },
     { "name": "名前の文字列が重なるだけの別ジャンルは一致しない", "genre": "DeepHouse", "query": "House", "match": false },
@@ -20,6 +20,10 @@
     { "name": "値の ; , も区切り", "genre": "House Techno", "query": "House;Techno", "match": true },
     { "name": "曲側の ; 区切り (v0.18〜v0.19 の保存形式) もタグに分かれる", "genre": "House; Techno", "query": "Techno", "match": true },
     { "name": "曲側の , 区切りもタグに分かれる", "genre": "House,Techno", "query": "house", "match": true },
+    { "name": "全角の ； は区切りではない (分割は fold より前。フロントの splitGenre と同じ): 片側だけでは一致しない", "genre": "House；Techno", "query": "House", "match": false },
+    { "name": "全角の ； を含む全体は 1 タグとして一致する", "genre": "House；Techno", "query": "House；Techno", "match": true },
+    { "name": "読点 、 は区切りではない", "genre": "House、Techno", "query": "Techno", "match": false },
+    { "name": "全角の ， は区切りではない", "genre": "House，Techno", "query": "House", "match": false },
     { "name": "/ は区切らない: 片側だけでは一致しない", "genre": "Electronic/Dance", "query": "Electronic", "match": false },
     { "name": "/ は区切らない: 全体なら一致", "genre": "Electronic/Dance", "query": "electronic/dance", "match": true },
     { "name": "R&B/Soul は 1 タグ", "genre": "R&B/Soul", "query": "R&B", "match": false },

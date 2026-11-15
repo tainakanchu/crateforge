@@ -258,9 +258,17 @@ pub async fn list_tracks(
     // これらが付いていると DB 側 LIMIT で打ち切ると取りこぼすため、上限は使えない。
     // そこで「q 指定 かつ 追加フィルタ無し」のときだけ DB へ limit/offset を委譲して
     // 全件転送を避ける (保守的対応)。フィルタがある場合・q 無しの全件取得は従来どおり。
+    // genre: タグ単位の完全一致 (docs/genre/design.md §3)。検索構文の `genre:` と同じ判定を
+    // SQL 側 (has_genre_tag) で行う。タグを含まない値 (`genre=` 空・空白のみ) は絞り込まない
+    // (= 指定なしと同じ扱い。下の件数上限の判定にも数えない)。
+    let genre_tags = q
+        .genre
+        .as_deref()
+        .filter(|g| !crate::db::tracks::split_genre_tags(g).is_empty());
+
     let has_extra_filters = q.rating_min.is_some()
         || q.rating_max.is_some()
-        || q.genre.is_some()
+        || genre_tags.is_some()
         || q.album.is_some()
         || q.artist.is_some()
         || q.album_artist.is_some()
@@ -280,13 +288,6 @@ pub async fn list_tracks(
     } else {
         (ALL_ROWS, 0)
     };
-
-    // genre: タグ単位の完全一致 (docs/genre/design.md §3)。検索構文の `genre:` と同じ判定を
-    // SQL 側 (has_genre_tag) で行う。タグを含まない値 (`genre=` 空・空白のみ) は絞り込まない。
-    let genre_tags = q
-        .genre
-        .as_deref()
-        .filter(|g| !crate::db::tracks::split_genre_tags(g).is_empty());
 
     let mut tracks = match (q.q.as_deref(), genre_tags) {
         (Some(query), _) if !query.trim().is_empty() => {
