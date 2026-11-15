@@ -8,7 +8,7 @@ import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "rea
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
-import { type DownloadedPlaylist, type Playlist, rootItems, useConnection, useDownloads, describeApiError } from "@crateforge/core";
+import { type DownloadedPlaylist, type Playlist, browseKeys, rootItems, useConnection, useDownloads, describeApiError } from "@crateforge/core";
 import { PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import { Loading, ErrorView, EmptyView } from "@/components/StateViews";
@@ -18,7 +18,7 @@ import PlaylistRow from "@/features/browse/PlaylistRow";
 import { LIGHT_LIST_FRESH_MS, usePullToRefresh, useRefetchStaleOnFocus } from "@/hooks/use-refresh";
 
 // タブに戻ったら（このタブの）プレイリスト一覧だけ、10 秒以上経っていれば取り直す（round-3 N5）。
-const PLAYLISTS_FOCUS_TARGETS = [{ queryKey: ["playlists"], freshMs: LIGHT_LIST_FRESH_MS }] as const;
+const PLAYLISTS_FOCUS_TARGETS = [{ queryKey: browseKeys.playlists, freshMs: LIGHT_LIST_FRESH_MS }] as const;
 
 export default function PlaylistsScreen() {
   const router = useRouter();

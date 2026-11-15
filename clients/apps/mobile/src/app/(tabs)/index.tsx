@@ -14,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 
-import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError, compareNamesUnknownLast, isSearchable, matchesNormalized } from "@crateforge/core";
+import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, browseKeys, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError, compareNamesUnknownLast, isSearchable, matchesNormalized } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import TrackRow from "@/components/TrackRow";
@@ -118,10 +118,10 @@ export default function LibraryScreen() {
   // アルバム/アーティストは軽いので 10 秒の鮮度閾値、全曲一覧は従来どおり stale（5 分）のときだけ。
   useRefetchStaleOnFocus(
     mode === "tracks"
-      ? [{ queryKey: ["tracks"] }, { queryKey: ["genres"] }]
+      ? [{ queryKey: browseKeys.tracksRoot }, { queryKey: browseKeys.genres }]
       : mode === "albums"
-        ? [{ queryKey: ["albums"], freshMs: LIGHT_LIST_FRESH_MS }]
-        : [{ queryKey: ["artists"], freshMs: LIGHT_LIST_FRESH_MS }],
+        ? [{ queryKey: browseKeys.albums, freshMs: LIGHT_LIST_FRESH_MS }]
+        : [{ queryKey: browseKeys.artistsRoot, freshMs: LIGHT_LIST_FRESH_MS }],
   );
   const refreshControl = (
     <RefreshControl

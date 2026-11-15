@@ -4,7 +4,7 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 
-import { ApiError, useConnection } from "@crateforge/core";
+import { ApiError, browseKeys, useConnection } from "@crateforge/core";
 
 import { usePendingEdits } from "@/store/pendingEdits";
 import { REVIEW_LATER_TAG } from "./commonTags";
@@ -39,11 +39,11 @@ export type ReviewLaterEdit = Omit<TagEdit, "tag">;
 
 /** rating を含むキャッシュ済みクエリのキープレフィックス（無効化対象）。 */
 export const RATING_AFFECTED_KEYS = [
-  ["tracks"],
-  ["artist-tracks"],
-  ["album-tracks"],
-  ["playlist-tracks"],
-  ["similar"],
+  browseKeys.tracksRoot,
+  browseKeys.artistTracksRoot,
+  browseKeys.albumTracksRoot,
+  browseKeys.playlistTracksRoot,
+  browseKeys.similarRoot,
 ] as const;
 
 /** rating を含む可能性のある一覧を無効化して取り直させる（評価の書き込み後に呼ぶ）。 */
