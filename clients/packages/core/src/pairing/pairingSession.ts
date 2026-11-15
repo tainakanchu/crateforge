@@ -1,0 +1,132 @@
+// コード承認ペアリングの状態機械（mobile / TV 共通、UI 非依存）。
+//   pairStart（コード取得）→ intervalMs ごとに pairPoll → approved / expired / エラーで終了。
+// 画面は onEvent を受けて表示を切り替え、approved のときに useConnection.connect を呼ぶ。
+// mDNS の探索そのもの（ネイティブモジュール）はアプリ側。ここには発見結果の重複排除だけ置く。
+
+import { DESKTOP_API_SETTINGS_PATH } from "../lib/api/errors";
+import type { PairPollResponse, PairStartResponse } from "../lib/types";
+
+/** ペアリング承認の確認間隔（ms）。 */
+export const PAIRING_POLL_INTERVAL_MS = 2000;
+
+/** デスクトップ側でコードを入力する場所（案内文用）。 */
+export const DESKTOP_PAIR_APPROVE_PATH = `${DESKTOP_API_SETTINGS_PATH} → 端末を承認`;
+
+/** コードの期限切れ（poll が expired を返した）ときの文言。 */
+export const PAIRING_EXPIRED_MESSAGE = "コードが期限切れになりました。もう一度お試しください。";
+
+/** ペアリングに必要な API だけを切り出した形（ApiClient が満たす）。 */
+export interface PairingClient {
+  pairStart(deviceName?: string, platform?: string): Promise<PairStartResponse>;
+  pairPoll(session: string): Promise<PairPollResponse>;
+}
+
+/**
+ * ペアリングの進行イベント。
+ * - code: pairStart 成功。コードを表示して承認待ちに入った（この後ポーリングが始まる）。
+ * - approved: 承認された。token で接続する（終了）。
+ * - expired: コードが期限切れ（終了）。
+ * - error: 失敗（終了）。stage は pairStart（"start"）か承認確認（"poll"）か。
+ *   文言は画面側で describeApiError(error, { action }) にする。
+ */
+export type PairingEvent =
+  | { type: "code"; code: string }
+  | { type: "approved"; token: string }
+  | { type: "expired" }
+  | { type: "error"; stage: "start" | "poll"; error: unknown };
+
+export interface PairingSessionOptions {
+  client: PairingClient;
+  deviceName: string;
+  platform: string;
+  /** 承認確認の間隔。既定は PAIRING_POLL_INTERVAL_MS。 */
+  intervalMs?: number;
+  onEvent: (event: PairingEvent) => void;
+}
+
+export interface PairingSession {
+  /** ペアリングを中断する。以後 onEvent は呼ばれず、ポーリングも止まる。何度呼んでもよい。 */
+  cancel(): void;
+}
+
+/**
+ * ペアリングを開始する。approved / expired / error のいずれかを 1 回だけ通知して終了する。
+ * - cancel 後や終了後に返ってきた応答は捨てる（pairStart 待ちの間に cancel しても
+ *   ポーリングは始まらない）。
+ * - 前回の確認がまだ返っていない間は次の確認を投げない（応答の追い越しで二重に
+ *   approved を通知しないため）。
+ */
+export function startPairingSession(options: PairingSessionOptions): PairingSession {
+  const { client, deviceName, platform, onEvent } = options;
+  const intervalMs = options.intervalMs ?? PAIRING_POLL_INTERVAL_MS;
+
+  let done = false;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let polling = false;
+
+  const stop = () => {
+    done = true;
+    if (timer != null) {
+      clearInterval(timer);
+      timer = null;
+    }
+  };
+
+  const finish = (event: PairingEvent) => {
+    if (done) return;
+    stop();
+    onEvent(event);
+  };
+
+  const poll = async (session: string) => {
+    if (done || polling) return;
+    polling = true;
+    try {
+      const res = await client.pairPoll(session);
+      if (res.status === "approved" && res.token != null) {
+        finish({ type: "approved", token: res.token });
+      } else if (res.status === "expired") {
+        finish({ type: "expired" });
+      }
+      // pending（および token 無しの approved）は次の確認を待つ。
+    } catch (error) {
+      finish({ type: "error", stage: "poll", error });
+    } finally {
+      polling = false;
+    }
+  };
+
+  void (async () => {
+    let started: PairStartResponse;
+    try {
+      started = await client.pairStart(deviceName, platform);
+    } catch (error) {
+      finish({ type: "error", stage: "start", error });
+      return;
+    }
+    if (done) return;
+    onEvent({ type: "code", code: started.code });
+    // onEvent の中で cancel された場合はポーリングを始めない。
+    if (done) return;
+    timer = setInterval(() => {
+      void poll(started.session);
+    }, intervalMs);
+  })();
+
+  return { cancel: stop };
+}
+
+/** mDNS で見つかったサービスの同一性キー（"host:port"。そのまま接続先アドレスにもなる）。 */
+export function discoveredKey(svc: { host: string; port: number }): string {
+  return `${svc.host}:${svc.port}`;
+}
+
+/**
+ * 発見済み一覧に svc を足す。同じ host:port が既にあれば prev をそのまま（同じ参照で）返す
+ * ので、setState の更新関数にそのまま渡せる。
+ */
+export function dedupeDiscovered<T extends { host: string; port: number }>(prev: T[], svc: T): T[] {
+  const key = discoveredKey(svc);
+  if (prev.some((s) => discoveredKey(s) === key)) return prev;
+  return [...prev, svc];
+}

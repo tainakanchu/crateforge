@@ -25,7 +25,15 @@ import {
   type DiscoveredService,
 } from "expo-crateforge-mdns";
 
-import { ApiClient, useConnection } from "@crateforge/core";
+import {
+  ApiClient,
+  PAIRING_EXPIRED_MESSAGE,
+  type PairingSession,
+  dedupeDiscovered,
+  discoveredKey,
+  startPairingSession,
+  useConnection,
+} from "@crateforge/core";
 import { PALETTE, TV_FONT, FOCUS_RING } from "@/theme/palette";
 
 type Phase = "input" | "polling" | "error";
@@ -51,15 +59,12 @@ export default function ConnectScreen() {
   const [btnFocused, setBtnFocused] = useState(false);
   const [discovered, setDiscovered] = useState<DiscoveredService[]>([]);
   const [discoveredFocusKey, setDiscoveredFocusKey] = useState<string | null>(null);
-  const sessionRef = useRef<string | null>(null);
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const clientRef = useRef<ApiClient | null>(null);
+  // 進行中のペアリング（core の状態機械）。cancel でポーリングごと止まる。
+  const pairingRef = useRef<PairingSession | null>(null);
 
   const stopPolling = useCallback(() => {
-    if (pollTimerRef.current != null) {
-      clearInterval(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
+    pairingRef.current?.cancel();
+    pairingRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -73,11 +78,7 @@ export default function ConnectScreen() {
     if (!DISCOVERY_AVAILABLE || phase === "polling") return;
     startDiscovery();
     const sub = addServiceFoundListener((svc) => {
-      setDiscovered((prev) => {
-        const key = `${svc.host}:${svc.port}`;
-        if (prev.some((s) => `${s.host}:${s.port}` === key)) return prev;
-        return [...prev, svc];
-      });
+      setDiscovered((prev) => dedupeDiscovered(prev, svc));
     });
     return () => {
       sub.remove();
@@ -85,8 +86,9 @@ export default function ConnectScreen() {
     };
   }, [phase]);
 
+  // pairStart → コード表示 → 承認確認のポーリング（core の pairingSession）。
   const startPairing = useCallback(
-    async (rawAddress: string) => {
+    (rawAddress: string) => {
       const trimmed = rawAddress.trim();
       if (!trimmed) {
         setErrorMsg("デスクトップの IP:port を入力してください（例: 192.168.1.10:8787）");
@@ -94,58 +96,57 @@ export default function ConnectScreen() {
         return;
       }
 
+      stopPolling();
       setPhase("polling");
       setErrorMsg(null);
 
-      try {
-        const client = new ApiClient({ baseUrl: trimmed, token: null });
-        clientRef.current = client;
-        const deviceName = Device.deviceName ?? Device.modelName ?? "Android TV";
-        const { session, code: pairingCode } = await client.pairStart(deviceName, "android-tv");
-        sessionRef.current = session;
-        setCode(pairingCode);
-
-        // 2秒ごとにポーリング
-        pollTimerRef.current = setInterval(async () => {
-          try {
-            if (!sessionRef.current || !clientRef.current) return;
-            const res = await clientRef.current.pairPoll(sessionRef.current);
-            if (res.status === "approved" && res.token != null) {
-              stopPolling();
-              await useConnection.getState().connect(trimmed, res.token);
-              // Gate が / へリダイレクトする
-            } else if (res.status === "expired") {
-              stopPolling();
-              setPhase("error");
-              setErrorMsg("コードが期限切れになりました。もう一度お試しください。");
-              setCode(null);
-            }
-          } catch (e) {
-            stopPolling();
-            setPhase("error");
-            setErrorMsg(e instanceof Error ? e.message : "ポーリングエラー");
-            setCode(null);
-          }
-        }, 2000);
-      } catch (e) {
+      const fail = (message: string) => {
         setPhase("error");
-        setErrorMsg(e instanceof Error ? e.message : "接続できませんでした");
+        setErrorMsg(message);
+        setCode(null);
+      };
+
+      let client: ApiClient;
+      try {
+        client = new ApiClient({ baseUrl: trimmed, token: null });
+      } catch (e) {
+        fail(e instanceof Error ? e.message : "接続できませんでした");
+        return;
       }
+      pairingRef.current = startPairingSession({
+        client,
+        deviceName: Device.deviceName ?? Device.modelName ?? "Android TV",
+        platform: "android-tv",
+        onEvent: (ev) => {
+          if (ev.type === "code") {
+            setCode(ev.code);
+          } else if (ev.type === "approved") {
+            // Gate が / へリダイレクトする
+            void useConnection.getState().connect(trimmed, ev.token);
+          } else if (ev.type === "expired") {
+            fail(PAIRING_EXPIRED_MESSAGE);
+          } else if (ev.stage === "start") {
+            fail(ev.error instanceof Error ? ev.error.message : "接続できませんでした");
+          } else {
+            fail(ev.error instanceof Error ? ev.error.message : "ポーリングエラー");
+          }
+        },
+      });
     },
     [stopPolling],
   );
 
   const handleStart = useCallback(() => {
-    void startPairing(address);
+    startPairing(address);
   }, [address, startPairing]);
 
   // 探索結果を選んだら探索を止め、その IP:port でペアリングを開始する。
   const handlePickDiscovered = useCallback(
     (svc: DiscoveredService) => {
-      const addr = `${svc.host}:${svc.port}`;
+      const addr = discoveredKey(svc);
       stopDiscovery();
       setAddress(addr);
-      void startPairing(addr);
+      startPairing(addr);
     },
     [startPairing],
   );
@@ -156,8 +157,6 @@ export default function ConnectScreen() {
     setCode(null);
     setErrorMsg(null);
     setDiscovered([]);
-    sessionRef.current = null;
-    clientRef.current = null;
   }, [stopPolling]);
 
   return (
@@ -198,7 +197,7 @@ export default function ConnectScreen() {
                   <Text style={styles.discoverHint}>同じ LAN を検索中…</Text>
                 ) : (
                   discovered.map((svc) => {
-                    const key = `${svc.host}:${svc.port}`;
+                    const key = discoveredKey(svc);
                     const focused = discoveredFocusKey === key;
                     return (
                       <Pressable

@@ -7,6 +7,7 @@ export * from "./lib/sort";
 export * from "./lib/playlistTree";
 export * from "./lib/api/client";
 export * from "./lib/api/errors";
+export * from "./pairing/pairingSession";
 export * from "./store/connection";
 export * from "./store/connectionMonitor";
 export * from "./store/player";

@@ -33,7 +33,13 @@ import { BRAND, PALETTE } from "@/constants/brand";
 import {
   ApiClient,
   DESKTOP_API_SETTINGS_PATH,
+  DESKTOP_PAIR_APPROVE_PATH,
+  PAIRING_EXPIRED_MESSAGE,
+  type PairingSession,
+  dedupeDiscovered,
   describeApiError,
+  discoveredKey,
+  startPairingSession,
   useConnection,
   useDownloads,
 } from "@crateforge/core";
@@ -84,9 +90,8 @@ export default function ConnectScreen() {
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [pairingBaseUrl, setPairingBaseUrl] = useState<string | null>(null);
-  const sessionRef = useRef<string | null>(null);
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pairClientRef = useRef<ApiClient | null>(null);
+  // 進行中のペアリング（core の状態機械）。cancel でポーリングごと止まる。
+  const pairingRef = useRef<PairingSession | null>(null);
 
   const connecting = status === "connecting";
   // 接続失敗がデスクトップ不達（network/timeout）なら、ルートの接続監視が同じ接続先で自動再試行している
@@ -94,10 +99,8 @@ export default function ConnectScreen() {
   const autoRetrying = status === "error" && (errorKind === "network" || errorKind === "timeout");
 
   const stopPolling = useCallback(() => {
-    if (pollTimerRef.current != null) {
-      clearInterval(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
+    pairingRef.current?.cancel();
+    pairingRef.current = null;
   }, []);
 
   // アンマウント時にポーリングを確実に止める
@@ -110,11 +113,7 @@ export default function ConnectScreen() {
     if (!DISCOVERY_AVAILABLE || pairingPhase !== "idle") return;
     startDiscovery();
     const sub = addServiceFoundListener((svc) => {
-      setDiscovered((prev) => {
-        const key = `${svc.host}:${svc.port}`;
-        if (prev.some((s) => `${s.host}:${s.port}` === key)) return prev;
-        return [...prev, svc];
-      });
+      setDiscovered((prev) => dedupeDiscovered(prev, svc));
     });
     return () => {
       sub.remove();
@@ -156,52 +155,46 @@ export default function ConnectScreen() {
     connect(url, token);
   }
 
-  // ペアリングフロー開始: 発見ホストのアドレスで pairStart → code 表示 → pairPoll。
+  // ペアリングフロー開始: 発見ホストのアドレスで pairStart → code 表示 → pairPoll（core の pairingSession）。
   const startPairing = useCallback(
-    async (rawAddr: string) => {
+    (rawAddr: string) => {
       const baseUrl = rawAddr.trim();
+      stopPolling();
       setPairingPhase("pairing");
       setPairingError(null);
       setPairingCode(null);
       setPairingBaseUrl(baseUrl);
 
-      try {
-        const client = new ApiClient({ baseUrl, token: null });
-        pairClientRef.current = client;
-        const deviceName = Device.deviceName ?? Device.modelName ?? "Mobile";
-        const platform = Platform.OS === "ios" ? "ios" : "android";
-        const { session, code } = await client.pairStart(deviceName, platform);
-        sessionRef.current = session;
-        setPairingCode(code);
-
-        // 2秒ごとにポーリング
-        pollTimerRef.current = setInterval(() => {
-          void (async () => {
-            try {
-              if (!sessionRef.current || !pairClientRef.current) return;
-              const res = await pairClientRef.current.pairPoll(sessionRef.current);
-              if (res.status === "approved" && res.token != null) {
-                stopPolling();
-                await useConnection.getState().connect(baseUrl, res.token);
-                // Gate が / へリダイレクトする
-              } else if (res.status === "expired") {
-                stopPolling();
-                setPairingPhase("pairError");
-                setPairingError("コードが期限切れになりました。もう一度お試しください。");
-                setPairingCode(null);
-              }
-            } catch (e) {
-              stopPolling();
-              setPairingPhase("pairError");
-              setPairingError(describeApiError(e, { action: "承認の確認" }));
-              setPairingCode(null);
-            }
-          })();
-        }, 2000);
-      } catch (e) {
+      const fail = (message: string) => {
         setPairingPhase("pairError");
-        setPairingError(describeApiError(e, { action: "接続" }));
+        setPairingError(message);
+        setPairingCode(null);
+      };
+
+      let client: ApiClient;
+      try {
+        client = new ApiClient({ baseUrl, token: null });
+      } catch (e) {
+        fail(describeApiError(e, { action: "接続" }));
+        return;
       }
+      pairingRef.current = startPairingSession({
+        client,
+        deviceName: Device.deviceName ?? Device.modelName ?? "Mobile",
+        platform: Platform.OS === "ios" ? "ios" : "android",
+        onEvent: (ev) => {
+          if (ev.type === "code") {
+            setPairingCode(ev.code);
+          } else if (ev.type === "approved") {
+            // Gate が / へリダイレクトする
+            void useConnection.getState().connect(baseUrl, ev.token);
+          } else if (ev.type === "expired") {
+            fail(PAIRING_EXPIRED_MESSAGE);
+          } else {
+            fail(describeApiError(ev.error, { action: ev.stage === "start" ? "接続" : "承認の確認" }));
+          }
+        },
+      });
     },
     [stopPolling],
   );
@@ -213,15 +206,12 @@ export default function ConnectScreen() {
     setPairingCode(null);
     setPairingError(null);
     setPairingBaseUrl(null);
-    sessionRef.current = null;
-    pairClientRef.current = null;
     setDiscovered([]);
   }, [stopPolling]);
 
   function handlePickDiscovered(svc: DiscoveredService) {
     stopDiscovery();
-    const addr = `${svc.host}:${svc.port}`;
-    void startPairing(addr);
+    startPairing(discoveredKey(svc));
   }
 
   function handleScanned(data: string) {
@@ -349,7 +339,7 @@ export default function ConnectScreen() {
                 <Text style={styles.discoverHint}>同じ Wi-Fi を検索中…</Text>
               ) : (
                 discovered.map((svc) => {
-                  const key = `${svc.host}:${svc.port}`;
+                  const key = discoveredKey(svc);
                   return (
                     <Pressable
                       key={key}
@@ -398,7 +388,7 @@ export default function ConnectScreen() {
                 <>
                   <Text style={styles.pairingCode}>{pairingCode}</Text>
                   <Text style={styles.pairingInstructions}>
-                    デスクトップの{"\n"}「設定 → モバイル / API → 端末を承認」に{"\n"}このコードを入力してください
+                    デスクトップの{"\n"}「{DESKTOP_PAIR_APPROVE_PATH}」に{"\n"}このコードを入力してください
                   </Text>
                   {pairingBaseUrl ? (
                     <Text style={styles.pairingAddr}>{pairingBaseUrl}</Text>
