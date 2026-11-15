@@ -66,7 +66,14 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
     [searchQuery, filterTags],
   );
 
-  const parentRef = useRef<HTMLDivElement>(null);
+  const parentRef = useRef<HTMLDivElement | null>(null);
+  // グリッドのスクロール要素。初回描画は空状態 (データ到着前) で要素が無いので、
+  // 付いた時点で幅計測を始められるよう state でも持つ (callback ref)。AlbumsView と同じ。
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const setParentRef = useCallback((el: HTMLDivElement | null) => {
+    parentRef.current = el;
+    setScrollEl(el);
+  }, []);
   const [width, setWidth] = useState(0);
   const [artists, setArtists] = useState<ArtistRow[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -101,8 +108,10 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   // store 側でもビュー切替時に正規化しているので、ここは保険。
   const artistSort: SortField = ARTIST_SORT_SET.has(sortField) ? sortField : "name";
 
+  // 依存を [] にすると、空状態でマウント → 後からグリッドが出たケースで計測が始まらず、
+  // width=0 → cols=2 (下限) でカードが横長に引き伸ばされていた。要素の付け替えに追従する。
   useLayoutEffect(() => {
-    const el = parentRef.current;
+    const el = scrollEl;
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
       for (const e of entries) setWidth(e.contentRect.width);
@@ -110,7 +119,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
     ro.observe(el);
     setWidth(el.clientWidth);
     return () => ro.disconnect();
-  }, []);
+  }, [scrollEl]);
 
   const load = useCallback(
     async (reset: boolean) => {
@@ -331,7 +340,7 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
   const items = rowVirtualizer.getVirtualItems();
 
   return (
-    <div className="cb-grid-wrap" ref={parentRef} onScroll={handleScroll}>
+    <div className="cb-grid-wrap" ref={setParentRef} onScroll={handleScroll}>
       <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
         {items.map((vRow) => {
           const row = rows[vRow.index];
