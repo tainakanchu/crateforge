@@ -44,6 +44,15 @@ export function compareAlbums(a: AlbumSortKey, b: AlbumSortKey): number {
   return ay - by;
 }
 
+/**
+ * アルバム一覧（mobile / TV 共通）の並び順。名前の自然順（不明なアルバムは末尾）で、
+ * 同名のアルバムどうしは compareAlbums（アルバムアーティスト → アルバム名 → 年）で決める。
+ */
+export const compareAlbumsByName: (a: AlbumSortKey, b: AlbumSortKey) => number = (() => {
+  const byName = compareNamesUnknownLast((a: AlbumSortKey) => a.album);
+  return (a, b) => byName(a, b) || compareAlbums(a, b);
+})();
+
 /** disc 番号 → トラック番号 の収録順比較（番号なしは 0 扱い）。 */
 export function byDiscTrack(
   a: Pick<Track, "discNumber" | "trackNumber">,

@@ -13,7 +13,7 @@ import { View, Text, StyleSheet } from "react-native";
 import {
   type Album,
   albumLabel,
-  compareNamesUnknownLast,
+  compareAlbumsByName,
   useAlbumTracks,
   useAlbums,
   usePlayer,
@@ -24,12 +24,10 @@ import { LibraryList } from "@/components/library/LibraryList";
 import { Focusable } from "@/components/focus";
 import { PALETTE, TV_FONT, TV_LAYOUT, FOCUS_RING } from "@/theme/palette";
 
-/** アルバム一覧の並び順: mobile と同じ名前の自然順（"Vol. 2" < "Vol. 10"）。不明なアルバムは末尾。 */
-const byAlbumName = compareNamesUnknownLast((a: Album) => a.album);
-
 /** useAlbums の select（参照を固定して、再描画のたびに並べ替え直さない）。 */
 function sortAlbumsForTv(albums: Album[]): Album[] {
-  return [...albums].sort(byAlbumName);
+  // mobile と同じ core の比較（名前の自然順・不明は末尾・同名はアルバムアーティスト順）。
+  return [...albums].sort(compareAlbumsByName);
 }
 
 export default function AlbumsScreen() {

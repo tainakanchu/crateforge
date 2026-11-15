@@ -14,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 
-import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, browseKeys, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError, compareNamesUnknownLast, isSearchable, matchesNormalized } from "@crateforge/core";
+import { type Album, type Artist, type DownloadedPlaylist, type SortField, type Track, albumLabel, artistLabel, browseKeys, compareAlbumsByName, trackAlbumArtistKey, trackArtistKey, useConnection, usePlayer, useDownloads, useSettings, describeApiError, compareNamesUnknownLast, isSearchable, matchesNormalized } from "@crateforge/core";
 import { BRAND, PALETTE } from "@/constants/brand";
 import Screen from "@/components/Screen";
 import TrackRow from "@/components/TrackRow";
@@ -140,7 +140,7 @@ export default function LibraryScreen() {
   // 全角半角・かなカナ・大小・記号のゆれは正規化して吸収し、並びは自然順（2 < 10）。
   // 不明なアルバム（album: ""）は末尾に置き、検索は表示ラベル（「不明なアルバム」）で照合する。
   const albums = useMemo(() => {
-    const all = [...(albumsQuery.data ?? [])].sort(compareNamesUnknownLast((a) => a.album));
+    const all = [...(albumsQuery.data ?? [])].sort(compareAlbumsByName);
     if (!debounced) return all;
     return all.filter((a) => matchesNormalized(albumLabel(a.album), debounced));
   }, [albumsQuery.data, debounced]);

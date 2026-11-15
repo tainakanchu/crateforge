@@ -100,6 +100,25 @@ describe("TV アルバム一覧の並び順", () => {
   });
 });
 
+describe("TV アルバム一覧: 同名のアルバム", () => {
+  test("同名どうしはアルバムアーティスト順（mobile と同じ core の比較）", async () => {
+    mockApi({
+      "/api/albums": [
+        album("Greatest Hits", "Queen", 1),
+        album("Another", "Zed", 2),
+        album("Greatest Hits", "ABBA", 3),
+      ],
+    });
+    const screen = await renderScreen(<AlbumsScreen />);
+    await waitFor(() => expect(screen.getByText("Another")).toBeTruthy());
+    expect(screen.getAllByLabelText(/曲$/).map((el) => String(el.props.accessibilityLabel))).toEqual([
+      "Another, Zed ・ 1曲",
+      "Greatest Hits, ABBA ・ 1曲",
+      "Greatest Hits, Queen ・ 1曲",
+    ]);
+  });
+});
+
 describe("TV アーティスト一覧の並び順", () => {
   test("名前の自然順（mobile と同じ）。不明なアーティストは末尾", async () => {
     mockApi({

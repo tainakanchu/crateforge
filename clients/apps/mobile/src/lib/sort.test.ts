@@ -1,6 +1,6 @@
 // core/src/lib/sort.ts のテスト（core に jest 設定が無いため mobile のテストツリーに置く）。
 
-import { byDiscTrack, compareAlbums, compareNamesUnknownLast } from "@crateforge/core";
+import { byDiscTrack, compareAlbums, compareAlbumsByName, compareNamesUnknownLast } from "@crateforge/core";
 
 describe("compareNamesUnknownLast", () => {
   const cmp = compareNamesUnknownLast((x: { name: string }) => x.name);
@@ -58,6 +58,35 @@ describe("compareAlbums", () => {
     expect(compareAlbums({ ...base, year: null }, { ...base, year: 2005 })).toBeGreaterThan(0);
     expect(compareAlbums({ ...base, year: 2005 }, { ...base })).toBeLessThan(0);
     expect(compareAlbums({ ...base }, { ...base, year: null })).toBe(0);
+  });
+});
+
+describe("compareAlbumsByName（mobile / TV のアルバム一覧）", () => {
+  const sorted = (albums: { album: string; albumArtist: string | null; year?: number | null }[]) =>
+    [...albums].sort(compareAlbumsByName).map((a) => `${a.album}/${a.albumArtist ?? "-"}`);
+
+  it("名前の自然順。不明なアルバムは末尾", () => {
+    expect(
+      sorted([
+        { album: "Vol. 10", albumArtist: "A" },
+        { album: "", albumArtist: null },
+        { album: "vol. 2", albumArtist: "Z" },
+        { album: "Alpha", albumArtist: "M" },
+      ]),
+    ).toEqual(["Alpha/M", "vol. 2/Z", "Vol. 10/A", "/-"]);
+  });
+
+  it("同名のアルバムはアルバムアーティスト順、さらに年の昇順", () => {
+    expect(
+      sorted([
+        { album: "Greatest Hits", albumArtist: "Queen" },
+        { album: "Greatest Hits", albumArtist: "ABBA" },
+        { album: "Greatest Hits", albumArtist: null },
+        { album: "Another", albumArtist: "Zed" },
+      ]),
+    ).toEqual(["Another/Zed", "Greatest Hits/ABBA", "Greatest Hits/-", "Greatest Hits/Queen"]);
+    const same = { album: "Live", albumArtist: "X" };
+    expect(compareAlbumsByName({ ...same, year: 1999 }, { ...same, year: 2005 })).toBeLessThan(0);
   });
 });
 
