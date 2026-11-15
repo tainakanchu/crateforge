@@ -30,6 +30,7 @@ import { combineQuery } from "../lib/query";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
 import { AddGenreTagDialog } from "./AddGenreTagDialog";
+import { CovTrackRow } from "./CovTrackRow";
 
 const SORT_LINE_H = 15; // ソートキー表示行 (.cov-meta .ls) のおよその高さ
 
@@ -932,46 +933,34 @@ function AlbumExpansion({
           const isIn = crateSet.has(t.trackId);
           const isCurrent = currentTrackId === t.trackId;
           const showArtist = (t.artist || "") !== vm.albumArtist && !!t.artist;
+          // 実効 BPM (タグ ?? 解析値)。解析値は薄く表示する。
+          const b = effectiveBpm(t, analysisByTrack.get(t.trackId));
+          const stars = ratingToStars(t.rating);
           return (
-            <div
+            <CovTrackRow
               key={`${t.id}-${i}`}
-              className={"cov-trk" + (isCurrent ? " play" : "") + (!t.fileExists ? " missing" : "")}
-              onDoubleClick={() => onPlayTrack(t.trackId)}
+              track={t}
+              index={i}
+              isCurrent={isCurrent}
+              inCrate={isIn}
+              showArtist={showArtist}
+              time={formatTime(t.totalTimeMs)}
+              onPlay={() => onPlayTrack(t.trackId)}
               onContextMenu={(e) => onTrackContextMenu(e, t)}
-            >
-              <span className="n">{t.trackNumber ?? i + 1}</span>
-              <span className="nm">
-                {isCurrent && (
-                  <span className="cov-now">
-                    <Icon name="play" size={9} fill="currentColor" stroke={0} />
-                  </span>
-                )}
-                {!t.fileExists && (
-                  <span className="cb-warn" title="ファイルが見つかりません">
-                    <Icon name="warning" size={11} />
-                  </span>
-                )}
-                <span className="ell">{t.name || "(unknown)"}</span>
-                {showArtist && <span className="sub"> — {t.artist}</span>}
-              </span>
-              {(() => {
-                // 実効 BPM (タグ ?? 解析値)。解析値は薄く表示する。
-                const b = effectiveBpm(t, analysisByTrack.get(t.trackId));
-                return b ? (
-                  <span
-                    className="bpm cb-fmono"
-                    style={{ color: bpmColor(b.value), opacity: b.fromAnalysis ? 0.6 : undefined }}
-                    title={b.fromAnalysis ? ANALYZED_BPM_TITLE : undefined}
-                  >
-                    {b.value}
-                  </span>
-                ) : null;
-              })()}
-              {(() => {
-                const stars = ratingToStars(t.rating);
-                return (
-                  // 未評価は行ホバー時だけ出す (全行に空の星が並ぶとうるさいため)。
-                  // ダブルクリックが行の再生に化けないよう止める。
+              onAddToCrate={() => onAddTrack(t)}
+              extra={
+                <>
+                  {b ? (
+                    <span
+                      className="bpm cb-fmono"
+                      style={{ color: bpmColor(b.value), opacity: b.fromAnalysis ? 0.6 : undefined }}
+                      title={b.fromAnalysis ? ANALYZED_BPM_TITLE : undefined}
+                    >
+                      {b.value}
+                    </span>
+                  ) : null}
+                  {/* 未評価は行ホバー時だけ出す (全行に空の星が並ぶとうるさいため)。
+                      ダブルクリックが行の再生に化けないよう止める。 */}
                   <span
                     className={"rt" + (stars > 0 ? "" : " empty")}
                     title="レーティング (左半分クリックで半星 / 同じ値で解除)"
@@ -979,26 +968,9 @@ function AlbumExpansion({
                   >
                     <Stars value={stars} size={12} onSet={(n) => onSetRating(t, n)} />
                   </span>
-                );
-              })()}
-              <span className="tm cb-fmono">{formatTime(t.totalTimeMs)}</span>
-              {isIn ? (
-                <span className="cov-trk-add in" title="Crate に追加済み">
-                  <Icon name="check" size={15} />
-                </span>
-              ) : (
-                <button
-                  className="cov-trk-add"
-                  title="Crate に追加"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onAddTrack(t);
-                  }}
-                >
-                  <Icon name="plus" size={15} />
-                </button>
-              )}
-            </div>
+                </>
+              }
+            />
           );
         })}
       </div>

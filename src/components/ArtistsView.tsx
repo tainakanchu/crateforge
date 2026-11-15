@@ -24,6 +24,7 @@ import { isTauri } from "../lib/env";
 import { combineQuery } from "../lib/query";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
+import { CovTrackRow } from "./CovTrackRow";
 
 
 /**
@@ -567,48 +568,18 @@ function ArtistExpansion({
                           const isCurrent = currentTrackId === t.trackId;
                           const showArtist = !!t.artist && t.artist !== artist.name;
                           return (
-                            <div
+                            // 列は番号 / 曲名 / 長さ / +Crate のみ (ui-spec 3.2)。extra は渡さない。
+                            <CovTrackRow
                               key={`${t.id}-${i}`}
-                              className={
-                                "cov-trk" +
-                                (isCurrent ? " play" : "") +
-                                (!t.fileExists ? " missing" : "")
-                              }
-                              onDoubleClick={() => onPlayAlbum(al, t.trackId)}
-                            >
-                              <span className="n">{t.trackNumber ?? i + 1}</span>
-                              <span className="nm">
-                                {isCurrent && (
-                                  <span className="cov-now">
-                                    <Icon name="play" size={9} fill="currentColor" stroke={0} />
-                                  </span>
-                                )}
-                                {!t.fileExists && (
-                                  <span className="cb-warn" title="ファイルが見つかりません">
-                                    <Icon name="warning" size={11} />
-                                  </span>
-                                )}
-                                <span className="ell">{t.name || "(unknown)"}</span>
-                                {showArtist && <span className="sub"> — {t.artist}</span>}
-                              </span>
-                              <span className="tm cb-fmono">{formatTime(t.totalTimeMs)}</span>
-                              {isIn ? (
-                                <span className="cov-trk-add in" title="Crate に追加済み">
-                                  <Icon name="check" size={15} />
-                                </span>
-                              ) : (
-                                <button
-                                  className="cov-trk-add"
-                                  title="Crate に追加"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onCrateTrack(t);
-                                  }}
-                                >
-                                  <Icon name="plus" size={15} />
-                                </button>
-                              )}
-                            </div>
+                              track={t}
+                              index={i}
+                              isCurrent={isCurrent}
+                              inCrate={isIn}
+                              showArtist={showArtist}
+                              time={formatTime(t.totalTimeMs)}
+                              onPlay={() => onPlayAlbum(al, t.trackId)}
+                              onAddToCrate={() => onCrateTrack(t)}
+                            />
                           );
                         })}
                       </div>
