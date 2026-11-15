@@ -24,7 +24,8 @@ use tauri::Manager;
 
 use super::error::ApiError;
 use super::ApiState;
-use crate::analyzer::similarity::{rank_similar, SimilarOpts};
+use crate::analyzer::similarity::SimilarOpts;
+use crate::library::similar::{similar_hits, DEFAULT_SIMILAR_LIMIT};
 use crate::db::tracks::{AlbumInfo, ArtistInfo};
 use crate::models::{
     GenreTagCount, LibraryStats, Playlist, SimilarHit, Tag, TagCount, Track, TrackAnalysis,
@@ -1290,7 +1291,8 @@ pub struct SimilarQuery {
     pub energy_tol: Option<f64>,
 }
 
-/// `GET /api/tracks/:trackId/similar` — `commands::analysis::get_similar` の中核を複製。
+/// `GET /api/tracks/:trackId/similar` — GUI の `get_similar` と同じ
+/// [`crate::library::similar::similar_hits`] の結果に、実効 BPM の補完だけを足す。
 /// 基準曲が未解析 (ベクトル空) なら空配列を返す。
 pub async fn get_similar_tracks(
     State(state): State<ApiState>,
@@ -1300,28 +1302,17 @@ pub async fn get_similar_tracks(
     Query(bq): Query<EffectiveBpmQuery>,
 ) -> Result<Json<Vec<SimilarHit>>, ApiError> {
     let db = state.db()?;
-    // 基準曲が未解析 / ベクトル空なら類似なし。
-    let base = match db.get_analysis(track_id)? {
-        Some(b) if !b.vector.is_empty() => b,
-        _ => return Ok(Json(Vec::new())),
-    };
-    let all = db.get_all_analysis()?;
     let opts = SimilarOpts {
         bpm_tol: q.bpm_tol,
         key_compatible: q.key_compatible.unwrap_or(false),
         energy_tol: q.energy_tol,
     };
-    let ranked = rank_similar(&base, &all, &opts, q.limit.unwrap_or(25));
-
-    let mut tracks = Vec::with_capacity(ranked.len());
-    let mut distances = Vec::with_capacity(ranked.len());
-    for (tid, distance) in ranked {
-        if let Ok(Some(track)) = db.get_track_by_track_id(tid) {
-            tracks.push(track);
-            distances.push(distance);
-        }
-    }
-    // 実効 BPM (タグ ?? 解析値) にそろえる (D3)。
+    let limit = q.limit.unwrap_or(DEFAULT_SIMILAR_LIMIT);
+    let (mut tracks, distances): (Vec<Track>, Vec<f64>) = similar_hits(&db, track_id, &opts, limit)?
+        .into_iter()
+        .map(|hit| (hit.track, hit.distance))
+        .unzip();
+    // 実効 BPM (タグ ?? 解析値) にそろえる (D3)。HTTP だけの規則なのでここで行う。
     apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
     let hits = tracks
         .into_iter()

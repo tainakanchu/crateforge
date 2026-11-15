@@ -1,8 +1,9 @@
 use tauri::AppHandle;
 
-use crate::analyzer::similarity::{rank_similar, smooth_order, SimilarOpts};
+use crate::analyzer::similarity::{smooth_order, SimilarOpts};
 use crate::analyzer::Analyzer;
 use crate::commands::library::open_db;
+use crate::library::similar::{similar_hits, DEFAULT_SIMILAR_LIMIT};
 use crate::models::{AnalysisStatus, SimilarHit, TrackAnalysis};
 
 /// 指定トラックの解析をバックグラウンドキューへ投入する。
@@ -52,25 +53,13 @@ pub fn get_similar(
     energy_tol: Option<f64>,
 ) -> Result<Vec<SimilarHit>, String> {
     let db = open_db(&app)?;
-    let base = match db.get_analysis(track_id).map_err(|e| e.to_string())? {
-        Some(b) if !b.vector.is_empty() => b,
-        _ => return Ok(Vec::new()),
-    };
-    let all = db.get_all_analysis().map_err(|e| e.to_string())?;
     let opts = SimilarOpts {
         bpm_tol,
         key_compatible: key_compatible.unwrap_or(false),
         energy_tol,
     };
-    let ranked = rank_similar(&base, &all, &opts, limit.unwrap_or(25));
-
-    let mut hits = Vec::with_capacity(ranked.len());
-    for (tid, distance) in ranked {
-        if let Ok(Some(track)) = db.get_track_by_track_id(tid) {
-            hits.push(SimilarHit { track, distance });
-        }
-    }
-    Ok(hits)
+    similar_hits(&db, track_id, &opts, limit.unwrap_or(DEFAULT_SIMILAR_LIMIT))
+        .map_err(|e| e.to_string())
 }
 
 /// crate 等の track_id 列を貪欲最近傍で「滑らかな並び」に並べ替えて返す。

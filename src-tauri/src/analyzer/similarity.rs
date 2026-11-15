@@ -2,6 +2,8 @@
 
 use crate::models::TrackAnalysis;
 
+/// 類似曲検索の絞り込み。既定 (`Default`) は絞り込みなし。
+#[derive(Debug, Clone, Default)]
 pub struct SimilarOpts {
     /// BPM 許容差 (base BPM に対する割合, 例 0.08)。None ならフィルタしない。
     pub bpm_tol: Option<f64>,
