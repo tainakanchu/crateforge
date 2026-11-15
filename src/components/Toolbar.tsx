@@ -3,6 +3,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import * as libraryApi from "../api/library";
 import * as playlistsApi from "../api/playlists";
 import { useStore } from "../store/useStore";
+import { useElementWidth } from "../hooks/useElementWidth";
 import { Icon } from "./Icon";
 import { ColumnPicker } from "./ColumnPicker";
 import { SmartRestoreDialog } from "./SmartRestoreDialog";
@@ -209,7 +210,6 @@ export function Toolbar({
   const [sortOpen, setSortOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   // ツールバー行の実効幅 (右ペインの表示・リサイズに追従) と畳み段階 (上の fitLevel 参照)。
-  const [rowWidth, setRowWidth] = useState(Number.POSITIVE_INFINITY);
   const [fitLevel, setFitLevel] = useState(0);
   // Web フォントの読み込み完了で文字幅が変わるので測り直す。
   const [fontsTick, setFontsTick] = useState(0);
@@ -223,7 +223,6 @@ export function Toolbar({
 
   const searchTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const rowRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLDivElement>(null);
   const sortBtnRef = useRef<HTMLButtonElement>(null);
   const moreBtnRef = useRef<HTMLButtonElement>(null);
@@ -232,16 +231,10 @@ export function Toolbar({
 
   // ツールバー幅を監視して畳み具合を切り替える（初回描画前に確定させたいので layout effect）。
   // 行の幅は右ペインの表示・リサイズに追従する (grid の中央列の幅)。
-  useLayoutEffect(() => {
-    const el = rowRef.current;
-    if (!el) return;
-    setRowWidth(el.clientWidth);
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setRowWidth(e.contentRect.width);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  // 計測前は「十分広い」として扱う。
+  const { ref: rowRef, width: rowWidth } = useElementWidth<HTMLDivElement>(
+    Number.POSITIVE_INFINITY,
+  );
 
   useEffect(() => {
     let alive = true;
