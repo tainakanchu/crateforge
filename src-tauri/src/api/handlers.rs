@@ -1737,17 +1737,9 @@ pub async fn delete_playlist(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// スマートプレイリストの曲目は直接編集させない → 409。曲目は条件のライブ評価で決まり、
-/// `playlist_tracks` に書いても無視されるため (黙って成功させない)。
-fn ensure_tracks_editable(db: &crate::db::Database, playlist_id: i64) -> Result<(), ApiError> {
-    if db.has_smart_criteria(playlist_id)? {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            crate::db::playlists::SMART_PLAYLIST_EDIT_ERROR,
-        ));
-    }
-    Ok(())
-}
+// 曲目の編集は GUI と共通の `library::playlists` を通す。スマートプレイリストは 409
+// (曲目は条件のライブ評価で決まり、`playlist_tracks` に書いても無視されるため黙って成功させない)。
+// エラーの HTTP ステータスへの写像は `api/error.rs`。
 
 /// `POST /api/playlists/:playlistId/tracks` — 曲を追加 → { added: n }。
 pub async fn add_tracks(
@@ -1756,8 +1748,7 @@ pub async fn add_tracks(
     ExtractJson(body): ExtractJson<ByIdsBody>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
-    ensure_tracks_editable(&db, playlist_id)?;
-    let added = db.add_tracks_to_playlist(playlist_id, &body.track_ids)?;
+    let added = crate::library::playlists::add_tracks(&db, playlist_id, &body.track_ids)?;
     // 追加成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
     state.notify_library_changed(Some(playlist_id));
     Ok(Json(json!({ "added": added })))
@@ -1769,8 +1760,7 @@ pub async fn remove_track(
     Path((playlist_id, track_id)): Path<(i64, i64)>,
 ) -> Result<StatusCode, ApiError> {
     let db = state.db()?;
-    ensure_tracks_editable(&db, playlist_id)?;
-    db.remove_track_from_playlist(playlist_id, track_id)?;
+    crate::library::playlists::remove_track(&db, playlist_id, track_id)?;
     // 削除成功を WebView へ通知 (起動中アプリの UI に即時反映させる)。
     state.notify_library_changed(Some(playlist_id));
     Ok(StatusCode::NO_CONTENT)
@@ -1783,23 +1773,10 @@ pub async fn replace_playlist_tracks(
     Path(playlist_id): Path<i64>,
     ExtractJson(body): ExtractJson<ByIdsBody>,
 ) -> Result<StatusCode, ApiError> {
-    use crate::db::playlists::ReplacePlaylistTracksResult;
-
     let db = state.db()?;
-    ensure_tracks_editable(&db, playlist_id)?;
-    match db.replace_playlist_tracks(playlist_id, &body.track_ids)? {
-        ReplacePlaylistTracksResult::Replaced => {
-            state.notify_library_changed(Some(playlist_id));
-            Ok(StatusCode::NO_CONTENT)
-        }
-        ReplacePlaylistTracksResult::PlaylistNotFound => {
-            Err(ApiError::not_found("playlist not found"))
-        }
-        ReplacePlaylistTracksResult::TrackNotFound(track_id) => Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            format!("track not found: {track_id}"),
-        )),
-    }
+    crate::library::playlists::replace_tracks(&db, playlist_id, &body.track_ids)?;
+    state.notify_library_changed(Some(playlist_id));
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ===== 曲メタデータ書き込み =====

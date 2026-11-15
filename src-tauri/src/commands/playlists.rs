@@ -1,17 +1,8 @@
 use tauri::AppHandle;
 
 use crate::commands::library::open_db;
-use crate::db::playlists::SMART_PLAYLIST_EDIT_ERROR;
-use crate::db::Database;
+use crate::library::playlists as playlist_edit;
 use crate::models::{Playlist, SmartCriteria, Track};
-
-/// スマートプレイリストの曲目は直接編集させない (書いても条件の評価で無視されるため)。
-fn ensure_tracks_editable(db: &Database, playlist_id: i64) -> Result<(), String> {
-    if db.has_smart_criteria(playlist_id).map_err(|e| e.to_string())? {
-        return Err(SMART_PLAYLIST_EDIT_ERROR.to_string());
-    }
-    Ok(())
-}
 
 #[tauri::command]
 pub fn get_playlists(app: AppHandle) -> Result<Vec<Playlist>, String> {
@@ -183,14 +174,14 @@ pub fn add_tracks_to_playlist(
     track_ids: Vec<i64>,
 ) -> Result<usize, String> {
     let db = open_db(&app)?;
-    ensure_tracks_editable(&db, playlist_id)?;
+    // スマートプレイリストなら (従来どおり) 一時再生曲の除外より先に拒否する。
+    playlist_edit::ensure_tracks_editable(&db, playlist_id).map_err(|e| e.to_string())?;
     // ライブラリ外の一時再生曲 (負の ID) は DB に行が無いので、プレイリストには入れない。
     let track_ids: Vec<i64> = track_ids
         .into_iter()
         .filter(|&id| !crate::transient::is_transient_id(id))
         .collect();
-    db.add_tracks_to_playlist(playlist_id, &track_ids)
-        .map_err(|e| e.to_string())
+    playlist_edit::add_tracks(&db, playlist_id, &track_ids).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -200,9 +191,7 @@ pub fn remove_track_from_playlist(
     track_id: i64,
 ) -> Result<(), String> {
     let db = open_db(&app)?;
-    ensure_tracks_editable(&db, playlist_id)?;
-    db.remove_track_from_playlist(playlist_id, track_id)
-        .map_err(|e| e.to_string())
+    playlist_edit::remove_track(&db, playlist_id, track_id).map_err(|e| e.to_string())
 }
 
 /// 選択中の複数曲をまとめてプレイリストから外す (1 トランザクション)。外した行数を返す。
@@ -213,9 +202,7 @@ pub fn remove_tracks_from_playlist(
     track_ids: Vec<i64>,
 ) -> Result<usize, String> {
     let db = open_db(&app)?;
-    ensure_tracks_editable(&db, playlist_id)?;
-    db.remove_tracks_from_playlist(playlist_id, &track_ids)
-        .map_err(|e| e.to_string())
+    playlist_edit::remove_tracks(&db, playlist_id, &track_ids).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -225,38 +212,5 @@ pub fn reorder_playlist_tracks(
     ordered_track_ids: Vec<i64>,
 ) -> Result<(), String> {
     let db = open_db(&app)?;
-    ensure_tracks_editable(&db, playlist_id)?;
-    db.reorder_playlist_tracks(playlist_id, &ordered_track_ids)
-        .map_err(|e| e.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// スマート条件のあるプレイリストは曲目の編集コマンドを拒否する。通常プレイリストは通す。
-    #[test]
-    fn smart_playlist_tracks_are_not_editable() {
-        let db = Database::open_memory().unwrap();
-        let normal = db.create_playlist("Normal", None, false).unwrap();
-        let smart = db
-            .create_smart_playlist(
-                "Smart",
-                &SmartCriteria {
-                    match_all: true,
-                    rules: vec![],
-                    groups: vec![],
-                    limit: None,
-                    sort_by: None,
-                    sort_desc: false,
-                    then_by: Vec::new(),
-                },
-            )
-            .unwrap();
-        assert_eq!(ensure_tracks_editable(&db, normal.playlist_id), Ok(()));
-        assert_eq!(
-            ensure_tracks_editable(&db, smart.playlist_id),
-            Err(SMART_PLAYLIST_EDIT_ERROR.to_string())
-        );
-    }
+    playlist_edit::reorder_tracks(&db, playlist_id, &ordered_track_ids).map_err(|e| e.to_string())
 }
