@@ -18,7 +18,7 @@ import type { LayoutChangeEvent, GestureResponderEvent } from "react-native";
 import { useRouter } from "expo-router";
 
 import { BRAND, PALETTE } from "@/constants/brand";
-import { ApiError, type SimilarHit, type Track, formatDuration, isNativePlaybackActive, ratingToHalfStars, starsToRating, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
+import { ApiError, type SimilarHit, type Track, formatDuration, isNativePlaybackActive, nextRepeat, ratingToHalfStars, starsToRating, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
 import Artwork from "@/components/Artwork";
 import ModeToggleButton from "@/components/ModeToggleButton";
@@ -281,7 +281,7 @@ function NowPlaying({
   const [showSleepPicker, setShowSleepPicker] = useState(false);
 
   const cycleRepeat = () => {
-    setRepeat(repeat === "off" ? "all" : repeat === "all" ? "one" : "off");
+    setRepeat(nextRepeat(repeat));
   };
 
   const skip = useCallback(

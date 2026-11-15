@@ -10,6 +10,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 
 import {
+  nextRepeat,
   usePlayer,
   useConnection,
   trackTitle,
@@ -51,7 +52,7 @@ export default function PlayerScreen() {
 
   // リピートを off → all → one → off で循環
   const cycleRepeat = () => {
-    setRepeat(repeat === "off" ? "all" : repeat === "all" ? "one" : "off");
+    setRepeat(nextRepeat(repeat));
   };
 
   // 曲なし状態
