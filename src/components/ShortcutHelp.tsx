@@ -63,7 +63,10 @@ const GROUPS: Group[] = [
     title: "リスト操作",
     items: [
       { keys: ["↑", "↓"], label: "選択を上下に移動" },
-      { keys: ["Ctrl", "A"], label: "すべて選択" },
+      { keys: ["PageUp", "PageDown"], label: "選択を 1 画面ぶん上下に移動" },
+      { keys: ["Home", "End"], label: "一覧の先頭 / 末尾の曲を選択" },
+      { keys: ["Shift", "↑"], label: "選択範囲を拡張 (↓ / PageUp / PageDown / Home / End も同じ)" },
+      { keys: ["Ctrl", "A"], label: "すべて選択 (一覧の全曲)" },
       { keys: ["Ctrl", "I"], label: "選択した曲を編集" },
       { keys: ["Delete"], label: "選択した曲をライブラリから削除（確認あり）" },
       {

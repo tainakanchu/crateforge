@@ -308,13 +308,33 @@ test("WindowLoader: key が変わったら古い応答を捨て、キャッシ�
   src.setLabel("b:");
   loader.sync({ key: "b", revision: 0, count: 1000 });
   assert.equal(loader.get(0), undefined);
-  loader.setVisibleRange(0, 7);
+  loader.schedule();
   stale.resolve(); // 前の一覧の応答が後から届く
   await flush();
   assert.equal(loader.get(0), undefined, "古い世代の応答は使わない");
   src.calls.find((c) => c.offset === 0 && c !== stale)!.resolve();
   await flush();
   assert.equal(loader.get(0), "b:0");
+});
+
+test("WindowLoader: key が変わったら表示範囲は先頭に戻る (範囲を伝え直さなくても先頭のページを取る)", async () => {
+  const { loader, src } = makeLoader(1000);
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(500, 507);
+  for (const c of src.calls) c.resolve();
+  await flush();
+  src.calls.length = 0;
+  loader.sync({ key: "b", revision: 0, count: 1000 });
+  loader.schedule();
+  assert.deepEqual(src.offsets(), [0, 10], "前の一覧の位置 (500) ではなく先頭を取る");
+  // 先頭にいたまま切り替わると、ビューから見た表示範囲は変わらない。それでも取り直せる。
+  for (const c of src.calls) c.resolve();
+  await flush();
+  src.calls.length = 0;
+  loader.sync({ key: "c", revision: 0, count: 1000 });
+  loader.setVisibleRange(0, 7);
+  loader.schedule();
+  assert.deepEqual(src.offsets(), [0, 10]);
 });
 
 test("WindowLoader: revision が変わったら表示中のページを取り直す。届くまで古い内容を表示する", async () => {

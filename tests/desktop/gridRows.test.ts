@@ -6,7 +6,6 @@ import {
   GRID_PAD_X,
   gridLayout,
   gridMetrics,
-  isNearBottom,
   relocateExpanded,
   shouldRemeasureGrid,
 } from "../../src/lib/gridRows.ts";
@@ -142,12 +141,6 @@ test("relocateExpanded: 見つからなければ閉じる。未取得の位置�
   });
 });
 
-test("isNearBottom: 末尾の手前 400px 以内で true", () => {
-  assert.equal(isNearBottom({ scrollTop: 0, clientHeight: 500, scrollHeight: 2000 }), false);
-  assert.equal(isNearBottom({ scrollTop: 1099, clientHeight: 500, scrollHeight: 2000 }), false);
-  assert.equal(isNearBottom({ scrollTop: 1100, clientHeight: 500, scrollHeight: 2000 }), true);
-});
-
 test("shouldRemeasureGrid: 初回は測る", () => {
   assert.equal(shouldRemeasureGrid(null, { gridRowHeight: 214, cols: 5 }), true);
 });
@@ -158,9 +151,9 @@ test("shouldRemeasureGrid: カード幅 (行の高さ) か列数が変わった�
   assert.equal(shouldRemeasureGrid(prev, { gridRowHeight: 214, cols: 4 }), true);
 });
 
-test("shouldRemeasureGrid: 寸法が同じなら測り直さない (展開の開閉・追加ロードで呼ばれても)", () => {
-  // 展開行の重なりの回帰テスト: 判定の入力は寸法だけで、行リストや展開状態を含まない。
-  // 開閉や追加ロードのあとの再レンダーでは寸法が変わらないので、実測キャッシュは捨てられない。
+test("shouldRemeasureGrid: 寸法が同じなら測り直さない (展開の開閉・ページの到着で呼ばれても)", () => {
+  // 展開行の重なりの回帰テスト: 判定の入力は寸法だけで、行の並びや展開状態を含まない。
+  // 開閉やページの到着のあとの再レンダーでは寸法が変わらないので、実測キャッシュは捨てられない。
   const key = { gridRowHeight: 214, cols: 5 };
   const closed = gridLayout(7, 3, null);
   const opened = gridLayout(7, 3, { key: "e", index: 4 });

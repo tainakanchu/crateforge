@@ -77,15 +77,15 @@ export function useWindowedList<T>({
   // アンマウント後に届く応答は捨てる (開発時の StrictMode の張り直しでは上の effect が取得し直す)。
   useEffect(() => () => loader.stop(), [loader]);
 
-  return useMemo(
+  // 関数は一覧が切り替わっても同じものを返す (effect の依存に入れても張り直しが起きない)。
+  const api = useMemo(
     () => ({
-      count,
       get: (index: number) => loader.get(index),
       setVisibleRange: (start: number, end: number) => loader.setVisibleRange(start, end),
       ensure: (index: number) => loader.ensure(index),
       loaded: () => loader.loaded(),
-      version,
     }),
-    [loader, count, version],
+    [loader],
   );
+  return useMemo(() => ({ ...api, count, version }), [api, count, version]);
 }

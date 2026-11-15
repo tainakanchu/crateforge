@@ -150,6 +150,28 @@ export async function getSmartPlaylistTracks(
   });
 }
 
+/// プレイリスト (スマート含む) の一覧の件数 (getPlaylistTracks / getSmartPlaylistTracks の
+/// 全ページぶん)。`query` はプレイリスト内検索。
+export async function countPlaylistTracks(playlistId: number, query?: string): Promise<number> {
+  return invoke("count_playlist_tracks", { playlistId, query: query || null });
+}
+
+/// プレイリスト (スマート含む) の一覧の trackId を表示順で全件取得する。sortField を省くと
+/// 通常プレイリストは手動順 (sort_index)、スマートは criteria の並び。
+export async function getPlaylistTrackIds(
+  playlistId: number,
+  query?: string,
+  sortField?: SortField,
+  sortOrder?: SortOrder,
+): Promise<number[]> {
+  return invoke("get_playlist_track_ids", {
+    playlistId,
+    query: query || null,
+    sortField,
+    sortOrder,
+  });
+}
+
 // ===== ライブラリ変更通知 =====
 
 /// API 経由などライブラリ変更時に発火するイベントを購読する。

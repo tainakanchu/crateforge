@@ -8,8 +8,6 @@ export const GRID_MIN_CARD = 150;
 export const GRID_META_H = 42;
 /** 展開行の高さの見積もり (実測されるまでの仮の値)。 */
 export const GRID_EXPAND_ESTIMATE = 260;
-/** 末尾からこの距離までスクロールしたら追加ロードする。 */
-export const GRID_LOAD_MORE_PX = 400;
 
 export interface GridMetrics {
   /** 1 行あたりのカード数 (下限 2)。 */
@@ -131,14 +129,6 @@ export function relocateExpanded(
   return null;
 }
 
-/** スクロール位置が末尾の手前 threshold px 以内か (追加ロードの判定)。 */
-export function isNearBottom(
-  el: { scrollTop: number; clientHeight: number; scrollHeight: number },
-  threshold: number = GRID_LOAD_MORE_PX,
-): boolean {
-  return el.scrollTop + el.clientHeight >= el.scrollHeight - threshold;
-}
-
 /** 行の高さを左右する寸法。これが変わったときだけ実測キャッシュを捨てる。 */
 export interface GridMeasureKey {
   /** グリッド行 1 行の高さの見積もり (カード幅・ラベル行数で決まる)。 */
@@ -149,7 +139,7 @@ export interface GridMeasureKey {
 /**
  * 仮想化の実測キャッシュを捨てて測り直すべきか。
  *
- * 引数に行リストや展開状態を取らないのは意図どおり: 展開の開閉・遅延取得・追加ロードで
+ * 引数に行の並びや展開状態を取らないのは意図どおり: 展開の開閉・遅延取得・ページの到着で
  * キャッシュを捨てると、展開行が見積もり高さに戻って次の行が重なる (行キーが安定なので不要)。
  * 測り直すのは初回 (prev が null) と、カード幅/列数が変わってグリッド行の高さが変わるときだけ。
  */

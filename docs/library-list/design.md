@@ -62,19 +62,27 @@ TracksView (カード表示)、AlbumsView、ArtistsView。Inbox と「最近再�
 
 ## 4. フロントエンドの構成
 
-- `src/lib/windowedList.ts` — 純関数 (ページ計算・LRU キャッシュ・取得タイミングの判定)。
+- `src/lib/windowedList.ts` — React に依存しない本体。純関数 (ページ計算・取得タイミングの判定・
+  カーソル移動の行番号計算)、`PageCache` (LRU)、`WindowLoader` (世代管理・重複排除・スクロール停止待ち)。
   `tests/desktop/windowedList.test.ts` で固定。
 - `src/hooks/useWindowedList.ts` — `useWindowedList({ key, revision, count, pageSize, fetchPage })`。
-  世代管理・重複排除・キャッシュ・スクロール停止待ちを持つ唯一の hook。3 つのビューが共用する。
-- `src/lib/trackListQuery.ts` — ストアの状態から「どの一覧か」(`TrackListQuery`) とキーを決める純関数。
-  `src/api/trackList.ts` がそれを各コマンドへ振り分ける。
-- `src/hooks/useTrackList.ts` — 曲の一覧 (TrackTable / TracksView) 用の薄い配線。件数の取得、
-  ID 列の遅延取得 (`getIds`)、選択中の曲の解決 (`resolveTracks`)。
+  `WindowLoader` を React に配線するだけの hook で、4 つのビューが共用する。
+- `src/hooks/useListCount.ts` — 件数の取得 (キーが変わったら未確定に戻し、取り直しでは前の件数を保つ)。
+- `src/lib/trackListQuery.ts` — ストアの状態から「どの一覧か」(`TrackListQuery`) とキーを決める純関数
+  (`tests/desktop/trackListQuery.test.ts`)。`src/api/trackList.ts` がそれを各コマンドへ振り分ける。
+- `src/hooks/useTrackList.ts` — 曲の一覧 (TrackTable / TracksView) 用の薄い配線。ID 列の遅延取得
+  (`getIds`)、選択中の曲の解決 (`resolveTracks`)、表示順への並べ直し (`orderByList`)。
 - `src/lib/gridRows.ts` `gridLayout` — 件数と列数からグリッドの行を決める。展開行は
-  「読み込み済みで、展開中の項目」の行の直後に 1 行だけ差し込む。行キーは展開の開閉で変わらない。
-- ビュー (TrackTable / TracksView / AlbumsView / ArtistsView) は描画と操作だけを持つ。
+  「読み込み済みで、展開中の項目」の行の直後に 1 行だけ差し込む。行キーは展開の開閉で変わらない
+  (`tests/desktop/gridRows.test.ts`)。
+- ビュー (TrackTable / TracksView / AlbumsView / ArtistsView) は描画と操作だけを持つ。未取得の行・カードは
+  同じ高さのプレースホルダ (`.cb-row.ph` / `PlaceholderCard`)。カード下のラベル行は CSS で高さを固定し、
+  行の高さの見積もりと実測を一致させる (スクロール範囲が実測で伸び縮みしない)。
 - ストアの `tracks` は **メモリ上の一覧 (Inbox / 最近再生した曲) 専用**。ライブラリ・プレイリスト・
-  検索では空。表示中の件数は `listCount`、ライブラリ変更の通知は `libraryRevision`。
+  検索では空。表示中の曲の一覧の全件数は `listCount` (App が取り、ツールバーの件数表示と各ビューの
+  スクロール範囲で共有する)、ライブラリ変更の通知は `libraryRevision`。
+- 一覧に読み込まれているとは限らない曲 (再生中の曲、ショートカットで編集・Crate に入れる選択中の曲) は
+  ID で取り直す (`get_tracks_by_ids`)。
 
 ## 5. 操作 (読み込んでいない行をまたいでも同じ結果になること)
 

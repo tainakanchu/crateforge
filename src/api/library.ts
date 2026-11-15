@@ -141,6 +141,20 @@ export async function searchTracks(
   });
 }
 
+/// ライブラリ / 検索の一覧の件数 (getTracks / searchTracks の全ページぶん)。query 省略で全曲数。
+export async function countTracks(query?: string): Promise<number> {
+  return invoke("count_tracks", { query: query || null });
+}
+
+/// ライブラリ / 検索の一覧の trackId を表示順で全件取得する (曲の情報は返さない)。
+export async function getTrackIds(
+  query?: string,
+  sortField?: SortField,
+  sortOrder?: SortOrder,
+): Promise<number[]> {
+  return invoke("get_track_ids", { query: query || null, sortField, sortOrder });
+}
+
 export async function getLibraryStats(): Promise<LibraryStats> {
   return invoke("get_library_stats");
 }

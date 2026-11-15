@@ -261,11 +261,23 @@ interface AppState extends PersistedSettings {
   searchScope: SearchScope;
 
   // Data
+  /**
+   * メモリ上の曲の一覧 (Inbox / 最近再生した曲)。件数に上限があるので全件を持つ。
+   * ライブラリ・プレイリスト・検索では空 (見えている範囲だけを各ビューが取得する。
+   * docs/library-list/design.md)。
+   */
   tracks: Track[];
   playlists: Playlist[];
   selectedTrackIds: Set<number>;
+  /** メモリ上の一覧 (tracks) を読み込み中か。 */
   isLoading: boolean;
-  hasMore: boolean;
+  /**
+   * 表示中の曲の一覧の全件数。key はどの一覧の件数か (lib/trackListQuery の trackListKey)。
+   * 未確定のあいだは null。
+   */
+  listCount: { key: string; count: number } | null;
+  /** ライブラリが変わるたびに増える値 (編集・取り込み・削除など)。一覧はこれを見て取り直す。 */
+  libraryRevision: number;
 
   // Playback
   playback: PlaybackState;
@@ -322,12 +334,10 @@ interface AppState extends PersistedSettings {
   removeFilterTag: (tag: string) => void;
   clearFilterTags: () => void;
   setTracks: (tracks: Track[]) => void;
-  /** 選択を保ったまま表示中の tracks を差し替える（プレイリストの手動並べ替え用）。 */
-  setTracksKeepSelection: (tracks: Track[]) => void;
-  appendTracks: (tracks: Track[]) => void;
+  setListCount: (listCount: { key: string; count: number } | null) => void;
+  bumpLibraryRevision: () => void;
   setPlaylists: (playlists: Playlist[]) => void;
   setIsLoading: (loading: boolean) => void;
-  setHasMore: (hasMore: boolean) => void;
   setPlayback: (state: PlaybackState) => void;
   setSelectedTrackIds: (ids: Set<number>) => void;
   toggleTrackSelection: (id: number, additive: boolean) => void;
@@ -658,7 +668,8 @@ export const useStore = create<AppState>()(
       playlists: [],
       selectedTrackIds: new Set(),
       isLoading: false,
-      hasMore: true,
+      listCount: null,
+      libraryRevision: 0,
       playback: {
         isPlaying: false,
         currentTrackId: null,
@@ -751,9 +762,8 @@ export const useStore = create<AppState>()(
         set((state) => ({ filterTags: state.filterTags.filter((t) => t !== tag) })),
       clearFilterTags: () => set({ filterTags: [] }),
       setTracks: (tracks) => set({ tracks, selectedTrackIds: new Set() }),
-      setTracksKeepSelection: (tracks) => set({ tracks }),
-      appendTracks: (tracks) =>
-        set((state) => ({ tracks: [...state.tracks, ...tracks] })),
+      setListCount: (listCount) => set({ listCount }),
+      bumpLibraryRevision: () => set((state) => ({ libraryRevision: state.libraryRevision + 1 })),
       // playlists のロード完了で初めて選択中プレイリストの isSmart/isFolder が分かるので、
       // 起動直後の永続復元 (#160) では playlists がまだ空のまま resyncSort していた
       // ミラーをここで補正する（通常プレイリストなら手動順へ）。
@@ -763,7 +773,6 @@ export const useStore = create<AppState>()(
           return { playlists, ...resyncSort(next) };
         }),
       setIsLoading: (loading) => set({ isLoading: loading }),
-      setHasMore: (hasMore) => set({ hasMore }),
       // 一時停止・停止中は毎回同じ値が返るので、変化がなければ set しない
       // （全体再レンダーと persist の書き込みを避ける）。
       setPlayback: (playback) => {

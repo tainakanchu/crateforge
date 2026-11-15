@@ -296,7 +296,9 @@ export class WindowLoader<T> {
       this.started = true;
       this.newGeneration();
       this.cache.clear();
-      this.range = null;
+      // 一覧が切り替わったら呼び出し側は先頭へスクロールを戻す。表示範囲も先頭へ戻しておき、
+      // 範囲が伝え直されなくても (先頭にいたまま切り替わったときなど) 先頭のページを取れるようにする。
+      this.range = this.range ? { start: 0, end: this.range.end - this.range.start } : null;
     } else if (!Object.is(this.target.revision, next.revision)) {
       this.newGeneration();
       this.cache.invalidate(this.wantedPages());

@@ -28,7 +28,8 @@ import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
 import { useWindowedList } from "../hooks/useWindowedList";
 import { useListCount } from "../hooks/useListCount";
-import { albumScopeOf, resolveTrackListQuery } from "../lib/trackListQuery";
+import { albumScopeOf } from "../lib/trackListQuery";
+import { useTrackListQuery } from "../hooks/useTrackList";
 import { PlaceholderCard } from "./PlaceholderCard";
 import { formatTotalTime, formatTrackTime } from "../lib/format";
 import * as trackActions from "../lib/trackActions";
@@ -308,9 +309,6 @@ export function AlbumsView({ reloadKey, onTracksChanged, onEditTrack, onConvert 
     playlists,
     viewMode,
     selectedPlaylistId,
-    searchQuery,
-    searchScope,
-    filterTags,
     recentPlaylistIds,
     pushRecentPlaylist,
     setSimilarBase,
@@ -338,24 +336,8 @@ export function AlbumsView({ reloadKey, onTracksChanged, onEditTrack, onConvert 
   const staleTrackKeys = useRef(new Set<string>());
 
   // どの範囲のアルバムか。曲の一覧 (TrackTable) と同じ決め方をする。
-  const playlistIsSmart =
-    playlists.find((p) => p.playlistId === selectedPlaylistId)?.isSmart ?? false;
-  const scope = useMemo(
-    () =>
-      albumScopeOf(
-        resolveTrackListQuery({
-          viewMode,
-          selectedPlaylistId,
-          playlistIsSmart,
-          searchQuery,
-          searchScope,
-          filterTags,
-          sortField,
-          sortOrder,
-        }),
-      ),
-    [viewMode, selectedPlaylistId, playlistIsSmart, searchQuery, searchScope, filterTags, sortField, sortOrder],
-  );
+  const { query: listQuery } = useTrackListQuery();
+  const scope = useMemo(() => albumScopeOf(listQuery), [listQuery]);
   // メモリ上の一覧 (scope が null) はクライアントで束ねる。件数に上限があるので全件を持ってよい。
   const memoryAlbums = useMemo<AlbumVM[] | null>(
     () => (scope ? null : groupAlbums(tracks, sortField, sortOrder)),

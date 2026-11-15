@@ -28,6 +28,9 @@ import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
 import { AddGenreTagDialog } from "./AddGenreTagDialog";
 import { useTrackActionRunner } from "../hooks/useTrackActionRunner";
+import { useTrackList } from "../hooks/useTrackList";
+import { clampRange, isCursorKey, moveCursor } from "../lib/windowedList";
+import type { CursorKey } from "../lib/windowedList";
 
 // 曲名列の最小幅 (未固定 = flex のとき)。styles.css の .cb-id / .cb-h-id と揃える。
 const NAME_MIN_WIDTH = 180;
@@ -36,15 +39,10 @@ const ROW_SIDE_PADDING = 18;
 const ADD_CELL_WIDTH = 40;
 
 
-
-/// 並べ替えコミット時に「プレイリストの全曲順」を取り直すときの上限。
-/// reorder_playlist_tracks は渡した ID 列で playlist_tracks を全置換するため、
-/// 画面に読み込み済みのページだけを送ると未ロード分が消えてしまう。
-const FULL_FETCH_LIMIT = 1_000_000;
-
 interface TrackTableProps {
-  onLoadMore: () => void;
   onTracksChanged: () => void;
+  /// プレイリスト内の並べ替えを書き込んだあと。一覧を取り直し、動かした曲の選択を残す。
+  onReordered: (trackIds: number[]) => void;
   onEditTrack: (tracks: Track[]) => void;
   onConvert: (trackIds: number[], mode?: ConvertMode) => void;
 }
@@ -53,6 +51,15 @@ interface ContextMenuState {
   x: number;
   y: number;
   track: Track;
+  /// 一覧の何行目か (メニューの「再生」でここから再生する)。
+  index: number;
+}
+
+/// 行の参照 (範囲選択の起点・カーソル)。行番号と、その行の曲で覚える。一覧を取り直して行が
+/// ずれたら曲から行を探し直す。id が null なのは、まだ読み込んでいない行へカーソルを動かした直後。
+interface RowRef {
+  index: number;
+  id: number | null;
 }
 
 interface GenreEditState {
@@ -62,11 +69,11 @@ interface GenreEditState {
   tags: string[];
 }
 
-export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert }: TrackTableProps) {
+/// 曲の一覧。スクロール範囲は最初から全件ぶん確保し、見えている範囲の行だけを取得する
+/// (docs/library-list/design.md)。選択は trackId の集合、起点とカーソルは行番号で持つので、
+/// 読み込んでいない行をまたぐ操作 (範囲選択・全選択・ここから再生) も同じ結果になる。
+export function TrackTable({ onTracksChanged, onReordered, onEditTrack, onConvert }: TrackTableProps) {
   const {
-    tracks,
-    isLoading,
-    hasMore,
     playback,
     selectedTrackIds,
     toggleTrackSelection,
@@ -100,10 +107,37 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const pushToast = useStore((s) => s.pushToast);
   const run = useTrackActionRunner();
 
+  const list = useTrackList();
+  // 一度だけ張る keydown effect と非同期処理から、最新の一覧を参照するための ref。
+  const listRef = useRef(list);
+  listRef.current = list;
+
   const parentRef = useRef<HTMLDivElement>(null);
   // 範囲選択の起点（Shift の基準）と、矢印移動のカーソル位置。
-  const anchorIdRef = useRef<number | null>(null);
-  const focusIdRef = useRef<number | null>(null);
+  const anchorRef = useRef<RowRef | null>(null);
+  const focusRef = useRef<RowRef | null>(null);
+
+  /// 行の参照を、いまの一覧での行番号に直す。
+  const rowIndexOf = useCallback((ref: RowRef): number => {
+    const l = listRef.current;
+    const fallback = Math.max(0, Math.min(ref.index, l.count - 1));
+    if (ref.id === null || l.get(ref.index)?.trackId === ref.id) return fallback;
+    return l.loadedIndexOf(ref.id) ?? fallback;
+  }, []);
+
+  /// 行番号 a〜b (順不同・両端を含む) の trackId。読み込んでいない行があれば全曲の ID 列から切り出す。
+  const idsInRange = useCallback(async (a: number, b: number): Promise<number[]> => {
+    const l = listRef.current;
+    const range = clampRange(a, b, l.count);
+    if (!range) return [];
+    const out: number[] = [];
+    for (let i = range.start; i <= range.end; i++) {
+      const t = l.get(i);
+      if (!t) return (await l.getIds()).slice(range.start, range.end + 1);
+      out.push(t.trackId);
+    }
+    return out;
+  }, []);
 
   // === 列ヘッダの pointer 操作（リサイズ / 並べ替え） ===
   // ヘッダ各列の DOM 参照。ドラッグ中の当たり判定（挿入位置算出）に使う。
@@ -262,18 +296,8 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   // 並べ替えの書き込みを直列化する (連続操作で全曲取得と書き込みが交錯しないように)。
   const reorderChainRef = useRef<Promise<void>>(Promise.resolve());
   const pendingWritesRef = useRef(0);
-  // 並べ替え後の再読み込みで選択が消えないよう、復元する ID を覚えておく。
-  const pendingSelectionRef = useRef<number[] | null>(null);
-
-  useEffect(() => {
-    const pending = pendingSelectionRef.current;
-    if (!pending) return;
-    pendingSelectionRef.current = null;
-    const present = new Set(tracks.map((t) => t.trackId));
-    const restored = new Set(pending.filter((id) => present.has(id)));
-    if (restored.size > 0) setSelectedTrackIds(restored);
-  }, [tracks, setSelectedTrackIds]);
-
+  // 取り直しが要る (連続操作のどれかが並びを書き換えた)。
+  const reorderDirtyRef = useRef(false);
   const clearRowDrag = useCallback(() => {
     dragIdsRef.current = null;
     dropIndexRef.current = null;
@@ -282,54 +306,42 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   }, []);
 
   /**
-   * 表示中の一覧の挿入位置 dropIndex へ movingIds を移動する。
+   * プレイリストの曲 movingIds を、全曲順の挿入位置 (0..曲数) へ 1 ブロックとして移動する。
    *
-   * 1. 画面の並びを先に更新して体感を軽くする (楽観更新)
-   * 2. DB の全曲順を取り直し、同じアンカーで並べ替えて reorder_playlist_tracks
-   * 3. 書き込みが片付いたら再読み込みして正とすり合わせる
+   * 挿入位置は、書き込みの直前に取り直した全曲順 (DB の sort_index 順) を受けて決める
+   * (dropAtOf。動かせなければ null)。手動順の一覧は検索・並べ替えなしなので、表示中の行番号が
+   * そのまま全曲順の位置になる。連続操作でも、前の書き込みを反映した順から動かせる。
+   * 書き込みが片付いたら一覧を取り直す (動かした曲の選択は残す)。
    */
   const commitReorder = useCallback(
-    (movingIds: number[], dropAt: number, scrollToBlock = false) => {
-      const st = useStore.getState();
-      const playlistId = st.selectedPlaylistId;
+    (movingIds: number[], dropAtOf: (all: number[]) => number | null, scrollToBlock = false) => {
+      const playlistId = useStore.getState().selectedPlaylistId;
       if (playlistId === null || movingIds.length === 0) return;
-
-      const visibleIds = st.tracks.map((t) => t.trackId);
-      const { before, after } = anchorsForDrop(visibleIds, movingIds, dropAt);
-      const nextVisible = moveIdsWithin(visibleIds, movingIds, before, after);
-      if (nextVisible.every((id, i) => id === visibleIds[i])) return;
-
-      const byId = new Map(st.tracks.map((t) => [t.trackId, t]));
-      st.setTracksKeepSelection(
-        nextVisible.map((id) => byId.get(id)).filter((t): t is Track => !!t),
-      );
-      if (scrollToBlock) {
-        const idx = nextVisible.indexOf(movingIds[0]);
-        if (idx >= 0) virtualizerRef.current.scrollToIndex(idx, { align: "auto" });
-      }
 
       pendingWritesRef.current += 1;
       const settle = () => {
         pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
         // 追い越し操作が残っているうちは再読み込みしない (途中経過で画面が跳ねる)。
-        if (pendingWritesRef.current > 0) return;
-        pendingSelectionRef.current = movingIds;
-        onTracksChanged();
+        if (pendingWritesRef.current > 0 || !reorderDirtyRef.current) return;
+        reorderDirtyRef.current = false;
+        onReordered(movingIds);
       };
       reorderChainRef.current = reorderChainRef.current
         .then(async () => {
-          // 未ロード分を消さないよう、必ず全曲順を取り直してから全置換する。
-          const all = await playlistsApi.getPlaylistTracks(
-            playlistId,
-            FULL_FETCH_LIMIT,
-          );
-          const nextFull = moveIdsWithin(
-            all.map((t) => t.trackId),
-            movingIds,
-            before,
-            after,
-          );
-          await playlistsApi.reorderPlaylistTracks(playlistId, nextFull);
+          // reorder_playlist_tracks は渡した ID 列で全置換するので、必ず全曲順から組み立てる。
+          const all = await playlistsApi.getPlaylistTrackIds(playlistId);
+          const dropAt = dropAtOf(all);
+          if (dropAt === null) return;
+          const { before, after } = anchorsForDrop(all, movingIds, dropAt);
+          const next = moveIdsWithin(all, movingIds, before, after);
+          if (next.every((id, i) => id === all[i])) return;
+          // 書き込みが途中で失敗しても、実際の並びに合わせ直す。
+          reorderDirtyRef.current = true;
+          await playlistsApi.reorderPlaylistTracks(playlistId, next);
+          if (scrollToBlock) {
+            const idx = next.findIndex((id) => movingIds.includes(id));
+            if (idx >= 0) virtualizerRef.current.scrollToIndex(idx, { align: "auto" });
+          }
         })
         .then(settle)
         .catch((err) => {
@@ -339,7 +351,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           settle();
         });
     },
-    [onTracksChanged],
+    [onReordered],
   );
 
   // 空 deps の keydown effect から最新の値を参照するための ref。
@@ -348,18 +360,33 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const commitReorderRef = useRef(commitReorder);
   commitReorderRef.current = commitReorder;
 
+  // 選択が複数あるときは、ドラッグ開始 (同期処理) で表示順に並べられるよう ID 列を先に取っておく。
+  const multiSelected = selectedTrackIds.size > 1;
+  useEffect(() => {
+    if (multiSelected) void list.getIds().catch(() => {});
+  }, [multiSelected, list.getIds, list.key]);
+
   const handleRowDragStart = useCallback(
-    (e: React.DragEvent, track: Track) => {
+    (e: React.DragEvent, track: Track, index: number) => {
       // 未選択の行を掴んだらその行だけを対象にする (選択もそこへ移す)。
       let ids: number[];
       if (selectedTrackIds.has(track.trackId)) {
-        ids = tracks
-          .filter((t) => selectedTrackIds.has(t.trackId))
-          .map((t) => t.trackId);
+        // 選択中の曲を表示順で渡す。ID 列が未取得なら、読み込み済みの行の順 → 残りの選択の順。
+        const seen = new Set<number>();
+        ids = [];
+        const take = (id: number) => {
+          if (!selectedTrackIds.has(id) || seen.has(id)) return;
+          seen.add(id);
+          ids.push(id);
+        };
+        const all = list.peekIds();
+        if (all) all.forEach(take);
+        else for (const [, t] of list.loaded()) take(t.trackId);
+        selectedTrackIds.forEach(take);
       } else {
         ids = [track.trackId];
-        anchorIdRef.current = track.trackId;
-        focusIdRef.current = track.trackId;
+        anchorRef.current = { index, id: track.trackId };
+        focusRef.current = { index, id: track.trackId };
         setSelectedTrackIds(new Set(ids));
       }
       dragIdsRef.current = ids;
@@ -368,7 +395,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       e.dataTransfer.effectAllowed = "copyMove";
       setDraggingIds(new Set(ids));
     },
-    [tracks, selectedTrackIds, setSelectedTrackIds],
+    [list, selectedTrackIds, setSelectedTrackIds],
   );
 
   const handleRowDragOver = useCallback(
@@ -396,7 +423,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       if (!ids || at === null) return;
       e.preventDefault();
       e.stopPropagation();
-      commitReorder(ids, at);
+      commitReorder(ids, () => at);
     },
     [manualReorder, clearRowDrag, commitReorder],
   );
@@ -418,7 +445,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const nameFontSize = rowH < 44 ? 13 : 14.5;
 
   const rowVirtualizer = useVirtualizer({
-    count: tracks.length,
+    count: list.count,
     getScrollElement: () => parentRef.current,
     estimateSize: () => rowH,
     overscan: 16,
@@ -426,71 +453,95 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   // キーボード操作（空 deps の effect）から最新の virtualizer を参照するための ref。
   const virtualizerRef = useRef(rowVirtualizer);
   virtualizerRef.current = rowVirtualizer;
+  const rowHRef = useRef(rowH);
+  rowHRef.current = rowH;
 
   useEffect(() => {
     rowVirtualizer.measure();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rowH]);
 
-  const handleScroll = useCallback(() => {
-    const el = parentRef.current;
-    if (!el || isLoading || !hasMore) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 240) {
-      onLoadMore();
-    }
-  }, [isLoading, hasMore, onLoadMore]);
+  // 描画する行 (overscan を含む) の範囲を伝える。足りないページの取得はここから始まる。
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const firstRow = virtualItems.length > 0 ? virtualItems[0].index : -1;
+  const lastRow = virtualItems.length > 0 ? virtualItems[virtualItems.length - 1].index : -1;
+  useEffect(() => {
+    if (firstRow >= 0) list.setVisibleRange(firstRow, lastRow);
+  }, [list.setVisibleRange, firstRow, lastRow]);
+
+  // 一覧が切り替わったら (スコープ・検索・並び順の変更) 先頭へ戻し、起点とカーソルを捨てる。
+  useEffect(() => {
+    anchorRef.current = null;
+    focusRef.current = null;
+    if (parentRef.current) parentRef.current.scrollTop = 0;
+  }, [list.key]);
+
+  /// 行番号 a〜b を選択する (base に足す)。待っているあいだに一覧が切り替わったら何もしない。
+  const selectRange = useCallback(
+    async (a: number, b: number, base: ReadonlySet<number>) => {
+      const key = listRef.current.key;
+      await run("loadTracks", async () => {
+        const ids = await idsInRange(a, b);
+        if (listRef.current.key !== key) return;
+        const next = new Set(base);
+        for (const id of ids) next.add(id);
+        setSelectedTrackIds(next);
+      });
+    },
+    [idsInRange, run, setSelectedTrackIds],
+  );
 
   const handleRowClick = useCallback(
-    (e: React.MouseEvent, track: Track) => {
+    (e: React.MouseEvent, track: Track, index: number) => {
       const additive = e.ctrlKey || e.metaKey;
+      const here: RowRef = { index, id: track.trackId };
       if (e.shiftKey) {
         // アンカー（前回クリック位置）から今回までを範囲選択。アンカーは
         // 動かさないので、Shift クリックを繰り返すと同じ起点から伸縮できる。
-        const anchorId = anchorIdRef.current ?? track.trackId;
-        const anchorIdx = tracks.findIndex((t) => t.trackId === anchorId);
-        const curIdx = tracks.findIndex((t) => t.trackId === track.trackId);
-        if (anchorIdx !== -1 && curIdx !== -1) {
-          const [from, to] = anchorIdx <= curIdx ? [anchorIdx, curIdx] : [curIdx, anchorIdx];
-          // Shift+Ctrl/Cmd は既存選択へ追加、ただの Shift は置き換え。
-          const next = new Set<number>(additive ? selectedTrackIds : new Set<number>());
-          for (let i = from; i <= to; i++) next.add(tracks[i].trackId);
-          setSelectedTrackIds(next);
-          if (anchorIdRef.current === null) anchorIdRef.current = anchorId;
-          focusIdRef.current = track.trackId;
-          return;
-        }
+        // 読み込んでいない行をまたいでも、行番号の範囲で選ぶ。
+        const anchor = anchorRef.current ?? here;
+        anchorRef.current = anchor;
+        focusRef.current = here;
+        // Shift+Ctrl/Cmd は既存選択へ追加、ただの Shift は置き換え。
+        void selectRange(rowIndexOf(anchor), index, additive ? selectedTrackIds : new Set());
+        return;
       }
       // 通常クリック / Ctrl・Cmd クリック: アンカーとフォーカスをここへ移す。
-      anchorIdRef.current = track.trackId;
-      focusIdRef.current = track.trackId;
+      anchorRef.current = here;
+      focusRef.current = here;
       toggleTrackSelection(track.trackId, additive);
     },
-    [tracks, selectedTrackIds, setSelectedTrackIds, toggleTrackSelection],
+    [selectedTrackIds, selectRange, rowIndexOf, toggleTrackSelection],
   );
 
+  /// 一覧の全曲 (読み込んでいない行も含む) を表示順でキューに入れ、index の行から再生する。
   const handleDoubleClick = useCallback(
-    async (track: Track) => {
+    async (track: Track, index: number) => {
       if (!track.fileExists) return;
-      const ids = tracks.map((t) => t.trackId);
-      const startIndex = ids.indexOf(track.trackId);
       await run(
         "play",
-        () => trackActions.playQueueFrom(trackApi, ids, Math.max(0, startIndex), track.trackId),
+        async () => {
+          const ids = await list.getIds();
+          // 同じ曲が複数回入るプレイリストでも、クリックした行から始める。
+          const start =
+            ids[index] === track.trackId ? index : Math.max(0, ids.indexOf(track.trackId));
+          await trackActions.playQueueFrom(trackApi, ids, start, track.trackId);
+        },
         track.name || "(unknown)",
       );
     },
-    [tracks, run],
+    [list, run],
   );
 
   const handleContextMenu = useCallback(
-    (e: React.MouseEvent, track: Track) => {
+    (e: React.MouseEvent, track: Track, index: number) => {
       e.preventDefault();
       if (!selectedTrackIds.has(track.trackId)) {
-        anchorIdRef.current = track.trackId;
-        focusIdRef.current = track.trackId;
+        anchorRef.current = { index, id: track.trackId };
+        focusRef.current = { index, id: track.trackId };
         toggleTrackSelection(track.trackId, false);
       }
-      setContextMenu({ x: e.clientX, y: e.clientY, track });
+      setContextMenu({ x: e.clientX, y: e.clientY, track, index });
     },
     [selectedTrackIds, toggleTrackSelection],
   );
@@ -518,12 +569,24 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     [ctxIds, pushRecentPlaylist, onTracksChanged, pushToast, playlists, run],
   );
 
-  const handleAddSelectionToCrate = useCallback(() => {
+  /// trackId 列を、一覧の表示順の曲に解決する (読み込んでいない行の曲は ID で取り直す)。
+  /// 失敗はトーストで知らせて空を返す。
+  const tracksInListOrder = useCallback(
+    async (ids: readonly number[]): Promise<Track[]> => {
+      let ts: Track[] = [];
+      await run("loadTracks", async () => {
+        ts = await list.resolveTracks(await list.orderByList(ids));
+      });
+      return ts;
+    },
+    [list, run],
+  );
+
+  const handleAddSelectionToCrate = useCallback(async () => {
     const ids = ctxIds();
-    const set = new Set(ids);
-    tracks.filter((t) => set.has(t.trackId)).forEach((t) => addToCrate(t));
     setContextMenu(null);
-  }, [ctxIds, tracks, addToCrate]);
+    for (const t of await tracksInListOrder(ids)) addToCrate(t);
+  }, [ctxIds, tracksInListOrder, addToCrate]);
 
   // 選択（or 右クリック対象）の曲をまとめて今のプレイリストから外す。
   // 同じ曲が複数回入っている場合は、単曲版と同じく各曲の最初の 1 つだけを外す。
@@ -625,13 +688,14 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     [ctxIds, onTracksChanged, run, pushToast],
   );
 
-  const handleGetInfo = useCallback(() => {
+  const handleGetInfo = useCallback(async () => {
     if (!contextMenu) return;
-    const ids = new Set(ctxIds());
-    const sel = tracks.filter((t) => ids.has(t.trackId));
-    onEditTrack(sel.length > 0 ? sel : [contextMenu.track]);
+    const fallback = contextMenu.track;
+    const ids = ctxIds();
     setContextMenu(null);
-  }, [contextMenu, ctxIds, tracks, onEditTrack]);
+    const sel = await tracksInListOrder(ids);
+    onEditTrack(sel.length > 0 ? sel : [fallback]);
+  }, [contextMenu, ctxIds, tracksInListOrder, onEditTrack]);
 
   // === 一覧からのジャンル直接編集 ===
   const loadGenreSuggestions = useCallback(() => {
@@ -686,12 +750,19 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   }, [ctxIds, onConvert]);
 
   // 選択（or 右クリック対象）の曲を削除確認モーダルへ渡す。
+  const openDeleteDialog = useCallback(
+    async (ids: readonly number[]) => {
+      const sel = await tracksInListOrder(ids);
+      if (sel.length > 0) setDeleteTargets(sel);
+    },
+    [tracksInListOrder],
+  );
+
   const handleDelete = useCallback(() => {
-    const ids = new Set(ctxIds());
-    const sel = tracks.filter((t) => ids.has(t.trackId));
-    if (sel.length > 0) setDeleteTargets(sel);
+    const ids = ctxIds();
     setContextMenu(null);
-  }, [ctxIds, tracks]);
+    void openDeleteDialog(ids);
+  }, [ctxIds, openDeleteDialog]);
 
   // 右クリックした 1 曲を Finder / エクスプローラで表示する。
   const handleReveal = useCallback(async (path: string) => {
@@ -712,15 +783,13 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable) return;
       if (document.querySelector(".modal-overlay")) return;
       if (selectedTrackIds.size === 0) return;
-      const sel = tracks.filter((t) => selectedTrackIds.has(t.trackId));
-      if (sel.length === 0) return;
       e.preventDefault();
       setContextMenu(null);
-      setDeleteTargets(sel);
+      void openDeleteDialog(Array.from(selectedTrackIds));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tracks, selectedTrackIds]);
+  }, [selectedTrackIds, openDeleteDialog]);
 
   // アプリケーションキー / Shift+F10 でコンテキストメニューを開く（D）
   useEffect(() => {
@@ -731,32 +800,127 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       const tag = el?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
       if (selectedTrackIds.size === 0) return;
-      // フォーカス行を優先し、無ければ最初の選択行を基準にする。
-      const focused =
-        focusIdRef.current != null && selectedTrackIds.has(focusIdRef.current)
-          ? tracks.find((t) => t.trackId === focusIdRef.current)
-          : undefined;
-      const sel = focused ?? tracks.find((t) => selectedTrackIds.has(t.trackId));
-      if (!sel) return;
       e.preventDefault();
-      const rowEl = parentRef.current?.querySelector(
-        `[data-track-id="${sel.trackId}"]`,
-      ) as HTMLElement | null;
-      let x = 220;
-      let y = 200;
-      if (rowEl) {
-        const r = rowEl.getBoundingClientRect();
-        x = r.left + 96;
-        y = r.bottom;
+      // フォーカス行を優先し、無ければ読み込み済みの最初の選択行を基準にする。
+      const focus = focusRef.current;
+      let index = focus ? rowIndexOf(focus) : -1;
+      let sel = index >= 0 ? list.get(index) : undefined;
+      if (!sel || !selectedTrackIds.has(sel.trackId)) {
+        sel = undefined;
+        for (const [i, t] of list.loaded()) {
+          if (selectedTrackIds.has(t.trackId)) {
+            sel = t;
+            index = i;
+            break;
+          }
+        }
       }
-      setContextMenu({ x, y, track: sel });
+      const open = (track: Track, at: number) => {
+        const rowEl = parentRef.current?.querySelector(
+          `[data-track-id="${track.trackId}"]`,
+        ) as HTMLElement | null;
+        let x = 220;
+        let y = 200;
+        if (rowEl) {
+          const r = rowEl.getBoundingClientRect();
+          x = r.left + 96;
+          y = r.bottom;
+        }
+        setContextMenu({ x, y, track, index: at });
+      };
+      if (sel) {
+        open(sel, index);
+        return;
+      }
+      // 選択した行がどれも読み込まれていない (離れた位置までスクロールした) ときは ID で取り直す。
+      const firstId = selectedTrackIds.values().next().value as number;
+      void run("loadTracks", async () => {
+        const [track] = await list.resolveTracks([firstId]);
+        if (track) open(track, Math.max(0, (await list.getIds()).indexOf(firstId)));
+      });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tracks, selectedTrackIds]);
+  }, [list, selectedTrackIds, rowIndexOf, run]);
 
-  // 矢印キーでの選択移動 / 範囲拡張 と Ctrl・Cmd+A の全選択。
-  // 最新状態は useStore.getState() から読むので effect は一度だけ張る。
+  /// フォーカス行 (無ければ選択の先頭) から、一覧の全曲をキューに入れて再生する (Enter)。
+  const playFromCursor = useCallback(async () => {
+    const l = listRef.current;
+    await run("play", async () => {
+      const ids = await l.getIds();
+      const focus = focusRef.current;
+      let index = -1;
+      if (focus) {
+        const i = rowIndexOf(focus);
+        index = focus.id === null || ids[i] === focus.id ? i : ids.indexOf(focus.id);
+      }
+      if (index < 0) {
+        const selected = useStore.getState().selectedTrackIds;
+        index = ids.findIndex((id) => selected.has(id));
+      }
+      if (index < 0 || index >= ids.length) return;
+      const track = await l.ensure(index);
+      if (!track || !track.fileExists) return;
+      await trackActions.playQueueFrom(trackApi, ids, index, ids[index]);
+    });
+  }, [rowIndexOf, run]);
+
+  // カーソル移動は連続して届く (キーの押しっぱなし)。古い移動の結果で選択を上書きしない。
+  const cursorSeqRef = useRef(0);
+  /// カーソルを動かす (↑ ↓ PageUp PageDown Home End)。extend なら起点からの範囲選択。
+  /// 行番号だけで動かすので、読み込んでいない行へも行ける (曲の ID は必要になってから取る)。
+  const moveCursorBy = useCallback(
+    (key: CursorKey, extend: boolean) => {
+      const l = listRef.current;
+      const cursor = focusRef.current ?? anchorRef.current;
+      const cur = cursor ? rowIndexOf(cursor) : null;
+      const visibleRows = Math.floor((parentRef.current?.clientHeight ?? 0) / rowHRef.current);
+      const next = moveCursor(key, cur, l.count, visibleRows - 1);
+      if (next === null) return;
+      virtualizerRef.current.scrollToIndex(next, { align: "auto" });
+
+      const seq = ++cursorSeqRef.current;
+      const listKey = l.key;
+      const isCurrent = () => seq === cursorSeqRef.current && listRef.current.key === listKey;
+      // 行番号は先に確定させる (ID を待つあいだに次のキーが来ても、続きから動ける)。
+      const target: RowRef = { index: next, id: l.get(next)?.trackId ?? null };
+      focusRef.current = target;
+      if (extend) {
+        // アンカーは固定。無ければ移動前のカーソル (それも無ければ移動先) を起点にする。
+        anchorRef.current ??= cursor ?? target;
+        void selectRangeRef.current(rowIndexOf(anchorRef.current), next, isCurrent);
+      } else {
+        // 単一選択を移動。アンカーも一緒に移す。
+        anchorRef.current = target;
+        void run("loadTracks", async () => {
+          const id = target.id ?? (await l.getIds())[next];
+          if (!isCurrent() || id === undefined) return;
+          target.id = id;
+          useStore.getState().setSelectedTrackIds(new Set([id]));
+        });
+      }
+    },
+    [rowIndexOf, run],
+  );
+  /// 行番号 a〜b だけを選択する (カーソル移動用。古い移動の結果は捨てる)。
+  const selectRangeRef = useRef(async (_a: number, _b: number, _isCurrent: () => boolean) => {});
+  selectRangeRef.current = async (a, b, isCurrent) => {
+    await run("loadTracks", async () => {
+      const ids = await idsInRange(a, b);
+      if (isCurrent()) setSelectedTrackIds(new Set(ids));
+    });
+  };
+
+  // 最新の値を一度だけ張る keydown effect から参照するための ref。
+  const playFromCursorRef = useRef(playFromCursor);
+  playFromCursorRef.current = playFromCursor;
+  const moveCursorByRef = useRef(moveCursorBy);
+  moveCursorByRef.current = moveCursorBy;
+  const runRef = useRef(run);
+  runRef.current = run;
+
+  // カーソル移動 (↑ ↓ PageUp PageDown Home End) / 範囲拡張 と Ctrl・Cmd+A の全選択、Enter の再生。
+  // 最新状態は ref と useStore.getState() から読むので effect は一度だけ張る。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
@@ -767,112 +931,76 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
       const cmd = e.ctrlKey || e.metaKey;
       const st = useStore.getState();
-      const ts = st.tracks;
-      if (ts.length === 0) return;
+      const l = listRef.current;
+      if (l.count === 0) return;
 
-      // Ctrl/Cmd+A: 全選択。
+      // Ctrl/Cmd+A: 全選択 (読み込んでいない行も含む一覧の全曲)。
       if (cmd && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        st.setSelectedTrackIds(new Set(ts.map((t) => t.trackId)));
-        anchorIdRef.current = ts[0].trackId;
-        focusIdRef.current = ts[ts.length - 1].trackId;
+        const listKey = l.key;
+        void runRef.current("loadTracks", async () => {
+          const ids = await l.getIds();
+          if (listRef.current.key !== listKey || ids.length === 0) return;
+          st.setSelectedTrackIds(new Set(ids));
+          anchorRef.current = { index: 0, id: ids[0] };
+          focusRef.current = { index: ids.length - 1, id: ids[ids.length - 1] };
+        });
         return;
       }
 
       // Enter: フォーカス行（無ければ選択先頭）の曲を再生。
       if (e.key === "Enter" && !cmd) {
-        // フォーカス → 選択先頭 の順でフォールバック。
-        let track = ts.find((t) => t.trackId === focusIdRef.current);
-        if (!track) track = ts.find((t) => st.selectedTrackIds.has(t.trackId));
-        if (!track || !track.fileExists) return;
+        if (!focusRef.current && st.selectedTrackIds.size === 0) return;
         e.preventDefault();
-        const ids = ts.map((t) => t.trackId);
-        const startIndex = ids.indexOf(track.trackId);
-        const playId = track.trackId;
-        // useStore.getState() 経由でトーストを出す（effect クロージャ内のため）。
-        void trackActions.runTrackAction(
-          (message) => useStore.getState().pushToast("error", message),
-          "play",
-          () => trackActions.playQueueFrom(trackApi, ids, Math.max(0, startIndex), playId),
-          track.name || "(unknown)",
-        );
+        void playFromCursorRef.current();
         return;
       }
 
-      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      if (!isCursorKey(e.key)) return;
       if (cmd) return; // Cmd/Ctrl+Arrow は別操作に譲る。
+      const isArrow = e.key === "ArrowDown" || e.key === "ArrowUp";
+      if (e.altKey && !isArrow) return;
 
       // Alt+↑/↓: プレイリストの手動順のとき、選択行を 1 つ上/下へ動かす
       // (ドラッグ並べ替えのキーボード版)。手動順でなければ通常の選択移動に落とす。
       if (e.altKey && manualReorderRef.current) {
         const sel = st.selectedTrackIds;
         if (sel.size === 0) return;
-        const idxs: number[] = [];
-        ts.forEach((t, i) => {
-          if (sel.has(t.trackId)) idxs.push(i);
-        });
-        if (idxs.length === 0) return;
-        const movingIds = idxs.map((i) => ts[i].trackId);
-        const movingSet = new Set(movingIds);
-        let dropAt: number;
-        if (e.key === "ArrowUp") {
-          // 選択ブロックの直前にある非選択行の位置へ差し込む。
-          let i = idxs[0] - 1;
-          while (i >= 0 && movingSet.has(ts[i].trackId)) i--;
-          if (i < 0) return; // すでに先頭
-          dropAt = i;
-        } else {
-          let i = idxs[idxs.length - 1] + 1;
-          while (i < ts.length && movingSet.has(ts[i].trackId)) i++;
-          if (i >= ts.length) return; // すでに末尾
-          dropAt = i + 1;
-        }
         e.preventDefault();
-        commitReorderRef.current(movingIds, dropAt, true);
+        const movingIds = Array.from(sel);
+        const up = e.key === "ArrowUp";
+        commitReorderRef.current(
+          movingIds,
+          (all) => {
+            const idxs: number[] = [];
+            all.forEach((id, i) => {
+              if (sel.has(id)) idxs.push(i);
+            });
+            if (idxs.length === 0) return null;
+            if (up) {
+              // 選択ブロックの直前にある非選択行の位置へ差し込む。
+              let i = idxs[0] - 1;
+              while (i >= 0 && sel.has(all[i])) i--;
+              return i < 0 ? null : i; // null: すでに先頭
+            }
+            let i = idxs[idxs.length - 1] + 1;
+            while (i < all.length && sel.has(all[i])) i++;
+            return i >= all.length ? null : i + 1; // null: すでに末尾
+          },
+          true,
+        );
         return;
       }
       e.preventDefault();
-
-      const dir = e.key === "ArrowDown" ? 1 : -1;
-      // 現在のカーソル位置を決める（フォーカス → アンカー の順でフォールバック）。
-      let curIdx = ts.findIndex((t) => t.trackId === focusIdRef.current);
-      if (curIdx === -1) curIdx = ts.findIndex((t) => t.trackId === anchorIdRef.current);
-      const nextIdx =
-        curIdx === -1
-          ? dir === 1
-            ? 0
-            : ts.length - 1
-          : Math.max(0, Math.min(ts.length - 1, curIdx + dir));
-      const nextId = ts[nextIdx].trackId;
-
-      if (e.shiftKey) {
-        // アンカーから nextIdx までを範囲選択。アンカーは固定。
-        if (anchorIdRef.current === null) {
-          anchorIdRef.current = curIdx === -1 ? nextId : ts[curIdx].trackId;
-        }
-        let aIdx = ts.findIndex((t) => t.trackId === anchorIdRef.current);
-        if (aIdx === -1) aIdx = nextIdx;
-        const [from, to] = aIdx <= nextIdx ? [aIdx, nextIdx] : [nextIdx, aIdx];
-        const next = new Set<number>();
-        for (let i = from; i <= to; i++) next.add(ts[i].trackId);
-        st.setSelectedTrackIds(next);
-        focusIdRef.current = nextId;
-      } else {
-        // 単一選択を 1 行移動。アンカーも一緒に移す。
-        st.setSelectedTrackIds(new Set([nextId]));
-        anchorIdRef.current = nextId;
-        focusIdRef.current = nextId;
-      }
-      virtualizerRef.current.scrollToIndex(nextIdx, { align: "auto" });
+      moveCursorByRef.current(e.key, e.shiftKey);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const items = rowVirtualizer.getVirtualItems();
-  // 右クリック対象の最新状態（レーティング更新後も即反映させるため tracks から引き直す）
+  // 右クリック対象の最新状態（レーティング更新後も即反映させるため、読み込み済みの行から引き直す）
   const ctxTrack = contextMenu
-    ? tracks.find((t) => t.trackId === contextMenu.track.trackId) ?? contextMenu.track
+    ? (list.loadedTrack(contextMenu.track.trackId) ?? contextMenu.track)
     : null;
   const targetPlaylists = playlists.filter((p) => !p.isFolder && !p.isSmart);
   const recentPlaylists = recentPlaylistIds
@@ -1023,7 +1151,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   };
 
   return (
-    <div className="cb-list" ref={parentRef} onScroll={handleScroll} onClick={closeMenu}>
+    <div className="cb-list" ref={parentRef} onClick={closeMenu}>
       {/* Column header */}
       <div className="cb-head" ref={headRef} style={{ minWidth: rowMinWidth }}>
         <span
@@ -1128,8 +1256,34 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           minWidth: rowMinWidth,
         }}
       >
-        {items.map((virtualRow) => {
-          const t = tracks[virtualRow.index];
+        {virtualItems.map((virtualRow) => {
+          const t = list.get(virtualRow.index);
+          const rowStyle: React.CSSProperties = {
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: "100%",
+            height: `${virtualRow.size}px`,
+            transform: `translateY(${virtualRow.start}px)`,
+          };
+          // まだ読み込んでいない行は同じ高さのプレースホルダ (届いても位置がずれない)。
+          if (!t) {
+            return (
+              <div
+                key={`ph-${virtualRow.index}`}
+                className="cb-row ph"
+                style={rowStyle}
+                aria-hidden
+              >
+                <div
+                  className="cb-id"
+                  style={nameColWidth != null ? { flex: "0 0 auto", width: nameColWidth } : undefined}
+                >
+                  <span className="cb-ph-bar" style={{ width: "45%" }} />
+                </div>
+              </div>
+            );
+          }
           const isCurrent = playback.currentTrackId === t.trackId;
           const isSelected = selectedTrackIds.has(t.trackId);
           const isIn = inCrate.has(t.trackId);
@@ -1138,8 +1292,8 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           const dropBefore = manualReorder && dropIndex === virtualRow.index;
           const dropAfter =
             manualReorder &&
-            dropIndex === tracks.length &&
-            virtualRow.index === tracks.length - 1;
+            dropIndex === list.count &&
+            virtualRow.index === list.count - 1;
           return (
             <div
               // 同じ曲を複数回含むプレイリストでは t.trackId が重複する。重複 key は React の
@@ -1157,27 +1311,20 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 (dropBefore ? " dropbefore" : "") +
                 (dropAfter ? " dropafter" : "")
               }
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                width: "100%",
-                height: `${virtualRow.size}px`,
-                transform: `translateY(${virtualRow.start}px)`,
-              }}
+              style={rowStyle}
               title={
                 manualReorder
                   ? "ドラッグで並べ替え (Alt+↑↓ でも移動) / サイドバーのプレイリストへドロップで追加"
                   : undefined
               }
               draggable
-              onDragStart={(e) => handleRowDragStart(e, t)}
+              onDragStart={(e) => handleRowDragStart(e, t, virtualRow.index)}
               onDragEnd={clearRowDrag}
               onDragOver={(e) => handleRowDragOver(e, virtualRow.index)}
               onDrop={handleRowDrop}
-              onClick={(e) => handleRowClick(e, t)}
-              onDoubleClick={() => handleDoubleClick(t)}
-              onContextMenu={(e) => handleContextMenu(e, t)}
+              onClick={(e) => handleRowClick(e, t, virtualRow.index)}
+              onDoubleClick={() => handleDoubleClick(t, virtualRow.index)}
+              onContextMenu={(e) => handleContextMenu(e, t, virtualRow.index)}
             >
               <div
                 className="cb-id"
@@ -1252,7 +1399,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
         })}
       </div>
 
-      {isLoading && (
+      {list.loading && (
         <div
           className="cb-loading"
           style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
@@ -1270,10 +1417,10 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
               animation: "cb-spin 0.7s linear infinite",
             }}
           />
-          <span>読み込み中… ({tracks.length}曲)</span>
+          <span>読み込み中…</span>
         </div>
       )}
-      {tracks.length === 0 && !isLoading && (
+      {list.count === 0 && !list.loading && (
         <EmptyState />
       )}
 
@@ -1301,7 +1448,7 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           }
           deleteCount={ctxIds().length}
           onClose={closeMenu}
-          onPlay={() => handleDoubleClick(ctxTrack)}
+          onPlay={() => handleDoubleClick(ctxTrack, contextMenu.index)}
           onSetRating={handleSetRatingForSelection}
           onAddToCrate={handleAddSelectionToCrate}
           onPlayNext={handlePlayNext}

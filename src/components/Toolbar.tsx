@@ -153,7 +153,8 @@ export function Toolbar({
     fields,
     selectedPlaylistId,
     playlists,
-    tracks,
+    listCount,
+    libraryRevision,
     selectedTrackIds,
     analysisActive,
     autoExportEnabled,
@@ -302,7 +303,7 @@ export function Toolbar({
   // 曲数だけでなくプレイリストの増減 (作成・削除) でも統計を取り直す。
   useEffect(() => {
     refreshStats();
-  }, [refreshStats, tracks.length, playlists.length]);
+  }, [refreshStats, libraryRevision, listCount?.count, playlists.length]);
 
   useEffect(() => {
     libraryApi
@@ -571,8 +572,8 @@ export function Toolbar({
     return () => {
       cancelled = true;
     };
-    // tracks が読み直されたら (ライブラリ変更・条件編集) 数え直す。
-  }, [needsLiveCount, activePlaylistId, tracks]);
+    // ライブラリが変わったら (曲の編集・条件編集) 数え直す。
+  }, [needsLiveCount, activePlaylistId, libraryRevision]);
   const title = isSearching
     ? "検索結果"
     : activePlaylist
@@ -587,12 +588,14 @@ export function Toolbar({
         : null
       : (activePlaylist?.trackCount ?? null);
   const artistsResult = useArtistsResult();
+  // 表示中の曲の一覧の全件数 (読み込み済みの行数ではない)。未確定のあいだは "…"。
+  const listCountLabel = listCount ? `${listCount.count.toLocaleString()} 曲` : "…";
   const subCount = isSearching
     ? viewMode === "artists"
       ? artistsResult.count != null
         ? `${artistsResult.count.toLocaleString()} アーティスト`
         : "…"
-      : `${tracks.length.toLocaleString()} 曲`
+      : listCountLabel
     : activePlaylist
       ? playlistCount != null
         ? `${playlistCount.toLocaleString()} 曲`
@@ -603,7 +606,7 @@ export function Toolbar({
           : "…"
         : viewMode === "library" && stats
           ? `${stats.trackCount.toLocaleString()} 曲`
-          : `${tracks.length.toLocaleString()} 曲`;
+          : listCountLabel;
 
   // Albums モードはアルバム粒度のソートのみ (ALBUM_SORT_FIELDS の順序を維持)。
   const albumSortOptions = ALBUM_SORT_FIELDS.map(
