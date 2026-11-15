@@ -162,7 +162,10 @@ mod tests {
     #[test]
     fn smart_playlist_tracks_are_not_editable() {
         let db = db_with_tracks(&[1, 2]);
-        let normal = db.create_playlist("Normal", None, false).unwrap().playlist_id;
+        let normal = db
+            .create_playlist("Normal", None, false)
+            .unwrap()
+            .playlist_id;
         let smart = db
             .create_smart_playlist("Smart", &empty_criteria())
             .unwrap()
@@ -174,7 +177,10 @@ mod tests {
             Err(PlaylistEditError::Smart)
         ));
         // コマンド層へはこの文言のまま届く。
-        assert_eq!(PlaylistEditError::Smart.to_string(), SMART_PLAYLIST_EDIT_ERROR);
+        assert_eq!(
+            PlaylistEditError::Smart.to_string(),
+            SMART_PLAYLIST_EDIT_ERROR
+        );
 
         let rejected = [
             add_tracks(&db, smart, &[1]).map(|_| ()),

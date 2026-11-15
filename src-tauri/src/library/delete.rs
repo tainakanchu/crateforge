@@ -19,9 +19,15 @@ pub enum DeleteError {
     /// ファイルも消す指定なのに、ライブラリルート (整理先) が未設定。
     LibraryRootNotSet,
     /// ライブラリルートのパスを解決できない (存在しない等)。
-    LibraryRootUnresolvable { root: String, source: std::io::Error },
+    LibraryRootUnresolvable {
+        root: String,
+        source: std::io::Error,
+    },
     /// 削除対象ファイルのパスを解決できない。
-    FileUnresolvable { file: PathBuf, source: std::io::Error },
+    FileUnresolvable {
+        file: PathBuf,
+        source: std::io::Error,
+    },
     /// 削除対象ファイルがライブラリルートの外にある。
     FileOutsideLibraryRoot { file: PathBuf, root: PathBuf },
     /// DB の読み書きに失敗した。
@@ -81,10 +87,11 @@ pub struct RemovedTracks {
 /// symlink でルート外を指すファイルも弾けるよう、両者 canonicalize してから比較する
 /// (`root` は canonicalize 済みを渡す)。
 fn ensure_inside_root(root: &Path, file: &Path) -> Result<PathBuf, DeleteError> {
-    let canonical = std::fs::canonicalize(file).map_err(|source| DeleteError::FileUnresolvable {
-        file: file.to_path_buf(),
-        source,
-    })?;
+    let canonical =
+        std::fs::canonicalize(file).map_err(|source| DeleteError::FileUnresolvable {
+            file: file.to_path_buf(),
+            source,
+        })?;
     if !canonical.starts_with(root) {
         return Err(DeleteError::FileOutsideLibraryRoot {
             file: file.to_path_buf(),
@@ -201,7 +208,8 @@ mod tests {
         std::fs::write(&inside, b"x").unwrap();
         let gone = root.join("gone.mp3");
         let db = Database::open_memory().unwrap();
-        db.set_state("library_root", &root.to_string_lossy()).unwrap();
+        db.set_state("library_root", &root.to_string_lossy())
+            .unwrap();
         add_track(&db, 1, Some(&inside));
         add_track(&db, 2, Some(&gone));
 
@@ -222,7 +230,8 @@ mod tests {
         std::fs::write(&inside, b"x").unwrap();
         std::fs::write(&outside, b"x").unwrap();
         let db = Database::open_memory().unwrap();
-        db.set_state("library_root", &root.to_string_lossy()).unwrap();
+        db.set_state("library_root", &root.to_string_lossy())
+            .unwrap();
         add_track(&db, 1, Some(&inside));
         add_track(&db, 2, Some(&outside));
 

@@ -105,7 +105,10 @@ mod tests {
         let db = library();
         seed(&db, 50, "[0.05, 0.0]", 120.0, "8A", false);
         let opts = SimilarOpts::default();
-        assert_eq!(ids(&similar_hits(&db, 1, &opts, 25).unwrap()), vec![2, 4, 3]);
+        assert_eq!(
+            ids(&similar_hits(&db, 1, &opts, 25).unwrap()),
+            vec![2, 4, 3]
+        );
         // 最も近いのは孤児 (50)。limit 1 はそれで埋まり、結果は空になる。
         assert!(similar_hits(&db, 1, &opts, 1).unwrap().is_empty());
     }
@@ -121,9 +124,15 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert!(similar_hits(&db, 9, &SimilarOpts::default(), 25).unwrap().is_empty());
-        assert!(similar_hits(&db, 12345, &SimilarOpts::default(), 25).unwrap().is_empty());
+        assert!(similar_hits(&db, 9, &SimilarOpts::default(), 25)
+            .unwrap()
+            .is_empty());
+        assert!(similar_hits(&db, 12345, &SimilarOpts::default(), 25)
+            .unwrap()
+            .is_empty());
         seed(&db, 10, "[]", 120.0, "8A", true);
-        assert!(similar_hits(&db, 10, &SimilarOpts::default(), 25).unwrap().is_empty());
+        assert!(similar_hits(&db, 10, &SimilarOpts::default(), 25)
+            .unwrap()
+            .is_empty());
     }
 }

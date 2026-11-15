@@ -76,7 +76,8 @@ pub fn apply_track_edit(
         .filter(|n| *n > 0)
         .map(|n| n as f64)
         .or_else(|| analysis.as_ref().and_then(|a| a.bpm));
-    let key = organizer::effective_initial_key(track.key_camelot_user.as_deref(), analysis.as_ref());
+    let key =
+        organizer::effective_initial_key(track.key_camelot_user.as_deref(), analysis.as_ref());
 
     let file_write_failed = {
         let w = organizer::TagWrite {
