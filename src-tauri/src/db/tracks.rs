@@ -1476,25 +1476,28 @@ impl Database {
 
         // Key の手動上書き (#172)。アプリ管轄フィールドなので rating と同様に
         // XML メタデータの LWW 時計 (date_modified) は進めず、別 UPDATE で確定させる。
-        if let Some(opt) = &edits.key_camelot_user {
-            let value = match opt.as_deref().map(str::trim) {
-                None | Some("") => None,
-                Some(raw) => Some(
-                    crate::analyzer::similarity::normalize_camelot(raw).ok_or_else(|| {
-                        rusqlite::Error::ToSqlConversionFailure(
-                            format!("invalid Camelot key: {raw}").into(),
-                        )
-                    })?,
-                ),
-            };
-            self.conn.execute(
+        //
+        // 不正な値はどの UPDATE よりも前に弾く。`library::edit` は先に同じ関数で検証して
+        // `EditError::InvalidKey` (API は 400) にするので、ここに来るのは DB 層を直接呼ぶ経路だけ。
+        let key_override = match &edits.key_camelot_user {
+            Some(opt) => Some(normalize_key_override(opt.as_deref()).map_err(|e| {
+                rusqlite::Error::ToSqlConversionFailure(e.to_string().into())
+            })?),
+            None => None,
+        };
+
+        // Key の UPDATE と本体の UPDATE (+ search_text の再計算) は 1 トランザクションにまとめる。
+        // 本体が失敗したのに Key だけ書き換わった、という中途半端な状態を残さないため。
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some(value) = &key_override {
+            tx.execute(
                 "UPDATE tracks SET key_camelot_user = ?1 WHERE track_id = ?2",
                 params![value, track_id],
             )?;
         }
 
         if sets.is_empty() {
-            return Ok(());
+            return tx.commit();
         }
 
         // Touch date_modified.
@@ -1507,11 +1510,12 @@ impl Database {
 
         let sql = format!("UPDATE tracks SET {} WHERE track_id = ?", sets.join(", "));
         let params = rusqlite::params_from_iter(values);
-        self.conn.execute(&sql, params)?;
+        tx.execute(&sql, params)?;
         if touches_search {
+            // 同じ接続なのでこのトランザクションの中で実行される。
             self.recompute_search_text(track_id)?;
         }
-        Ok(())
+        tx.commit()
     }
 
     /// トラックの実ファイル位置を更新する (自動整理でファイルを移動した後)。
@@ -2251,6 +2255,28 @@ pub fn delete_track_cascade(conn: &Connection, track_id: i64) -> Result<bool> {
     Ok(conn.execute("DELETE FROM tracks WHERE track_id = ?1", params![track_id])? > 0)
 }
 
+/// Key の手動上書き (`TrackEdit::key_camelot_user`) に Camelot として解釈できない値が来た。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidKeyOverride(pub String);
+
+impl std::fmt::Display for InvalidKeyOverride {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid Camelot key: {}", self.0)
+    }
+}
+
+/// Key の手動上書きの入力を DB に入れる値へ正規化する (規則はここ 1 か所)。
+/// `None` / 空白のみ → `None` (上書き解除)、Camelot 表記 → 正規形 ("08a" → "8A")、
+/// それ以外はエラー。
+pub fn normalize_key_override(raw: Option<&str>) -> Result<Option<String>, InvalidKeyOverride> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(raw) => crate::analyzer::similarity::normalize_camelot(raw)
+            .map(Some)
+            .ok_or_else(|| InvalidKeyOverride(raw.to_string())),
+    }
+}
+
 /// `get_track_by_track_id` / `get_tracks_by_ids` が共有する単曲取得 SQL。
 const TRACK_BY_TRACK_ID_SQL: &str = concat!(
     "SELECT ",
@@ -2314,6 +2340,56 @@ mod tests {
         remove_tag, split_genre_tags,
     };
     use crate::db::Database;
+
+    /// update_track は Key の UPDATE と本体の UPDATE を 1 トランザクションで行う。
+    /// 本体の UPDATE が失敗したら、先に実行した Key の上書きも残らない。
+    #[test]
+    fn update_track_key_and_body_are_atomic() {
+        let db = Database::open_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tracks (track_id, name, file_exists) VALUES (1, 'Song', 1)",
+                [],
+            )
+            .unwrap();
+        // 本体の UPDATE だけを失敗させる (name の変更を拒否するトリガー)。
+        db.conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_name BEFORE UPDATE OF name ON tracks
+                 BEGIN SELECT RAISE(ABORT, 'name is frozen'); END;",
+            )
+            .unwrap();
+        let edit = crate::models::TrackEdit {
+            name: Some("Renamed".into()),
+            key_camelot_user: Some(Some("8A".into())),
+            ..Default::default()
+        };
+        assert!(db.update_track(1, &edit).is_err());
+        let t = db.get_track_by_track_id(1).unwrap().unwrap();
+        assert_eq!(t.name.as_deref(), Some("Song"));
+        assert_eq!(t.key_camelot_user, None, "Key だけ書き換わっていないこと");
+
+        // Key だけの編集は従来どおり通り、date_modified は進めない。
+        db.conn.execute_batch("DROP TRIGGER reject_name").unwrap();
+        let key_only = crate::models::TrackEdit {
+            key_camelot_user: Some(Some("08a".into())),
+            ..Default::default()
+        };
+        db.update_track(1, &key_only).unwrap();
+        let t = db.get_track_by_track_id(1).unwrap().unwrap();
+        assert_eq!(t.key_camelot_user.as_deref(), Some("8A"));
+        assert_eq!(t.date_modified, None);
+
+        // DB 層を直接呼んだ場合の不正キーは従来と同じメッセージのエラー。
+        let bad = crate::models::TrackEdit {
+            key_camelot_user: Some(Some("nope".into())),
+            ..Default::default()
+        };
+        assert_eq!(
+            db.update_track(1, &bad).unwrap_err().to_string(),
+            "invalid Camelot key: nope"
+        );
+    }
 
     /// 別名付きの列リストは、別名なしの各列に `t.` を付けたものと一致すること。
     #[test]

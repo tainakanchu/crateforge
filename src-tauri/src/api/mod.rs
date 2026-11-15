@@ -2132,6 +2132,46 @@ mod tests {
         assert_eq!(track["genre"], "Disco Funk");
     }
 
+    // ===== メタデータ書き込み: 不正な Camelot キーは 400 (以前は 500) で、何も書き換えない =====
+    #[tokio::test]
+    async fn case_patch_invalid_key_is_400() {
+        let (dir, app) = setup();
+        let edit = json!({ "name": "Renamed", "keyCamelotUser": "13Z" });
+
+        let (status, body) = req(app.clone(), "PATCH", "/api/tracks/1", Some(edit.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "invalid Camelot key: 13Z");
+
+        // 一括でも同じ。
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks",
+            Some(json!({ "trackIds": [1, 2], "edit": edit })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // 同じリクエストの他の項目 (name) も書かれていない。
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        for id in [1, 2] {
+            let t = db.get_track_by_track_id(id).unwrap().unwrap();
+            assert_ne!(t.name.as_deref(), Some("Renamed"));
+            assert_eq!(t.key_camelot_user, None);
+        }
+
+        // 正しいキーは従来どおり正規化して保存される。
+        let (status, body) = req(
+            app,
+            "PATCH",
+            "/api/tracks/1",
+            Some(json!({ "keyCamelotUser": "08a" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["track"]["keyCamelotUser"], "8A");
+    }
+
     // ===== メタデータ書き込み: 整理先が設定されていれば PATCH でも移動 + リネーム =====
     // GUI の update_track と同じく、編集後のメタデータで整理先へ移動し、
     // レスポンスの locationPath / locationRaw も新パスになる。単体・一括の両方を確認する。

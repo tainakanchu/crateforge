@@ -9,6 +9,8 @@ use crate::organizer;
 /// [`apply_track_edit`] の失敗。
 #[derive(Debug)]
 pub enum EditError {
+    /// Key の手動上書きが Camelot 表記として解釈できない (入力の誤り。何も書き換えていない)。
+    InvalidKey(crate::db::tracks::InvalidKeyOverride),
     /// DB の読み書きに失敗した。
     Db(rusqlite::Error),
 }
@@ -16,6 +18,7 @@ pub enum EditError {
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            EditError::InvalidKey(e) => e.fmt(f),
             EditError::Db(e) => e.fmt(f),
         }
     }
@@ -42,7 +45,8 @@ pub struct TrackEditOutcome {
 
 /// 1 曲に編集を適用する。
 ///
-/// 1. DB を更新する (ここまでは必ず確定させる)。
+/// 0. 入力を検証する。不正な Camelot キーは何も書かずに [`EditError::InvalidKey`]。
+/// 1. DB を更新する (ここまでは必ず確定させる。Key と本体の UPDATE は 1 トランザクション)。
 /// 2. **更新後の DB の値** を最終値として実ファイルのタグへ書き戻す (他アプリにも見えるように。
 ///    整理先フォルダの設定とは無関係に常に行う: #163)。最終値の導出はここ 1 か所。
 /// 3. 整理先ルートが設定されていれば、同じ最終値でフォルダ移動 + リネームし DB の location を追従させる。
@@ -54,6 +58,9 @@ pub fn apply_track_edit(
     track_id: i64,
     edit: &TrackEdit,
 ) -> Result<Option<TrackEditOutcome>, EditError> {
+    if let Some(key) = &edit.key_camelot_user {
+        crate::db::tracks::normalize_key_override(key.as_deref()).map_err(EditError::InvalidKey)?;
+    }
     db.update_track(track_id, edit)?;
     // 更新後の Track を取得。存在しない id は 0 行更新なので空 → None。
     let Some(mut track) = db.get_tracks_by_ids(&[track_id])?.into_iter().next() else {
@@ -168,5 +175,48 @@ mod tests {
         assert_eq!(out.track.key_camelot_user.as_deref(), Some("8A"));
         assert!(!out.file_write_failed);
         assert!(!out.relocate_failed);
+    }
+
+    /// 不正な Camelot キーは InvalidKey。同じ edit の他の項目も含め、何も書き換えない。
+    #[test]
+    fn invalid_key_is_rejected_without_writing() {
+        let db = db_with_track(1);
+        let edit = TrackEdit {
+            name: Some("New".into()),
+            key_camelot_user: Some(Some("13Z".into())),
+            ..Default::default()
+        };
+        let err = apply_track_edit(&db, 1, &edit).unwrap_err();
+        assert!(matches!(err, EditError::InvalidKey(_)), "{err:?}");
+        assert_eq!(err.to_string(), "invalid Camelot key: 13Z");
+        let track = db.get_track_by_track_id(1).unwrap().unwrap();
+        assert_eq!(track.name.as_deref(), Some("Old"));
+        assert_eq!(track.key_camelot_user, None);
+        // 存在しない曲でも入力の誤りが先 (404 ではなく 400 相当)。
+        assert!(matches!(
+            apply_track_edit(&db, 99, &edit),
+            Err(EditError::InvalidKey(_))
+        ));
+    }
+
+    /// 空白のみ / null は上書き解除。
+    #[test]
+    fn blank_key_clears_override() {
+        let db = db_with_track(1);
+        let set = TrackEdit {
+            key_camelot_user: Some(Some("08b".into())),
+            ..Default::default()
+        };
+        let out = apply_track_edit(&db, 1, &set).unwrap().unwrap();
+        assert_eq!(out.track.key_camelot_user.as_deref(), Some("8B"));
+        for clear in [Some("  ".to_string()), None] {
+            apply_track_edit(&db, 1, &set).unwrap();
+            let edit = TrackEdit {
+                key_camelot_user: Some(clear),
+                ..Default::default()
+            };
+            let out = apply_track_edit(&db, 1, &edit).unwrap().unwrap();
+            assert_eq!(out.track.key_camelot_user, None);
+        }
     }
 }
