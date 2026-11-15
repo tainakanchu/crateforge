@@ -706,13 +706,26 @@ pub async fn evict(
             ));
             continue;
         }
-        let Some(record) = db.synced_track_file_record(persistent_id)? else {
-            summary.failures.push(failure(
-                Some(persistent_id.clone()),
-                None,
-                "同期所有の曲が見つかりません",
-            ));
-            continue;
+        // ここから先の DB エラーは `?` で抜けない。先に退避した曲の id (summary.removed) を
+        // 呼び出し元へ必ず返し、再生キューの掃除と UI への通知を漏らさないため。
+        let record = match db.synced_track_file_record(persistent_id) {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                summary.failures.push(failure(
+                    Some(persistent_id.clone()),
+                    None,
+                    "同期所有の曲が見つかりません",
+                ));
+                continue;
+            }
+            Err(error) => {
+                summary.failures.push(failure(
+                    Some(persistent_id.clone()),
+                    None,
+                    format!("DB エラーのため削除しませんでした: {error}"),
+                ));
+                continue;
+            }
         };
         let validated = match fingerprint_is_dirty(&record) {
             Ok((false, validated)) => validated,
@@ -749,13 +762,24 @@ pub async fn evict(
                 }
             }
         }
-        let Some(track_id) = db.delete_synced_track_if_eligible(persistent_id)? else {
-            summary.failures.push(failure(
-                Some(persistent_id.clone()),
-                None,
-                "削除直前の再検証で参照またはローカル変更が見つかりました",
-            ));
-            continue;
+        let track_id = match db.delete_synced_track_if_eligible(persistent_id) {
+            Ok(Some(track_id)) => track_id,
+            Ok(None) => {
+                summary.failures.push(failure(
+                    Some(persistent_id.clone()),
+                    None,
+                    "削除直前の再検証で参照またはローカル変更が見つかりました",
+                ));
+                continue;
+            }
+            Err(error) => {
+                summary.failures.push(failure(
+                    Some(persistent_id.clone()),
+                    None,
+                    format!("DB エラーのためライブラリから削除できませんでした: {error}"),
+                ));
+                continue;
+            }
         };
         summary.evicted += 1;
         summary.removed.track_ids.push(track_id);
@@ -1160,6 +1184,58 @@ mod tests {
         assert!(dirty_excluded_note(scan.dirty_excluded)
             .unwrap()
             .contains("2 曲"));
+    }
+
+    /// 途中の曲で DB エラーが起きても、それまでに退避した曲の id は summary で返す
+    /// (コマンドが再生キューから落とせるように)。エラーの曲は failures に入り、後続も処理する。
+    #[tokio::test(flavor = "current_thread")]
+    async fn eviction_db_error_on_one_track_keeps_removed_ids_of_others() {
+        let mut db = Database::open_memory().unwrap();
+        let dir = tempdir().unwrap();
+        let source = db
+            .upsert_sync_source("partial", Some("Partial"), "http://p", "token")
+            .unwrap();
+        let mut ids = Vec::new();
+        let pids = ["EEEEEEEEEEEEEE01", "EEEEEEEEEEEEEE02", "EEEEEEEEEEEEEE03"];
+        for pid in pids {
+            let path = dir.path().join(format!("{pid}.mp3"));
+            std::fs::write(&path, b"audio").unwrap();
+            let value = track(pid, pid, &path);
+            let id = db
+                .upsert_synced_track(&value, &path, source.id)
+                .unwrap()
+                .unwrap();
+            db.record_sync_track_with_root(
+                pid,
+                source.id,
+                &serde_json::to_string(&value).unwrap(),
+                Some(dir.path()),
+            )
+            .unwrap();
+            ids.push(id);
+        }
+        // 2 曲目の tracks 行の DELETE だけを失敗させる。
+        db.conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_delete BEFORE DELETE ON tracks
+                 WHEN OLD.persistent_id = 'EEEEEEEEEEEEEE02'
+                 BEGIN SELECT RAISE(ABORT, 'delete refused'); END;",
+            )
+            .unwrap();
+
+        let pids: Vec<String> = pids.iter().map(|p| p.to_string()).collect();
+        let summary = evict(&mut db, &pids).await.unwrap();
+        assert_eq!(summary.evicted, 2);
+        assert_eq!(summary.removed.track_ids, vec![ids[0], ids[2]]);
+        assert_eq!(summary.failures.len(), 1);
+        assert_eq!(
+            summary.failures[0].persistent_id.as_deref(),
+            Some("EEEEEEEEEEEEEE02")
+        );
+        assert!(summary.failures[0].error.contains("delete refused"));
+        // 失敗した曲の行はロールバックされて残っている。
+        assert!(db.get_track_by_track_id(ids[1]).unwrap().is_some());
+        assert!(db.get_track_by_track_id(ids[0]).unwrap().is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
