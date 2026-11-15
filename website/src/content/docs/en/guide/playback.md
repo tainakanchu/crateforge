@@ -25,7 +25,7 @@ logged to `crateforge.log`.
 
 In every view (track list, cards, albums, artists), when an action on a track fails (play, add to queue, play next, rating,
 adding to or removing from a playlist, adding or removing a genre tag, saving genres, analysis, showing in the file manager),
-a toast tells you so along with the reason. The same applies when the tracks of an album or artist cannot be loaded.
+a toast tells you so along with the reason. The same applies when the tracks of an album or artist cannot be loaded; the expanded list then shows the failure, and clicking it retries.
 
 Toggling shuffle / repeat is reflected in the UI only after the playback engine has applied it,
 so Up Next never shows a stale order. If the toggle fails, the state is left unchanged and an error is shown.

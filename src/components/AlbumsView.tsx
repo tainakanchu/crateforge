@@ -32,6 +32,7 @@ import { trackApi } from "../lib/trackActionsApi";
 import { AddGenreTagDialog } from "./AddGenreTagDialog";
 import { CovTrackRow } from "./CovTrackRow";
 import { useTrackActionRunner } from "../hooks/useTrackActionRunner";
+import { LoadRetry } from "./LoadRetry";
 
 const SORT_LINE_H = 15; // ソートキー表示行 (.cov-meta .ls) のおよその高さ
 
@@ -277,6 +278,14 @@ function sortKeyLabel(vm: AlbumVM, sortField: SortField): string | null {
 
 const albumKeyOf = (vm: AlbumVM) => vm.key;
 
+/** key を除いた Set (含んでいなければ同じ Set を返し、再描画を起こさない)。 */
+function withoutKey(set: Set<string>, key: string): Set<string> {
+  if (!set.has(key)) return set;
+  const next = new Set(set);
+  next.delete(key);
+  return next;
+}
+
 /// アート前面のブラウズビュー。アルバム単位でまとめ、クリックで曲一覧を展開する。
 /// 入力は2系統:
 ///  - ライブラリスコープ (検索なしの全ライブラリ): store.albums (サーバ集約) を表示し、
@@ -344,6 +353,9 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     [trackCache],
   );
 
+  // 曲の取得に失敗したアルバム (albumKey)。展開行が「Loading…」のまま止まらないようにする。
+  const [loadFailedKeys, setLoadFailedKeys] = useState<Set<string>>(new Set());
+
   // ライブラリスコープのアルバムの曲を遅延取得してキャッシュする。
   const ensureTracks = useCallback(
     async (vm: AlbumVM): Promise<Track[]> => {
@@ -351,11 +363,16 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       const cached = trackCache.get(vm.key);
       if (cached) return cached;
       // 取得に失敗したらトーストで知らせて空を返す (再生・キュー・メニューが黙って何もしない、を避ける)。
+      // 展開行は失敗の表示 (再試行つき) に切り替える。再試行中は Loading… に戻す。
+      setLoadFailedKeys((prev) => withoutKey(prev, vm.key));
       let ts: Track[] = [];
       const ok = await run("loadTracks", async () => {
         ts = await libraryApi.getAlbumTracks(vm.key);
       });
-      if (!ok) return [];
+      if (!ok) {
+        setLoadFailedKeys((prev) => new Set(prev).add(vm.key));
+        return [];
+      }
       setTrackCache((prev) => {
         const next = new Map(prev);
         next.set(vm.key, ts);
@@ -782,6 +799,8 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                 <AlbumExpansion
                   vm={row.item}
                   tracks={knownTracks(row.item)}
+                  loadFailed={loadFailedKeys.has(row.item.key)}
+                  onRetry={() => void ensureTracks(row.item)}
                   crateSet={crateSet}
                   currentTrackId={playback.currentTrackId}
                   onPlayTrack={(id) => playAlbum(row.item, id)}
@@ -873,6 +892,9 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 interface AlbumExpansionProps {
   vm: AlbumVM;
   tracks: Track[] | null;
+  /// 曲の取得に失敗している (tracks が null のとき、再試行の表示に切り替える)。
+  loadFailed: boolean;
+  onRetry: () => void;
   crateSet: Set<number>;
   currentTrackId: number | null;
   onPlayTrack: (trackId: number) => void;
@@ -885,6 +907,8 @@ interface AlbumExpansionProps {
 function AlbumExpansion({
   vm,
   tracks,
+  loadFailed,
+  onRetry,
   crateSet,
   currentTrackId,
   onPlayTrack,
@@ -899,7 +923,11 @@ function AlbumExpansion({
     return (
       <div style={{ padding: `0 ${PAD_X}px ${GAP}px` }}>
         <div className="cov-exp">
-          <div className="cb-loading">Loading…</div>
+          {loadFailed ? (
+            <LoadRetry message="曲を取得できませんでした" onRetry={onRetry} />
+          ) : (
+            <div className="cb-loading">Loading…</div>
+          )}
         </div>
       </div>
     );

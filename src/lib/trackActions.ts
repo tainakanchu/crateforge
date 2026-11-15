@@ -183,3 +183,27 @@ export async function runTrackAction(
     return false;
   }
 }
+
+// ---- 複数の取得をまとめて行う操作 (アーティストの全アルバムの曲など) ----
+
+/** `Promise.allSettled` の結果を、成功した項目 (順序を保って連結) と失敗の理由に分ける。 */
+export function splitSettled<T>(
+  results: readonly PromiseSettledResult<readonly T[]>[],
+): { items: T[]; failures: unknown[] } {
+  const items: T[] = [];
+  const failures: unknown[] = [];
+  for (const r of results) {
+    if (r.status === "fulfilled") items.push(...r.value);
+    else failures.push(r.reason);
+  }
+  return { items, failures };
+}
+
+/**
+ * アルバムの曲の取得が失敗したときの文言。何枚失敗しても通知は 1 回にまとめ、
+ * 理由は最初の 1 件を添える (同じ原因で全部失敗することが多い)。失敗が無ければ null。
+ */
+export function albumLoadFailureMessage(failures: readonly unknown[]): string | null {
+  if (failures.length === 0) return null;
+  return `${failures.length} 枚のアルバムの曲を取得できませんでした: ${errorMessage(failures[0])}`;
+}

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   addTracksToPlaylist,
   addedToPlaylistMessage,
+  albumLoadFailureMessage,
   enqueueTracks,
   playNextTracks,
   playQueueFrom,
@@ -11,6 +12,7 @@ import {
   TRACK_ACTION_FAILURE_LABEL,
   runTrackAction,
   setRatingForTracks,
+  splitSettled,
   trackActionFailureMessage,
 } from "../../src/lib/trackActions.ts";
 import type { TrackActionKind } from "../../src/lib/trackActions.ts";
@@ -199,4 +201,32 @@ test("trackActionFailureMessage: 再生は曲名が分かれば添える", () =>
   );
   // 再生以外は曲名を使わない
   assert.equal(trackActionFailureMessage("enqueue", "x", "Song A"), "キューへの追加に失敗しました: x");
+});
+
+// ---- 複数の取得をまとめる (アーティストの全アルバムの曲) ----
+
+test("splitSettled: 成功した項目を順序どおり連結し、失敗の理由を集める", async () => {
+  const results = await Promise.allSettled([
+    Promise.resolve([1, 2]),
+    Promise.reject(new Error("boom")),
+    Promise.resolve([3]),
+    Promise.reject("again"),
+  ]);
+  const { items, failures } = splitSettled(results);
+  assert.deepEqual(items, [1, 2, 3]);
+  assert.equal(failures.length, 2);
+  assert.equal((failures[0] as Error).message, "boom");
+  assert.equal(failures[1], "again");
+});
+
+test("albumLoadFailureMessage: 何枚失敗しても文言は 1 つ (枚数 + 最初の理由)", () => {
+  assert.equal(albumLoadFailureMessage([]), null);
+  assert.equal(
+    albumLoadFailureMessage([new Error("offline")]),
+    "1 枚のアルバムの曲を取得できませんでした: offline",
+  );
+  assert.equal(
+    albumLoadFailureMessage([{ message: "database is locked" }, new Error("x"), "y"]),
+    "3 枚のアルバムの曲を取得できませんでした: database is locked",
+  );
 });

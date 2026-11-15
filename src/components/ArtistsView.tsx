@@ -27,6 +27,7 @@ import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
 import { CovTrackRow } from "./CovTrackRow";
 import { useTrackActionRunner } from "../hooks/useTrackActionRunner";
+import { LoadRetry } from "./LoadRetry";
 
 
 /**
@@ -149,52 +150,97 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
     setHasMore(false);
     albumCache.current = new Map();
     trackCache.current = new Map();
+    failedAlbums.current = new Set();
+    failedTracks.current = new Set();
     bumpCache();
     void load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [artistSort, sortOrder, combinedQuery, reloadKey]);
 
-  const ensureAlbums = useCallback(
+  // 取得に失敗したキー (アーティスト名 / albumKey)。展開行が「Loading…」のまま止まらないよう、
+  // 失敗を表示して再試行できるようにする。キャッシュと同じく ref + epoch で再描画する。
+  const failedAlbums = useRef(new Set<string>());
+  const failedTracks = useRef(new Set<string>());
+
+  /// アーティストのアルバム一覧を取得してキャッシュする。失敗は throw する (通知は呼び出し側)。
+  const fetchAlbums = useCallback(
     async (name: string): Promise<AlbumRow[]> => {
       const hit = albumCache.current.get(name);
       if (hit) return hit;
-      // 取得に失敗したらトーストで知らせて空を返す (再生・キュー・Crate が黙って何もしない、を避ける)。
+      if (failedAlbums.current.delete(name)) bumpCache(); // 再試行中は Loading… に戻す
+      try {
+        const rows = await libraryApi.getArtistAlbums(name);
+        albumCache.current.set(name, rows);
+        return rows;
+      } catch (err) {
+        failedAlbums.current.add(name);
+        throw err;
+      } finally {
+        bumpCache();
+      }
+    },
+    [bumpCache],
+  );
+
+  /// アルバムの曲を取得してキャッシュする。失敗は throw する (通知は呼び出し側)。
+  const fetchTracks = useCallback(
+    async (albumKey: string): Promise<Track[]> => {
+      const hit = trackCache.current.get(albumKey);
+      if (hit) return hit;
+      if (failedTracks.current.delete(albumKey)) bumpCache();
+      try {
+        const ts = await libraryApi.getAlbumTracks(albumKey);
+        trackCache.current.set(albumKey, ts);
+        return ts;
+      } catch (err) {
+        failedTracks.current.add(albumKey);
+        throw err;
+      } finally {
+        bumpCache();
+      }
+    },
+    [bumpCache],
+  );
+
+  // 単発の取得: 失敗したらトーストで知らせて空を返す (再生・キュー・Crate が黙って何もしない、を避ける)。
+  const ensureAlbums = useCallback(
+    async (name: string): Promise<AlbumRow[]> => {
       let rows: AlbumRow[] = [];
       const ok = await run("loadAlbums", async () => {
-        rows = await libraryApi.getArtistAlbums(name);
+        rows = await fetchAlbums(name);
       });
-      if (!ok) return [];
-      albumCache.current.set(name, rows);
-      bumpCache();
-      return rows;
+      return ok ? rows : [];
     },
-    [bumpCache, run],
+    [fetchAlbums, run],
   );
 
   const ensureTracks = useCallback(
     async (albumKey: string): Promise<Track[]> => {
-      const hit = trackCache.current.get(albumKey);
-      if (hit) return hit;
       let ts: Track[] = [];
       const ok = await run("loadTracks", async () => {
-        ts = await libraryApi.getAlbumTracks(albumKey);
+        ts = await fetchTracks(albumKey);
       });
-      if (!ok) return [];
-      trackCache.current.set(albumKey, ts);
-      bumpCache();
-      return ts;
+      return ok ? ts : [];
     },
-    [bumpCache, run],
+    [fetchTracks, run],
   );
 
   /// アーティストの全曲 (アルバム順 → disc/track 順)。未取得ぶんはここで取りに行く。
+  /// アルバムごとの取得は並列なので、失敗の通知はアルバムの数だけ出さず 1 回にまとめる。
+  /// 取得できたアルバムの曲はそのまま返す (操作は取れたぶんで続ける)。
   const artistTracks = useCallback(
     async (a: ArtistRow): Promise<Track[]> => {
       const albums = await ensureAlbums(a.name);
-      const lists = await Promise.all(albums.map((al) => ensureTracks(al.albumKey)));
-      return lists.flat();
+      const results = await Promise.allSettled(albums.map((al) => fetchTracks(al.albumKey)));
+      const { items, failures } = trackActions.splitSettled(results);
+      const message = trackActions.albumLoadFailureMessage(failures);
+      if (message) {
+        console.error("Failed to load album tracks:", failures);
+        pushToast("error", message);
+      }
+      return items;
     },
-    [ensureAlbums, ensureTracks],
+    [ensureAlbums, fetchTracks, pushToast],
   );
 
   const { cols, cardW } = gridMetrics(width);
@@ -405,6 +451,10 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
                   albums={albumCache.current.get(row.item.name) ?? null}
                   openAlbumKey={openAlbumKey}
                   tracksOf={(key) => trackCache.current.get(key) ?? null}
+                  albumsFailed={failedAlbums.current.has(row.item.name)}
+                  tracksFailed={(key) => failedTracks.current.has(key)}
+                  onRetryAlbums={() => void ensureAlbums(row.item.name)}
+                  onRetryTracks={(al) => void ensureTracks(al.albumKey)}
                   crateSet={crateSet}
                   currentTrackId={playback.currentTrackId}
                   onToggleAlbum={toggleAlbum}
@@ -435,6 +485,11 @@ interface ArtistExpansionProps {
   albums: AlbumRow[] | null;
   openAlbumKey: string | null;
   tracksOf: (albumKey: string) => Track[] | null;
+  /// アルバム一覧 / アルバムの曲の取得に失敗している (再試行の表示に切り替える)。
+  albumsFailed: boolean;
+  tracksFailed: (albumKey: string) => boolean;
+  onRetryAlbums: () => void;
+  onRetryTracks: (album: AlbumRow) => void;
   crateSet: Set<number>;
   currentTrackId: number | null;
   onToggleAlbum: (album: AlbumRow) => void;
@@ -454,6 +509,10 @@ function ArtistExpansion({
   albums,
   openAlbumKey,
   tracksOf,
+  albumsFailed,
+  tracksFailed,
+  onRetryAlbums,
+  onRetryTracks,
   crateSet,
   currentTrackId,
   onToggleAlbum,
@@ -493,7 +552,11 @@ function ArtistExpansion({
           </div>
         </div>
         {albums === null ? (
-          <div className="cb-loading">Loading…</div>
+          albumsFailed ? (
+            <LoadRetry message="アルバムを取得できませんでした" onRetry={onRetryAlbums} />
+          ) : (
+            <div className="cb-loading">Loading…</div>
+          )
         ) : (
           <div className="art-albs">
             {albums.map((al) => {
@@ -553,7 +616,14 @@ function ArtistExpansion({
                   </div>
                   {isOpen &&
                     (tracks === null ? (
-                      <div className="cb-loading">Loading…</div>
+                      tracksFailed(al.albumKey) ? (
+                        <LoadRetry
+                          message="曲を取得できませんでした"
+                          onRetry={() => onRetryTracks(al)}
+                        />
+                      ) : (
+                        <div className="cb-loading">Loading…</div>
+                      )
                     ) : (
                       <div className="cov-trks">
                         {tracks.map((t, i) => {
