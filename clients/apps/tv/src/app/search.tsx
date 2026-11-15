@@ -8,7 +8,8 @@
 //
 // TV の入力制約への配慮:
 //   - 入力は重いので 300ms デバウンスしてから問い合わせる（mobile と同値）。
-//   - 1 文字だと巨大ヒット＝全件転送になり得るため最小 2 文字ガード（mobile と同値）。
+//   - 1 文字だと巨大ヒット＝全件転送になり得るため最小長ガード（core の isSearchable。
+//     mobile と同じく CJK は 1 文字から、それ以外は 2 文字から）。
 //   - 結果リストの先頭行には hasTVPreferredFocus を付けない。結果更新のたびに
 //     フォーカスが入力欄からリストへ飛ぶのを防ぎ、入力中はキーボードに留める。
 //     ユーザーは入力欄から下キーでリストへ降りる。
@@ -18,7 +19,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { View, Text, TextInput, StyleSheet } from "react-native";
 
-import { type Track, useConnection, usePlayer } from "@crateforge/core";
+import { type Track, isSearchable, useConnection, usePlayer } from "@crateforge/core";
 import { TrackRow } from "@/components/library/TrackRow";
 import { LibraryList } from "@/components/library/LibraryList";
 import { Focusable } from "@/components/focus";
@@ -26,9 +27,6 @@ import { PALETTE, TV_FONT, TV_LAYOUT, FOCUS_RING } from "@/theme/palette";
 
 /** 大規模ライブラリでも全件取得（mobile の BROWSE_LIMIT と同値）。 */
 const BROWSE_LIMIT = 100000;
-
-/** これ未満の検索語は投げない（1 文字＝巨大ヒット回避。mobile と同値）。 */
-const MIN_QUERY_LENGTH = 2;
 
 export default function SearchScreen() {
   const router = useRouter();
@@ -47,7 +45,7 @@ export default function SearchScreen() {
   }, [search]);
 
   // 最小長を満たすときだけ有効な検索語にする（満たさなければ undefined＝問い合わせ無し）。
-  const term = debounced.length >= MIN_QUERY_LENGTH ? debounced : undefined;
+  const term = isSearchable(debounced) ? debounced : undefined;
   const searching = term != null;
 
   // q は曲名・アーティストの両方に効く。名前昇順で取得。
