@@ -15,10 +15,26 @@ Each release is documented in both Japanese and English.
 #### デスクトップ
 - **アルバムアーティストで並べるとコンピレーションが先頭に来る問題を修正**: 曲一覧を文字列の列（アルバムアーティストなど）で並べると、値が空文字や空白だけの曲（API で消したアルバムアーティストなど）が先頭に来ていた。空欄・空白のみの値は、昇順・降順とも末尾に並ぶようにした（アルバム表示と同じ扱い）。スマートプレイリストを列ヘッダで並べ替えたときも同じ。
 
+#### API
+- **仕様変更: 曲 JSON の `id` を `trackId` の別名にした**: API・デスクトップ内部とも、曲 JSON の `id` には以前は内部の行 id（`tracks.id`）を出していたが、`trackId` と同じ値を出すようにした（`id` は非推奨の別名として残す）。API の曲の指定はすべて `trackId` なのに、両者は同じ数値の範囲にあるため、`id` を trackId と取り違えたクライアントが 200 のまま無関係な曲を上書きする事故が起きていた。`id` を送っていた既存のクライアントも、この版からは正しい曲を指す。新しく書くクライアントは `trackId` を使うこと。
+- **書き込みの取り違え防止（任意）**: `PATCH /api/tracks/{trackId}` がヘッダー `If-Match: <persistentId>` とボディの `expect: { persistentId?, name?, artist?, album? }` を受け付ける。対象曲と食い違うと何も書かずに `409` を返し、実際に指していた曲（`trackId` / `persistentId` / `name` / `artist` / `album`）を本文の `track` で返す。`PUT` / `DELETE /api/tracks/{trackId}/artwork` も `If-Match` を受け付ける。
+- **一括更新を persistentId で指定できるように**: `PATCH /api/tracks` が `trackIds` の代わりに `persistentIds` を受け付ける（どちらか一方だけ。両方・どちらも無しは `400`）。見つからない persistentId は `notFound` に文字列で返す。
+
+#### モバイル
+- **評価・タグが別の曲に付く問題を修正**: 曲メニューと再生画面の評価（★）・タグ・「あとで聴く」が、曲の `trackId` ではなくデスクトップの内部の行 id を送っていたため、別の曲に書き込まれることがあった（オフライン中にためた編集も同じ）。`trackId` を送るようにした。デスクトップを更新すると、更新前のモバイルからの操作も正しい曲に付く。
+
 ### English
 
 #### Desktop
 - **Fixed compilations sorting first when sorting by album artist**: when the track list was sorted by a text column (album artist and others), tracks whose value was an empty or whitespace-only string (such as an album artist cleared through the API) came first. Empty and whitespace-only values now sort last in both ascending and descending order (the same as the album view). This also applies when sorting a smart playlist by a column header.
+
+#### API
+- **Behavior change: `id` in track JSON is now an alias of `trackId`**: the `id` field of track JSON (in the API and inside the desktop app) used to carry the internal row id (`tracks.id`); it now carries the same value as `trackId` (`id` is kept as a deprecated alias). Every API addresses tracks by `trackId`, but the two values share the same numeric range, so a client that mistook `id` for the trackId got a 200 and silently overwrote an unrelated track. Existing clients that send `id` now hit the right track. New clients should use `trackId`.
+- **Optional guards against writing to the wrong track**: `PATCH /api/tracks/{trackId}` accepts an `If-Match: <persistentId>` header and an `expect: { persistentId?, name?, artist?, album? }` body field. If they do not match the target track, nothing is written and `409` is returned with the track actually addressed (`trackId` / `persistentId` / `name` / `artist` / `album`) in `track`. `PUT` / `DELETE /api/tracks/{trackId}/artwork` also honor `If-Match`.
+- **Bulk updates can address tracks by persistentId**: `PATCH /api/tracks` accepts `persistentIds` instead of `trackIds` (exactly one of them; both or neither → `400`). Unknown persistentIds are returned in `notFound` as strings.
+
+#### Mobile
+- **Fixed ratings and tags landing on a different track**: ratings (stars), tags and "あとで聴く" (listen later) from the track menu and the player screen sent the desktop's internal row id instead of the track's `trackId`, so they could be written to a different track (edits queued while offline too). They now send `trackId`. Once the desktop is updated, actions from not-yet-updated mobile builds also land on the right track.
 
 ## [v0.20.0] - 2026-11-14
 

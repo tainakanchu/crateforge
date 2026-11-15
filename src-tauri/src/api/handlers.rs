@@ -2016,9 +2016,12 @@ fn artwork_response(bytes: Vec<u8>, mime: &str) -> Response {
 /// URL は受け取らない (サーバーに外部 fetch 権限を持たせない最小権限方針)。
 /// DB からファイルパスを引き、`set_picture` で既存カバー(front)を置換して実ファイルの
 /// タグに書き戻す。空ボディ=400、対象/パス無し=404、書き込み失敗=500、成功=204。
+/// 任意で `If-Match: <persistentId>` を付けると、対象曲の persistentId と一致しない場合は
+/// ファイルに触れずに 409 を返す (trackId の取り違え防止。`patch_track` と同じ)。
 pub async fn set_track_artwork(
     State(state): State<ApiState>,
     Path(track_id): Path<i64>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
     if body.is_empty() {
@@ -2029,6 +2032,7 @@ pub async fn set_track_artwork(
         .get_track_by_track_id(track_id)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
+    check_track_preconditions(&track, if_match_header(&headers)?.as_deref(), None)?;
     let path_str = track.location_path.as_deref().unwrap_or("");
     if path_str.is_empty() {
         return Err(ApiError::not_found("no file path for this track"));
@@ -2042,15 +2046,18 @@ pub async fn set_track_artwork(
 /// `DELETE /api/tracks/{trackId}/artwork` — 曲の埋め込みカバーを削除する。
 /// DB からファイルパスを引き、`remove_cover` で既存カバー(front)を削除して実ファイルの
 /// タグに書き戻す。対象/パス無し=404、削除失敗=500、成功=204。
+/// `If-Match: <persistentId>` が一致しなければ 409 (`set_track_artwork` と同じ)。
 pub async fn delete_track_artwork(
     State(state): State<ApiState>,
     Path(track_id): Path<i64>,
+    headers: axum::http::HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let db = state.db()?;
     let track = db
         .get_track_by_track_id(track_id)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| ApiError::not_found("track not found"))?;
+    check_track_preconditions(&track, if_match_header(&headers)?.as_deref(), None)?;
     let path_str = track.location_path.as_deref().unwrap_or("");
     if path_str.is_empty() {
         return Err(ApiError::not_found("no file path for this track"));
@@ -2992,19 +2999,151 @@ fn apply_track_edit(
     }))
 }
 
+/// 曲の取り違え防止のための前提条件 (`PATCH /api/tracks/{trackId}` の `expect`)。
+/// 指定した項目がすべて現在の DB 値と一致した場合だけ書き込む。
+/// persistentId は大文字小文字を区別せず (空文字は 400)、name / artist / album は完全一致で
+/// DB の NULL を `""` とみなして比較する。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackExpect {
+    pub persistent_id: Option<String>,
+    pub name: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+}
+
+/// `PATCH /api/tracks/{trackId}` のボディ。編集フィールドは `TrackEdit` をそのまま平置きし、
+/// API 専用の前提条件 `expect` を足す (`TrackEdit` は GUI と共有なので `expect` は持たせない)。
+#[derive(Debug, Deserialize)]
+pub struct PatchTrackBody {
+    #[serde(flatten)]
+    pub edit: crate::models::TrackEdit,
+    #[serde(default)]
+    pub expect: Option<TrackExpect>,
+}
+
+/// `If-Match` ヘッダーを persistentId として取り出す。前後の空白と `"` を外す。無ければ `None`。
+/// 外した結果が空なら 400。
+fn if_match_header(headers: &axum::http::HeaderMap) -> Result<Option<String>, ApiError> {
+    let Some(value) = headers.get(axum::http::header::IF_MATCH) else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid If-Match header"))?
+        .trim();
+    let value = value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(value)
+        .trim();
+    // 空値を許すと persistentId の無い曲 ("" とみなす) に黙って一致してしまう。
+    if value.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid If-Match header",
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
+/// 書き込み前の前提条件 (`If-Match: <persistentId>` / `expect`) を確認する。
+/// 不一致なら 409 を返し、実際に指していた曲 (trackId / persistentId / name / artist / album) を
+/// `track` として添える。クライアントが行 id など別の値を trackId と取り違えたときに、
+/// 無関係な曲を黙って上書きしないためのオプトインのガード。
+fn check_track_preconditions(
+    track: &Track,
+    if_match: Option<&str>,
+    expect: Option<&TrackExpect>,
+) -> Result<(), ApiError> {
+    let actual_pid = track.persistent_id.as_deref().unwrap_or("");
+    let mut mismatches: Vec<&str> = Vec::new();
+    if let Some(pid) = if_match {
+        if pid != "*" && !pid.eq_ignore_ascii_case(actual_pid) {
+            mismatches.push("If-Match");
+        }
+    }
+    if let Some(expect) = expect {
+        // persistentId は If-Match と同じく hex の大文字小文字を区別しない。
+        if let Some(pid) = &expect.persistent_id {
+            if !pid.eq_ignore_ascii_case(actual_pid) {
+                mismatches.push("expect.persistentId");
+            }
+        }
+        let checks = [
+            ("expect.name", &expect.name, &track.name),
+            ("expect.artist", &expect.artist, &track.artist),
+            ("expect.album", &expect.album, &track.album),
+        ];
+        for (label, expected, actual) in checks {
+            if let Some(expected) = expected {
+                if expected != actual.as_deref().unwrap_or("") {
+                    mismatches.push(label);
+                }
+            }
+        }
+    }
+    if mismatches.is_empty() {
+        return Ok(());
+    }
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "track".to_string(),
+        json!({
+            "trackId": track.track_id,
+            "persistentId": track.persistent_id,
+            "name": track.name,
+            "artist": track.artist,
+            "album": track.album,
+        }),
+    );
+    Err(ApiError::conflict(
+        format!(
+            "precondition failed ({}): trackId {} is not the expected track",
+            mismatches.join(", "),
+            track.track_id
+        ),
+        extra,
+    ))
+}
+
 /// `PATCH /api/tracks/:trackId` — 指定フィールドを置換 (未指定は据え置き)、
 /// 更新後の現在値を実ファイルのタグへも書き戻し、整理先ルートが設定されていれば
 /// GUI の編集と同じくフォルダ移動 + リネームする。対象が存在しなければ 404。
 /// 返り値 `{ "track": Track, "fileWriteFailed": bool, "relocateFailed": bool }`
 /// (`track` は移動後の locationPath / locationRaw を反映)。
+///
+/// 任意の前提条件: ヘッダー `If-Match: <persistentId>` とボディの
+/// `expect: { persistentId?, name?, artist?, album? }`。どちらかが現在の曲と食い違えば、
+/// 何も書かずに 409 (`{ "error", "track": { trackId, persistentId, name, artist, album } }`)。
 pub async fn patch_track(
     State(state): State<ApiState>,
     Path(track_id): Path<i64>,
     headers: axum::http::HeaderMap,
     Query(bq): Query<EffectiveBpmQuery>,
-    ExtractJson(edit): ExtractJson<crate::models::TrackEdit>,
+    ExtractJson(body): ExtractJson<PatchTrackBody>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
+    let if_match = if_match_header(&headers)?;
+    if body
+        .expect
+        .as_ref()
+        .and_then(|e| e.persistent_id.as_deref())
+        .is_some_and(|pid| pid.trim().is_empty())
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid expect.persistentId",
+        ));
+    }
+    if if_match.is_some() || body.expect.is_some() {
+        // 書き込みより前に確認する (不一致なら DB もファイルも触らない)。
+        let current = db
+            .get_track_by_track_id(track_id)?
+            .ok_or_else(|| ApiError::not_found("track not found"))?;
+        check_track_preconditions(&current, if_match.as_deref(), body.expect.as_ref())?;
+    }
+    let edit = body.edit;
     let mut r = match apply_track_edit(&db, track_id, &edit)? {
         Some(r) => r,
         None => return Err(ApiError::not_found("track not found")),
@@ -3045,28 +3184,61 @@ pub async fn set_track_rating(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `PATCH /api/tracks` のボディ。`trackIds` の各曲に同一の `edit` を一括適用する。
+/// `PATCH /api/tracks` のボディ。対象曲の各々に同一の `edit` を一括適用する。
+/// 対象は `trackIds` か `persistentIds` のちょうど一方で指定する (両方・どちらも無し = 400)。
+/// `persistentIds` は曲を一意に指せるので、スクリプトからの一括編集ではこちらを推奨。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkTrackEdit {
-    pub track_ids: Vec<i64>,
+    #[serde(default)]
+    pub track_ids: Option<Vec<i64>>,
+    #[serde(default)]
+    pub persistent_ids: Option<Vec<String>>,
     pub edit: crate::models::TrackEdit,
 }
 
 /// `PATCH /api/tracks` — 複数曲に同一の編集を一括適用する。
-/// 各 trackId に対し `patch_track` と同一のロジック (DB 更新＋ファイル書き戻し＋整理) を適用。
+/// 各曲に対し `patch_track` と同一のロジック (DB 更新＋ファイル書き戻し＋整理) を適用。
 /// 返り値 `{ "updated": n, "fileWriteFailed": [trackId,...], "relocateFailed": [trackId,...],
-/// "notFound": [trackId,...] }`。
+/// "notFound": [...] }`。`notFound` は指定に使った値 (trackId の数値、または persistentId の文字列)。
+/// `fileWriteFailed` / `relocateFailed` は指定方法によらず trackId。
 pub async fn patch_tracks_bulk(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<BulkTrackEdit>,
 ) -> Result<Json<Value>, ApiError> {
     let db = state.db()?;
+    // (trackId, 指定に使った値) の列に解決する。persistentId が見つからなければ notFound へ。
+    let mut targets: Vec<(i64, Value)> = Vec::new();
+    let mut not_found: Vec<Value> = Vec::new();
+    match (body.track_ids, body.persistent_ids) {
+        (Some(ids), None) => targets.extend(ids.into_iter().map(|id| (id, json!(id)))),
+        (None, Some(pids)) => {
+            for pid in pids {
+                let mut found = db.get_tracks_by_persistent_ids(std::slice::from_ref(&pid))?;
+                if found.is_empty() {
+                    // PID は大文字 16 桁 hex で保存されている。小文字で来ても引けるようにする。
+                    let upper = pid.to_ascii_uppercase();
+                    if upper != pid {
+                        found = db.get_tracks_by_persistent_ids(&[upper])?;
+                    }
+                }
+                match found.into_iter().next() {
+                    Some(track) => targets.push((track.track_id, json!(pid))),
+                    None => not_found.push(json!(pid)),
+                }
+            }
+        }
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "specify exactly one of trackIds or persistentIds",
+            ))
+        }
+    }
     let mut updated = 0_i64;
     let mut file_write_failed: Vec<i64> = Vec::new();
     let mut relocate_failed: Vec<i64> = Vec::new();
-    let mut not_found: Vec<i64> = Vec::new();
-    for &id in &body.track_ids {
+    for (id, requested) in targets {
         match apply_track_edit(&db, id, &body.edit)? {
             Some(r) => {
                 updated += 1;
@@ -3077,7 +3249,7 @@ pub async fn patch_tracks_bulk(
                     relocate_failed.push(id);
                 }
             }
-            None => not_found.push(id),
+            None => not_found.push(requested),
         }
     }
     if updated > 0 {

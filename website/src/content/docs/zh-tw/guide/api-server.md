@@ -40,16 +40,19 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 
 - `GET /api/health` — 伺服器資訊 + 目前曲目數
 - `GET /api/tracks`（`?q` 搜尋、`?album` / `?genre` 部分比對、offset/limit）。加上 `?albumExact=true` 可讓 `album` 完全比對
-- `GET /api/tracks/{id}` / `POST /api/tracks/by-ids`（ID 列 → 曲目。屬唯讀查詢，LAN 端帶權杖也可使用）
-- `GET /api/tracks/{id}/stream` — 音訊串流（`?native=true` 裝置可播放的格式不轉檔 / `?original=true` 原始檔 / `?fmt=aac&br=192` 轉為 AAC）
-- `GET /api/tracks/{id}/analysis` — 解析結果（未解析時為 null）
-- `GET /api/tracks/{id}/similar` — 相似曲
+- `GET /api/tracks/{trackId}` / `POST /api/tracks/by-ids`（ID 列 → 曲目。屬唯讀查詢，LAN 端帶權杖也可使用）
+- `GET /api/tracks/{trackId}/stream` — 音訊串流（`?native=true` 裝置可播放的格式不轉檔 / `?original=true` 原始檔 / `?fmt=aac&br=192` 轉為 AAC）
+- `GET /api/tracks/{trackId}/analysis` — 解析結果（未解析時為 null）
+- `GET /api/tracks/{trackId}/similar` — 相似曲
 - `GET /api/stats` / `GET /api/genres` / `GET /api/albums`
 - `GET /api/playlists` / `GET /api/playlists/{id}`（含智慧型條件 `smartCriteria`） / `GET /api/playlists/{id}/tracks`
   （智慧型播放清單的 `trackCount` 為條件即時評估後的曲數）
 
+指定曲目一律使用 **`trackId`**（路徑與內文皆同）。曲目 JSON 的 `id` 是 `trackId` 的**已棄用別名**（值相同）。
+先前的版本在 `id` 回傳的是內部列編號，與 `trackId` 不同。新撰寫的用戶端請勿使用 `id`。
+
 回傳曲目的 API（`/api/tracks` 系列・`/api/tracks/by-ids`・`/api/tracks/lookup`・`/similar`・`/api/playlists/{id}/tracks`・
-`PATCH /api/tracks/{id}` 的回應）的 `bpm` 一律為**實效 BPM**（標籤的 BPM，沒有時為解析 BPM）。
+`PATCH /api/tracks/{trackId}` 的回應）的 `bpm` 一律為**實效 BPM**（標籤的 BPM，沒有時為解析 BPM）。
 需要標籤原值時，請加上 `?effectiveBpm=false` 明確指定（sync 角色的權杖也一律回傳標籤值）。
 同步（取回・寫回）為避免把解析值存成標籤，一定會帶上 `?effectiveBpm=false` 發出請求。
 
@@ -63,10 +66,17 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 
 ### 寫入（中繼資料）
 
-- `PATCH /api/tracks/{id}` — 部分更新 name / artist / album / genre / year / bpm / rating / composer / comments 等。
+- `PATCH /api/tracks/{trackId}` — 部分更新 name / artist / album / genre / year / bpm / rating / composer / comments 等。
   name / artist / album / genre / year / composer / comments 會寫回實際檔案的標籤，`rating` / `disabled` / `playCount` / `skipCount` 僅寫入 DB。
-- `PATCH /api/tracks`（`{trackIds, edit}`） — 多曲一次更新。
+- `PATCH /api/tracks`（`{trackIds, edit}` 或 `{persistentIds, edit}`） — 多曲一次更新。`trackIds` 與 `persistentIds` 只能指定其中一個（兩者皆有或皆無為 `400`）。
+  找不到的曲目會以所指定的值（trackId / persistentId）列在 `notFound`。
 - `POST /api/tracks/genre-tags/add` / `/remove` — 對類型標籤在尾端批次增減。
+
+**防止指錯曲目（選用）**：`PATCH /api/tracks/{trackId}` 可接受標頭 `If-Match: <persistentId>`，
+或內文的 `expect: { persistentId?, name?, artist?, album? }`。與目標曲目不符時**不寫入任何內容**並回傳 `409`，
+內文的 `track`（`trackId` / `persistentId` / `name` / `artist` / `album`）會告知實際指到的曲目。
+`PUT` / `DELETE /api/tracks/{trackId}/artwork` 也接受 `If-Match`。
+以腳本大量改寫曲目時，建議使用以 `persistentIds` 指定的批次更新，或附上 `If-Match` / `expect` 的單曲更新。
 
 中繼資料的寫入除了更新 DB 之外，還會 **寫回實際檔案的 ID3 / Vorbis / MP4 標籤**，
 並即時反映到 GUI。寫回的處理與桌面 GUI 的編輯共用同一條路徑。

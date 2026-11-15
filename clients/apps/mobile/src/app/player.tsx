@@ -137,7 +137,7 @@ export default function PlayerScreen() {
               ? "similar-section"
               : item.kind === "upnext-track"
                 ? `upnext-${item.orderIndex}`
-                : `track-${item.track.id}`
+                : `track-${item.track.trackId}`
         }
         renderItem={({ item }) =>
           item.kind === "section" ? (
@@ -349,8 +349,8 @@ function NowPlaying({
 
       {/* レーティング（★×5・タップで設定）。current が変わるたびに id をキーにして再マウントし、
           別の曲の楽観的状態が引き継がれないようにする。オフラインでもキューへ積む。 */}
-      <RatingControl key={current.id} track={current} />
-      <TriageQuickActions key={`triage-${current.id}`} track={current} />
+      <RatingControl key={current.trackId} track={current} />
+      <TriageQuickActions key={`triage-${current.trackId}`} track={current} />
 
       <SeekBar progress={progress} durationMs={durationMs} onSeek={seek} />
       <View style={styles.timeRow}>
@@ -533,7 +533,7 @@ function RatingControl({ track }: { track: Track }) {
     setRatingValue(value); // 楽観的更新
     setRating.mutate(
       {
-        trackId: track.id,
+        trackId: track.trackId,
         rating: value,
         baseRating: track.rating ?? null,
         trackName: track.name,
@@ -573,7 +573,7 @@ function TriageQuickActions({ track }: { track: Track }) {
     try {
       if (client) {
         try {
-          await client.addTrackTags([track.id], tag);
+          await client.addTrackTags([track.trackId], tag);
           flash(tag === REVIEW_LATER_TAG ? "あとで聴くに追加" : `タグ: ${tag}`);
         } catch (e) {
           if (e instanceof ApiError && (e.status === 404 || e.status === 501)) {
@@ -586,13 +586,13 @@ function TriageQuickActions({ track }: { track: Track }) {
         if (tag === REVIEW_LATER_TAG) {
           usePendingEdits.getState().enqueue({
             kind: "review-later",
-            trackId: track.id,
+            trackId: track.trackId,
             trackName: track.name,
           });
         } else {
           usePendingEdits.getState().enqueue({
             kind: "tag-add",
-            trackId: track.id,
+            trackId: track.trackId,
             tag,
             trackName: track.name,
           });
@@ -757,7 +757,7 @@ function SimilarSection({ trackId, analyzed }: { trackId: number; analyzed: bool
       </View>
       {tracks.map((track, i) => (
         <TrackRow
-          key={`similar-${track.id}`}
+          key={`similar-${track.trackId}`}
           track={track}
           onPress={() => setQueue(tracks, i)}
         />

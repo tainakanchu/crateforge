@@ -1014,7 +1014,7 @@ function AlbumExpansion({
           const showArtist = (t.artist || "") !== vm.albumArtist && !!t.artist;
           return (
             <div
-              key={`${t.id}-${i}`}
+              key={`${t.trackId}-${i}`}
               className={"cov-trk" + (isCurrent ? " play" : "") + (!t.fileExists ? " missing" : "")}
               onDoubleClick={() => onPlayTrack(t.trackId)}
               onContextMenu={(e) => onTrackContextMenu(e, t)}

@@ -4,7 +4,12 @@
 
 /** 1 曲。`Option<T>` は `T | null` に対応。`bool` は非 Option。 */
 export interface Track {
+  /**
+   * @deprecated `trackId` の別名（値は常に trackId と同じ）。曲の指定・比較・key には `trackId` を使う。
+   * 以前のサーバーは内部の行 id を返しており、API に渡すと別の曲を書き換える事故があった。
+   */
   id: number;
+  /** 曲 ID。API のパス・ボディで曲を指定するのは常にこれ。 */
   trackId: number;
   persistentId: string | null;
   name: string | null;
