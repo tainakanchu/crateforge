@@ -23,8 +23,9 @@ and if the next track's file can't be found, it skips automatically and keeps pl
 Tracks that fail to play are notified via a toast, and the failure details (file missing / decode failure / decoder crash) are
 logged to `crateforge.log`.
 
-In every view (track list, albums, artists), when an action on a track fails (play, add to queue, play next, rating,
-adding to or removing from a playlist, adding or removing a genre tag, analysis), a toast tells you so along with the reason.
+In every view (track list, cards, albums, artists), when an action on a track fails (play, add to queue, play next, rating,
+adding to or removing from a playlist, adding or removing a genre tag, saving genres, analysis, showing in the file manager),
+a toast tells you so along with the reason. The same applies when the tracks of an album or artist cannot be loaded.
 
 Toggling shuffle / repeat is reflected in the UI only after the playback engine has applied it,
 so Up Next never shows a stale order. If the toggle fails, the state is left unchanged and an error is shown.

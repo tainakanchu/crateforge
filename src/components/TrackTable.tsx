@@ -402,7 +402,9 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   );
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [showAddTagDialog, setShowAddTagDialog] = useState(false);
+  // ジャンルタグ追加ダイアログの対象曲 (null で非表示)。対象はダイアログを開いた時点で決める
+  // (入力中に選択が変わっても、開いたときの曲に付く)。TracksView / AlbumsView と同じ。
+  const [addTagTargetIds, setAddTagTargetIds] = useState<number[] | null>(null);
   // 削除確認モーダルの対象曲（null で非表示）。window.confirm は使わない。
   const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
   const [newTag, setNewTag] = useState("");
@@ -542,8 +544,12 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     async (track: Track, stars: number) => {
       const newRating = starsToRating(stars);
       await run("rating", async () => {
-        await trackActions.setRatingForTracks(trackApi, [track.trackId], newRating);
-        onTracksChanged();
+        try {
+          await trackActions.setRatingForTracks(trackApi, [track.trackId], newRating);
+        } finally {
+          // 失敗しても取り直して、一覧を実際の値に合わせる。
+          onTracksChanged();
+        }
       });
     },
     [onTracksChanged, run],
@@ -555,14 +561,20 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       const ids = ctxIds();
       if (ids.length === 0) return;
       const newRating = starsToRating(stars);
+      const menu = contextMenu;
       const ok = await run("rating", async () => {
-        await trackActions.setRatingForTracks(trackApi, ids, newRating);
-        onTracksChanged();
+        try {
+          await trackActions.setRatingForTracks(trackApi, ids, newRating);
+        } finally {
+          // 複数曲の途中で失敗しても、先に成功した曲の値が一覧に出るよう取り直す。
+          onTracksChanged();
+        }
       });
       // 星はメニューを開いたまま付け直せるが、失敗したら (プレビューの星が残らないよう) 閉じる。
-      if (!ok) setContextMenu(null);
+      // 待っている間に別のメニューが開かれていたら、そちらは閉じない。
+      if (!ok) setContextMenu((cur) => (cur === menu ? null : cur));
     },
-    [ctxIds, onTracksChanged, run],
+    [ctxIds, contextMenu, onTracksChanged, run],
   );
 
   const handleEnqueue = useCallback(async () => {
@@ -587,19 +599,15 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleApplyAddTag = useCallback(async () => {
     const tag = newTag.trim();
-    if (!tag) {
-      setShowAddTagDialog(false);
-      return;
-    }
-    const ids = ctxIds();
-    setShowAddTagDialog(false);
+    const ids = addTagTargetIds;
+    setAddTagTargetIds(null);
+    if (!tag || !ids || ids.length === 0) return;
     setNewTag("");
-    setContextMenu(null);
     await run("addTag", async () => {
       await libraryApi.addGenreTag(ids, tag);
       onTracksChanged();
     });
-  }, [newTag, ctxIds, onTracksChanged, run]);
+  }, [newTag, addTagTargetIds, onTracksChanged, run]);
 
   const handleRemoveGenreTag = useCallback(
     async (tag: string) => {
@@ -1303,18 +1311,22 @@ export function TrackTable({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           onReveal={() => void handleReveal(ctxTrack.locationPath ?? "")}
           onDelete={handleDelete}
           onAddToPlaylist={handleAddToPlaylist}
-          onAddTag={() => setShowAddTagDialog(true)}
+          onAddTag={() => {
+            // 対象が無ければダイアログを開かない。
+            const ids = ctxIds();
+            if (ids.length > 0) setAddTagTargetIds(ids);
+          }}
           onRemoveTag={handleRemoveGenreTag}
         />
       )}
 
       {/* Add genre tag dialog */}
-      {showAddTagDialog && (
+      {addTagTargetIds && (
         <AddGenreTagDialog
           value={newTag}
           onChange={setNewTag}
           onSubmit={() => void handleApplyAddTag()}
-          onClose={() => setShowAddTagDialog(false)}
+          onClose={() => setAddTagTargetIds(null)}
         />
       )}
 

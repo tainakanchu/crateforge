@@ -128,7 +128,9 @@ export type TrackActionKind =
   | "removeTag"
   | "saveGenre"
   | "analyze"
-  | "reveal";
+  | "reveal"
+  | "loadTracks"
+  | "loadAlbums";
 
 const FAILURE_LABEL: Record<TrackActionKind, string> = {
   play: "再生に失敗しました",
@@ -142,6 +144,9 @@ const FAILURE_LABEL: Record<TrackActionKind, string> = {
   saveGenre: "ジャンルの保存に失敗しました",
   analyze: "解析を開始できませんでした",
   reveal: "ファイルマネージャで表示できませんでした",
+  // 操作の前段 (アルバム / アーティストの曲を取りに行く) で失敗したとき。
+  loadTracks: "曲を取得できませんでした",
+  loadAlbums: "アルバムを取得できませんでした",
 };
 
 /**

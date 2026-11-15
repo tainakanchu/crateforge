@@ -350,20 +350,20 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       if (vm.tracks) return vm.tracks;
       const cached = trackCache.get(vm.key);
       if (cached) return cached;
-      try {
-        const ts = await libraryApi.getAlbumTracks(vm.key);
-        setTrackCache((prev) => {
-          const next = new Map(prev);
-          next.set(vm.key, ts);
-          return next;
-        });
-        return ts;
-      } catch (err) {
-        console.error("Failed to load album tracks:", err);
-        return [];
-      }
+      // 取得に失敗したらトーストで知らせて空を返す (再生・キュー・メニューが黙って何もしない、を避ける)。
+      let ts: Track[] = [];
+      const ok = await run("loadTracks", async () => {
+        ts = await libraryApi.getAlbumTracks(vm.key);
+      });
+      if (!ok) return [];
+      setTrackCache((prev) => {
+        const next = new Map(prev);
+        next.set(vm.key, ts);
+        return next;
+      });
+      return ts;
     },
-    [trackCache],
+    [trackCache, run],
   );
 
   const { cols, cardW } = gridMetrics(width);
@@ -470,8 +470,22 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       const ok = await run("rating", () =>
         trackActions.setRatingForTracks(trackApi, trackIds, rating),
       );
-      if (!ok) return false;
       const ids = new Set(trackIds);
+      if (!ok) {
+        // 複数曲の途中で失敗すると、先に成功した曲だけ値が変わっている。どの曲まで進んだかは
+        // 分からないので、一覧と、対象を含む展開キャッシュを取り直して実際の値に合わせる。
+        onTracksChanged();
+        for (const [key, ts] of trackCache) {
+          if (!ts.some((t) => ids.has(t.trackId))) continue;
+          try {
+            const fresh = await libraryApi.getAlbumTracks(key);
+            setTrackCache((prev) => new Map(prev).set(key, fresh));
+          } catch (err) {
+            console.error("Failed to reload album tracks:", err);
+          }
+        }
+        return false;
+      }
       setTrackCache((prev) => {
         let next: Map<string, Track[]> | null = null;
         for (const [key, ts] of prev) {
@@ -484,16 +498,20 @@ export function AlbumsView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
       onTracksChanged();
       return true;
     },
-    [onTracksChanged, run],
+    [onTracksChanged, run, trackCache],
   );
 
   const handleSetRating = useCallback(
     async (stars: number) => {
       if (!contextMenu) return;
+      const menu = contextMenu;
       // 星はメニューを開いたまま付け直せるが、失敗したら (プレビューの星が残らないよう) 閉じる。
-      if (!(await applyRating(contextMenu.trackIds, stars))) closeMenu();
+      // 待っている間に別のメニューが開かれていたら、そちらは閉じない。
+      if (!(await applyRating(menu.trackIds, stars))) {
+        setContextMenu((cur) => (cur === menu ? null : cur));
+      }
     },
-    [contextMenu, applyRating, closeMenu],
+    [contextMenu, applyRating],
   );
 
   // メニューの操作対象 (trackIds) だけを入れる。contextMenu.tracks はアルバム全曲なので、

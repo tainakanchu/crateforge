@@ -107,14 +107,19 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleSetRating = useCallback(async (stars: number) => {
     if (!contextMenu) return;
-    const id = contextMenu.track.trackId;
+    const menu = contextMenu;
     const ok = await run("rating", async () => {
-      await trackActions.setRatingForTracks(trackApi, [id], starsToRating(stars));
-      onTracksChanged();
+      try {
+        await trackActions.setRatingForTracks(trackApi, [menu.track.trackId], starsToRating(stars));
+      } finally {
+        // 失敗しても取り直して、一覧を実際の値に合わせる。
+        onTracksChanged();
+      }
     });
     // 星はメニューを開いたまま付け直せるが、失敗したら (プレビューの星が残らないよう) 閉じる。
-    if (!ok) closeMenu();
-  }, [contextMenu, onTracksChanged, run, closeMenu]);
+    // 待っている間に別のメニューが開かれていたら、そちらは閉じない。
+    if (!ok) setContextMenu((cur) => (cur === menu ? null : cur));
+  }, [contextMenu, onTracksChanged, run]);
 
   const handleAddToCrate = useCallback(() => {
     if (!contextMenu) return;

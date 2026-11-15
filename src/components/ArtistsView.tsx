@@ -158,34 +158,33 @@ export function ArtistsView({ reloadKey }: ArtistsViewProps) {
     async (name: string): Promise<AlbumRow[]> => {
       const hit = albumCache.current.get(name);
       if (hit) return hit;
-      try {
-        const rows = await libraryApi.getArtistAlbums(name);
-        albumCache.current.set(name, rows);
-        bumpCache();
-        return rows;
-      } catch (err) {
-        console.error("Failed to load artist albums:", err);
-        return [];
-      }
+      // 取得に失敗したらトーストで知らせて空を返す (再生・キュー・Crate が黙って何もしない、を避ける)。
+      let rows: AlbumRow[] = [];
+      const ok = await run("loadAlbums", async () => {
+        rows = await libraryApi.getArtistAlbums(name);
+      });
+      if (!ok) return [];
+      albumCache.current.set(name, rows);
+      bumpCache();
+      return rows;
     },
-    [bumpCache],
+    [bumpCache, run],
   );
 
   const ensureTracks = useCallback(
     async (albumKey: string): Promise<Track[]> => {
       const hit = trackCache.current.get(albumKey);
       if (hit) return hit;
-      try {
-        const ts = await libraryApi.getAlbumTracks(albumKey);
-        trackCache.current.set(albumKey, ts);
-        bumpCache();
-        return ts;
-      } catch (err) {
-        console.error("Failed to load album tracks:", err);
-        return [];
-      }
+      let ts: Track[] = [];
+      const ok = await run("loadTracks", async () => {
+        ts = await libraryApi.getAlbumTracks(albumKey);
+      });
+      if (!ok) return [];
+      trackCache.current.set(albumKey, ts);
+      bumpCache();
+      return ts;
     },
-    [bumpCache],
+    [bumpCache, run],
   );
 
   /// アーティストの全曲 (アルバム順 → disc/track 順)。未取得ぶんはここで取りに行く。
