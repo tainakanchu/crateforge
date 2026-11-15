@@ -44,7 +44,7 @@
   (安定キー、開閉では `measure()` しない、幅/列変更時のみ再計測)。AlbumsView / ArtistsView / TracksView に適用。
   **ArtistsView の展開行の重なりはここで直る (バグ修正)**。
   TracksView の「空状態でマウントするとカードが 2 列に引き伸ばされる」も callback ref 化で直る (Albums / Artists と同じ原因。意図したバグ修正)。
-- `lib/format.ts`: `formatClock`, `formatBytes`, `formatYmd`。`lib/errors.ts`: `errorMessage`。
+- `lib/format.ts`: 時間表示 (`formatTrackTime` / `formatTotalTime` / `formatPlaybackTime` / `formatRemainingTime`)、`formatBytes`, `formatYmd`。`lib/errors.ts`: `errorMessage`。
   `lib/env.ts`: `isTauri`。`lib/query.ts`: `combineQuery`。重複定義を置き換える (表示は変えない)。
   `errorMessage` は `{ message }` 形式の失敗を優先して読み、Sync 系ダイアログの「[object Object]」表示が直る (意図したバグ修正)。
 - `lib/tauriEvents.ts` `subscribeDisposable` + `hooks/useTauriEvent.ts`。App.tsx と
@@ -87,8 +87,8 @@
 | C4 | リモートの「前の曲」に GUI と同じ 3 秒ルール (再生 3 秒超なら頭出し) |
 | G1 | `genre:` / `?genre=` をタグ単位の完全一致に (`docs/genre/design.md` §3) |
 | R1 | rating ↔ 星の丸めを検索構文の区間方式 (`rating:0` = 0〜19) に統一 (スマートプレイリスト側を合わせる) |
-| A2 | 時間表示: 合計時間 (アルバム・アーティスト) は時を付ける (`1:15:03`)、丸めは切り捨てに統一 |
-| A3 | デスクトップの曲操作の失敗はトーストで知らせる (再生・キュー追加・rating など全ビュー共通) |
+| A2 | 時間表示: 規則は 1 つ。曲の長さ・合計時間・再生位置 (プレイヤーバーを含む) のどれも、1 時間未満は `m:ss`、1 時間以上は `h:mm:ss` (`1:15:03`)。秒未満は切り捨て (`docs/ui-spec.md` §3.8) |
+| A3 | デスクトップの曲操作の失敗はトーストで知らせる (再生・キュー追加・rating など全ビュー共通。操作の前段の曲の取得失敗も含む。`docs/ui-spec.md` §4.4) |
 | B6 | mobile の評価・タグ書き込みの失敗・未対応はトーストで知らせる (3 経路共通) |
 | B5 | TV のアルバム/アーティストの並び順を mobile と同じにする |
 | B7 | TV も mobile と同じ接続監視 (`useConnectionMonitor`) を使う |
