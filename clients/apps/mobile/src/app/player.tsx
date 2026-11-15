@@ -20,6 +20,7 @@ import { useRouter } from "expo-router";
 import { BRAND, PALETTE } from "@/constants/brand";
 import { type SimilarHit, type Track, formatDuration, isNativePlaybackActive, nextRepeat, ratingToHalfStars, starsToRating, trackTitle, artistLabel, trackArtistKey, trackAlbumArtistKey, upNextEntries, useConnection, usePlayer, useSettings } from "@crateforge/core";
 import Screen from "@/components/Screen";
+import ModalToastHost from "@/components/ModalToastHost";
 import Artwork from "@/components/Artwork";
 import ModeToggleButton from "@/components/ModeToggleButton";
 import IconButton from "@/components/IconButton";
@@ -172,6 +173,8 @@ export default function PlayerScreen() {
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
       />
+      {/* iOS のモーダルではルートのトーストが裏に隠れるので、この画面の中にも表示先を置く。 */}
+      <ModalToastHost />
     </Screen>
   );
 }
