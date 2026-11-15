@@ -340,35 +340,41 @@ pub(crate) async fn next_track(app: &AppHandle) -> Result<Option<i64>, String> {
     }
 }
 
+/// 「前の曲」で次に再生する曲を決める (GUI の `play_prev` と `POST /api/remote/prev` 共通)。
+///
+/// 規則は [`crate::library::playback::prev_action`] (iTunes 流儀の 3 秒ルール)。
+/// - 今の曲を 3 秒を超えて再生していれば、その曲の id を返す (キューは動かさない)。
+///   頭出しは seek 非対応フォーマットでも確実なよう、呼び出し側がシークではなく再生し直す。
+/// - そうでなければキューを 1 つ戻し (`queue-changed` を emit)、その曲の id を返す。
+///   前の曲が無ければ `None`。
+///
+/// 再生位置は有効な再生先 (Cast 中は Cast) のものを使う。返した曲の再生は呼び出し側が行う
+/// (GUI は preview フラグ付き、リモートは常に通常再生と、再生の仕方が違うため)。
+pub(crate) fn prev_target(app: &AppHandle) -> Result<Option<i64>, String> {
+    use crate::library::playback::{prev_action, PrevAction};
+
+    let st = coordinator(app).get_state();
+    match prev_action(st.position_ms, st.current_track_id) {
+        PrevAction::RestartCurrent(tid) => Ok(Some(tid)),
+        PrevAction::Previous => {
+            let prev_id = app
+                .state::<Mutex<AudioPlayer>>()
+                .lock()
+                .map_err(|e| e.to_string())?
+                .advance_prev();
+            emit_queue_changed(app);
+            Ok(prev_id)
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn play_prev(app: AppHandle) -> Result<Option<i64>, String> {
-    // iTunes 流儀: 3 秒以上再生していれば、前の曲ではなく現在の曲を頭から再生し直す。
-    // (seek 非対応フォーマットでも確実に頭出しできるよう、シークではなく再生し直す)
-    // 位置は有効な再生先 (Cast 中は Cast) のものを使う。
-    let restart = {
-        let st = coordinator(&app).get_state();
-        if st.position_ms > 3000 {
-            st.current_track_id
-        } else {
-            None
-        }
-    };
-    if let Some(tid) = restart {
+    let target = prev_target(&app)?;
+    if let Some(tid) = target {
         play_track_by_id(&app, tid).await?;
-        return Ok(Some(tid));
     }
-    let prev_id = app
-        .state::<Mutex<AudioPlayer>>()
-        .lock()
-        .map_err(|e| e.to_string())?
-        .advance_prev();
-    emit_queue_changed(&app);
-    if let Some(tid) = prev_id {
-        play_track_by_id(&app, tid).await?;
-        Ok(Some(tid))
-    } else {
-        Ok(None)
-    }
+    Ok(target)
 }
 
 #[tauri::command]

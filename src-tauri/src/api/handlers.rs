@@ -2666,15 +2666,13 @@ pub async fn remote_next(State(state): State<ApiState>) -> Result<Json<Value>, A
     Ok(Json(json!({ "trackId": tid })))
 }
 
-/// `POST /api/remote/prev` — キューの前の曲へ戻る。
+/// `POST /api/remote/prev` — 「前の曲」。デスクトップの ⏮ と同じ 3 秒ルール
+/// ([`crate::commands::playback::prev_target`]): 今の曲を 3 秒を超えて再生していれば
+/// その曲を頭から再生し直し、そうでなければキューの前の曲へ戻る。
+/// 返り値 `{ "trackId": 再生した曲 | null }` (前の曲が無ければ null)。
 pub async fn remote_prev(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
     let app = remote_app(&state)?;
-    let prev_id = app
-        .state::<std::sync::Mutex<crate::audio::AudioPlayer>>()
-        .lock()
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .advance_prev();
-    crate::commands::playback::emit_queue_changed(app);
+    let prev_id = crate::commands::playback::prev_target(app)?;
     if let Some(tid) = prev_id {
         play_by_id_for_remote(&state, app, tid).await?;
         Ok(Json(json!({ "trackId": tid })))

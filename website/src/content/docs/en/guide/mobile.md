@@ -56,6 +56,7 @@ While connected, you can browse the desktop library in the following units.
 
 Switching to "Play on PC (remote)" lets you control desktop playback from mobile.
 You can do play / pause, previous/next, seek, volume, and shuffle / repeat, and the playing state stays in sync.
+As on the desktop, "previous" restarts the current track from the beginning when it has played for more than 3 seconds.
 Tapping the playing artist (and album) navigates to that page.
 "Play on desktop…" in the track menu asks for confirmation before replacing the desktop queue when it already has tracks.
 

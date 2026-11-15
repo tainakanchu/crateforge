@@ -13,6 +13,7 @@ You build up playback and curation in the right rail (the curation workbench): *
 - **Double-click** a track to play it.
 - `Space` to **play / pause**, `Enter` to play the focused/selected row.
 - `J` / `K` for previous / next track, `Shift + ←` / `Shift + →` to seek 5 seconds.
+  "Previous" restarts the current track from the beginning when it has played for more than 3 seconds, instead of going back (press it again to go to the previous track).
 - `S` for shuffle, `R` for repeat (off / all / one). `Ctrl + ↑` / `Ctrl + ↓` for volume.
 
 In the player bar, drag the seek bar to scrub, click the time display to toggle "elapsed ⇄ remaining,"
