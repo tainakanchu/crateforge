@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Virtualizer } from "@tanstack/react-virtual";
 import {
   GRID_GAP,
   GRID_MIN_CARD,
@@ -8,6 +9,7 @@ import {
   buildGridRows,
   gridMetrics,
   isNearBottom,
+  remeasureGridRows,
   shouldRemeasureGrid,
 } from "../../src/lib/gridRows.ts";
 
@@ -140,4 +142,76 @@ test("appendUniqueBy: 追加後も展開行のキーが一意", () => {
     const expandRows = buildGridRows(all, 2, keyOf, k).filter((r) => r.type === "expand");
     assert.equal(expandRows.length, 1);
   }
+});
+
+// ---- remeasureGridRows (列数/カード幅が変わったときの測り直し) ----
+
+/** DOM なしで動かす virtual-core の Virtualizer。行キーは keys、見積もりは estimate。 */
+function makeVirtualizer(keys: string[], estimate: (i: number) => number) {
+  return new Virtualizer<HTMLElement, Element>({
+    count: keys.length,
+    getScrollElement: () => null,
+    estimateSize: estimate,
+    getItemKey: (i) => keys[i],
+    scrollToFn: () => {},
+    observeElementRect: () => {},
+    observeElementOffset: () => {},
+  });
+}
+
+/** 各行の [キー, 開始位置, 高さ]。getTotalSize() で位置の配列を最新にしてから読む。 */
+function layoutOf(v: Virtualizer<HTMLElement, Element>) {
+  v.getTotalSize();
+  return Array.from({ length: v.options.count }, (_, i) => {
+    const it = v.measurementsCache[i]!;
+    return [it.key, it.start, it.size];
+  });
+}
+
+test("remeasureGridRows: 高さが変わらなかった展開行も実測値のまま残る (見積もりに戻らない)", () => {
+  // グリッド行 / 展開行 (曲 16 行で 664px、見積もり 260) / グリッド行
+  const keys = ["g:6:0", "x:zanaka", "g:6:1"];
+  const v = makeVirtualizer(keys, (i) => (i === 1 ? 260 : 256));
+  v.getTotalSize();
+  v.resizeItem(0, 256);
+  v.resizeItem(1, 664);
+  v.resizeItem(2, 256);
+  assert.equal(v.getTotalSize(), 256 + 664 + 256);
+
+  // 列数 6 → 5 でカード幅が変わりグリッド行は高くなるが、展開行の高さは 664 のまま。
+  remeasureGridRows(v, [
+    { index: 0, size: 300 },
+    { index: 1, size: 664 },
+    { index: 2, size: 300 },
+  ]);
+  assert.deepEqual(
+    layoutOf(v),
+    [
+      ["g:6:0", 0, 300],
+      ["x:zanaka", 300, 664],
+      ["g:6:1", 964, 300],
+    ],
+  );
+  assert.equal(v.getTotalSize(), 300 + 664 + 300);
+});
+
+test("remeasureGridRows: スクロール中 (isScrolling) でも測り直す", () => {
+  // measureElement はスクロール中は同期計測を飛ばす。測り直しはそれに頼らない。
+  const keys = ["g:6:0", "x:zanaka", "g:6:1"];
+  const v = makeVirtualizer(keys, (i) => (i === 1 ? 260 : 256));
+  v.getTotalSize();
+  v.resizeItem(1, 664);
+  v.isScrolling = true;
+  remeasureGridRows(v, [{ index: 1, size: 664 }]);
+  assert.equal(layoutOf(v)[1]![2], 664);
+  assert.equal(v.getTotalSize(), 256 + 664 + 256);
+});
+
+test("remeasureGridRows: 描画されていない行は見積もりに戻る", () => {
+  const keys = ["g:6:0", "x:zanaka", "g:6:1", "g:6:2"];
+  const v = makeVirtualizer(keys, (i) => (i === 1 ? 260 : 256));
+  v.getTotalSize();
+  v.resizeItem(3, 400);
+  remeasureGridRows(v, [{ index: 0, size: 256 }]);
+  assert.equal(layoutOf(v)[3]![2], 256);
 });
