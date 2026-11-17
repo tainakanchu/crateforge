@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Virtualizer } from "@tanstack/react-virtual";
-import { GRID_EXPAND_ESTIMATE, shouldRemeasureGrid } from "../lib/gridRows";
+import { GRID_EXPAND_ESTIMATE, remeasureGridRows, shouldRemeasureGrid } from "../lib/gridRows";
 import type { GridLayout, GridMeasureKey } from "../lib/gridRows";
 
 interface CardGridVirtualizerOptions {
@@ -25,7 +25,8 @@ interface CardGridVirtualizerOptions {
  * - 行キーは `GridRow.key` (安定キー)。展開の開閉では実測キャッシュを捨てない
  *   (捨てると展開行が見積もり高さに戻り、次の行が重なって描画される)。
  * - カード幅/列数が変わるとグリッド行の高さが変わるので、そのときだけ実測キャッシュを捨てる。
- *   `measure()` はキャッシュを消すだけで再計測しないため、表示中の行はその場で測り直す。
+ *   `measure()` はキャッシュを消すだけで再計測しないため、表示中の行はその場で測り直す
+ *   (手順と理由は remeasureGridRows)。
  */
 export function useCardGridVirtualizer({
   layout,
@@ -53,10 +54,11 @@ export function useCardGridVirtualizer({
     const next: GridMeasureKey = { gridRowHeight, cols };
     if (!shouldRemeasureGrid(measuredRef.current, next)) return;
     measuredRef.current = next;
-    virtualizer.measure();
-    scrollRef.current
-      ?.querySelectorAll<HTMLElement>(":scope > div > [data-index]")
-      .forEach((el) => virtualizer.measureElement(el));
+    const rendered = Array.from(
+      scrollRef.current?.querySelectorAll<HTMLElement>(":scope > div > [data-index]") ?? [],
+      (el) => ({ index: Number(el.dataset.index), size: el.offsetHeight }),
+    );
+    remeasureGridRows(virtualizer, rendered);
   });
 
   // 描画する行 (overscan を含む) の項目の範囲を毎レンダー後に伝える。同じ範囲なら受け手が無視する。

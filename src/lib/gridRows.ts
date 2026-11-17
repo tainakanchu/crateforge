@@ -146,3 +146,34 @@ export interface GridMeasureKey {
 export function shouldRemeasureGrid(prev: GridMeasureKey | null, next: GridMeasureKey): boolean {
   return prev === null || prev.gridRowHeight !== next.gridRowHeight || prev.cols !== next.cols;
 }
+
+/** remeasureGridRows が使う仮想化の操作 (@tanstack/virtual-core の Virtualizer の一部)。 */
+export interface GridRemeasurer {
+  measure(): void;
+  getTotalSize(): number;
+  resizeItem(index: number, size: number): void;
+}
+
+/**
+ * 実測キャッシュを捨て、表示中の行の実測サイズを入れ直す (列数/カード幅が変わったとき)。
+ *
+ * virtual-core の `measure()` はキャッシュを消すだけで、位置の配列 (前回の実測サイズ入り) は
+ * 次に読まれるまで作り直さない。その間に `resizeItem` / `measureElement` で同じ高さを入れると、
+ * 古い配列の値と比べて差分 0 と判定され、キャッシュに入らない。結果、高さが変わらなかった行
+ * (列数が変わっても高さが同じ展開行) だけ見積もり高さに戻り、ResizeObserver も高さが
+ * 変わらないので二度と通知せず、次の行が展開行に重なって描画される。
+ * そこで `measure()` の直後に `getTotalSize()` で配列を見積もりで作り直してから入れ直す。
+ *
+ * `measureElement` ではなく `resizeItem` を直接呼ぶのは、`measureElement` がスクロール中
+ * (`isScrolling`) は同期計測を飛ばして ResizeObserver に任せるため。ここで飛ばすと
+ * 同じ理由で取り戻せない。
+ */
+export function remeasureGridRows(
+  v: GridRemeasurer,
+  rendered: Iterable<{ index: number; size: number }>,
+): void {
+  v.measure();
+  v.getTotalSize();
+  for (const { index, size } of rendered) v.resizeItem(index, size);
+}
+
