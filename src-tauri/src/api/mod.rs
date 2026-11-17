@@ -13,6 +13,7 @@
 
 pub mod error;
 pub(crate) mod handlers;
+pub(crate) mod notify;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -40,6 +41,9 @@ pub struct ApiState {
     /// Cast Receiver 用の Media Ticket (`/api/cast/media/{ticket}` の認可)。
     /// Tauri の managed state と `Arc` を共有し、Cast Coordinator が発行・失効させる。
     pub cast_tickets: crate::cast::media_ticket::MediaTickets,
+    /// `?notify=false` の書き込みで送らずにおいた `library-changed` (まとめた内容)。
+    /// `POST /api/library/notify` でまとめて送ってクリアする。
+    pub held_changes: notify::HeldChanges,
 }
 
 impl ApiState {
@@ -54,29 +58,47 @@ impl ApiState {
     }
 
     /// 書き込み後に WebView へ「ライブラリが変わった」と通知する。
+    /// 連続した書き込みでは窓の間の通知を 1 回にまとめる ([`notify`] モジュール)。
     /// API サーバー単体起動 (テスト) では app=None なので何もしない。emit 失敗は無視。
+    /// `?notify=false` のリクエスト中は送らずに [`ApiState::held_changes`] へためる。
     pub(crate) fn notify_library_changed(&self, playlist_id: Option<i64>) {
-        if let Some(app) = &self.app {
-            use tauri::Emitter; // v2 では emit は Emitter トレイト経由。
-            let _ = app.emit(
-                "library-changed",
-                serde_json::json!({ "playlistId": playlist_id }),
-            );
-        }
+        self.notify_change(notify::LibraryChange {
+            playlist_id,
+            artwork_changed: false,
+        });
     }
 
     /// 実ファイルの埋め込みアートワークが変わりうる書き込み後の通知。
     /// `library-changed` に `artworkChanged: true` を載せ、WebView 側は
     /// このときだけアートワーク epoch を進めて `<img>` を取り直す
     /// (無印の `library-changed` では取り直さない #213)。
+    /// `notify_library_changed` と同じく間引き、まとめた通知では `artworkChanged` を OR する。
     pub(crate) fn notify_artwork_changed(&self) {
-        if let Some(app) = &self.app {
-            use tauri::Emitter;
-            let _ = app.emit(
-                "library-changed",
-                serde_json::json!({ "playlistId": null, "artworkChanged": true }),
-            );
+        self.notify_change(notify::LibraryChange {
+            playlist_id: None,
+            artwork_changed: true,
+        });
+    }
+
+    /// 通知の共通部。`?notify=false` のリクエスト中ならためるだけ、そうでなければ間引いて送る。
+    fn notify_change(&self, change: notify::LibraryChange) {
+        if notify::notify_suppressed() {
+            notify::hold(&self.held_changes, change);
+            return;
         }
+        if let Some(app) = &self.app {
+            notify::notify(app, change);
+        }
+    }
+
+    /// ためておいた通知をまとめて 1 回送り、クリアする。ためた分が無ければ何もしない。
+    /// 送った (ためた分があった) 内容を返す。
+    pub(crate) fn flush_held_changes(&self) -> Option<notify::LibraryChange> {
+        let change = notify::take_held(&self.held_changes)?;
+        if let Some(app) = &self.app {
+            notify::notify(app, change);
+        }
+        Some(change)
     }
 
     /// ペアリング要求が来たことを WebView へ通知する (承認ポップアップ表示用)。
@@ -104,6 +126,23 @@ impl ApiState {
             );
         }
     }
+}
+
+/// SQLite やファイル I/O を伴う処理を tokio のブロッキング用スレッドで実行する。
+/// axum のハンドラは Tauri と共有の非同期ランタイムで動くので、重い同期処理をそのまま
+/// 走らせると `artwork://` や非同期の Tauri コマンドまで待たされる (API 連打で UI が固まる)。
+/// DB は閉じ込めた処理の中で開くこと (`Database` はスレッドをまたいで持ち回さない)。
+pub(crate) async fn run_blocking<T, F>(f: F) -> Result<T, ApiError>
+where
+    F: FnOnce() -> Result<T, ApiError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f).await.map_err(|e| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("blocking task failed: {e}"),
+        )
+    })?
 }
 
 /// ウェブプレイヤー HTML (LAN 向け簡易プレイヤー)。
@@ -579,6 +618,11 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/tracks/by-ids", post(handlers::tracks_by_ids))
         .route("/api/tracks/lookup", post(handlers::tracks_lookup))
+        // 曲ごとに違う編集をまとめて適用する。静的セグメントなので `/api/tracks/{trackId}` より優先。
+        // LAN からは書き込み許可リストに入れていないため 403 (ループバック専用)。
+        .route("/api/tracks/batch", axum::routing::patch(handlers::patch_tracks_batch))
+        // `?notify=false` でためた library-changed をまとめて 1 回送る (ループバック専用)。
+        .route("/api/library/notify", post(handlers::flush_library_notify))
         // 解析キュー投入 (この PC で解析を走らせる)。静的セグメントなので
         // `/api/tracks/{trackId}` より優先解決される。`POST /api/analysis` (結果アップロード) とは別物。
         // LAN からは書き込み許可リストに入れていないため 403 (ループバック専用)。
@@ -707,6 +751,8 @@ pub fn router(state: ApiState) -> Router {
             state.clone(),
             auth_guard,
         ))
+        // `?notify=false` (書き込み後の library-changed を送らずにためる) をリクエスト中だけ有効にする。
+        .route_layer(axum::middleware::from_fn(notify::notify_option))
         // JSON 応答の gzip 圧縮 (認証の外側。401/403 は空ボディなので素通り)。
         .layer(axum::middleware::from_fn(gzip_json))
         .with_state(state)
@@ -807,6 +853,7 @@ pub fn start(
         tokens,
         pairings,
         cast_tickets,
+        held_changes: Default::default(),
     };
     let svc = router(state).into_make_service_with_connect_info::<SocketAddr>();
     let handle = tauri::async_runtime::spawn(async move {
@@ -968,6 +1015,7 @@ mod tests {
             tokens: crate::devices::ValidTokens::default(),
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
         (dir, app)
     }
@@ -1470,6 +1518,7 @@ mod tests {
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
 
         // (uri, user-agent, LAN トークン) → 1 曲目の bpm
@@ -1549,6 +1598,7 @@ mod tests {
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
 
         // UA も付けない素の要求 (User-Agent では判定しないことの確認を兼ねる)。
@@ -1673,6 +1723,7 @@ mod tests {
             tokens: crate::devices::ValidTokens::default(),
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
 
         // /api/artists: 不明は artist: "" の 1 件で末尾 ("Unknown Artist" などの文字列は埋めない)。
@@ -2241,6 +2292,145 @@ mod tests {
         assert_eq!(track["genre"], "Disco Funk");
     }
 
+    /// `setup` と同じだが、`held_changes` を見るために ApiState も返す。
+    fn setup_with_state() -> (tempfile::TempDir, Router, ApiState) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(dir.path()).unwrap();
+        seed(&db);
+        let state = ApiState {
+            app_data_dir: dir.path().to_path_buf(),
+            app: None,
+            tokens: crate::devices::ValidTokens::default(),
+            pairings: crate::pairing::PairingRegistry::default(),
+            cast_tickets: Default::default(),
+            held_changes: Default::default(),
+        };
+        (dir, router(state.clone()), state)
+    }
+
+    // ===== 通知の保留: ?notify=false の書き込みはためるだけ、POST /api/library/notify でまとめて送る =====
+    #[tokio::test]
+    async fn case_notify_false_holds_until_flush() {
+        let (_dir, app, state) = setup_with_state();
+        let held = || *state.held_changes.lock().unwrap();
+
+        // 既定 (オプションなし) はためない (間引いてすぐ送る経路)。
+        let (status, _) = req(app.clone(), "PATCH", "/api/tracks/1", Some(json!({ "comments": "a" }))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(held(), None);
+
+        // ?notify=false はためる。書き込み自体は通常どおり反映される。
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/1?notify=false",
+            Some(json!({ "comments": "b" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            held(),
+            Some(notify::LibraryChange { playlist_id: None, artwork_changed: false })
+        );
+        let (_, track) = req(app.clone(), "GET", "/api/tracks/1", None).await;
+        assert_eq!(track["comments"], "b");
+
+        // 一括 PATCH (他のクエリと併用) もためる。
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks?effectiveBpm=false&notify=false",
+            Some(json!({ "trackIds": [2], "edit": { "comments": "c" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // まとめて送るとクリアされる。2 回目は送るものが無い。
+        let (status, body) = req(app.clone(), "POST", "/api/library/notify", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "notified": true, "artworkChanged": false }));
+        assert_eq!(held(), None);
+        let (_, body) = req(app.clone(), "POST", "/api/library/notify", None).await;
+        assert_eq!(body, json!({ "notified": false, "artworkChanged": false }));
+
+        // アートワーク変更をためると artworkChanged が残る (ファイル無しの曲は 404 なのでフラグを直接ためて確認)。
+        notify::hold(&state.held_changes, notify::LibraryChange { playlist_id: None, artwork_changed: true });
+        let (status, _) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/3?notify=false",
+            Some(json!({ "comments": "d" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = req(app, "POST", "/api/library/notify", None).await;
+        assert_eq!(body, json!({ "notified": true, "artworkChanged": true }));
+    }
+
+    // ===== 曲ごとに違う編集の一括 PATCH /api/tracks/batch =====
+    #[tokio::test]
+    async fn case_patch_tracks_batch() {
+        let (_dir, app, state) = setup_with_state();
+        let (status, body) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/batch?notify=false",
+            Some(json!([
+                { "trackId": 1, "edit": { "name": "One" } },
+                { "trackId": 99999, "edit": { "name": "Missing" } },
+                { "trackId": 2, "edit": { "comments": "x" }, "expect": { "name": "Not Midnight" } },
+                { "trackId": 3, "edit": { "genre": "Disco" }, "expect": { "persistentId": "0000000000000003" } },
+            ])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["updated"], 2);
+        let results = body["results"].as_array().unwrap();
+        assert_eq!(results.len(), 4);
+        assert_eq!(results[0]["trackId"], 1);
+        assert_eq!(results[0]["status"], 200);
+        assert_eq!(results[0]["fileWriteFailed"], false);
+        assert_eq!(results[0]["relocateFailed"], false);
+        assert!(results[0].get("error").is_none());
+        assert_eq!(results[1]["status"], 404);
+        assert_eq!(results[1]["error"], "track not found");
+        assert_eq!(results[2]["status"], 409);
+        assert_eq!(results[3]["status"], 200);
+
+        // 各曲に別々の値が入り、409 の曲は書き換わらない。
+        let (_, t1) = req(app.clone(), "GET", "/api/tracks/1", None).await;
+        assert_eq!(t1["name"], "One");
+        let (_, t2) = req(app.clone(), "GET", "/api/tracks/2", None).await;
+        assert_eq!(t2["name"], "Midnight");
+        assert!(t2["comments"].is_null());
+        let (_, t3) = req(app.clone(), "GET", "/api/tracks/3", None).await;
+        assert_eq!(t3["genre"], "Disco");
+
+        // 通知は 1 回分だけためている。
+        assert!(state.held_changes.lock().unwrap().is_some());
+
+        // 1 件でも入力に誤りがあれば、どの曲にも書かずに 400 (index 付き)。
+        let (status, body) = req(
+            app.clone(),
+            "PATCH",
+            "/api/tracks/batch",
+            Some(json!([
+                { "trackId": 4, "edit": { "name": "Four" } },
+                { "trackId": 5, "edit": { "keyCamelotUser": "13Z" } },
+            ])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["index"], 1);
+        let (_, t4) = req(app.clone(), "GET", "/api/tracks/4", None).await;
+        assert_eq!(t4["name"], "Evening");
+
+        // 空配列は何もしない。
+        let (status, body) = req(app, "PATCH", "/api/tracks/batch", Some(json!([]))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "updated": 0, "results": [] }));
+    }
+
     // ===== メタデータ書き込み: 不正な Camelot キーは 400 (以前は 500) で、何も書き換えない =====
     #[tokio::test]
     async fn case_patch_invalid_key_is_400() {
@@ -2464,6 +2654,7 @@ mod tests {
             tokens: crate::devices::ValidTokens::default(),
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
         (dir, app, row_id)
     }
@@ -3265,6 +3456,7 @@ mod tests {
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
 
         let lan_ip = SocketAddr::from(([192, 168, 1, 50], 54321));
@@ -3374,6 +3566,7 @@ mod tests {
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
 
         // remote は rating・first-class tags・artwork に到達できる。
@@ -3906,6 +4099,7 @@ mod tests {
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
         let body = Some(upload_metadata("1111222233334444", 1));
         let (status, _) = lan_req(
@@ -4151,6 +4345,7 @@ mod tests {
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
 
         for token in ["remote-token", "sync-token"] {
@@ -4209,6 +4404,7 @@ mod tests {
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: tickets.clone(),
+            held_changes: Default::default(),
         });
 
         async fn send(
@@ -4424,6 +4620,7 @@ mod tests {
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
         let (status, body) = lan_req(
             app.clone(),
@@ -4483,6 +4680,7 @@ mod tests {
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
         let (status, _) = lan_req(
             app.clone(),
@@ -4544,6 +4742,7 @@ mod tests {
             tokens: crate::devices::ValidTokens::default(),
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
 
         let (status, body) = req(app.clone(), "GET", "/api/playlists", None).await;
@@ -4704,6 +4903,7 @@ mod tests {
             tokens,
             pairings: crate::pairing::PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
         let body = json!({ "trackIds": [1], "format": "mp3", "bitrateKbps": 320, "original": "trash" });
         for token in [None, Some("remote-token"), Some("sync-token"), Some("bogus")] {

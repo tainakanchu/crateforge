@@ -72,6 +72,10 @@ When the client sends `Accept-Encoding: gzip`, large JSON responses (such as the
   `rating` is 0–100; a value outside that range returns `400` (nothing is updated). Updating only `rating` does not advance `dateModified`.
 - `PATCH /api/tracks` (`{trackIds, edit}` or `{persistentIds, edit}`) — bulk-update multiple tracks. Specify exactly one of `trackIds` / `persistentIds` (both or neither → `400`).
   Tracks that are not found are returned in `notFound` as the values you sent (trackId / persistentId).
+- `PATCH /api/tracks/batch` (`[{ trackId, edit, expect? }, ...]`) — apply a different edit to each track in one request. `edit` / `expect` take the same shape as the single-track `PATCH`.
+  If any item has invalid input (e.g. an out-of-range `rating`), nothing is written and `400` is returned (`index` is the offending item).
+  The response is `{ updated, results }`; `results` lists `{ trackId, status, fileWriteFailed, relocateFailed, error? }` in request order,
+  where `status` is what the single-track `PATCH` would return (`200` / `404` / `409` / `500`). A failure on one track does not stop the rest.
 - `POST /api/tracks/genre-tags/add` / `/remove` — add or remove genre tags at the end in bulk.
 
 **Guarding against the wrong track (optional)**: `PATCH /api/tracks/{trackId}` accepts an `If-Match: <persistentId>` header
@@ -120,6 +124,11 @@ Each entry of `results` has `trackId`, `status` (`ok` / `skipped` / `failed`), `
 - `DELETE /api/playlists/{id}/tracks/{trackId}` — remove a single track
 
 Changes made via the API are reflected immediately in the running app's UI through the `library-changed` event.
+When many writes arrive back to back, UI refreshes are coalesced to about once every 0.5 seconds.
+
+**Deferring the UI refresh**: add `?notify=false` to a write request to skip notifying the UI for that request; the app only remembers that something changed.
+Send `POST /api/library/notify` at the end to apply everything remembered in a single refresh
+(response `{ notified, artworkChanged }`; does nothing if nothing was remembered). Useful when a script pushes a large number of writes.
 
 ### AI curation (dj-curator)
 

@@ -71,6 +71,10 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
   `rating` 為 0〜100，超出範圍會回傳 `400`（不會更新任何內容）。只更新 `rating` 時不會推進 `dateModified`。
 - `PATCH /api/tracks`（`{trackIds, edit}` 或 `{persistentIds, edit}`） — 多曲一次更新。`trackIds` 與 `persistentIds` 只能指定其中一個（兩者皆有或皆無為 `400`）。
   找不到的曲目會以所指定的值（trackId / persistentId）列在 `notFound`。
+- `PATCH /api/tracks/batch`（`[{ trackId, edit, expect? }, ...]`） — 一次對各曲套用不同的編輯。`edit` / `expect` 的格式與單曲 `PATCH` 相同。
+  只要有一筆輸入有誤（例如超出範圍的 `rating`），就不寫入任何內容並回傳 `400`（`index` 為出錯的位置）。
+  回應為 `{ updated, results }`，`results` 依送出順序列出 `{ trackId, status, fileWriteFailed, relocateFailed, error? }`，
+  `status` 為單曲 `PATCH` 會回傳的狀態碼（`200` / `404` / `409` / `500`）。某一曲失敗也不會中斷其餘曲目。
 - `POST /api/tracks/genre-tags/add` / `/remove` — 對類型標籤在尾端批次增減。
 
 **防止指錯曲目（選用）**：`PATCH /api/tracks/{trackId}` 可接受標頭 `If-Match: <persistentId>`，
@@ -119,6 +123,10 @@ Crateforge 內建 **本機 HTTP API 伺服器**。
 - `DELETE /api/playlists/{id}/tracks/{trackId}` — 移除 1 首曲目
 
 經由 API 的變更會以 `library-changed` 事件即時反映到執行中應用程式的 UI。
+連續寫入多筆時，UI 的更新會合併為約每 0.5 秒一次。
+
+**延後反映到 UI**：在寫入類請求加上 `?notify=false`，該請求就不會通知 UI，只記下「有變更」。
+最後送出 `POST /api/library/notify`，即可將記下的變更一次反映（回應 `{ notified, artworkChanged }`；沒有記下的變更時不做任何事）。適合以腳本大量寫入時使用。
 
 ### AI 選曲（dj-curator）
 

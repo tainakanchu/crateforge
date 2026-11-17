@@ -53,6 +53,7 @@ import {
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
 import type { ConvertMode, DiscToc, PlaybackState, RepeatMode, Track } from "./types";
 import { isTauri } from "./lib/env";
+import { createCoalescer } from "./lib/coalesce";
 import { useTauriEvent } from "./hooks/useTauriEvent";
 
 // 窓の幅がこれ未満なら右ペインを自動で畳む (最小 1024px でも曲名列が潰れないように)。
@@ -99,6 +100,8 @@ function reconcilePlayerState(
   }
 }
 
+/** `library-changed` をまとめる窓 (ms)。 */
+const LIBRARY_CHANGED_WINDOW_MS = 300;
 export default function App() {
   const {
     viewMode,
@@ -185,7 +188,11 @@ export default function App() {
     if (!isTauri) return;
     try {
       const pls = await playlistsApi.getPlaylists();
-      setPlaylists(pls);
+      // 中身が変わっていなければ差し替えない。ライブラリ変更のたびに新しい配列を入れると、
+      // 配列に依存する Sidebar のスマートプレイリスト件数の取り直しが 2 回走る。
+      if (JSON.stringify(pls) !== JSON.stringify(useStore.getState().playlists)) {
+        setPlaylists(pls);
+      }
       // 永続化された選択プレイリスト (#160) が、読み込んだ一覧に無ければ
       // （削除された／別ライブラリの ID など）Library 表示へフォールバックする。
       const st = useStore.getState();
@@ -789,17 +796,29 @@ export default function App() {
   runAutoExportCallbackRef.current = runAutoExport;
 
   // 内蔵 API 経由の変更（プレイリスト作成・曲追加/削除）を即時反映する。
+  // API を連続で叩かれると通知が続けて届くので、先頭 + 末尾の 2 回にまとめて取り直す
+  // （バックエンドでも間引いているが、API 以外の送り元もあるので二段にしている）。
   useTauriEvent(() => {
-    return playlistsApi.onLibraryChanged((_playlistId, info) => {
-      // アートワークが実際に変わりうる変更のときだけ epoch を進める。
-      // 毎回進めると全 ArtworkImg が一斉に取り直してしまう (#213)。
-      // アプリ内のアートワーク編集は TrackEditor が直接 bumpArtworkEpoch する。
-      if (info.artworkChanged) useStore.getState().bumpArtworkEpoch();
-      reloadPlaylists();
-      bumpLibraryRevision();
-      libraryDirtyRef.current = true;
-      scheduleAutoExport();
-    });
+    const coalescer = createCoalescer<playlistsApi.LibraryChangedInfo>(
+      (info) => {
+        // アートワークが実際に変わりうる変更のときだけ epoch を進める。
+        // 毎回進めると全 ArtworkImg が一斉に取り直してしまう (#213)。
+        // アプリ内のアートワーク編集は TrackEditor が直接 bumpArtworkEpoch する。
+        if (info.artworkChanged) useStore.getState().bumpArtworkEpoch();
+        reloadPlaylists();
+        bumpLibraryRevision();
+        libraryDirtyRef.current = true;
+        scheduleAutoExport();
+      },
+      (a, b) => ({ artworkChanged: a.artworkChanged || b.artworkChanged }),
+      LIBRARY_CHANGED_WINDOW_MS,
+    );
+    return playlistsApi
+      .onLibraryChanged((_playlistId, info) => coalescer.push(info))
+      .then((unlisten) => () => {
+        coalescer.cancel();
+        unlisten();
+      });
   }, [reloadPlaylists, scheduleAutoExport, bumpLibraryRevision]);
 
   const triggerReload = useCallback(() => {
