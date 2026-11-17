@@ -4,6 +4,7 @@ import { useStore } from "../store/useStore";
 import * as libraryApi from "../api/library";
 import { importWithDuplicateCheck, summarizeImport } from "../lib/importFlow";
 import { baseName, isZipPath, looksImportable } from "../lib/dropImport";
+import type { DropArtwork } from "../types";
 
 /**
  * Tauri ネイティブの drag-drop イベントを購読し、ドロップされたオーディオファイル /
@@ -17,6 +18,7 @@ import { baseName, isZipPath, looksImportable } from "../lib/dropImport";
  * zip が含まれていれば、先に `prepare_drop_paths` で展開して展開先フォルダに置き換える
  * (整理 OFF なら zip の隣、ON なら一時フォルダ。一時フォルダは取り込み完了 /
  * キャンセル後に消す)。展開できなかった zip はエラートーストを出し、残りは取り込む。
+ * 取り込み後、zip 内のジャケット画像をアートワークの無い取り込み曲に埋め込む。
  *
  * @param onImported - 取り込み成功後に呼ぶコールバック（ライブラリ再読込用）
  * @returns isDragOver - ウィンドウ上にファイルがドラッグ中かどうか
@@ -25,6 +27,7 @@ export function useFileDropImport(onImported: () => void): boolean {
   const [isDragOver, setIsDragOver] = useState(false);
   const pushToast = useStore((s) => s.pushToast);
   const dismissToast = useStore((s) => s.dismissToast);
+  const bumpArtworkEpoch = useStore((s) => s.bumpArtworkEpoch);
 
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
@@ -50,6 +53,7 @@ export function useFileDropImport(onImported: () => void): boolean {
           try {
             let paths = dropped;
             let zipErrors = 0;
+            let artwork: DropArtwork[] = [];
             if (dropped.some(isZipPath)) {
               // 大きな zip は展開に時間がかかるので、終わるまで出しておく。
               const toastId = pushToast("info", "zip を展開しています…", 0);
@@ -62,6 +66,7 @@ export function useFileDropImport(onImported: () => void): boolean {
               staging = prepared.staging;
               paths = prepared.paths;
               zipErrors = prepared.errors.length;
+              artwork = prepared.artwork;
               for (const e of prepared.errors) {
                 pushToast("error", `zip を展開できません（${baseName(e.path)}）: ${e.message}`, 6000);
               }
@@ -77,8 +82,20 @@ export function useFileDropImport(onImported: () => void): boolean {
             const r = await importWithDuplicateCheck(paths);
             if (!r) return; // キャンセル
             if (r.imported + r.skipped + r.replaced + r.failed === 0) return noAudio();
-            const summary = summarizeImport(r);
             const changed = r.imported + r.replaced > 0;
+            // zip 内のジャケットを、今回取り込んだ / 置き換えた曲 (アートワーク無し) に埋め込む。
+            // 失敗しても取り込みは成功扱い (Rust 側でログに残す)。
+            let artworkCount = 0;
+            if (changed && artwork.length > 0) {
+              try {
+                artworkCount = (await libraryApi.embedDropArtwork(r.results, artwork)).embedded;
+                if (artworkCount > 0) bumpArtworkEpoch();
+              } catch (err) {
+                console.warn("embed_drop_artwork failed", err);
+              }
+            }
+            const summary =
+              summarizeImport(r) + (artworkCount > 0 ? ` / アートワーク ${artworkCount} 曲` : "");
             const msg =
               r.imported > 0
                 ? `${summary} — Inbox に追加されました。サイドバーの Inbox から整理できます`
@@ -110,7 +127,7 @@ export function useFileDropImport(onImported: () => void): boolean {
       // useEffect クリーンアップ時に必ず unlisten してリークを防ぐ。
       if (unlistenFn) unlistenFn();
     };
-  }, [onImported, pushToast, dismissToast]);
+  }, [onImported, pushToast, dismissToast, bumpArtworkEpoch]);
 
   return isDragOver;
 }

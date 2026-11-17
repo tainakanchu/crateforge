@@ -74,6 +74,14 @@ Zip files cannot be picked in the "ファイルを追加" (Add Files) dialog; th
 - These zips are not imported and an error is shown (the other files you dropped with them are still imported):
   password-protected, corrupted, **more than 8 GB once extracted**, or containing paths that try to write outside the extraction folder.
 - A zip with no supported files creates no folder and shows "対応フォーマットのファイルがありません" (no supported files).
+- **Cover images inside the zip are embedded as artwork** (jpg / png).
+  - The image is picked from the track's folder (or, if it has none, the nearest parent folder up to the top of the zip).
+    File names are preferred in the order `cover` > `folder` > `front` > `album` > `artwork` (names starting with them, like `cover_front`, count too);
+    otherwise, if there is exactly one image, that one is used. If no single image can be chosen, nothing is set.
+  - **Tracks that already have artwork are never changed.** Only tracks imported (or replaced) in this run get artwork; tracks skipped in the confirmation dialog do not.
+  - Images are shrunk to at most 1400px on the long edge before embedding (small images are not enlarged). Images over 50 MB are not used.
+    Even when the zip is extracted next to itself, images are not written into that folder.
+  - If any tracks got artwork, the result toast shows "アートワーク N 曲" (artwork: N tracks).
 
 ### Organize folder (auto-organize)
 

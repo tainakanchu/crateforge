@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 use crate::commands::library::open_db;
-use crate::importer::zip_extract::{self, PreparedDrop};
+use crate::importer::zip_extract::{self, ArtworkEmbedSummary, DropArtwork, PreparedDrop};
+use crate::models::ImportActionResult;
 
 /// 整理 ON のときの一時展開先 (`<app cache>/import-staging`)。
 pub(crate) fn staging_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -55,4 +56,24 @@ pub async fn cleanup_import_staging(app: AppHandle, staging: String) -> Result<(
     })
     .await
     .map_err(|e| format!("staging cleanup panicked: {e}"))?
+}
+
+/// zip から取り込んだ曲に、`prepare_drop_paths` が選んだアートワークを埋め込む。
+/// `results` は `import_with_actions` の結果をそのまま渡す (取り込み / 置き換えに成功した曲だけが
+/// 対象。既に埋め込みアートワークがある曲は触らない)。失敗は数えてログに残すだけ。
+#[tauri::command]
+pub async fn embed_drop_artwork(
+    app: AppHandle,
+    results: Vec<ImportActionResult>,
+    artwork: Vec<DropArtwork>,
+) -> Result<ArtworkEmbedSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = open_db(&app)?;
+        let root = staging_root(&app)?;
+        Ok(zip_extract::embed_drop_artwork(
+            &db, &root, &results, &artwork,
+        ))
+    })
+    .await
+    .map_err(|e| format!("artwork embed panicked: {e}"))?
 }

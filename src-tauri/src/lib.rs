@@ -288,6 +288,7 @@ pub fn run() {
             commands::duplicates::import_with_actions,
             commands::drop_import::prepare_drop_paths,
             commands::drop_import::cleanup_import_staging,
+            commands::drop_import::embed_drop_artwork,
             commands::library::refresh_tech_metadata,
             commands::library::rescan_file_existence,
             commands::library::relocate_track_file,

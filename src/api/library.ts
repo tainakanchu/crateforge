@@ -12,6 +12,9 @@ import type {
   ImportActionItem,
   ImportActionsSummary,
   PreparedDrop,
+  DropArtwork,
+  ArtworkEmbedSummary,
+  ImportActionResult,
   LibraryStats,
   TrackEdit,
   GenreTagCount,
@@ -67,6 +70,17 @@ export async function prepareDropPaths(paths: string[]): Promise<PreparedDrop> {
 /** `prepareDropPaths` が作った一時フォルダを消す (取り込み完了 / キャンセル後)。 */
 export async function cleanupImportStaging(staging: string): Promise<void> {
   return invoke("cleanup_import_staging", { staging });
+}
+
+/**
+ * zip から取り込んだ曲にアートワークを埋め込む。`results` は `importWithActions` の結果。
+ * 取り込み / 置き換えに成功し、まだ埋め込みアートワークが無い曲だけが対象。
+ */
+export async function embedDropArtwork(
+  results: ImportActionResult[],
+  artwork: DropArtwork[],
+): Promise<ArtworkEmbedSummary> {
+  return invoke("embed_drop_artwork", { results, artwork });
 }
 
 /** 取り込み計画 (タグ読み・照合) の進捗を購読する。 */
