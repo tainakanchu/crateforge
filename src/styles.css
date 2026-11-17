@@ -2834,6 +2834,14 @@ select optgroup {
   background: var(--bg3);
   position: relative;
   cursor: pointer;
+  /* ドラッグ中にタッチ操作のスクロールへ奪われないように。 */
+  touch-action: none;
+}
+/* バー本体は 4px と細いので、上下に透明な当たり判定を広げてつかみやすくする。 */
+.cb-vbar::before {
+  content: "";
+  position: absolute;
+  inset: -8px 0;
 }
 .cb-vbar i {
   position: absolute;

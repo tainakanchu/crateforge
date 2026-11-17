@@ -198,15 +198,42 @@ export function PlayerBar() {
     [dragRatio, playback.durationMs, getRatioFromX],
   );
 
-  const handleVolumeClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      const rect = e.currentTarget.getBoundingClientRect();
-      const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  // 音量バー: クリック位置へのジャンプに加え、ドラッグ中も追従させる (pointer capture)。
+  // Rust 側の音量もドラッグ中に逐次反映する (IPC は ~1ms なので間引かない)。
+  const volumeDraggingRef = useRef(false);
+  const applyVolumeFromX = useCallback(
+    (el: HTMLElement, clientX: number) => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
       setVolume(ratio);
       playbackApi.setVolume(ratio);
     },
     [setVolume],
   );
+
+  const handleVolumePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      e.preventDefault(); // ドラッグ中のテキスト選択を防ぐ
+      e.currentTarget.setPointerCapture(e.pointerId);
+      volumeDraggingRef.current = true;
+      applyVolumeFromX(e.currentTarget, e.clientX);
+    },
+    [applyVolumeFromX],
+  );
+
+  const handleVolumePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!volumeDraggingRef.current) return;
+      applyVolumeFromX(e.currentTarget, e.clientX);
+    },
+    [applyVolumeFromX],
+  );
+
+  const endVolumeDrag = useCallback(() => {
+    volumeDraggingRef.current = false;
+  }, []);
 
   // Rust 側プレイヤーに反映してからストアを更新する。
   // 先にストアを更新すると Up Next の取り直し (RightRail) が古い再生順を読んでしまう。
@@ -460,7 +487,11 @@ export function PlayerBar() {
         {/* title に現在の音量 % を表示。サム（丸いつまみ）を絶対配置で追加 */}
         <div
           className="cb-vbar"
-          onClick={handleVolumeClick}
+          onPointerDown={handleVolumePointerDown}
+          onPointerMove={handleVolumePointerMove}
+          onPointerUp={endVolumeDrag}
+          onPointerCancel={endVolumeDrag}
+          onLostPointerCapture={endVolumeDrag}
           title={`音量: ${Math.round(volume * 100)}% (Ctrl+↑/↓)`}
           style={{ position: "relative" }}
         >
