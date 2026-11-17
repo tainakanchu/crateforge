@@ -169,6 +169,22 @@ export async function searchTracks(
   });
 }
 
+/// ライブラリ / 検索の一覧の件数 (getTracks / searchTracks の全ページぶん)。query 省略で全曲数。
+export async function countTracks(query?: string): Promise<number> {
+  return invoke("count_tracks", { query: query || null });
+}
+
+/// ライブラリ / 検索の一覧の trackId を表示順で全件取得する (曲の情報は返さない)。
+/// only を渡すと、そのうち一覧に入っている ID だけを表示順で返す (選択中の曲の確認・並べ直し用)。
+export async function getTrackIds(
+  query?: string,
+  sortField?: SortField,
+  sortOrder?: SortOrder,
+  only?: readonly number[],
+): Promise<number[]> {
+  return invoke("get_track_ids", { query: query || null, sortField, sortOrder, only: only ?? null });
+}
+
 export async function getLibraryStats(): Promise<LibraryStats> {
   return invoke("get_library_stats");
 }
@@ -180,6 +196,11 @@ export async function getTracksByIds(trackIds: number[]): Promise<Track[]> {
 
 export async function updateTrack(trackId: number, edits: TrackEdit): Promise<void> {
   return invoke("update_track", { trackId, edits });
+}
+
+/// trackIds の全曲に同じ rating を付ける (1 トランザクション。失敗したらどの曲も変わらない)。
+export async function setTracksRating(trackIds: number[], rating: number): Promise<void> {
+  return invoke("set_tracks_rating", { trackIds, rating });
 }
 
 export async function setTrackRating(trackId: number, rating: number): Promise<void> {
@@ -289,19 +310,39 @@ export async function getOrganizeActive(): Promise<boolean> {
   return invoke("organize_active");
 }
 
-/// ライブラリ全体をアルバム単位に集約して取得 (コンピは1枚に束ね済み)。
+/** アルバム表示の対象範囲。どちらも省略するとライブラリ全体。 */
+export interface AlbumScopeArgs {
+  /** 検索クエリ (検索ボックス + フィルタタグ)。一致する曲だけでアルバムを束ねる。 */
+  query?: string;
+  /** このプレイリスト (スマート含む) の曲だけでアルバムを束ねる。 */
+  playlistId?: number | null;
+}
+
+const albumScopeArgs = (scope?: AlbumScopeArgs) => ({
+  query: scope?.query || null,
+  playlistId: scope?.playlistId ?? null,
+});
+
+/// アルバム単位に集約して取得 (コンピは1枚に束ね済み)。scope があればその範囲の曲だけで束ねる。
 export async function getAlbums(
   sortField?: SortField,
   sortOrder?: SortOrder,
   limit?: number,
   offset?: number,
+  scope?: AlbumScopeArgs,
 ): Promise<AlbumRow[]> {
-  return invoke("get_albums", { sortField, sortOrder, limit, offset });
+  return invoke("get_albums", { sortField, sortOrder, limit, offset, ...albumScopeArgs(scope) });
 }
 
-/// 指定アルバムの曲を disc→track 順で取得。
-export async function getAlbumTracks(albumKey: string): Promise<Track[]> {
-  return invoke("get_album_tracks", { albumKey });
+/// getAlbums と同じ範囲のアルバム数 (全ページぶん)。
+export async function countAlbums(scope?: AlbumScopeArgs): Promise<number> {
+  return invoke("count_albums", albumScopeArgs(scope));
+}
+
+/// 指定アルバムの曲を disc→track 順で取得。scope があればその範囲の曲だけ
+/// (getAlbums が数えた曲数と一致する)。
+export async function getAlbumTracks(albumKey: string, scope?: AlbumScopeArgs): Promise<Track[]> {
+  return invoke("get_album_tracks", { albumKey, ...albumScopeArgs(scope) });
 }
 
 /// ライブラリ全体をアーティスト単位に集約して取得 (コンピは Various Artists に巻き上げ)。
@@ -315,6 +356,11 @@ export async function getArtists(
   query?: string,
 ): Promise<ArtistRow[]> {
   return invoke("get_artists", { sortField, sortOrder, limit, offset, query: query || null });
+}
+
+/// getArtists と同じ検索条件のアーティスト数 (全ページぶん)。
+export async function countArtists(query?: string): Promise<number> {
+  return invoke("count_artists", { query: query || null });
 }
 
 /// 指定アーティストのアルバム一覧 (年→アルバム名順)。name は getArtists が返した表示名。
@@ -359,6 +405,24 @@ export async function deleteTracks(
 }
 
 /// OS のファイルマネージャ (Finder / エクスプローラ) でファイルを表示する。
+/** 削除の確認に出す内容。 */
+export interface DeleteTracksPreview {
+  /** ライブラリにある対象曲の数 (重複・存在しない ID を除く)。 */
+  count: number;
+  /** 先頭の数曲 (曲名の表示用)。 */
+  sample: Track[];
+  /** 実ファイルがあり、root の外にある曲の数 (root が無ければ 0)。 */
+  outsideRoot: number;
+}
+
+/// 削除の確認用の集計。対象の曲を全部読み込まずに、件数・先頭の数曲・ルート外の数だけを取る。
+export async function previewDeleteTracks(
+  trackIds: number[],
+  root: string | null,
+): Promise<DeleteTracksPreview> {
+  return invoke("preview_delete_tracks", { trackIds, root });
+}
+
 export async function revealInFileManager(path: string): Promise<void> {
   return invoke("reveal_in_file_manager", { path });
 }

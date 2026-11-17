@@ -2,41 +2,24 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import * as libraryApi from "../api/library";
 import { useStore } from "../store/useStore";
 import { Icon } from "./Icon";
-import type { Track } from "../types";
 import { useEscapeKey } from "../hooks/useEscapeKey";
 
 interface DeleteTracksDialogProps {
-  /** 削除対象の曲（曲名とファイルパスの表示・ルート判定に使う） */
-  tracks: Track[];
+  /**
+   * 削除対象の曲の ID。確認に出す件数・先頭の数曲・ルート外のファイル数はバックエンドが数えるので、
+   * 対象の曲を読み込まずに何曲でも (全選択の数万曲でも) 渡せる。
+   */
+  trackIds: number[];
   /** キャンセル / 完了でモーダルを閉じる */
   onClose: () => void;
   /** 削除が成功したときに呼ばれる（一覧の再読み込み用） */
   onDeleted: () => void;
 }
 
-/**
- * パスが root 配下かを文字列で判定する。
- * 実際の安全判定は Rust 側 (canonicalize + starts_with) が行うので、ここは
- * 「ファイルも削除する」を出してよいかのヒントに留める。
- * 区切りは OS 差を吸収するため `/` に寄せ、末尾に区切りを足して
- * `/Music` が `/MusicOld` に前方一致してしまうのを防ぐ。
- */
-function isInsideRoot(path: string, root: string): boolean {
-  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
-  return (norm(path) + "/").startsWith(norm(root) + "/");
-}
-
-export function DeleteTracksDialog({ tracks: rawTracks, onClose, onDeleted }: DeleteTracksDialogProps) {
+export function DeleteTracksDialog({ trackIds: rawIds, onClose, onDeleted }: DeleteTracksDialogProps) {
   // 同じ曲を 2 回含むプレイリストから選ぶと同じ trackId が重複して渡る。
-  // 件数表示・プレビューの React key・削除 API 引数がずれないよう trackId で一意化する。
-  const tracks = useMemo(() => {
-    const seen = new Set<number>();
-    return rawTracks.filter((t) => {
-      if (seen.has(t.trackId)) return false;
-      seen.add(t.trackId);
-      return true;
-    });
-  }, [rawTracks]);
+  // 削除 API 引数がずれないよう一意化する。
+  const ids = useMemo(() => [...new Set(rawIds)], [rawIds]);
   const pushToast = useStore((s) => s.pushToast);
   const removeFromCrate = useStore((s) => s.removeFromCrate);
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
@@ -44,19 +27,32 @@ export function DeleteTracksDialog({ tracks: rawTracks, onClose, onDeleted }: De
   const [deleteFiles, setDeleteFiles] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  // 確認に出す内容 (件数・先頭の数曲・ルート外のファイル数)。届くまでは件数を ID の数で仮に出す。
+  const [preview, setPreview] = useState<libraryApi.DeleteTracksPreview | null>(null);
+
   // 整理ルートは「ファイルも削除する」を許可してよいかの判定に使う。
   // organize が無効なら Rust 側も削除を拒否するので、UI でも出さない。
   useEffect(() => {
     let alive = true;
     (async () => {
+      let root: string | null = null;
       try {
-        const [root, active] = await Promise.all([
+        const [r, active] = await Promise.all([
           libraryApi.getLibraryRoot(),
           libraryApi.getOrganizeActive(),
         ]);
-        if (alive) setLibraryRoot(active && root ? root : null);
+        root = active && r ? r : null;
       } catch {
-        if (alive) setLibraryRoot(null);
+        root = null;
+      }
+      if (!alive) return;
+      setLibraryRoot(root);
+      try {
+        const p = await libraryApi.previewDeleteTracks(ids, root);
+        if (alive) setPreview(p);
+      } catch (err) {
+        // 集計できなくても削除はできる (ファイルの削除は安全側で選べないままにする)。
+        console.error("Failed to preview delete:", err);
       } finally {
         if (alive) setRootLoaded(true);
       }
@@ -64,18 +60,12 @@ export function DeleteTracksDialog({ tracks: rawTracks, onClose, onDeleted }: De
     return () => {
       alive = false;
     };
-  }, []);
+  }, [ids]);
 
-  // ルート外 / パス不明の曲が 1 つでもあると、Rust 側は 1 件も消さずに失敗する。
+  // ルート外のファイルが 1 つでもあると、Rust 側は 1 件も消さずに失敗する。
   // そのためチェックボックス自体を無効にし、理由を添えて出す。
-  const outside = useMemo(() => {
-    if (!libraryRoot) return [];
-    return tracks.filter(
-      (t) => t.fileExists && t.locationPath && !isInsideRoot(t.locationPath, libraryRoot),
-    );
-  }, [tracks, libraryRoot]);
-
-  const canDeleteFiles = rootLoaded && !!libraryRoot && outside.length === 0;
+  const outsideCount = preview?.outsideRoot ?? 0;
+  const canDeleteFiles = rootLoaded && !!libraryRoot && preview !== null && outsideCount === 0;
 
   // 条件が崩れた（ルート未設定・ルート外を含む）ときにチェックが残らないようにする。
   useEffect(() => {
@@ -86,7 +76,6 @@ export function DeleteTracksDialog({ tracks: rawTracks, onClose, onDeleted }: De
     if (busy) return;
     setBusy(true);
     try {
-      const ids = tracks.map((t) => t.trackId);
       const count = await libraryApi.deleteTracks(ids, deleteFiles && canDeleteFiles);
       // クレート (フロント側の一時リスト) に残っていると再生できない曲が並ぶので外す。
       for (const id of ids) removeFromCrate(id);
@@ -102,12 +91,13 @@ export function DeleteTracksDialog({ tracks: rawTracks, onClose, onDeleted }: De
       pushToast("error", `削除に失敗しました: ${err}`);
       setBusy(false);
     }
-  }, [busy, tracks, deleteFiles, canDeleteFiles, removeFromCrate, pushToast, onDeleted, onClose]);
+  }, [busy, ids, deleteFiles, canDeleteFiles, removeFromCrate, pushToast, onDeleted, onClose]);
 
   // Esc で閉じる (処理中は無視)。
   useEscapeKey(onClose, { enabled: !busy });
 
-  const preview = tracks.slice(0, 5);
+  const total = preview?.count ?? ids.length;
+  const sample = preview?.sample ?? [];
 
   return (
     <div className="modal-overlay" onClick={busy ? undefined : onClose}>
@@ -125,9 +115,9 @@ export function DeleteTracksDialog({ tracks: rawTracks, onClose, onDeleted }: De
           style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}
         >
           <div>
-            {tracks.length === 1
-              ? `『${tracks[0].name || "(unknown)"}』をライブラリから削除します。`
-              : `${tracks.length} 曲をライブラリから削除します。`}
+            {total === 1 && sample.length === 1
+              ? `『${sample[0].name || "(unknown)"}』をライブラリから削除します。`
+              : `${total.toLocaleString()} 曲をライブラリから削除します。`}
           </div>
           <ul
             style={{
@@ -140,13 +130,15 @@ export function DeleteTracksDialog({ tracks: rawTracks, onClose, onDeleted }: De
               gap: 2,
             }}
           >
-            {preview.map((t) => (
+            {sample.map((t) => (
               <li key={t.trackId} className="ell">
                 {t.name || "(unknown)"}
                 {t.artist ? ` — ${t.artist}` : ""}
               </li>
             ))}
-            {tracks.length > preview.length && <li>ほか {tracks.length - preview.length} 曲</li>}
+            {preview !== null && total > sample.length && (
+              <li>ほか {(total - sample.length).toLocaleString()} 曲</li>
+            )}
           </ul>
           <div style={{ fontSize: 12, color: "var(--mut)" }}>
             プレイリストへの登録・再生履歴・解析結果も一緒に消えます。この操作は取り消せません。
@@ -173,9 +165,9 @@ export function DeleteTracksDialog({ tracks: rawTracks, onClose, onDeleted }: De
               ライブラリルート（整理先）が未設定のため、ファイルは削除できません。設定から整理先を指定してください。
             </div>
           )}
-          {rootLoaded && libraryRoot && outside.length > 0 && (
+          {rootLoaded && libraryRoot && outsideCount > 0 && (
             <div style={{ fontSize: 11.5, color: "var(--mut)" }}>
-              ライブラリルート（{libraryRoot}）の外にあるファイルが {outside.length}{" "}
+              ライブラリルート（{libraryRoot}）の外にあるファイルが {outsideCount.toLocaleString()}{" "}
               件含まれるため、ファイルは削除できません。安全のためルート外のファイルには触れません。
             </div>
           )}

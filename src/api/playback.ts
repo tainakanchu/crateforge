@@ -42,6 +42,16 @@ export async function enqueueTrack(trackId: number): Promise<void> {
 }
 
 /// 「次に再生」: 現在再生中の曲の直後に割り込ませる。
+/// trackIds をキューの末尾へ、渡した順でまとめて追加する。
+export async function enqueueTracks(trackIds: number[]): Promise<void> {
+  return invoke("enqueue_tracks", { trackIds });
+}
+
+/// trackIds を現在曲の直後へ、渡した順で並ぶようにまとめて割り込ませる。
+export async function enqueueTracksNext(trackIds: number[]): Promise<void> {
+  return invoke("enqueue_tracks_next", { trackIds });
+}
+
 export async function enqueueTrackNext(trackId: number): Promise<void> {
   return invoke("enqueue_track_next", { trackId });
 }

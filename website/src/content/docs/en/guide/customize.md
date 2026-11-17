@@ -28,10 +28,19 @@ You can fine-tune the track table and the right rail to match how you work. Sett
 
 Truncated cells (track name / album / album artist) show the full text as a tooltip on hover.
 
+The track list and the Albums, Tracks and Artists views are all scrollable over their full length from the start.
+Dragging the scrollbar to the bottom lands on the last track (card). Only the visible range is loaded, so positions
+that are not loaded yet show empty rows (cards) until loading finishes. Select all, range selection and
+double-click-to-play cover every track in the list, including the ones that are not loaded. The selection is kept
+when you change the sort order or edit the library (it is cleared when you search or switch to another list).
+Get Info / Edit and adding to the Crate take up to 1,000 tracks at a time.
+
 ### Albums / Artists views
 
 - **Albums** — cards are sorted by the toolbar's Sort in every scope: the whole library, search results, and inside a playlist.
   Below each card, the value of the current sort key (Year / Date Added / Rating / Plays) is shown as a secondary line.
+  Inside a playlist or search results, albums are built only from the tracks in that scope (the track count on the card
+  and the expanded track list cover only those tracks; a track that appears more than once in a playlist counts once).
 - **Artists** — the artist list is aggregated on the server side (SQLite) and rendered virtualized.
   Compilations roll up into **Various Artists**; tracks with an empty album artist fall back to the artist name,
   and to "Unknown Artist" when neither is present. Track and album counts match the Albums view.
@@ -154,8 +163,10 @@ Press `?` (or the `?` button in the toolbar) to show the shortcut list overlay.
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Move the selection up / down |
-| `Shift` + `↑` / `↓` | Extend the selection |
-| `Ctrl` + `A` | Select all |
+| `PageUp` / `PageDown` | Move the selection up / down by one screen |
+| `Home` / `End` | Select the first / last track of the list |
+| `Shift` + `↑` / `↓` / `PageUp` / `PageDown` / `Home` / `End` | Extend the selection |
+| `Ctrl` + `A` | Select all (every track in the list) |
 | `Ctrl` + `I` | Edit the selected track ("情報を見る / 編集" — Get Info / Edit) |
 | `Delete` | Delete the selected tracks from the library (opens a confirmation dialog) |
 | `Alt` + `↑` | Move the selected tracks up one (while a playlist is shown in Playlist Order) |

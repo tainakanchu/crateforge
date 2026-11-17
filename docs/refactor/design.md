@@ -40,6 +40,8 @@
 
 ### デスクトップ UI (`src/`)
 - `lib/gridRows.ts`: `gridMetrics(width)`, `buildGridRows(items, cols, keyOf, expandedKey)`, 安定行キー。
+  (その後 `buildGridRows` は、件数だけで行が決まる `gridLayout(count, cols, expanded)` に置き換えた。
+  行キーの規則は同じ。経緯と仕様は `docs/library-list/design.md`。)
   `hooks/useElementWidth.ts` (callback ref)、`hooks/useCardGridVirtualizer.ts`
   (安定キー、開閉では `measure()` しない、幅/列変更時のみ再計測)。AlbumsView / ArtistsView / TracksView に適用。
   **ArtistsView の展開行の重なりはここで直る (バグ修正)**。

@@ -9,8 +9,8 @@ export const trackApi: PlayApi & QueueApi & RatingApi & PlaylistApi = {
   ensureNormalPlay: audition.ensureNormalPlay,
   setQueue: playbackApi.setQueue,
   playTrack: playbackApi.playTrack,
-  enqueueTrack: playbackApi.enqueueTrack,
-  enqueueTrackNext: playbackApi.enqueueTrackNext,
-  setTrackRating: libraryApi.setTrackRating,
+  enqueueTracks: playbackApi.enqueueTracks,
+  enqueueTracksNext: playbackApi.enqueueTracksNext,
+  setTracksRating: libraryApi.setTracksRating,
   addTracksToPlaylist: playlistsApi.addTracksToPlaylist,
 };

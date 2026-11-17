@@ -334,10 +334,12 @@ fn artist_order_by(sort_field: Option<&str>, sort_order: Option<&str>) -> String
 }
 
 /// アルバム集約 SELECT の共通部分 (get_albums / get_artist_albums で共有)。
+/// `base_where` は集約の対象にする曲の条件 (`tracks` に対する WHERE の中身。全曲なら `1=1`)。
+/// 曲数・カバー・合計時間などはこの範囲の曲だけで数える。
 /// `filter` は base に対する WHERE 句 (空文字なら無条件)、`tail` は ORDER BY の後ろ
 /// (LIMIT/OFFSET 句など)。base には album_key に加えて artist_key も載せるので、
 /// 「あるアーティストのアルバム」を同じ集約ロジックのまま絞り込める。
-fn album_agg_sql(filter: &str, order_by: &str, tail: &str) -> String {
+fn album_agg_sql(base_where: &str, filter: &str, order_by: &str, tail: &str) -> String {
     format!(
         "WITH base AS (
               SELECT *,
@@ -349,6 +351,7 @@ fn album_agg_sql(filter: &str, order_by: &str, tail: &str) -> String {
                            (track_number IS NULL), track_number, track_id
                 ) AS rn
               FROM tracks
+              WHERE {base_where}
             )
             SELECT * FROM (
             SELECT
@@ -855,6 +858,19 @@ pub(super) fn build_order_by(
     order
 }
 
+/// ライブラリ / 検索の一覧の既定の並び (sort_field が無い・無効なとき)。同名の曲の相対順が
+/// 決まらないとページ間で重複・取りこぼしが起きるので、track_id で一意にする。
+const LIBRARY_DEFAULT_ORDER: &str = "name COLLATE NATSORT ASC, track_id ASC";
+
+/// アルバム表示の対象範囲。既定 (どちらも None) はライブラリ全体。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AlbumScope<'a> {
+    /// ライブラリ検索と同じ DSL。None・空なら絞らない。
+    pub query: Option<&'a str>,
+    /// このプレイリスト (スマート含む) の曲だけ。
+    pub playlist_id: Option<i64>,
+}
+
 impl Database {
     /// XML マージ全体を包むトランザクションを開始する。
     pub fn begin_import(&self) -> Result<()> {
@@ -1294,7 +1310,7 @@ impl Database {
     /// 既存行の `search_text` を、現在の name/artist/album/album_artist/genre/comments から
     /// 再計算する。SQL 側 `SEARCH_TEXT_EXPR` (= Rust 側 compute_search_text と等価) を使い、
     /// どの列が変わっても確実に正しい値へ更新できる。検索対象列を変える全 UPDATE 経路から呼ぶ。
-    fn recompute_search_text(&self, track_id: i64) -> Result<()> {
+    pub(super) fn recompute_search_text(&self, track_id: i64) -> Result<()> {
         self.conn.execute(
             &format!(
                 "UPDATE tracks SET search_text = {expr} WHERE track_id = ?1",
@@ -1312,15 +1328,7 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
-        let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NATSORT ASC");
-        let sql = format!(
-            "SELECT {TRACK_COLUMNS}
-             FROM tracks ORDER BY {} LIMIT ?1 OFFSET ?2",
-            order_by
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![limit, offset], row_to_track)?;
-        rows.collect()
+        self.search_tracks_with_genre("", None, limit, offset, sort_field, sort_order)
     }
 
     /// 空白区切りの各トークンを AND で結合した検索。
@@ -1351,22 +1359,56 @@ impl Database {
         sort_field: Option<&str>,
         sort_order: Option<&str>,
     ) -> Result<Vec<Track>> {
-        use rusqlite::types::Value;
+        // ID 先行: 並べ替えは (並びのキー, track_id) だけで行い、そのページの ID を決めてから行を引く。
+        // 全列を並べ替えると、深い OFFSET のページほど遅くなる。表示順の ID 列は書き込みがあるまで
+        // 使い回すので、2 ページ目以降は並べ替えもしない (docs/library-list/design.md §3)。
+        let ids = self.ordered_track_ids(query, genre_tags, sort_field, sort_order)?;
+        self.get_tracks_by_ids(super::list_cache::page(&ids, limit, offset))
+    }
 
-        let order_by = build_order_by(sort_field, sort_order, "", "name COLLATE NATSORT ASC");
-
-        // 検索の字体ゆれ吸収レベル。Off のときは従来と完全に同じ SQL/バインドになる。
-        let level = crate::text_fold::FoldLevel::from_state(
-            self.get_state("search_fold_level")
-                .ok()
-                .flatten()
-                .as_deref(),
+    /// ライブラリ / 検索の一覧の track_id を表示順で全件返す (プロセス内キャッシュつき)。
+    ///
+    /// ページ取得 ([`Self::search_tracks_with_genre`]) と ID 列 ([`Self::get_track_ids`]) は
+    /// どちらもここを通す (同じ WHERE・同じ ORDER BY)。並びは必ず track_id で一意にする。
+    fn ordered_track_ids(
+        &self,
+        query: &str,
+        genre_tags: Option<&str>,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<std::sync::Arc<Vec<i64>>> {
+        // 検索の字体ゆれ吸収レベルは app_state にある (その書き込みではキャッシュを捨てない) ので、
+        // 一覧のキーに含める。
+        let list = format!(
+            "library\u{1f}{query}\u{1f}{genre_tags:?}\u{1f}{sort_field:?}\u{1f}{sort_order:?}\u{1f}{}",
+            self.search_fold_level().as_str()
         );
+        self.cached_list_ids(&list, || {
+            let order_by = build_order_by(sort_field, sort_order, "", LIBRARY_DEFAULT_ORDER);
+            let (where_sql, bind) = self.search_where(query, genre_tags);
+            let sql =
+                format!("SELECT track_id FROM tracks WHERE {where_sql} ORDER BY {order_by}");
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), |r| r.get(0))?;
+            rows.collect()
+        })
+    }
 
+    /// ライブラリ検索の WHERE 句 (`FROM tracks` 用) とバインド値。`query` が空なら全曲 (`1=1`)。
+    ///
+    /// ページ取得 ([`Self::search_tracks_with_genre`])・件数 ([`Self::count_tracks`])・
+    /// ID 列 ([`Self::get_track_ids`]) はすべてここを通す。件数とページが食い違わないよう、
+    /// 検索条件の組み立てをほかの場所に書かない (`docs/library-list/design.md` §3)。
+    pub(super) fn search_where(
+        &self,
+        query: &str,
+        genre_tags: Option<&str>,
+    ) -> (String, Vec<rusqlite::types::Value>) {
+        // 検索の字体ゆれ吸収レベル。Off のときは従来と完全に同じ SQL/バインドになる。
+        let level = self.search_fold_level();
         // 各トークンを AND 結合。句とバインド値の組み立ては build_search_clauses に集約し、
         // プレイリスト内検索と同じ構文を共有する (ここは FROM tracks なので prefix は "tracks.")。
-        let (mut clauses, mut bind): (Vec<String>, Vec<Value>) =
-            build_search_clauses(query, level, "tracks.");
+        let (mut clauses, mut bind) = build_search_clauses(query, level, "tracks.");
         if let Some(genre_tags) = genre_tags {
             let (clause, value) = genre_tag_clause("tracks.", genre_tags, level);
             clauses.push(clause);
@@ -1377,37 +1419,47 @@ impl Database {
         } else {
             clauses.join(" AND ")
         };
-        bind.push(Value::Integer(limit));
-        bind.push(Value::Integer(offset));
+        (where_sql, bind)
+    }
 
-        let sql = format!(
-            "SELECT {TRACK_COLUMNS}
-             FROM tracks
-             WHERE {}
-             ORDER BY {} LIMIT ? OFFSET ?",
-            where_sql, order_by
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), row_to_track)?;
-        rows.collect()
+    /// 検索の字体ゆれ吸収レベル (設定 `search_fold_level`)。
+    pub(super) fn search_fold_level(&self) -> crate::text_fold::FoldLevel {
+        crate::text_fold::FoldLevel::from_state(
+            self.get_state("search_fold_level")
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
+    }
+
+    /// ライブラリ / 検索の一覧の件数。`query` が None・空なら全曲数
+    /// ([`Self::get_tracks`] の全ページぶん)、あれば [`Self::search_tracks`] の全ページぶん。
+    pub fn count_tracks(&self, query: Option<&str>) -> Result<i64> {
+        let (where_sql, bind) = self.search_where(query.unwrap_or(""), None);
+        self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM tracks WHERE {where_sql}"),
+            rusqlite::params_from_iter(bind.iter()),
+            |r| r.get(0),
+        )
+    }
+
+    /// ライブラリ / 検索の一覧の track_id を表示順 (ページ取得と同じ ORDER BY) で全件返す。
+    /// 全選択・範囲選択・「ここから再生」が、読み込んでいない行をまたいで動くためのもの。
+    pub fn get_track_ids(
+        &self,
+        query: Option<&str>,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> Result<Vec<i64>> {
+        self.ordered_track_ids(query.unwrap_or(""), None, sort_field, sort_order)
+            .map(|ids| ids.to_vec())
     }
 
     /// 検索クエリ (search_tracks と同じ DSL) にマッチする track_id の集合を返す。
     /// LIMIT/ORDER BY を伴わないので、Rust 側で候補を組み立ててから絞り込む用途
     /// (スマートプレイリスト内検索など) に使える。
     pub fn search_track_ids(&self, query: &str) -> Result<HashSet<i64>> {
-        let level = crate::text_fold::FoldLevel::from_state(
-            self.get_state("search_fold_level")
-                .ok()
-                .flatten()
-                .as_deref(),
-        );
-        let (clauses, bind) = build_search_clauses(query, level, "tracks.");
-        let where_sql = if clauses.is_empty() {
-            "1=1".to_string()
-        } else {
-            clauses.join(" AND ")
-        };
+        let (where_sql, bind) = self.search_where(query, None);
         let sql = format!("SELECT track_id FROM tracks WHERE {where_sql}");
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), |r| {
@@ -1427,22 +1479,26 @@ impl Database {
     }
 
     /// 指定した track_id 群を、**入力 ID の順序を保って** 解決する。
-    /// 見つからない ID はスキップする (Up Next 表示で、フロントの
-    /// ロード済みページに無い曲も解決できるようにするためのもの)。
+    /// 見つからない ID はスキップする (Up Next・再生中の曲・選択中の曲など、フロントの
+    /// 一覧が持っていない曲を解決するためのもの)。
     ///
-    /// 1 件ずつ `prepare` し直すと ID 数だけ SQL のパースが走るため、
-    /// `prepare_cached` で 1 つの statement を使い回す (結果は `get_track_by_track_id`
-    /// を ID ごとに呼ぶのと同一)。
+    /// ID 列を JSON 配列 1 個で渡し、1 回の問い合わせで引く (`json_each` の `key` = 配列の位置で
+    /// 並べるので入力順のまま。同じ ID が複数回あればその回数ぶん返す)。ID ごとに問い合わせると、
+    /// 一覧の 1 ページ (200 件) や API の全件取得で、件数ぶんの往復になる。
     pub fn get_tracks_by_ids(&self, track_ids: &[i64]) -> Result<Vec<Track>> {
-        let mut stmt = self.conn.prepare_cached(TRACK_BY_TRACK_ID_SQL)?;
-        let mut out = Vec::with_capacity(track_ids.len());
-        for &tid in track_ids {
-            let mut rows = stmt.query_map(params![tid], row_to_track)?;
-            if let Some(row) = rows.next() {
-                out.push(row?);
-            }
+        if track_ids.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(out)
+        let json = serde_json::to_string(track_ids)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let sql = format!(
+            "SELECT {TRACK_COLUMNS_T}
+             FROM json_each(?1) AS j INNER JOIN tracks t ON t.track_id = j.value
+             ORDER BY j.key"
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(params![json], row_to_track)?;
+        rows.collect()
     }
 
     /// 指定した persistent_id 群を、入力順を保って Track へ解決する。
@@ -1666,6 +1722,20 @@ impl Database {
         Ok(())
     }
 
+    /// 複数曲に同じ rating を付ける ([`Self::set_rating`] と同じ規則)。1 トランザクションで行い、
+    /// 途中で失敗したらどの曲も変わらない。存在しない id は無視する。
+    pub fn set_rating_many(&self, track_ids: &[i64], rating: i64) -> Result<()> {
+        let rating = crate::rating::clamp_rating(rating);
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare("UPDATE tracks SET rating = ?1 WHERE track_id = ?2")?;
+            for &track_id in track_ids {
+                stmt.execute(params![rating, track_id])?;
+            }
+        }
+        tx.commit()
+    }
+
     /// アプリ内再生で「1回聴いた」と判定されたとき、play_count を +1 し
     /// last_played を現在時刻 (ISO8601 UTC) に更新する。
     pub fn mark_played(&self, track_id: i64) -> Result<()> {
@@ -1871,6 +1941,8 @@ impl Database {
     }
 
     /// アルバムグリッド向けの集約クエリ。コンピレーション対応・カバー代表曲選択済み。
+    /// ライブラリ全体を対象にした [`Self::get_albums_scoped`] の省略形 (テスト用)。
+    #[cfg(test)]
     pub fn get_albums(
         &self,
         sort_field: Option<&str>,
@@ -1878,14 +1950,71 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<AlbumRow>> {
+        self.get_albums_scoped(AlbumScope::default(), sort_field, sort_order, limit, offset)
+    }
+
+    /// アルバム表示の対象にする曲の WHERE 句 (`FROM tracks` 用) とバインド値。
+    ///
+    /// アルバムのページ ([`Self::get_albums_scoped`])・件数 ([`Self::count_albums`])・
+    /// 展開したときの曲 ([`Self::get_album_tracks_scoped`]) はすべてここを通す
+    /// (`docs/library-list/design.md` §3)。
+    /// - `query`: ライブラリ検索と同じ DSL ([`Self::search_where`])。
+    /// - `playlist_id`: そのプレイリストの曲だけ。メンバーは曲の一覧と同じ
+    ///   [`Self::get_playlist_track_ids_filtered`] (スマートは criteria の並び + limit を
+    ///   適用した結果)。`query` もあれば、プレイリストの曲の中からさらに絞る。
+    fn album_scope_where(
+        &self,
+        scope: AlbumScope<'_>,
+    ) -> Result<(String, Vec<rusqlite::types::Value>)> {
+        use rusqlite::types::Value;
+        let (mut where_sql, mut bind) = self.search_where(scope.query.unwrap_or(""), None);
+        if let Some(playlist_id) = scope.playlist_id {
+            let ids = self.get_playlist_track_ids_filtered(playlist_id, None, None, None)?;
+            // ID 列は JSON 配列 1 個のバインドで渡す (曲数ぶんのプレースホルダを並べない)。
+            let json = serde_json::to_string(&ids)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            where_sql.push_str(" AND tracks.track_id IN (SELECT value FROM json_each(?))");
+            bind.push(Value::Text(json));
+        }
+        Ok((where_sql, bind))
+    }
+
+    /// [`Self::get_albums`] の範囲つき版。`scope` の曲だけでアルバムを束ねる。
+    pub fn get_albums_scoped(
+        &self,
+        scope: AlbumScope<'_>,
+        sort_field: Option<&str>,
+        sort_order: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<AlbumRow>> {
+        use rusqlite::types::Value;
+        let (where_sql, mut bind) = self.album_scope_where(scope)?;
+        bind.push(Value::Integer(limit));
+        bind.push(Value::Integer(offset));
         let sql = album_agg_sql(
+            &where_sql,
             "",
             &album_order_by(sort_field, sort_order),
-            "LIMIT ?1 OFFSET ?2",
+            "LIMIT ? OFFSET ?",
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![limit, offset], row_to_album_row)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), row_to_album_row)?;
         rows.collect()
+    }
+
+    /// `scope` のアルバム数 ([`Self::get_albums_scoped`] の全ページぶん)。
+    /// 同じ WHERE 句・同じ束ねキー (ALBUM_KEY_EXPR) で数える。
+    pub fn count_albums(&self, scope: AlbumScope<'_>) -> Result<i64> {
+        let (where_sql, bind) = self.album_scope_where(scope)?;
+        self.conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM tracks WHERE {where_sql} GROUP BY ({key}))",
+                key = ALBUM_KEY_EXPR,
+            ),
+            rusqlite::params_from_iter(bind.iter()),
+            |r| r.get(0),
+        )
     }
 
     /// 指定アーティストのアルバム一覧を get_albums と同じ集約で返す (年→アルバム名順)。
@@ -1897,6 +2026,7 @@ impl Database {
     /// そのアーティストの曲だけを引けるようにする)。
     pub fn get_artist_albums(&self, name: &str) -> Result<Vec<AlbumRow>> {
         let sql = album_agg_sql(
+            "1=1",
             "WHERE artist_key = lower(trim(?1))",
             &album_order_by(Some("year"), Some("asc")),
             "",
@@ -1919,33 +2049,51 @@ impl Database {
     ///
     /// `unka:<アーティスト名>` (get_artist_albums の不明なアルバム) は「アルバムが空 かつ
     /// そのアーティスト (ARTIST_NAME_EXPR の束ね方)」の曲を返す。
+    /// ライブラリ全体を対象にした [`Self::get_album_tracks_scoped`] の省略形 (テスト用)。
+    #[cfg(test)]
     pub fn get_album_tracks(&self, album_key: &str) -> Result<Vec<Track>> {
+        self.get_album_tracks_scoped(album_key, AlbumScope::default())
+    }
+
+    /// [`Self::get_album_tracks`] の範囲つき版。`scope` (検索 / プレイリスト) の曲だけを返すので、
+    /// [`Self::get_albums_scoped`] が数えた曲数と一致する。
+    pub fn get_album_tracks_scoped(
+        &self,
+        album_key: &str,
+        scope: AlbumScope<'_>,
+    ) -> Result<Vec<Track>> {
+        use rusqlite::types::Value;
+        let (where_sql, mut bind) = self.album_scope_where(scope)?;
         if let Some(artist) = album_key.strip_prefix(UNKNOWN_ALBUM_OF_ARTIST_PREFIX) {
             let sql = format!(
                 "SELECT {TRACK_COLUMNS}
                  FROM (
                    SELECT *, ({key}) AS album_key, ({artist_key}) AS artist_key FROM tracks
-                 ) WHERE album_key = 'unk:' AND artist_key = lower(trim(?1))
+                   WHERE {where_sql}
+                 ) WHERE album_key = 'unk:' AND artist_key = lower(trim(?))
                  ORDER BY (disc_number IS NULL), disc_number,
                           (track_number IS NULL), track_number, track_id",
                 key = ALBUM_KEY_EXPR,
                 artist_key = artist_key_expr(),
             );
+            bind.push(Value::Text(artist.to_string()));
             let mut stmt = self.conn.prepare(&sql)?;
-            let rows = stmt.query_map(params![artist], row_to_track)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), row_to_track)?;
             return rows.collect();
         }
         let sql = format!(
             "SELECT {TRACK_COLUMNS}
              FROM (
                SELECT *, ({key}) AS album_key FROM tracks
-             ) WHERE album_key = ?1
+               WHERE {where_sql}
+             ) WHERE album_key = ?
              ORDER BY (disc_number IS NULL), disc_number,
                       (track_number IS NULL), track_number, track_id",
             key = ALBUM_KEY_EXPR
         );
+        bind.push(Value::Text(album_key.to_string()));
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![album_key], row_to_track)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(bind.iter()), row_to_track)?;
         rows.collect()
     }
 
@@ -2012,9 +2160,19 @@ impl Database {
 
     /// Artists ビューに並ぶアーティスト数 (get_artists と同じ束ね方)。
     pub fn artist_count(&self) -> Result<i64> {
+        self.count_artists_matching(None)
+    }
+
+    /// [`Self::get_artists_matching`] の全ページぶんのアーティスト数。
+    /// 同じ WHERE 句 ([`Self::search_where`])・同じ束ねキーで数える。
+    pub fn count_artists_matching(&self, query: Option<&str>) -> Result<i64> {
+        let (where_sql, bind) = self.search_where(query.unwrap_or(""), None);
         self.conn.query_row(
-            &format!("SELECT COUNT(DISTINCT {}) FROM tracks", artist_key_expr()),
-            [],
+            &format!(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM tracks WHERE {where_sql} GROUP BY ({key}))",
+                key = artist_key_expr(),
+            ),
+            rusqlite::params_from_iter(bind.iter()),
             |r| r.get(0),
         )
     }
@@ -2045,23 +2203,7 @@ impl Database {
     ) -> Result<Vec<ArtistRow>> {
         use rusqlite::types::Value;
 
-        let (clauses, mut bind): (Vec<String>, Vec<Value>) = match query.map(str::trim) {
-            Some(q) if !q.is_empty() => {
-                let level = crate::text_fold::FoldLevel::from_state(
-                    self.get_state("search_fold_level")
-                        .ok()
-                        .flatten()
-                        .as_deref(),
-                );
-                build_search_clauses(q, level, "tracks.")
-            }
-            _ => (Vec::new(), Vec::new()),
-        };
-        let where_sql = if clauses.is_empty() {
-            "1=1".to_string()
-        } else {
-            clauses.join(" AND ")
-        };
+        let (where_sql, mut bind) = self.search_where(query.unwrap_or(""), None);
         bind.push(Value::Integer(limit));
         bind.push(Value::Integer(offset));
         let sql = format!(

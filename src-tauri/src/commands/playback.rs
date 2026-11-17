@@ -177,6 +177,36 @@ pub fn enqueue_track(
     Ok(())
 }
 
+/// 複数曲をキューの末尾へ、渡した順で追加する (全選択でも 1 回の呼び出し・通知 1 回で済ませる)。
+#[tauri::command(async)]
+pub fn enqueue_tracks(
+    app: AppHandle,
+    player: tauri::State<'_, Mutex<AudioPlayer>>,
+    track_ids: Vec<i64>,
+) -> Result<(), String> {
+    player
+        .lock()
+        .map_err(|e| e.to_string())?
+        .enqueue_many(&track_ids);
+    emit_queue_changed(&app);
+    Ok(())
+}
+
+/// 「次に再生」の複数曲版: 現在再生中の曲の直後に、渡した順で並ぶように割り込ませる。
+#[tauri::command(async)]
+pub fn enqueue_tracks_next(
+    app: AppHandle,
+    player: tauri::State<'_, Mutex<AudioPlayer>>,
+    track_ids: Vec<i64>,
+) -> Result<(), String> {
+    player
+        .lock()
+        .map_err(|e| e.to_string())?
+        .enqueue_next_many(&track_ids);
+    emit_queue_changed(&app);
+    Ok(())
+}
+
 /// 「次に再生」: 現在再生中の曲の直後に track_id を割り込ませる。
 #[tauri::command]
 pub fn enqueue_track_next(

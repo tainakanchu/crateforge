@@ -51,14 +51,15 @@ export function formatRemainingTime(positionMs: number, durationMs: number): str
   return `-${clock(durationMs - positionMs)}`;
 }
 
+const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
+
 /** バイト数を 1024 基準の単位で整形する (`0 B` / `12.3 MB`)。 */
 export function formatBytes(bytes: number | null | undefined): string {
   if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), BYTE_UNITS.length - 1);
   const value = bytes / 1024 ** power;
   const digits = value >= 100 || power === 0 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} ${units[power]}`;
+  return `${value.toFixed(digits)} ${BYTE_UNITS[power]}`;
 }
 
 /** ローカル時刻の `YYYY-MM-DD`。 */

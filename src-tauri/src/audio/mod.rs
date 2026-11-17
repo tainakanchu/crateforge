@@ -619,6 +619,37 @@ impl AudioPlayer {
         }
     }
 
+    /// 「次に再生」の複数曲版: track_ids を現在位置の直後へ、渡した順で並ぶように割り込ませる。
+    /// 1 曲ずつ [`Self::enqueue_next`] すると後の曲ほど前に来て逆順になり、曲数ぶん order の
+    /// 挿入 (O(n)) が走るので、まとめて 1 回で差し込む。
+    pub fn enqueue_next_many(&mut self, track_ids: &[i64]) {
+        if track_ids.is_empty() {
+            return;
+        }
+        let first = self.queue.len();
+        self.queue.extend_from_slice(track_ids);
+        let new_indices = first..self.queue.len();
+        match self.order_pos {
+            Some(pos) => {
+                let insert_at = (pos + 1).min(self.order.len());
+                self.order.splice(insert_at..insert_at, new_indices);
+            }
+            None => {
+                // まだ何も再生していない: enqueue と同じく末尾に足し、足した先頭を現在位置にする。
+                let start = self.order.len();
+                self.order.extend(new_indices);
+                self.order_pos = Some(start);
+            }
+        }
+    }
+
+    /// キュー末尾への追加の複数曲版 (渡した順)。
+    pub fn enqueue_many(&mut self, track_ids: &[i64]) {
+        for &id in track_ids {
+            self.enqueue(id);
+        }
+    }
+
     /// `order` 上の指定位置の曲をキューから除去する。除去できたら true。
     /// - `order_index == order_pos` (再生中の曲) は拒否して false を返す。
     /// - `order_index` が範囲外でも false。
@@ -1206,6 +1237,37 @@ mod tests {
         // シャッフル中でも、割り込んだ曲は現在位置の直後に来る。
         let ordered = p.ordered_track_ids();
         assert_eq!(ordered[pos + 1], 99);
+    }
+
+    /// 複数曲の「次に再生」は、1 曲ずつ逆順に割り込ませたのと同じ並び (渡した順) になる。
+    #[test]
+    fn enqueue_next_many_keeps_given_order() {
+        let mut many = make_player(vec![10, 20, 30], 1);
+        many.enqueue_next_many(&[7, 8, 9]);
+        assert_order_is_permutation(&many);
+        assert_eq!(many.ordered_track_ids(), vec![10, 20, 7, 8, 9, 30]);
+        assert_eq!(many.order_pos, Some(1));
+
+        let mut one_by_one = make_player(vec![10, 20, 30], 1);
+        for id in [9, 8, 7] {
+            one_by_one.enqueue_next(id);
+        }
+        assert_eq!(many.ordered_track_ids(), one_by_one.ordered_track_ids());
+
+        // 空のキューへは、渡した順で入り、先頭が現在位置になる (enqueue_next と同じ)。
+        let mut empty = AudioPlayer::new();
+        empty.enqueue_next_many(&[1, 2, 3]);
+        assert_order_is_permutation(&empty);
+        assert_eq!(empty.ordered_track_ids(), vec![1, 2, 3]);
+        assert_eq!(empty.order_pos, Some(0));
+        empty.enqueue_next_many(&[]);
+        assert_eq!(empty.ordered_track_ids(), vec![1, 2, 3]);
+
+        // 末尾への追加は渡した順。
+        let mut tail = make_player(vec![10, 20], 0);
+        tail.enqueue_many(&[5, 6]);
+        assert_order_is_permutation(&tail);
+        assert_eq!(tail.ordered_track_ids(), vec![10, 20, 5, 6]);
     }
 
     #[test]

@@ -5,16 +5,12 @@ import {
   GRID_GAP,
   GRID_MIN_CARD,
   GRID_PAD_X,
-  appendUniqueBy,
-  buildGridRows,
+  gridLayout,
   gridMetrics,
-  isNearBottom,
+  relocateExpanded,
   remeasureGridRows,
   shouldRemeasureGrid,
 } from "../../src/lib/gridRows.ts";
-
-const keyOf = (s: string) => s;
-const items = ["a", "b", "c", "d", "e", "f", "g"];
 
 test("gridMetrics: 幅 0 (未計測) は 2 列・最小カード幅", () => {
   assert.deepEqual(gridMetrics(0), { cols: 2, cardW: GRID_MIN_CARD });
@@ -37,76 +33,114 @@ test("gridMetrics: 列数は最小カード幅で入る数、カード幅は余�
   assert.equal(gridMetrics(exact - 1).cols, 3);
 });
 
-test("buildGridRows: cols 枚ずつに分ける", () => {
-  const rows = buildGridRows(items, 3, keyOf, null);
-  assert.deepEqual(
-    rows.map((r) => (r.type === "grid" ? r.items : null)),
-    [["a", "b", "c"], ["d", "e", "f"], ["g"]],
-  );
+const rowsOf = (layout: ReturnType<typeof gridLayout>) =>
+  Array.from({ length: layout.rowCount }, (_, i) => layout.rowAt(i));
+
+test("gridLayout: 件数だけで行が決まる (cols 枚ずつ。最後の行は端数)", () => {
+  const layout = gridLayout(7, 3);
+  assert.equal(layout.rowCount, 3);
+  assert.deepEqual(rowsOf(layout), [
+    { type: "grid", key: "g:3:0", start: 0, end: 3 },
+    { type: "grid", key: "g:3:1", start: 3, end: 6 },
+    { type: "grid", key: "g:3:2", start: 6, end: 7 },
+  ]);
 });
 
-test("buildGridRows: 展開行は展開した項目を含む行の直後に入る", () => {
-  const rows = buildGridRows(items, 3, keyOf, "e");
+test("gridLayout: 行数は最初から全件ぶん (3,152 件 × 5 列 = 631 行)", () => {
+  const layout = gridLayout(3152, 5);
+  assert.equal(layout.rowCount, 631);
+  assert.deepEqual(layout.rowAt(630), { type: "grid", key: "g:5:630", start: 3150, end: 3152 });
+});
+
+test("gridLayout: 展開行は展開した項目を含む行の直後に 1 つだけ入る", () => {
+  const layout = gridLayout(7, 3, { key: "e", index: 4 });
   assert.deepEqual(
-    rows.map((r) => r.type),
+    rowsOf(layout).map((r) => r.type),
     ["grid", "grid", "expand", "grid"],
   );
-  const x = rows[2];
-  assert.equal(x.type === "expand" ? x.item : null, "e");
+  assert.deepEqual(layout.rowAt(2), { type: "expand", key: "x:e", itemIndex: 4 });
+  // 展開行の後ろのカード行は、展開していないときと同じ項目を指す。
+  assert.deepEqual(layout.rowAt(3), { type: "grid", key: "g:3:2", start: 6, end: 7 });
 });
 
-test("buildGridRows: 展開の開閉でグリッド行のキーが変わらない", () => {
-  const gridKeys = (expanded: string | null) =>
-    buildGridRows(items, 3, keyOf, expanded)
-      .filter((r) => r.type === "grid")
-      .map((r) => r.key);
-  const closed = gridKeys(null);
-  assert.deepEqual(gridKeys("a"), closed);
-  assert.deepEqual(gridKeys("e"), closed);
-  assert.deepEqual(gridKeys("g"), closed);
+test("gridLayout: 展開の開閉でカード行のキーも中身も変わらない (行が重ならない)", () => {
+  const grid = (expanded: { key: string; index: number } | null) =>
+    rowsOf(gridLayout(7, 3, expanded)).filter((r) => r.type === "grid");
+  const closed = grid(null);
+  assert.deepEqual(grid({ key: "a", index: 0 }), closed);
+  assert.deepEqual(grid({ key: "e", index: 4 }), closed);
+  assert.deepEqual(grid({ key: "g", index: 6 }), closed);
 });
 
-test("buildGridRows: 展開行のキーは項目キーから決まる (位置・列数によらない)", () => {
-  const key = (expanded: string, cols = 3) =>
-    buildGridRows(items, cols, keyOf, expanded).find((r) => r.type === "expand")?.key;
-  assert.equal(key("a"), "x:a");
-  assert.equal(key("g"), "x:g");
-  assert.equal(key("g", 2), "x:g");
+test("gridLayout: 展開行のキーは項目キーから決まる (位置・列数によらない)", () => {
+  const key = (index: number, cols: number) =>
+    rowsOf(gridLayout(7, cols, { key: "k", index })).find((r) => r.type === "expand")?.key;
+  assert.equal(key(0, 3), "x:k");
+  assert.equal(key(6, 3), "x:k");
+  assert.equal(key(6, 2), "x:k");
 });
 
-test("buildGridRows: 行キーは一意 (同じ項目が複数回あっても)", () => {
-  const dup = ["a", "b", "a", "b", "a", "b"];
-  const keys = buildGridRows(dup, 2, keyOf, null).map((r) => r.key);
+test("gridLayout: 行キーは一意", () => {
+  const keys = rowsOf(gridLayout(50, 4, { key: "k", index: 17 })).map((r) => r.key);
   assert.equal(new Set(keys).size, keys.length);
 });
 
-test("buildGridRows: 列数が変わるとグリッド行のキーも変わる (高さが変わるため)", () => {
-  const k2 = buildGridRows(items, 2, keyOf, null)[0].key;
-  const k3 = buildGridRows(items, 3, keyOf, null)[0].key;
-  assert.notEqual(k2, k3);
+test("gridLayout: 列数が変わるとカード行のキーも変わる (高さが変わるため)", () => {
+  assert.notEqual(gridLayout(7, 2).rowAt(0).key, gridLayout(7, 3).rowAt(0).key);
 });
 
-test("buildGridRows: 空なら行なし、該当しない expandedKey は無視", () => {
-  assert.deepEqual(buildGridRows([], 3, keyOf, "a"), []);
-  assert.equal(buildGridRows(items, 3, keyOf, "zzz").length, 3);
+test("gridLayout: 空なら行なし。件数の外を指す展開は無視する", () => {
+  assert.equal(gridLayout(0, 3, { key: "a", index: 0 }).rowCount, 0);
+  assert.equal(gridLayout(7, 3, { key: "zzz", index: 7 }).rowCount, 3);
+  assert.equal(gridLayout(7, 3, { key: "zzz", index: -1 }).rowCount, 3);
 });
 
-test("isNearBottom: 末尾の手前 400px 以内で true", () => {
-  assert.equal(isNearBottom({ scrollTop: 0, clientHeight: 500, scrollHeight: 2000 }), false);
-  assert.equal(isNearBottom({ scrollTop: 1099, clientHeight: 500, scrollHeight: 2000 }), false);
-  assert.equal(isNearBottom({ scrollTop: 1100, clientHeight: 500, scrollHeight: 2000 }), true);
+test("gridLayout.itemRange: 見えている行の項目の範囲 (両端を含む)", () => {
+  const layout = gridLayout(100, 5);
+  assert.deepEqual(layout.itemRange(0, 2), { start: 0, end: 14 });
+  assert.deepEqual(layout.itemRange(19, 19), { start: 95, end: 99 });
+  // 最後の行が端数でも件数を超えない。行番号は範囲に丸める。
+  assert.deepEqual(gridLayout(7, 3).itemRange(1, 99), { start: 3, end: 6 });
+  assert.equal(gridLayout(0, 3).itemRange(0, 0), null);
+  assert.equal(layout.itemRange(3, 2), null);
 });
 
-test("buildGridRows: keyOf を省略するとグリッド行だけを返す (展開なしのグリッド)", () => {
-  const rows = buildGridRows(items, 3);
-  assert.deepEqual(
-    rows.map((r) => [r.type, r.key, r.items.length]),
-    [
-      ["grid", "g:3:0", 3],
-      ["grid", "g:3:1", 3],
-      ["grid", "g:3:2", 1],
-    ],
-  );
+test("gridLayout.itemRange: 展開行をまたいでも項目の範囲がずれない", () => {
+  // 行: 0=g0, 1=g1, 2=展開 (項目 4), 3=g2, 4=g3
+  const layout = gridLayout(12, 3, { key: "e", index: 4 });
+  assert.deepEqual(layout.itemRange(0, 1), { start: 0, end: 5 });
+  assert.deepEqual(layout.itemRange(2, 2), { start: 3, end: 5 }, "展開行だけ → 展開した項目の行");
+  assert.deepEqual(layout.itemRange(2, 3), { start: 3, end: 8 });
+  assert.deepEqual(layout.itemRange(3, 4), { start: 6, end: 11 });
+});
+
+test("relocateExpanded: 同じ位置に同じ項目があればそのまま", () => {
+  const ex = { key: "b", index: 1 };
+  assert.equal(relocateExpanded(ex, 3, (i) => ["a", "b", "c"][i], []), ex);
+  assert.equal(relocateExpanded(null, 3, () => "a", []), null);
+});
+
+test("relocateExpanded: 位置がずれたら取得済みの項目から探して移す", () => {
+  const keys = ["x", "a", "b", "c"];
+  const loaded = keys.map((k, i): [number, string] => [i, k]);
+  assert.deepEqual(relocateExpanded({ key: "b", index: 1 }, 4, (i) => keys[i], loaded), {
+    key: "b",
+    index: 2,
+  });
+});
+
+test("relocateExpanded: 見つからなければ閉じる。未取得の位置は判定を保留する", () => {
+  const keys = ["a", "c"];
+  const loaded = keys.map((k, i): [number, string] => [i, k]);
+  assert.equal(relocateExpanded({ key: "b", index: 1 }, 2, (i) => keys[i], loaded), null);
+  const ex = { key: "b", index: 500 };
+  assert.equal(relocateExpanded(ex, 1000, () => undefined, loaded), ex);
+  // 件数が減って位置そのものが無くなったら、探し直す (無ければ閉じる)。
+  assert.equal(relocateExpanded(ex, 2, () => undefined, loaded), null);
+  assert.deepEqual(relocateExpanded({ key: "c", index: 500 }, 2, () => undefined, loaded), {
+    key: "c",
+    index: 1,
+  });
 });
 
 test("shouldRemeasureGrid: 初回は測る", () => {
@@ -119,29 +153,15 @@ test("shouldRemeasureGrid: カード幅 (行の高さ) か列数が変わった�
   assert.equal(shouldRemeasureGrid(prev, { gridRowHeight: 214, cols: 4 }), true);
 });
 
-test("shouldRemeasureGrid: 寸法が同じなら測り直さない (展開の開閉・追加ロードで呼ばれても)", () => {
-  // 展開行の重なりの回帰テスト: 判定の入力は寸法だけで、行リストや展開状態を含まない。
-  // 開閉や追加ロードのあとの再レンダーでは寸法が変わらないので、実測キャッシュは捨てられない。
+test("shouldRemeasureGrid: 寸法が同じなら測り直さない (展開の開閉・ページの到着で呼ばれても)", () => {
+  // 展開行の重なりの回帰テスト: 判定の入力は寸法だけで、行の並びや展開状態を含まない。
+  // 開閉やページの到着のあとの再レンダーでは寸法が変わらないので、実測キャッシュは捨てられない。
   const key = { gridRowHeight: 214, cols: 5 };
-  const closed = buildGridRows(items, 3, keyOf, null);
-  const opened = buildGridRows(items, 3, keyOf, "e");
-  assert.notEqual(closed.length, opened.length);
+  const closed = gridLayout(7, 3, null);
+  const opened = gridLayout(7, 3, { key: "e", index: 4 });
+  assert.notEqual(closed.rowCount, opened.rowCount);
   assert.equal(shouldRemeasureGrid(key, { ...key }), false);
   assert.equal(shouldRemeasureGrid.length, 2);
-});
-
-test("appendUniqueBy: 既出のキーは足さず、順序を保つ", () => {
-  assert.deepEqual(appendUniqueBy(["a", "b"], ["b", "c", "a", "d"], keyOf), ["a", "b", "c", "d"]);
-  assert.deepEqual(appendUniqueBy([], ["a", "a", "b"], keyOf), ["a", "b"]);
-  assert.deepEqual(appendUniqueBy(["a"], [], keyOf), ["a"]);
-});
-
-test("appendUniqueBy: 追加後も展開行のキーが一意", () => {
-  const all = appendUniqueBy(["a", "b", "c"], ["c", "d"], keyOf);
-  for (const k of all) {
-    const expandRows = buildGridRows(all, 2, keyOf, k).filter((r) => r.type === "expand");
-    assert.equal(expandRows.length, 1);
-  }
 });
 
 // ---- remeasureGridRows (列数/カード幅が変わったときの測り直し) ----

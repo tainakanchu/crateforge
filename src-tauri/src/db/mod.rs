@@ -1,6 +1,7 @@
 pub mod analysis;
 pub mod backup;
 pub mod duplicates;
+pub(crate) mod list_cache;
 pub mod playback;
 pub mod playlists;
 pub mod schema;
@@ -9,6 +10,8 @@ pub mod stats;
 pub mod sync;
 pub mod tags;
 pub mod tracks;
+#[cfg(test)]
+mod windowed_list_tests;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -47,6 +50,9 @@ pub struct Database {
     pub(crate) conn: Connection,
     #[allow(dead_code)]
     pub path: String,
+    /// 一覧の ID 列キャッシュ ([`list_cache`])。ファイルの DB はパスごとに共有 (どのコネクションからも
+    /// 同じ)、テスト用のインメモリ DB は個体ごとに別。
+    lists: list_cache::Handle,
 }
 
 impl Database {
@@ -65,8 +71,10 @@ impl Database {
         )?;
         let db = Database {
             conn,
+            lists: list_cache::Handle::new(&path_str, Some(&db_path)),
             path: path_str,
         };
+        db.lists.watch(&db.conn);
         register_functions(&db.conn)?;
         {
             let mut done = migrated_paths().lock().unwrap_or_else(|e| e.into_inner());
@@ -141,15 +149,50 @@ fn register_functions(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+impl Database {
+    /// 一覧 `list` (スコープ・検索語・並び順を表す文字列) の表示順の track_id 列。
+    /// ライブラリが書き換わるまでプロセス内で使い回す ([`list_cache`])。
+    pub(crate) fn cached_list_ids(
+        &self,
+        list: &str,
+        compute: impl FnOnce() -> Result<Vec<i64>>,
+    ) -> Result<std::sync::Arc<Vec<i64>>> {
+        self.lists.get_or_compute(list, compute)
+    }
+
+    /// このコネクションでは一覧の ID 列キャッシュを使わない (毎回計算し、覚えない)。
+    /// HTTP API の問い合わせ用: 外部クライアントの検索が、デスクトップの一覧のキャッシュを追い出さない。
+    pub fn bypass_list_cache(mut self) -> Self {
+        self.lists.set_bypass(true);
+        self
+    }
+
+    /// テスト・計測用: 覚えた ID 列を全部捨てる。
+    #[cfg(test)]
+    pub(crate) fn drop_list_cache(&self) {
+        self.lists.drop_all();
+    }
+
+    /// テスト用: 直前の書き込みから十分に時間がたったことにする (直後の計算も覚える)。
+    #[cfg(test)]
+    pub(crate) fn settle_list_cache(&self) {
+        self.lists.settle();
+    }
+}
+
 #[cfg(test)]
 impl Database {
     /// テスト用のインメモリ DB (スキーマ + マイグレーション適用済み)。
     pub fn open_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let db = Database {
             conn,
             path: ":memory:".to_string(),
+            lists: list_cache::Handle::new(&format!(":memory:{n}"), None),
         };
+        db.lists.watch(&db.conn);
         register_functions(&db.conn)?;
         schema::create_tables(&db.conn)?;
         migrate(&db.conn)?;
