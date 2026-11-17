@@ -10,6 +10,16 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+### 日本語
+
+#### デスクトップ
+- **zip をドロップして直接取り込めるようにした**: 音楽の入った zip をウィンドウにドラッグ＆ドロップすると、手で展開しなくても中の曲を取り込む（ファイル・フォルダと混ぜてもよい）。整理先フォルダが未設定なら zip と同じ場所の `<zip の名前>` フォルダ（既にあれば `(2)`, `(3)` …）に展開してその場で取り込み、設定済みならキャッシュ内の一時フォルダに展開して整理先へコピーし、一時フォルダは取り込み後（キャンセル時も）に消す。元の zip はそのまま残す。展開するのは対応形式の音楽ファイルだけで、`__MACOSX` や `.` 始まりのファイルは除く。Windows で作られた日本語ファイル名（Shift_JIS）の zip も読める。パスワード付き・壊れた zip、展開後 8 GB を超える zip、zip の外へ書き出そうとする不正なパスを含む zip はエラーを表示して取り込まない。「ファイルを追加」ダイアログでは従来どおり zip は選べない。
+
+### English
+
+#### Desktop
+- **Drop a zip to import it directly**: drag and drop a zip of music onto the window and its tracks are imported without unzipping by hand (mixing zips with files and folders is fine). With no organize folder set, the zip is extracted into a `<zip name>` folder next to it (or `(2)`, `(3)`, … if that exists) and imported in place; with an organize folder set, it is extracted into a temporary folder in the cache, copied into the organize folder, and the temporary folder is removed after the import (or when it is cancelled). The original zip is kept. Only supported audio files are extracted; `__MACOSX` and files starting with `.` are skipped. Zips with Japanese (Shift_JIS) file names made on Windows are read correctly. Password-protected or corrupted zips, zips over 8 GB once extracted, and zips with paths that escape the extraction folder show an error and are not imported. The "ファイルを追加" (Add Files) dialog still does not accept zips.
+
 ## [v0.21.0] - 2026-11-15
 
 ### 日本語
