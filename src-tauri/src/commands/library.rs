@@ -573,7 +573,7 @@ pub fn count_artists(app: AppHandle, query: Option<String>) -> Result<i64, Strin
 }
 
 /// 指定アーティストのアルバム一覧 (Artists ビューの展開表示用)。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_artist_albums(app: AppHandle, name: String) -> Result<Vec<AlbumRow>, String> {
     let db = open_db(&app)?;
     db.get_artist_albums(&name).map_err(|e| e.to_string())

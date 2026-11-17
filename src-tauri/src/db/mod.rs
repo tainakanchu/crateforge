@@ -63,10 +63,14 @@ impl Database {
         let conn = Connection::open(&db_path)?;
         // busy_timeout: バックグラウンド解析ワーカと UI コマンドが別コネクションで
         // 同時アクセスしても SQLITE_BUSY で即失敗しないように待つ。
+        // 下の `journal_mode=WAL` もロックを取るので、その前に設定する
+        // (後ろに置くと、API の書き込みが続いている間に WAL の設定が待たずに
+        // `database is locked` で失敗し、500 を返していた)。
+        conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         // temp_store / cache_size: ソートや一時テーブルをメモリ上で行い、ページキャッシュを
         // 約 32MB (負値は KiB 指定) に広げる。いずれもコネクション単位の設定。
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; \
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; \
              PRAGMA temp_store=MEMORY; PRAGMA cache_size=-32000;",
         )?;
         let db = Database {

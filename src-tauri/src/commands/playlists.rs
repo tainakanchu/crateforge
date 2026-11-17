@@ -4,7 +4,8 @@ use crate::commands::library::open_db;
 use crate::library::playlists as playlist_edit;
 use crate::models::{Playlist, SmartCriteria, Track};
 
-#[tauri::command]
+// 読み取りのみ。ライブラリ変更のたびに呼ばれるのでメインスレッドで実行しない。
+#[tauri::command(async)]
 pub fn get_playlists(app: AppHandle) -> Result<Vec<Playlist>, String> {
     let db = open_db(&app)?;
     db.get_playlists().map_err(|e| e.to_string())
@@ -162,7 +163,8 @@ pub fn rename_playlist(app: AppHandle, playlist_id: i64, name: String) -> Result
 }
 
 /// プレイリストの実際の曲数 (スマートはライブ評価、フォルダは子孫の和集合)。
-#[tauri::command]
+// 読み取りのみ。ライブラリ変更のたびに呼ばれるのでメインスレッドで実行しない。
+#[tauri::command(async)]
 pub fn get_playlist_track_count(app: AppHandle, playlist_id: i64) -> Result<usize, String> {
     let db = open_db(&app)?;
     db.playlist_member_count(playlist_id)

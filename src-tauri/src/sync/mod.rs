@@ -1218,6 +1218,7 @@ mod tests {
             tokens: ValidTokens::default(),
             pairings: PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1360,6 +1361,7 @@ mod tests {
             tokens: ValidTokens::default(),
             pairings: PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
         let (base_url, server) = serve(app).await;
 
@@ -1501,6 +1503,7 @@ mod tests {
             tokens: ValidTokens::default(),
             pairings: PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
         let (base_url, server) = serve(app).await;
 
@@ -1641,6 +1644,7 @@ mod tests {
             tokens: ValidTokens::default(),
             pairings: PairingRegistry::default(),
             cast_tickets: Default::default(),
+            held_changes: Default::default(),
         });
         let (base_url, server) = serve(app).await;
 
