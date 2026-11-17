@@ -98,6 +98,13 @@ tauri-plugin-window-state = "2.4.1"
 tauri-plugin-single-instance = "2"
 # 「変換して置き換え」で元ファイルを OS のゴミ箱へ送る (MIT)。
 trash = "5"
+# ドラッグ＆ドロップした zip の展開 (importer::zip_extract)。全 OS で使う。
+# 音楽の zip は stored / deflate がほぼすべて (Windows のエクスプローラーは大きいと deflate64)。
+# 既定機能の bzip2 / zstd / xz / aes は C ライブラリや暗号を引き込むので外す
+# (Windows では下の `zip = "2"` が既定機能を有効にするので従来どおり)。
+zip = { version = "2", default-features = false, features = ["deflate", "deflate64"] }
+# UTF-8 フラグの無い zip のエントリ名 (Windows 製の CP932 / Shift_JIS) を読む。
+encoding_rs = "0.8"
 
 # === Unix-only: MusicBrainz disc id via libdiscid (C lib comes from Nix/Brew/apt). ===
 # Skipped on Windows because libdiscid isn't trivially available via the standard
@@ -105,7 +112,9 @@ trash = "5"
 [target.'cfg(unix)'.dependencies]
 discid = "0.6"
 
-# === Windows-only: `zip` は on-demand ffmpeg ダウンロード解凍 (BtbN win64) に使用 ===
+# === Windows-only: on-demand ffmpeg ダウンロード解凍 (BtbN win64) / ポータブル版更新 ===
+# `zip` 本体は上の [dependencies] にある (zip ドロップ取り込み用に全 OS)。Windows では
+# 従来どおり既定機能 (bzip2 / zstd / aes など) も有効にしておく。
 [target.'cfg(target_os = "windows")'.dependencies]
 zip = "2"
 

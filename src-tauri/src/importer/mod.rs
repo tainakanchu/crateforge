@@ -16,6 +16,8 @@ use crate::models::{
 };
 use crate::organizer;
 
+pub mod zip_extract;
+
 /// 取り込み対象とするオーディオ拡張子 (小文字)。
 /// フロントの `src/lib/audioExtensions.ts` の `AUDIO_EXTENSIONS` と揃えること
 /// (ファイル選択ダイアログ / D&D のフィルタと同じ集合にする)。

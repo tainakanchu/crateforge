@@ -178,6 +178,13 @@ pub fn run() {
                 artwork::thumb::spawn_startup_trim(dir.join(artwork::thumb::CACHE_DIR_NAME));
             }
 
+            // zip ドロップ取り込み (整理 ON) の一時展開フォルダの残骸を消す。通常は取り込み後に
+            // 消しているが、取り込み中の終了やクラッシュで残った分の保険。ドロップより前に
+            // 終わらせたいので同期で消す (普段は空)。
+            if let Ok(root) = commands::drop_import::staging_root(app.handle()) {
+                importer::zip_extract::purge_staging_root(&root);
+            }
+
             // バックグラウンド音声解析ワーカを起動して managed state に載せる。
             app.manage(analyzer::Analyzer::new(app.handle().clone()));
 
@@ -279,6 +286,9 @@ pub fn run() {
             commands::duplicates::find_rip_duplicates,
             commands::duplicates::plan_import,
             commands::duplicates::import_with_actions,
+            commands::drop_import::prepare_drop_paths,
+            commands::drop_import::cleanup_import_staging,
+            commands::drop_import::embed_drop_artwork,
             commands::library::refresh_tech_metadata,
             commands::library::rescan_file_existence,
             commands::library::relocate_track_file,

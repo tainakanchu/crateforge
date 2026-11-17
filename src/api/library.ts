@@ -11,6 +11,10 @@ import type {
   ImportPlanItem,
   ImportActionItem,
   ImportActionsSummary,
+  PreparedDrop,
+  DropArtwork,
+  ArtworkEmbedSummary,
+  ImportActionResult,
   LibraryStats,
   TrackEdit,
   GenreTagCount,
@@ -53,6 +57,30 @@ export async function planImport(paths: string[]): Promise<ImportPlanItem[]> {
 /** 計画に対する指示 (取り込む / スキップ / 置き換え) どおりに取り込む。進捗は `import-progress`。 */
 export async function importWithActions(items: ImportActionItem[]): Promise<ImportActionsSummary> {
   return invoke("import_with_actions", { items });
+}
+
+/**
+ * ドラッグ＆ドロップされたパスのうち zip を展開し、展開先フォルダに置き換える
+ * (zip 以外はそのまま)。整理 ON なら一時フォルダへ、OFF なら zip の隣へ展開する。
+ */
+export async function prepareDropPaths(paths: string[]): Promise<PreparedDrop> {
+  return invoke("prepare_drop_paths", { paths });
+}
+
+/** `prepareDropPaths` が作った一時フォルダを消す (取り込み完了 / キャンセル後)。 */
+export async function cleanupImportStaging(staging: string): Promise<void> {
+  return invoke("cleanup_import_staging", { staging });
+}
+
+/**
+ * zip から取り込んだ曲にアートワークを埋め込む。`results` は `importWithActions` の結果。
+ * 取り込み / 置き換えに成功し、まだ埋め込みアートワークが無い曲だけが対象。
+ */
+export async function embedDropArtwork(
+  results: ImportActionResult[],
+  artwork: DropArtwork[],
+): Promise<ArtworkEmbedSummary> {
+  return invoke("embed_drop_artwork", { results, artwork });
 }
 
 /** 取り込み計画 (タグ読み・照合) の進捗を購読する。 */

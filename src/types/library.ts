@@ -74,6 +74,39 @@ export interface ImportActionsSummary {
   results: ImportActionResult[];
 }
 
+/** zip ドロップの展開に失敗した 1 件 (Rust: ZipDropError)。 */
+export interface ZipDropError {
+  /** ドロップされた zip のパス */
+  path: string;
+  message: string;
+}
+
+/** zip から展開したオーディオと、埋め込むアートワーク画像 (Rust: DropArtwork)。 */
+export interface DropArtwork {
+  audioPath: string;
+  image: string;
+}
+
+/** `embed_drop_artwork` の結果 (Rust: ArtworkEmbedSummary)。 */
+export interface ArtworkEmbedSummary {
+  embedded: number;
+  /** 既にアートワークがあったので触らなかった曲数 */
+  kept: number;
+  failed: number;
+}
+
+/**
+ * `prepare_drop_paths` の結果 (Rust: PreparedDrop)。zip は展開先フォルダに置き換え済み。
+ * `staging` があれば取り込み後 (キャンセル時も) `cleanup_import_staging` で消す。
+ */
+export interface PreparedDrop {
+  paths: string[];
+  staging: string | null;
+  errors: ZipDropError[];
+  /** 取り込み後に埋め込むアートワーク (zip 内に使える画像があった曲だけ) */
+  artwork: DropArtwork[];
+}
+
 /** 技術メタデータ一括再読み取り (#171) の結果 (Rust: TechMetaRefreshSummary)。 */
 export interface TechMetaRefreshSummary {
   /** 対象 (未取得列がある曲) の総数 */
