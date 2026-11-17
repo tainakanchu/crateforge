@@ -97,6 +97,48 @@ pub fn resize_encode(
     encode_image(&img, format)
 }
 
+/// 外から拾った画像 (zip 内のジャケットなど) を埋め込み用に整えたときの既定の最大辺 (px)。
+pub const EMBED_MAX_EDGE: u32 = 1400;
+
+/// 外から拾った画像を埋め込み用に整える: デコード → 最大辺 ≤ `edge` に縮小 (拡大はしない)
+/// → エンコードして `(バイト列, 拡張子)` を返す。デコードできなければ `None`。
+///
+/// - アルファ付きの PNG は透過を保つため PNG のまま (縮小時は PNG で再エンコード)。
+/// - それ以外は JPEG (品質 90)。ただし元が JPEG で縮小不要なら再圧縮による劣化を避けて原本を使う。
+/// - 巨大な寸法の画像 (展開すると数 GB になるもの) は image の上限でデコードを拒否する。
+pub fn prepare_for_embed(bytes: &[u8], edge: u32) -> Option<(Vec<u8>, &'static str)> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let format = reader.format()?;
+    if !matches!(format, image::ImageFormat::Jpeg | image::ImageFormat::Png) {
+        return None;
+    }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+    let img = reader.decode().ok()?;
+    let needs_shrink = img.width().max(img.height()) > edge.max(1);
+
+    if format == image::ImageFormat::Png && img.color().has_alpha() {
+        if !needs_shrink {
+            return Some((bytes.to_vec(), "png"));
+        }
+        let mut out = std::io::Cursor::new(Vec::new());
+        shrink_to(img, edge)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .ok()?;
+        return Some((out.into_inner(), "png"));
+    }
+    if format == image::ImageFormat::Jpeg && !needs_shrink {
+        return Some((bytes.to_vec(), "jpg"));
+    }
+    let (data, _) = encode_image(&shrink_to(img, edge), ThumbFormat::Jpeg(90))?;
+    Some((data, "jpg"))
+}
+
 /// 埋め込み用に画像を PNG/JPEG へ正規化して `(バイト列, MIME)` を返す。
 /// - PNG / JPEG はそのまま（再エンコードしない）。
 /// - それ以外（WebP/GIF/BMP 等）は decode して JPEG(品質90) に変換する。
@@ -182,4 +224,74 @@ pub fn remove_cover(path: &str) -> Result<(), String> {
         .save_to_path(path, WriteOptions::default())
         .map_err(|e| format!("save artwork failed: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgb, RgbImage, Rgba, RgbaImage};
+
+    fn png_bytes(img: DynamicImage) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    fn jpeg_bytes(w: u32, h: u32) -> Vec<u8> {
+        let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(w, h, Rgb([200, 10, 10])));
+        encode_image(&img, ThumbFormat::Jpeg(90)).unwrap().0
+    }
+
+    #[test]
+    fn prepare_for_embed_downscales_large_images_to_jpeg() {
+        let src = png_bytes(DynamicImage::ImageRgb8(RgbImage::from_pixel(
+            3000,
+            1500,
+            Rgb([1, 2, 3]),
+        )));
+        let (out, ext) = prepare_for_embed(&src, EMBED_MAX_EDGE).unwrap();
+        assert_eq!(ext, "jpg");
+        let img = decode_image(&out).unwrap();
+        assert_eq!((img.width(), img.height()), (1400, 700));
+    }
+
+    #[test]
+    fn prepare_for_embed_never_upscales_and_keeps_small_jpeg_as_is() {
+        let src = jpeg_bytes(300, 200);
+        let (out, ext) = prepare_for_embed(&src, EMBED_MAX_EDGE).unwrap();
+        assert_eq!(ext, "jpg");
+        assert_eq!(out, src);
+
+        let big = jpeg_bytes(2000, 2000);
+        let (out, _) = prepare_for_embed(&big, EMBED_MAX_EDGE).unwrap();
+        let img = decode_image(&out).unwrap();
+        assert_eq!((img.width(), img.height()), (1400, 1400));
+    }
+
+    #[test]
+    fn prepare_for_embed_keeps_png_with_alpha_as_png() {
+        let src = png_bytes(DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            1600,
+            800,
+            Rgba([0, 0, 0, 10]),
+        )));
+        let (out, ext) = prepare_for_embed(&src, EMBED_MAX_EDGE).unwrap();
+        assert_eq!(ext, "png");
+        let img = decode_image(&out).unwrap();
+        assert_eq!((img.width(), img.height()), (1400, 700));
+        assert!(img.color().has_alpha());
+
+        // アルファ無しの PNG は JPEG にする (小さくても)。
+        let opaque = png_bytes(DynamicImage::ImageRgb8(RgbImage::from_pixel(
+            10,
+            10,
+            Rgb([1, 2, 3]),
+        )));
+        assert_eq!(prepare_for_embed(&opaque, EMBED_MAX_EDGE).unwrap().1, "jpg");
+    }
+
+    #[test]
+    fn prepare_for_embed_rejects_non_images() {
+        assert!(prepare_for_embed(b"not an image", EMBED_MAX_EDGE).is_none());
+    }
 }

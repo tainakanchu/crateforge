@@ -995,6 +995,7 @@ dependencies = [
  "chrono",
  "discid",
  "ebur128",
+ "encoding_rs",
  "flate2",
  "fontdb",
  "futures-util",

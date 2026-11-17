@@ -42,7 +42,7 @@ With **"ファイルを追加" (Add Files)** in the toolbar, you can import your
 
 Pick a folder with **"フォルダを追加" (Add Folder)** in the toolbar (inside the ⋯ menu when the window is narrow) and it
 **walks subfolders recursively**, importing every supported file it finds. **Dragging and dropping** onto the window
-goes through the same path, so you can drop a mix of files and folders.
+goes through the same path, so you can drop a mix of files and folders ([zip files work too](#dropping-a-zip-file)).
 
 - Only files with a supported extension are imported (everything else is ignored).
 - **Hidden files and folders (starting with `.`) are skipped** (`.DS_Store` and friends).
@@ -55,6 +55,33 @@ goes through the same path, so you can drop a mix of files and folders.
 - Symlink loops are detected and cut off, and unreadable folders are skipped so the rest still imports.
 - The result is shown as a toast: how many were imported, how many were skipped as already imported, and how many failed.
 - Imported tracks land in the **Inbox** in the sidebar, where you can [rate them and add them to the Crate](../playback/).
+
+### Dropping a zip file
+
+You can **drop a downloaded album's zip file straight onto the window, without unzipping it first**
+(mixed with files and folders is fine). The supported files inside are extracted and imported the same way as above.
+Zip files cannot be picked in the "ファイルを追加" (Add Files) dialog; this works with drag and drop only.
+
+- **Where the files go**:
+  - **No organize folder set**: the zip is extracted into a **`<zip name>` folder next to the zip**, and those files are imported in place.
+    If a folder with that name already exists, a new `<zip name> (2)`, `(3)`, … folder is created instead (existing folders are never written to).
+  - **Organize folder set**: the zip is extracted into a temporary folder in the app's cache and the files are copied into the organize folder as usual.
+    The temporary folder is deleted automatically once the import finishes (or is cancelled).
+- **The original zip is kept as is** (never modified or deleted).
+- Only supported audio files are extracted. Images, text files, the `__MACOSX` folder and files / folders starting with `.` are left out.
+  The folder structure inside the zip is kept.
+- Zips with Japanese file names made on Windows (Shift_JIS) are extracted without garbled names.
+- These zips are not imported and an error is shown (the other files you dropped with them are still imported):
+  password-protected, corrupted, **more than 8 GB once extracted**, or containing paths that try to write outside the extraction folder.
+- A zip with no supported files creates no folder and shows "対応フォーマットのファイルがありません" (no supported files).
+- **Cover images inside the zip are embedded as artwork** (jpg / png).
+  - The image is picked from the track's folder (or, if it has none, the nearest parent folder up to the top of the zip).
+    File names are preferred in the order `cover` > `folder` > `front` > `album` > `artwork` (names starting with them, like `cover_front`, count too);
+    otherwise, if there is exactly one image, that one is used. If no single image can be chosen, nothing is set.
+  - **Tracks that already have artwork are never changed.** Only tracks imported (or replaced) in this run get artwork; tracks skipped in the confirmation dialog do not.
+  - Images are shrunk to at most 1400px on the long edge before embedding (small images are not enlarged). Images over 50 MB are not used.
+    Even when the zip is extracted next to itself, images are not written into that folder.
+  - If any tracks got artwork, the result toast shows "アートワーク N 曲" (artwork: N tracks).
 
 ### Organize folder (auto-organize)
 
