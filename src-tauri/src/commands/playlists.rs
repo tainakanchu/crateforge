@@ -102,6 +102,42 @@ pub fn get_playlist_tracks(
     .map_err(|e| e.to_string())
 }
 
+/// プレイリスト (スマート含む) の一覧の件数。`get_playlist_tracks` /
+/// `get_smart_playlist_tracks` の全ページぶん (`query` はプレイリスト内検索)。
+#[tauri::command(async)]
+pub fn count_playlist_tracks(
+    app: AppHandle,
+    playlist_id: i64,
+    query: Option<String>,
+) -> Result<i64, String> {
+    let db = open_db(&app)?;
+    db.count_playlist_tracks_filtered(playlist_id, query.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// プレイリスト (スマート含む) の一覧の track_id を表示順で全件返す。
+/// `sort_field` を省くと通常プレイリストは手動順 (sort_index)、スマートは criteria の並び。
+/// `only` を渡すと、そのうち一覧に入っている ID だけを表示順で返す (`get_track_ids` と同じ)。
+#[tauri::command(async)]
+pub fn get_playlist_track_ids(
+    app: AppHandle,
+    playlist_id: i64,
+    query: Option<String>,
+    sort_field: Option<String>,
+    sort_order: Option<String>,
+    only: Option<Vec<i64>>,
+) -> Result<Vec<i64>, String> {
+    let db = open_db(&app)?;
+    db.get_playlist_track_ids_filtered(
+        playlist_id,
+        query.as_deref(),
+        sort_field.as_deref(),
+        sort_order.as_deref(),
+    )
+    .map(|ids| crate::commands::library::only_ids(ids, only))
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn create_playlist(
     app: AppHandle,
@@ -203,8 +239,10 @@ pub fn remove_tracks_from_playlist(
 pub fn reorder_playlist_tracks(
     app: AppHandle,
     playlist_id: i64,
+    base_track_ids: Vec<i64>,
     ordered_track_ids: Vec<i64>,
-) -> Result<(), String> {
+) -> Result<playlist_edit::ReorderOutcome, String> {
     let db = open_db(&app)?;
-    playlist_edit::reorder_tracks(&db, playlist_id, &ordered_track_ids).map_err(|e| e.to_string())
+    playlist_edit::reorder_tracks_from(&db, playlist_id, &base_track_ids, &ordered_track_ids)
+        .map_err(|e| e.to_string())
 }

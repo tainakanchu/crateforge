@@ -294,7 +294,7 @@ export function RightRail({
     }
   }, [prevRailTab, railTab, setRailTab]);
 
-  // Up Next: バックエンドのキューを解決する。曲名はロード済み tracks に依存せず
+  // Up Next: バックエンドのキューを解決する。曲名は一覧 (tracks) に依存せず
   // getTracksByIds で取り直すため、別ビュー/別ページの曲もタイトル表示できる。
   // 解決するのは先頭 UP_NEXT_LIMIT 曲だけ (残りは件数のみ)。
   const aliveRef = useRef(false);

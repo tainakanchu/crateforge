@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
 import * as playlistsApi from "../api/playlists";
 import * as libraryApi from "../api/library";
@@ -17,12 +17,14 @@ import {
   GRID_GAP as GAP,
   GRID_META_H as META_H,
   GRID_PAD_X as PAD_X,
-  buildGridRows,
+  gridLayout,
   gridMetrics,
-  isNearBottom,
 } from "../lib/gridRows";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { useCardGridVirtualizer } from "../hooks/useCardGridVirtualizer";
+import { useTrackList } from "../hooks/useTrackList";
+import { PlaceholderCard } from "./PlaceholderCard";
+import { LoadRetry } from "./LoadRetry";
 import * as trackActions from "../lib/trackActions";
 import { trackApi } from "../lib/trackActionsApi";
 import { AddGenreTagDialog } from "./AddGenreTagDialog";
@@ -32,21 +34,21 @@ interface CtxMenu {
   x: number;
   y: number;
   track: Track;
+  /** 一覧の何曲目か (メニューの「再生」でここから再生する)。 */
+  index: number;
 }
 
 interface TracksViewProps {
-  onLoadMore: () => void;
   onTracksChanged: () => void;
   onEditTrack: (tracks: Track[]) => void;
   onConvert: (trackIds: number[], mode?: ConvertMode) => void;
 }
 
 
-export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert }: TracksViewProps) {
+/// 1 曲 1 枚のカード表示。スクロール範囲は最初から全件ぶん確保し、見えている範囲の曲だけを
+/// 取得する (docs/library-list/design.md)。
+export function TracksView({ onTracksChanged, onEditTrack, onConvert }: TracksViewProps) {
   const {
-    tracks,
-    hasMore,
-    isLoading,
     playback,
     crate,
     addToCrate,
@@ -67,42 +69,47 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   // contextMenu が null になるので、対象は開くときにここへ控えておく。
   const [addTagTargetIds, setAddTagTargetIds] = useState<number[] | null>(null);
   // 削除確認モーダルの対象曲（null で非表示）。
-  const [deleteTargets, setDeleteTargets] = useState<Track[] | null>(null);
+  const [deleteTargets, setDeleteTargets] = useState<number[] | null>(null);
   const [newTag, setNewTag] = useState("");
 
   const { cols, cardW } = gridMetrics(width);
-  const rows = useMemo(() => buildGridRows(tracks, cols), [tracks, cols]);
+  const list = useTrackList();
+  const layout = useMemo(() => gridLayout(list.count, cols), [list.count, cols]);
   const rowVirtualizer = useCardGridVirtualizer({
-    rows,
+    layout,
     scrollRef: parentRef,
-    cols,
     gridRowHeight: cardW + META_H + GAP,
+    onVisibleItems: list.setVisibleRange,
   });
 
-  const handleScroll = useCallback(() => {
-    const el = parentRef.current;
-    if (!el || isLoading || !hasMore) return;
-    if (isNearBottom(el)) onLoadMore();
-  }, [isLoading, hasMore, onLoadMore]);
+  // 一覧が切り替わったら (スコープ・検索・並び順の変更) 先頭へ戻す。
+  useEffect(() => {
+    if (parentRef.current) parentRef.current.scrollTop = 0;
+  }, [list.key, parentRef]);
 
-  const playTrack = useCallback(async (t: Track) => {
-    const ids = trackActions.playableIds(tracks);
-    if (ids.length === 0) return;
-    const start = Math.max(0, ids.indexOf(t.trackId));
-    // キューは再生できる曲だけ。鳴らすのはクリックした曲そのもの。
-    await run(
-      "play",
-      () => trackActions.playQueueFrom(trackApi, ids, start, t.trackId),
-      t.name || "(unknown)",
-    );
-  }, [tracks, run]);
+  // index はカードの通し番号 (一覧の何曲目か)。キューには一覧の全曲を表示順で入れ、
+  // クリックした曲から再生する (読み込んでいない曲も含む。TrackTable と同じ)。
+  const playTrack = useCallback(
+    async (t: Track, index: number) => {
+      await run(
+        "play",
+        async () => {
+          const ids = await list.getIds();
+          const start = ids[index] === t.trackId ? index : Math.max(0, ids.indexOf(t.trackId));
+          await trackActions.playQueueFrom(trackApi, ids, start, t.trackId);
+        },
+        t.name || "(unknown)",
+      );
+    },
+    [list, run],
+  );
 
   const closeMenu = useCallback(() => setContextMenu(null), []);
 
-  const openTrackMenu = useCallback((e: React.MouseEvent, t: Track) => {
+  const openTrackMenu = useCallback((e: React.MouseEvent, t: Track, index: number) => {
     e.preventDefault();
     e.stopPropagation();
-    setContextMenu({ x: e.clientX, y: e.clientY, track: t });
+    setContextMenu({ x: e.clientX, y: e.clientY, track: t, index });
   }, []);
 
   const handleSetRating = useCallback(async (stars: number) => {
@@ -177,7 +184,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const handleDelete = useCallback(() => {
     if (!contextMenu) return;
-    setDeleteTargets([contextMenu.track]);
+    setDeleteTargets([contextMenu.track.trackId]);
     closeMenu();
   }, [contextMenu, closeMenu]);
 
@@ -237,8 +244,9 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
   const crateSet = useMemo(() => new Set(crate.map((t) => t.trackId)), [crate]);
 
+  // メニュー表示用 (レーティングは最新の行から引き直す)。
   const ctxTrack = contextMenu
-    ? tracks.find((t) => t.trackId === contextMenu.track.trackId) ?? contextMenu.track
+    ? (list.loadedTrack(contextMenu.track.trackId) ?? contextMenu.track)
     : null;
   const activePlaylist =
     viewMode === "playlist" && selectedPlaylistId !== null
@@ -250,7 +258,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
     .filter((p): p is Playlist => Boolean(p));
   const ctxGenreTags = ctxTrack?.genre ? splitGenre(ctxTrack.genre) : [];
 
-  if (tracks.length === 0 && !isLoading) {
+  if (list.count === 0 && !list.loading) {
     return (
       <div className="cb-grid-wrap">
         <EmptyState />
@@ -261,10 +269,11 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
   const items = rowVirtualizer.getVirtualItems();
 
   return (
-    <div className="cb-grid-wrap" ref={setParentRef} onScroll={handleScroll} onClick={closeMenu}>
+    <div className="cb-grid-wrap" ref={setParentRef} onClick={closeMenu}>
       <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
         {items.map((vRow) => {
-          const row = rows[vRow.index];
+          const row = layout.rowAt(vRow.index);
+          if (row.type !== "grid") return null;
           return (
             <div
               key={vRow.key}
@@ -286,7 +295,11 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                   padding: `0 ${PAD_X}px ${GAP}px`,
                 }}
               >
-                {row.items.map((t, j) => {
+                {Array.from({ length: row.end - row.start }, (_, j) => {
+                  const index = row.start + j;
+                  const t = list.get(index);
+                  // 未取得の曲は同じ高さのプレースホルダ (届いても行がずれない)。
+                  if (!t) return <PlaceholderCard key={`ph:${index}`} size={cardW} />;
                   const inCrate = crateSet.has(t.trackId);
                   const isCurrent = playback.currentTrackId === t.trackId;
                   return (
@@ -295,8 +308,8 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                       <div
                         className={"cb-card" + (inCrate ? " incrate" : "") + (isCurrent ? " playing" : "")}
                         style={{ background: artGradient(t.album || t.name || ""), height: cardW }}
-                        onDoubleClick={() => void playTrack(t)}
-                        onContextMenu={(e) => openTrackMenu(e, t)}
+                        onDoubleClick={() => void playTrack(t, index)}
+                        onContextMenu={(e) => openTrackMenu(e, t, index)}
                       >
                         <span className="glyph">{leadingGlyph(t.album || t.name || "")}</span>
                         <ArtworkImg path={t.fileExists ? t.locationPath : null} size={cardW} />
@@ -325,7 +338,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                           title="再生"
                           onClick={(e) => {
                             e.stopPropagation();
-                            void playTrack(t);
+                            void playTrack(t, index);
                           }}
                         >
                           <Icon name="play" size={20} fill="currentColor" stroke={0} />
@@ -353,8 +366,8 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
                       </div>
                       <div
                         className="cov-meta"
-                        onDoubleClick={() => void playTrack(t)}
-                        onContextMenu={(e) => openTrackMenu(e, t)}
+                        onDoubleClick={() => void playTrack(t, index)}
+                        onContextMenu={(e) => openTrackMenu(e, t, index)}
                         title={[t.name || "(unknown)", t.artist].filter(Boolean).join(" — ")}
                       >
                         <div className="cj">{t.name || "(unknown)"}</div>
@@ -368,7 +381,12 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           );
         })}
       </div>
-      {isLoading && <div className="cb-loading">Loading…</div>}
+      {list.loading && <div className="cb-loading">Loading…</div>}
+      {list.failed && (
+        <div className="cb-list-retry">
+          <LoadRetry message="一覧の一部を取得できませんでした" onRetry={list.retry} />
+        </div>
+      )}
 
       {contextMenu && ctxTrack && (
         <TrackContextMenu
@@ -387,7 +405,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
           relocateTrack={ctxTrack}
           deleteCount={1}
           onClose={closeMenu}
-          onPlay={() => { void playTrack(contextMenu.track); closeMenu(); }}
+          onPlay={() => { void playTrack(contextMenu.track, contextMenu.index); closeMenu(); }}
           onSetRating={handleSetRating}
           onAddToCrate={handleAddToCrate}
           onPlayNext={handlePlayNext}
@@ -408,7 +426,7 @@ export function TracksView({ onLoadMore, onTracksChanged, onEditTrack, onConvert
 
       {deleteTargets && (
         <DeleteTracksDialog
-          tracks={deleteTargets}
+          trackIds={deleteTargets}
           onClose={() => setDeleteTargets(null)}
           onDeleted={onTracksChanged}
         />

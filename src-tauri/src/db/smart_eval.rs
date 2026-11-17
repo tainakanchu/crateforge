@@ -29,8 +29,6 @@ struct PlaylistRow {
 struct Library {
     tracks: Vec<Track>,
     analysis: HashMap<i64, TrackAnalysis>,
-    /// track_id → `tracks` の添字。
-    index: HashMap<i64, usize>,
 }
 
 /// 解決済みメンバー。順序付きの列と、参照判定用の集合を両方持つ。
@@ -165,28 +163,6 @@ impl PlaylistResolver<'_> {
             .unwrap_or_default())
     }
 
-    /// 評価パスで読み込んだ解析結果 (track_id → 解析)。実効 BPM での並び替えに使う。
-    pub fn analysis(&mut self) -> Result<&smart::AnalysisMap> {
-        self.ensure_library()?;
-        Ok(&self.library.as_ref().expect("library loaded").analysis)
-    }
-
-    /// スマートプレイリストの評価結果 (criteria の並び + limit 適用済み) を曲で返す。
-    /// criteria を持たない (通常・フォルダ・存在しない) なら None。
-    pub fn smart_tracks(&mut self, playlist_id: i64) -> Result<Option<Vec<Track>>> {
-        if !self.is_smart(playlist_id) {
-            return Ok(None);
-        }
-        let ids = self.track_ids(playlist_id)?;
-        self.ensure_library()?;
-        let lib = self.library.as_ref().expect("library loaded");
-        Ok(Some(
-            ids.iter()
-                .filter_map(|id| lib.index.get(id).map(|&i| lib.tracks[i].clone()))
-                .collect(),
-        ))
-    }
-
     fn ensure_library(&mut self) -> Result<()> {
         if self.library.is_none() {
             let tracks = self.db.get_all_tracks()?;
@@ -196,15 +172,9 @@ impl PlaylistResolver<'_> {
                 .into_iter()
                 .map(|a| (a.track_id, a))
                 .collect();
-            let index = tracks
-                .iter()
-                .enumerate()
-                .map(|(i, t)| (t.track_id, i))
-                .collect();
             self.library = Some(Library {
                 tracks,
                 analysis,
-                index,
             });
         }
         Ok(())

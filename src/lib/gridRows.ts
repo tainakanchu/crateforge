@@ -4,12 +4,10 @@
 export const GRID_GAP = 18;
 export const GRID_PAD_X = 20;
 export const GRID_MIN_CARD = 150;
-/** カード下のラベル 2 行 (名前・件数) のおよその高さ。 */
-export const GRID_META_H = 46;
+/** カード下のラベル 2 行 (名前・件数) の高さ。styles.css の .cov-meta (7 + 18 + 1 + 16) と一致させる。 */
+export const GRID_META_H = 42;
 /** 展開行の高さの見積もり (実測されるまでの仮の値)。 */
 export const GRID_EXPAND_ESTIMATE = 260;
-/** 末尾からこの距離までスクロールしたら追加ロードする。 */
-export const GRID_LOAD_MORE_PX = 400;
 
 export interface GridMetrics {
   /** 1 行あたりのカード数 (下限 2)。 */
@@ -29,55 +27,106 @@ export function gridMetrics(width: number): GridMetrics {
   return { cols, cardW };
 }
 
-export type GridCardRow<T> = { type: "grid"; key: string; items: T[] };
-export type GridExpandRow<T> = { type: "expand"; key: string; item: T };
-export type GridRow<T> = GridCardRow<T> | GridExpandRow<T>;
+/** カード行: 通し番号 [start, end) の項目を横に並べる。 */
+export interface GridCardRow {
+  type: "grid";
+  key: string;
+  start: number;
+  end: number;
+}
+/** 展開行: 通し番号 itemIndex の項目の中身 (アルバムの曲一覧など)。 */
+export interface GridExpandRow {
+  type: "expand";
+  key: string;
+  itemIndex: number;
+}
+export type GridRow = GridCardRow | GridExpandRow;
+
+/** 展開中の項目。項目キーと、開いたときの通し番号で覚える。 */
+export interface GridExpanded {
+  key: string;
+  index: number;
+}
+
+export interface GridLayout {
+  cols: number;
+  /** 仮想化する行数 (カード行 + 展開行)。 */
+  rowCount: number;
+  /** 仮想行 i の内容。 */
+  rowAt: (i: number) => GridRow;
+  /** 仮想行 [firstRow, lastRow] に並ぶ項目の通し番号の範囲 (両端を含む)。項目が無ければ null。 */
+  itemRange: (firstRow: number, lastRow: number) => { start: number; end: number } | null;
+}
 
 /**
- * items を cols 枚ずつのグリッド行に分け、expandedKey の項目を含む行の直後に展開行を差し込む。
+ * count 件の項目を cols 枚ずつのカード行に並べ、展開中の項目を含む行の直後に展開行を 1 つ差し込む。
+ *
+ * 行は件数だけで決まる (項目の中身は要らない) ので、スクロール範囲を最初から全件ぶん確保でき、
+ * 未取得の項目はプレースホルダのカードで埋められる (docs/library-list/design.md §1, §6)。
  *
  * 行キーは仮想化の実測サイズのキャッシュキーになるので、展開の開閉で変わってはいけない
  * (行番号をキーにすると、展開行の挿入/除去で後続行の番号がずれ、実測サイズが別の行に
  * 付け替わって行が重なる)。
- * - グリッド行: `g:<cols>:<グリッド行の通し番号>` (展開行を数えない番号。同じ曲が複数回入る
- *   プレイリストでも一意)
+ * - カード行: `g:<cols>:<カード行の通し番号>` (展開行を数えない番号)
  * - 展開行: `x:<項目キー>`
- *
- * 展開しないグリッド (TracksView) は keyOf / expandedKey を省略でき、グリッド行だけが返る。
  */
-export function buildGridRows<T>(items: readonly T[], cols: number): GridCardRow<T>[];
-export function buildGridRows<T>(
-  items: readonly T[],
+export function gridLayout(
+  count: number,
   cols: number,
-  keyOf: (item: T) => string,
-  expandedKey: string | null,
-): GridRow<T>[];
-export function buildGridRows<T>(
-  items: readonly T[],
-  cols: number,
-  keyOf?: (item: T) => string,
-  expandedKey: string | null = null,
-): GridRow<T>[] {
+  expanded: GridExpanded | null = null,
+): GridLayout {
   const n = Math.max(1, Math.floor(cols));
-  const out: GridRow<T>[] = [];
-  for (let i = 0; i < items.length; i += n) {
-    const chunk = items.slice(i, i + n);
-    out.push({ type: "grid", key: `g:${n}:${i / n}`, items: chunk });
-    if (!keyOf || expandedKey === null) continue;
-    for (const it of chunk) {
-      const k = keyOf(it);
-      if (k === expandedKey) out.push({ type: "expand", key: `x:${k}`, item: it });
-    }
-  }
-  return out;
+  const total = Math.max(0, Math.floor(count));
+  const cardRows = Math.ceil(total / n);
+  const open = expanded !== null && expanded.index >= 0 && expanded.index < total ? expanded : null;
+  /** 展開行の仮想行番号 (無ければ -1)。 */
+  const expandRow = open ? Math.floor(open.index / n) + 1 : -1;
+  const rowCount = cardRows + (open ? 1 : 0);
+  /** 仮想行 i に対応するカード行の番号 (展開行は、その項目が載っている直前のカード行)。 */
+  const cardRowOf = (i: number) => (expandRow >= 0 && i >= expandRow ? i - 1 : i);
+  return {
+    cols: n,
+    rowCount,
+    rowAt: (i) => {
+      if (open && i === expandRow) {
+        return { type: "expand", key: `x:${open.key}`, itemIndex: open.index };
+      }
+      const g = cardRowOf(i);
+      return { type: "grid", key: `g:${n}:${g}`, start: g * n, end: Math.min(total, (g + 1) * n) };
+    },
+    itemRange: (firstRow, lastRow) => {
+      if (rowCount === 0 || lastRow < firstRow) return null;
+      const clamp = (i: number) => Math.max(0, Math.min(rowCount - 1, i));
+      const first = cardRowOf(clamp(firstRow));
+      const last = cardRowOf(clamp(lastRow));
+      return { start: first * n, end: Math.min(total, (last + 1) * n) - 1 };
+    },
+  };
 }
 
-/** スクロール位置が末尾の手前 threshold px 以内か (追加ロードの判定)。 */
-export function isNearBottom(
-  el: { scrollTop: number; clientHeight: number; scrollHeight: number },
-  threshold: number = GRID_LOAD_MORE_PX,
-): boolean {
-  return el.scrollTop + el.clientHeight >= el.scrollHeight - threshold;
+/**
+ * 一覧を取り直したあと、展開中の項目の位置を合わせ直す。
+ *
+ * - 元の位置の項目が同じキーなら、そのまま。
+ * - 元の位置がまだ取得できていなければ、そのまま (届いてから判定し直す)。
+ * - 別の項目になっていた / 件数が減って位置が無くなったら、取得済みの項目から同じキーを探して
+ *   移す。見つからなければ閉じる (null)。
+ */
+export function relocateExpanded(
+  expanded: GridExpanded | null,
+  count: number,
+  keyAt: (index: number) => string | undefined,
+  loadedKeys: Iterable<[number, string]>,
+): GridExpanded | null {
+  if (expanded === null) return null;
+  if (expanded.index < count) {
+    const here = keyAt(expanded.index);
+    if (here === undefined || here === expanded.key) return expanded;
+  }
+  for (const [index, key] of loadedKeys) {
+    if (key === expanded.key) return { key, index };
+  }
+  return null;
 }
 
 /** 行の高さを左右する寸法。これが変わったときだけ実測キャッシュを捨てる。 */
@@ -90,32 +139,10 @@ export interface GridMeasureKey {
 /**
  * 仮想化の実測キャッシュを捨てて測り直すべきか。
  *
- * 引数に行リストや展開状態を取らないのは意図どおり: 展開の開閉・遅延取得・追加ロードで
+ * 引数に行の並びや展開状態を取らないのは意図どおり: 展開の開閉・遅延取得・ページの到着で
  * キャッシュを捨てると、展開行が見積もり高さに戻って次の行が重なる (行キーが安定なので不要)。
  * 測り直すのは初回 (prev が null) と、カード幅/列数が変わってグリッド行の高さが変わるときだけ。
  */
 export function shouldRemeasureGrid(prev: GridMeasureKey | null, next: GridMeasureKey): boolean {
   return prev === null || prev.gridRowHeight !== next.gridRowHeight || prev.cols !== next.cols;
-}
-
-/**
- * 追加ロードしたページを末尾に足す。既にあるキーの行は足さない。
- *
- * offset ページングは、取得の合間に並びが変わると同じ行が 2 ページにまたがって返りうる。
- * 項目キーは展開行の行キー (`x:<項目キー>`) になるので、重複させない。
- */
-export function appendUniqueBy<T>(
-  prev: readonly T[],
-  page: readonly T[],
-  keyOf: (item: T) => string,
-): T[] {
-  const seen = new Set(prev.map(keyOf));
-  const out = [...prev];
-  for (const it of page) {
-    const k = keyOf(it);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(it);
-  }
-  return out;
 }

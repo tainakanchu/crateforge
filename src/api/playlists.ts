@@ -93,11 +93,15 @@ export async function removeTracksFromPlaylist(
   return invoke("remove_tracks_from_playlist", { playlistId, trackIds });
 }
 
+/// プレイリストの曲順を orderedTrackIds で全置換する (手動並べ替え)。
+/// baseTrackIds は並べ替えを始めたときの全曲順で、DB の曲順がそれと同じときだけ書き込む
+/// (照合と書き込みは 1 トランザクション)。違っていたら何も書かず "changed" を返す。
 export async function reorderPlaylistTracks(
   playlistId: number,
-  orderedTrackIds: number[],
-): Promise<void> {
-  return invoke("reorder_playlist_tracks", { playlistId, orderedTrackIds });
+  baseTrackIds: readonly number[],
+  orderedTrackIds: readonly number[],
+): Promise<"reordered" | "changed"> {
+  return invoke("reorder_playlist_tracks", { playlistId, baseTrackIds, orderedTrackIds });
 }
 
 // ===== Smart playlists =====
@@ -147,6 +151,31 @@ export async function getSmartPlaylistTracks(
     sortField,
     sortOrder,
     query,
+  });
+}
+
+/// プレイリスト (スマート含む) の一覧の件数 (getPlaylistTracks / getSmartPlaylistTracks の
+/// 全ページぶん)。`query` はプレイリスト内検索。
+export async function countPlaylistTracks(playlistId: number, query?: string): Promise<number> {
+  return invoke("count_playlist_tracks", { playlistId, query: query || null });
+}
+
+/// プレイリスト (スマート含む) の一覧の trackId を表示順で全件取得する。sortField を省くと
+/// 通常プレイリストは手動順 (sort_index)、スマートは criteria の並び。
+export async function getPlaylistTrackIds(
+  playlistId: number,
+  query?: string,
+  sortField?: SortField,
+  sortOrder?: SortOrder,
+  /** 渡すと、そのうち一覧に入っている ID だけを表示順で返す。 */
+  only?: readonly number[],
+): Promise<number[]> {
+  return invoke("get_playlist_track_ids", {
+    playlistId,
+    query: query || null,
+    sortField,
+    sortOrder,
+    only: only ?? null,
   });
 }
 
