@@ -11,6 +11,9 @@
 //! - フィールド 0 はサブ条件で、データが入れ子の SLst グループ。
 //! - 文字列データは UTF-16BE。数値データ (0x44 バイト) は data+0 に値1 (u64 BE)、data+24 に
 //!   値2 (範囲の上限。それ以外は値1と同じ)、data+16 / data+40 は単位 (通常 1、相対日付では秒数)。
+//! - 相対日付 (「過去 N 日以内」/ 否定で「過去 N 日以内でない」) は演算 0x00 で、値1 が
+//!   [`RELATIVE_DATE_MAGIC`]、data+8 に -N (i64 BE)、data+16 に単位の秒数 (86400 日 / 604800 週 /
+//!   2628000 月)。itunessmart / Banshee の資料による (実データでは未確認)。
 //! - プレイリスト (0x28) は data+0 の u64 を 16 桁の大文字 16 進にしたものが参照先の
 //!   "Playlist Persistent ID"。
 //! - Smart Info: byte0 ライブ更新、byte2 上限あり、byte3 上限の種類 (3 = 曲数)、
@@ -20,7 +23,7 @@
 //! 変換自体を失敗扱いにする (呼び出し側はそのプレイリストに条件を保存しない)。
 
 use crate::models::{SmartCriteria, SmartGroup, SmartOp, SmartRule};
-use crate::smart::PLAYLIST_FIELD;
+use crate::smart::{format_relative_date, RelativeUnit, PLAYLIST_FIELD};
 
 /// デコード結果。`result` が Err ならそのプレイリストは変換しない (理由つき)。
 #[derive(Debug)]
@@ -35,6 +38,10 @@ const FIRST_RULE_OFFSET: usize = 136;
 const RULE_HEADER_LEN: usize = 56;
 /// 相対日付 (「過去 N 日以内」など) を表す値1 のマジック。
 const RELATIVE_DATE_MAGIC: u64 = 0x2dae_2dae_2dae_2dae;
+/// 相対日付の単位 (秒数)。iTunes の「月」は 30.4166… 日 (= 365 日 / 12) で、暦の月に読み替える。
+const SECONDS_PER_DAY: u64 = 86_400;
+const SECONDS_PER_WEEK: u64 = 604_800;
+const SECONDS_PER_MONTH: u64 = 2_628_000;
 /// Mac (HFS+) 紀元 1904-01-01 から Unix 紀元までの秒数。
 const MAC_EPOCH_OFFSET: i64 = 2_082_844_800;
 /// このライブラリでは常に真とみなすメディアの種類 (ミュージック / ミュージックビデオ)。
@@ -122,7 +129,7 @@ fn int_field(id: u32) -> Option<&'static str> {
     })
 }
 
-/// 日付フィールド (絶対日付のみ対応)。
+/// 日付フィールド (絶対日付と相対日付「過去 N 日 / 週 / か月以内」)。
 fn date_field(id: u32) -> Option<&'static str> {
     Some(match id {
         0x10 => "dateAdded",
@@ -407,9 +414,7 @@ impl Decoder {
             return self.unsupported(format!("{name} の条件形式が不正なため除外しました"));
         };
         if v1 == RELATIVE_DATE_MAGIC {
-            return self.unsupported(format!(
-                "{name} の相対日付 (「過去 N 日以内」など) は未対応のため除外しました"
-            ));
+            return self.relative_date_rule(name, logic, negated, data);
         }
         // 絶対日付は Mac 紀元の秒 (iTunes のローカル時刻)。DB は UTC の ISO8601 文字列なので
         // タイムゾーン分のずれは許容し、同じ書式の文字列比較で判定する。
@@ -429,6 +434,55 @@ impl Decoder {
                 "{name} の演算 (0x{logic:02x}) は未対応のため除外しました"
             )),
         }
+    }
+
+    /// 相対日付 → `inLast` / `notInLast` (値は `"30d"` など)。
+    fn relative_date_rule(
+        &mut self,
+        name: &str,
+        logic: u8,
+        negated: bool,
+        data: &[u8],
+    ) -> Result<Folded, String> {
+        let (Some(count), Some(unit)) = (u64_at(data, 8), u64_at(data, 16)) else {
+            return self.unsupported(format!("{name} の相対日付の形式が不正なため除外しました"));
+        };
+        if logic != 0x00 {
+            return self.unsupported(format!(
+                "{name} の相対日付の演算 (0x{logic:02x}) は未対応のため除外しました"
+            ));
+        }
+        // 件数は負数 (-N) で入っている。念のため符号は問わない。
+        let n = (count as i64).unsigned_abs();
+        let converted = match unit {
+            SECONDS_PER_DAY => Some((n, RelativeUnit::Day)),
+            SECONDS_PER_WEEK => Some((n, RelativeUnit::Week)),
+            SECONDS_PER_MONTH => Some((n, RelativeUnit::Month)),
+            // ほかの秒数でも日の倍数なら日数で表す。
+            u if u > 0 && u % SECONDS_PER_DAY == 0 => {
+                n.checked_mul(u / SECONDS_PER_DAY).map(|d| (d, RelativeUnit::Day))
+            }
+            _ => None,
+        };
+        let Some((n, unit)) = converted
+            .and_then(|(n, unit)| {
+                u32::try_from(n)
+                    .ok()
+                    .filter(|n| *n > 0 && *n <= unit.max_count())
+                    .map(|n| (n, unit))
+            })
+        else {
+            return self.unsupported(format!(
+                "{name} の相対日付 (件数 {}・単位 {unit} 秒) は未対応のため除外しました",
+                count as i64
+            ));
+        };
+        let op = if negated {
+            SmartOp::NotInLast
+        } else {
+            SmartOp::InLast
+        };
+        Ok(Folded::Rule(rule(name, op, format_relative_date(n, unit))))
     }
 
     /// Smart Info の上限 (曲数) と、その上限を選ぶ並びを反映する。
@@ -904,11 +958,70 @@ mod tests {
         assert!(out.result.is_err(), "{:?}", out.result);
         assert!(!out.warnings.is_empty());
 
-        // 相対日付だけの条件も同様。
-        let mut rel = int_data(RELATIVE_DATE_MAGIC, RELATIVE_DATE_MAGIC);
-        rel[8..16].copy_from_slice(&(-7i64).to_be_bytes());
-        let blob = slst(false, &[raw_rule(0x10, 0, 0x00, &rel)]);
-        assert!(decode_smart_playlist(&blob, None).result.is_err());
+        // 単位の分からない相対日付だけの条件も同様。
+        let blob = slst(false, &[raw_rule(0x10, 0, 0x00, &rel_data(-7, 3_600))]);
+        let out = decode_smart_playlist(&blob, None);
+        assert!(out.result.is_err(), "{:?}", out.result);
+        assert!(out.warnings[0].contains("相対日付"), "{:?}", out.warnings);
+    }
+
+    /// 相対日付のデータ: 値1・値2 がマジック、data+8 / data+32 に -N、data+16 / data+40 に単位の秒数。
+    fn rel_data(count: i64, unit: u64) -> Vec<u8> {
+        let mut d = int_data(RELATIVE_DATE_MAGIC, RELATIVE_DATE_MAGIC);
+        d[8..16].copy_from_slice(&count.to_be_bytes());
+        d[16..24].copy_from_slice(&unit.to_be_bytes());
+        d[32..40].copy_from_slice(&count.to_be_bytes());
+        d[40..48].copy_from_slice(&unit.to_be_bytes());
+        d
+    }
+
+    /// 相対日付「過去 N 日 / 週 / か月以内」は inLast、否定は notInLast に変換する。
+    #[test]
+    fn relative_date_becomes_in_last() {
+        let blob = slst(
+            false,
+            &[
+                raw_rule(0x10, 0, 0x00, &rel_data(-30, 86_400)),
+                raw_rule(0x17, 2, 0x00, &rel_data(-2, 604_800)),
+                raw_rule(0x10, 0, 0x00, &rel_data(-3, 2_628_000)),
+                // 日の倍数の秒数は日数に直す (2 日 × 3)。
+                raw_rule(0x17, 0, 0x00, &rel_data(-3, 172_800)),
+            ],
+        );
+        let out = decode_smart_playlist(&blob, None);
+        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+        let c = out.result.unwrap();
+        assert!(c.match_all);
+        assert_eq!(
+            c.rules,
+            vec![
+                r("dateAdded", SmartOp::InLast, "30d"),
+                r("lastPlayed", SmartOp::NotInLast, "2w"),
+                r("dateAdded", SmartOp::InLast, "3m"),
+                r("lastPlayed", SmartOp::InLast, "6d"),
+            ]
+        );
+    }
+
+    /// 単位が不明・件数 0・上限超えの相対日付は警告付きで落とし、残りの条件は変換する。
+    #[test]
+    fn unsupported_relative_date_is_dropped() {
+        let blob = slst(
+            false,
+            &[
+                raw_rule(0x10, 0, 0x00, &rel_data(-12, 3_600)),
+                raw_rule(0x10, 0, 0x00, &rel_data(0, 86_400)),
+                // 上限 (1200 か月) を超える期間。
+                raw_rule(0x10, 0, 0x00, &rel_data(-1201, 2_628_000)),
+                raw_rule(0x02, 1, 0x02, &str_data("Live")),
+            ],
+        );
+        let out = decode_smart_playlist(&blob, None);
+        assert_eq!(out.warnings.len(), 3, "{:?}", out.warnings);
+        assert_eq!(
+            out.result.unwrap().rules,
+            vec![r("name", SmartOp::Contains, "Live")]
+        );
     }
 
     /// 絶対日付は ISO8601 文字列に変換して比較する。

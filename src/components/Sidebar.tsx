@@ -149,6 +149,9 @@ const NAV: NavItem[] = [
   { mode: "recent", icon: "clock", label: "最近再生した曲" },
 ];
 
+/// アプリに戻ったときにスマートプレイリストの件数を数え直す最短間隔 (バックエンドの一覧キャッシュの寿命と同じ)。
+const SMART_COUNT_REFOCUS_MS = 60_000;
+
 export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKey }: SidebarProps) {
   const {
     viewMode,
@@ -172,12 +175,33 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKe
   // スマートは 0 になる → 一覧とは別に非同期で数え、通常プレイリストと同じ位置に出す。
   const [smartCounts, setSmartCounts] = useState<Record<number, number>>({});
   const hasSmart = playlists.some((p) => p.isSmart);
+  // 相対日付の条件 (「追加日が過去 7 日以内」など) は時間がたつと結果が変わるので、
+  // アプリに戻ったとき (ウィンドウのフォーカス / 表示) にも数え直す。全スマートを評価するので
+  // 前回の取得から SMART_COUNT_REFOCUS_MS 以内なら取り直さない。
+  const [refocusTick, setRefocusTick] = useState(0);
+  const lastSmartCountAt = useRef(0);
+  useEffect(() => {
+    const onRefocus = () => {
+      if (document.visibilityState === "hidden") return;
+      if (Date.now() - lastSmartCountAt.current < SMART_COUNT_REFOCUS_MS) return;
+      // focus と visibilitychange が続けて来ても 1 回だけ取り直すよう、ここで時刻を進める。
+      lastSmartCountAt.current = Date.now();
+      setRefocusTick((n) => n + 1);
+    };
+    window.addEventListener("focus", onRefocus);
+    document.addEventListener("visibilitychange", onRefocus);
+    return () => {
+      window.removeEventListener("focus", onRefocus);
+      document.removeEventListener("visibilitychange", onRefocus);
+    };
+  }, []);
   useEffect(() => {
     if (!hasSmart) {
       setSmartCounts({});
       return;
     }
     let cancelled = false;
+    lastSmartCountAt.current = Date.now();
     playlistsApi
       .getSmartPlaylistCounts()
       .then((c) => {
@@ -187,7 +211,7 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKe
     return () => {
       cancelled = true;
     };
-  }, [hasSmart, playlists, reloadKey]);
+  }, [hasSmart, playlists, reloadKey, refocusTick]);
 
   // Set History badge (#123) — cheap localStorage read; updates when re-entering History.
   const historyCount = listSetHistories().length;

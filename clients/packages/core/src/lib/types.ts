@@ -77,7 +77,11 @@ export type SmartOp =
   | "gte"
   | "lte"
   | "exists"
-  | "notExists";
+  | "notExists"
+  /** 日付が過去 N 日 / 週 / か月以内。value は "30d" / "2w" / "3m"。 */
+  | "inLast"
+  /** inLast の否定 (日付が無い曲も一致)。 */
+  | "notInLast";
 
 /** スマートプレイリストの 1 条件。`field: "playlist"` は value に参照先プレイリストの persistentId。 */
 export interface SmartRule {
