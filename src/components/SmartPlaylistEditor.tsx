@@ -10,6 +10,16 @@ import type {
   SmartRule,
   SmartSortKey,
 } from "../types";
+import {
+  RELATIVE_UNITS,
+  formatRelativeDate,
+  isRelativeDateOp,
+  parseRelativeDate,
+  relativeCountOf,
+  relativeUnitOf,
+  valueForOpChange,
+  type RelativeUnit,
+} from "../lib/relativeDate";
 
 interface SmartPlaylistEditorProps {
   /// null = 新規作成、数値 = 既存スマートプレイリストの編集。
@@ -66,6 +76,12 @@ const STR_OPS: { value: SmartOp; label: string }[] = [
   { value: "endsWith", label: "が次で終わる" },
   { value: "exists", label: "が空でない" },
   { value: "notExists", label: "が空" },
+];
+/// 日付: 相対日付 (過去 N 日 / 週 / か月以内) + 文字列演算子 (値は ISO 8601 の文字列)。
+const DATE_OPS: { value: SmartOp; label: string }[] = [
+  { value: "inLast", label: "が過去…以内" },
+  { value: "notInLast", label: "が過去…以内でない" },
+  ...STR_OPS,
 ];
 const NUM_OPS: { value: SmartOp; label: string }[] = [
   { value: "is", label: "=" },
@@ -125,9 +141,10 @@ function fieldType(field: string): FieldType {
   return FIELDS.find((f) => f.value === field)?.type ?? "str";
 }
 function opsFor(field: string) {
-  // date は内部的に str 演算子を流用する。
+  // date は相対日付に加えて str 演算子を流用する。
   const t = fieldType(field);
   if (t === "playlist") return PLAYLIST_OPS;
+  if (t === "date") return DATE_OPS;
   return t === "num" ? NUM_OPS : STR_OPS;
 }
 function needsValue(op: SmartOp) {
@@ -154,6 +171,14 @@ function hasEmptyPlaylistRule(g: GroupNode): boolean {
   return (
     g.rules.some((r) => r.field === "playlist" && !r.value.trim()) ||
     g.groups.some(hasEmptyPlaylistRule)
+  );
+}
+
+/// ツリー中に値の読めない相対日付の条件 (過去 N 日以内の N が空・0 など) があるか。
+function hasInvalidRelativeRule(g: GroupNode): boolean {
+  return (
+    g.rules.some((r) => isRelativeDateOp(r.op) && !parseRelativeDate(r.value)) ||
+    g.groups.some(hasInvalidRelativeRule)
   );
 }
 
@@ -205,7 +230,8 @@ function RuleRow({ rule, onChange, onRemove, removeDisabled, playlistOptions }: 
           const op = ops.some((o) => o.value === rule.op) ? rule.op : ops[0].value;
           // プレイリスト条件との切り替えでは値の意味が変わるので空にする。
           const switchedKind = (fieldType(field) === "playlist") !== (type === "playlist");
-          onChange({ field, op, value: switchedKind ? "" : rule.value });
+          const value = switchedKind ? "" : valueForOpChange(rule.op, op, rule.value);
+          onChange({ field, op, value });
         }}
         style={{ flex: "1 1 120px", minWidth: 0 }}
       >
@@ -222,7 +248,10 @@ function RuleRow({ rule, onChange, onRemove, removeDisabled, playlistOptions }: 
       <select
         className="rip-input"
         value={rule.op}
-        onChange={(e) => onChange({ ...rule, op: e.target.value as SmartOp })}
+        onChange={(e) => {
+          const op = e.target.value as SmartOp;
+          onChange({ ...rule, op, value: valueForOpChange(rule.op, op, rule.value) });
+        }}
         style={{ flex: "0 0 130px" }}
       >
         {opsFor(rule.field).map((o) => (
@@ -251,6 +280,8 @@ function RuleRow({ rule, onChange, onRemove, removeDisabled, playlistOptions }: 
             </option>
           ))}
         </select>
+      ) : isRelativeDateOp(rule.op) ? (
+        <RelativeDateInput value={rule.value} onChange={(value) => onChange({ ...rule, value })} />
       ) : (
         <input
           className="rip-input"
@@ -271,6 +302,52 @@ function RuleRow({ rule, onChange, onRemove, removeDisabled, playlistOptions }: 
       >
         <Icon name="minus" size={14} />
       </button>
+    </div>
+  );
+}
+
+/// 相対日付の値 (過去 N 日 / 週 / か月) の入力: 数値欄 + 単位。値は "30d" などの文字列で持つ。
+function RelativeDateInput({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const count = relativeCountOf(value);
+  const unit = relativeUnitOf(value);
+  const invalid = !parseRelativeDate(value);
+  return (
+    <div style={{ display: "flex", gap: 4, flex: "1 1 100px", minWidth: 0 }}>
+      <input
+        className="rip-input"
+        type="number"
+        min={1}
+        step={1}
+        inputMode="numeric"
+        value={count}
+        aria-label="期間の長さ"
+        title={invalid ? "1 以上の整数を入力してください" : undefined}
+        onChange={(e) => onChange(formatRelativeDate(e.target.value, unit))}
+        style={{
+          flex: "1 1 50px",
+          minWidth: 0,
+          ...(invalid ? { borderColor: "var(--warn)" } : {}),
+        }}
+      />
+      <select
+        className="rip-input"
+        value={unit}
+        aria-label="期間の単位"
+        onChange={(e) => onChange(formatRelativeDate(count, e.target.value as RelativeUnit))}
+        style={{ flex: "0 0 auto" }}
+      >
+        {RELATIVE_UNITS.map((u) => (
+          <option key={u.value} value={u.value}>
+            {u.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -482,6 +559,10 @@ export function SmartPlaylistEditor({
     }
     if (hasEmptyPlaylistRule(root)) {
       setError("参照するプレイリストを選択してください");
+      return;
+    }
+    if (hasInvalidRelativeRule(root)) {
+      setError("「過去…以内」の期間には 1 以上の整数を入力してください");
       return;
     }
     setBusy(true);

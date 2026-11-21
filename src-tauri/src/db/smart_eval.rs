@@ -257,9 +257,11 @@ impl PlaylistResolver<'_> {
 
         self.ensure_library()?;
         let lib = self.library.as_ref().expect("library loaded");
+        // 相対日付 (inLast など) は評価のたびの現在時刻が基準。
         let ctx = EvalContext {
             level: self.level,
             membership: &membership,
+            now: chrono::Utc::now(),
         };
         let mut matched: Vec<usize> = (0..lib.tracks.len())
             .filter(|&i| {

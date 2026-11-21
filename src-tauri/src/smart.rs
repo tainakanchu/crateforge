@@ -9,6 +9,8 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
+use chrono::{DateTime, Duration, Months, NaiveDate, NaiveDateTime, Utc};
+
 use crate::models::{SmartCriteria, SmartGroup, SmartOp, SmartRule, Track, TrackAnalysis};
 use crate::text_fold::{fold, FoldLevel};
 
@@ -22,6 +24,98 @@ pub struct EvalContext<'a> {
     /// 参照先プレイリスト (persistent_id) → メンバーの track_id 集合。
     /// 載っていない参照先は「存在しない = 空」として扱う。
     pub membership: &'a HashMap<String, HashSet<i64>>,
+    /// 相対日付 (`inLast` / `notInLast`) の基準時刻。評価パスごとに現在時刻を入れる
+    /// (結果を日をまたいで使い回さない。テストでは固定値を入れる)。
+    pub now: DateTime<Utc>,
+}
+
+/// 相対日付 (`inLast` / `notInLast`) の単位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelativeUnit {
+    Day,
+    Week,
+    /// 暦の月 (3 月 31 日の 1 か月前は 2 月末日)。
+    Month,
+}
+
+impl RelativeUnit {
+    fn suffix(self) -> char {
+        match self {
+            RelativeUnit::Day => 'd',
+            RelativeUnit::Week => 'w',
+            RelativeUnit::Month => 'm',
+        }
+    }
+}
+
+/// 相対日付の値 (`"30d"` / `"2w"` / `"3m"`) を読む。正の整数 + 単位 (d / w / m、大小無視)。
+/// 読めない値 (0・負数・単位なし・小数など) は None。
+pub fn parse_relative_date(value: &str) -> Option<(u32, RelativeUnit)> {
+    let v = value.trim();
+    let unit = match v.chars().last()?.to_ascii_lowercase() {
+        'd' => RelativeUnit::Day,
+        'w' => RelativeUnit::Week,
+        'm' => RelativeUnit::Month,
+        _ => return None,
+    };
+    let num = &v[..v.len() - 1];
+    if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = num.parse().ok()?;
+    (n > 0).then_some((n, unit))
+}
+
+/// [`parse_relative_date`] の逆 (`(30, Day)` → `"30d"`)。
+pub fn format_relative_date(n: u32, unit: RelativeUnit) -> String {
+    format!("{n}{}", unit.suffix())
+}
+
+/// 「過去 N 単位以内」の境界 (この時刻以降なら以内)。日・週は 24 時間単位、月は暦の月で引く。
+/// 表せない (大きすぎる) 値は None。
+fn relative_threshold(now: DateTime<Utc>, n: u32, unit: RelativeUnit) -> Option<DateTime<Utc>> {
+    match unit {
+        RelativeUnit::Day => now.checked_sub_signed(Duration::try_days(n as i64)?),
+        RelativeUnit::Week => now.checked_sub_signed(Duration::try_weeks(n as i64)?),
+        RelativeUnit::Month => now.checked_sub_months(Months::new(n)),
+    }
+}
+
+/// 日付フィールドの文字列を時刻として読む。DB の主な形式は `2017-01-01T23:59:59Z` (UTC)。
+/// オフセット付きの RFC 3339、オフセットなしの日時 (UTC とみなす)、日付だけ (UTC の 0 時) も受ける。
+fn parse_field_date(s: &str) -> Option<DateTime<Utc>> {
+    let s = s.trim();
+    if let Ok(d) = DateTime::parse_from_rfc3339(s) {
+        return Some(d.with_timezone(&Utc));
+    }
+    for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"] {
+        if let Ok(d) = NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(d.and_utc());
+        }
+    }
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|d| d.and_utc())
+}
+
+/// `inLast` / `notInLast` の判定。値が読めなければ (どちらの演算でも) 一致しない。
+/// 日付が無い・日付として読めない曲は「値なし」: inLast は満たさず、notInLast は満たす
+/// (isNot / notContains と同じ扱い)。境界ちょうど (now − N) は「以内」に入る。
+fn relative_date_op(v: FieldVal, r: &SmartRule, now: DateTime<Utc>) -> bool {
+    let Some(threshold) =
+        parse_relative_date(&r.value).and_then(|(n, unit)| relative_threshold(now, n, unit))
+    else {
+        return false;
+    };
+    let date = match v {
+        FieldVal::Str(s) => parse_field_date(&s),
+        _ => None,
+    };
+    match date {
+        Some(d) => (d >= threshold) == (r.op == SmartOp::InLast),
+        None => r.op == SmartOp::NotInLast,
+    }
 }
 
 enum FieldVal {
@@ -223,6 +317,8 @@ fn str_op(s: &str, r: &SmartRule, level: FoldLevel) -> bool {
         SmartOp::Gte => a >= b,
         SmartOp::Lte => a <= b,
         SmartOp::Exists | SmartOp::NotExists => true,
+        // 相対日付は rule_matches が先に判定する (ここには来ない)。
+        SmartOp::InLast | SmartOp::NotInLast => false,
     }
 }
 
@@ -243,6 +339,7 @@ fn num_op(n: f64, r: &SmartRule) -> bool {
         SmartOp::StartsWith => n.to_string().starts_with(r.value.trim()),
         SmartOp::EndsWith => n.to_string().ends_with(r.value.trim()),
         SmartOp::Exists | SmartOp::NotExists => true,
+        SmartOp::InLast | SmartOp::NotInLast => false,
     }
 }
 
@@ -279,6 +376,9 @@ fn rule_matches(t: &Track, a: Option<&TrackAnalysis>, r: &SmartRule, ctx: &EvalC
             SmartOp::IsNot => !member,
             _ => false,
         };
+    }
+    if matches!(r.op, SmartOp::InLast | SmartOp::NotInLast) {
+        return relative_date_op(field_value(t, a, &r.field), r, ctx.now);
     }
     if r.field == "rating" {
         if let Some(matched) = t.rating.and_then(|rating| rating_op(rating, r)) {
@@ -572,6 +672,7 @@ mod tests {
             &EvalContext {
                 level,
                 membership: &membership,
+                now: Utc::now(),
             },
         )
     }
@@ -924,6 +1025,7 @@ mod tests {
         let ctx = EvalContext {
             level: FoldLevel::Standard,
             membership: &membership,
+            now: Utc::now(),
         };
         let is = crit(
             true,
@@ -1084,6 +1186,124 @@ mod tests {
         // exists / notExists は従来どおり。
         assert!(m("genre", SmartOp::NotExists, ""));
         assert!(!m("genre", SmartOp::Exists, ""));
+    }
+
+    /// 固定した現在時刻で 1 ルールを評価する。
+    fn matches_at(t: &Track, r: SmartRule, now: &str) -> bool {
+        let membership = HashMap::new();
+        track_matches(
+            t,
+            None,
+            &crit(true, vec![r], vec![]),
+            &EvalContext {
+                level: FoldLevel::Standard,
+                membership: &membership,
+                now: DateTime::parse_from_rfc3339(now).unwrap().with_timezone(&Utc),
+            },
+        )
+    }
+
+    #[test]
+    fn parse_relative_date_values() {
+        assert_eq!(parse_relative_date("30d"), Some((30, RelativeUnit::Day)));
+        assert_eq!(parse_relative_date(" 2W "), Some((2, RelativeUnit::Week)));
+        assert_eq!(parse_relative_date("3m"), Some((3, RelativeUnit::Month)));
+        for bad in ["", "d", "0d", "-1d", "1.5d", "30", "30y", "3 m", "abc", "99999999999d"] {
+            assert_eq!(parse_relative_date(bad), None, "{bad}");
+        }
+        assert_eq!(format_relative_date(30, RelativeUnit::Day), "30d");
+        assert_eq!(format_relative_date(3, RelativeUnit::Month), "3m");
+    }
+
+    /// 過去 N 日 / 週: 現在時刻から 24 時間 × N を引いた時刻以降 (境界ちょうどを含む)。
+    #[test]
+    fn in_last_days_and_weeks() {
+        let now = "2026-03-31T12:00:00Z";
+        let mut t = track(1, "X", None, None);
+        let at = |t: &mut Track, d: &str| t.date_added = Some(d.to_string());
+
+        at(&mut t, "2026-03-01T12:00:00Z"); // ちょうど 30 日前
+        assert!(matches_at(&t, rule("dateAdded", SmartOp::InLast, "30d"), now));
+        assert!(!matches_at(&t, rule("dateAdded", SmartOp::NotInLast, "30d"), now));
+        at(&mut t, "2026-03-01T11:59:59Z"); // 30 日と 1 秒前
+        assert!(!matches_at(&t, rule("dateAdded", SmartOp::InLast, "30d"), now));
+        assert!(matches_at(&t, rule("dateAdded", SmartOp::NotInLast, "30d"), now));
+
+        at(&mut t, "2026-03-17T12:00:00Z"); // ちょうど 2 週間前
+        assert!(matches_at(&t, rule("dateAdded", SmartOp::InLast, "2w"), now));
+        assert!(!matches_at(&t, rule("dateAdded", SmartOp::InLast, "1w"), now));
+        assert!(matches_at(&t, rule("dateAdded", SmartOp::NotInLast, "1w"), now));
+
+        // 未来の日付も「以内」に入る (境界より後)。
+        at(&mut t, "2026-04-10T00:00:00Z");
+        assert!(matches_at(&t, rule("dateAdded", SmartOp::InLast, "1d"), now));
+    }
+
+    /// 過去 N か月: 暦の月で引く (3/31 の 1 か月前は 2/28、境界ちょうどを含む)。
+    #[test]
+    fn in_last_months_uses_calendar_months() {
+        let now = "2026-03-31T12:00:00Z";
+        let mut t = track(1, "X", None, None);
+        t.last_played = Some("2026-02-28T12:00:00Z".into());
+        assert!(matches_at(&t, rule("lastPlayed", SmartOp::InLast, "1m"), now));
+        t.last_played = Some("2026-02-28T11:59:59Z".into());
+        assert!(!matches_at(&t, rule("lastPlayed", SmartOp::InLast, "1m"), now));
+        // 3 か月前 = 2025-12-31T12:00:00Z。
+        t.last_played = Some("2025-12-31T12:00:00Z".into());
+        assert!(matches_at(&t, rule("lastPlayed", SmartOp::InLast, "3m"), now));
+        t.last_played = Some("2025-12-31T11:00:00Z".into());
+        assert!(!matches_at(&t, rule("lastPlayed", SmartOp::InLast, "3m"), now));
+        assert!(matches_at(&t, rule("lastPlayed", SmartOp::NotInLast, "3m"), now));
+        // dateModified も同じ。
+        t.date_modified = Some("2026-01-15T00:00:00Z".into());
+        assert!(matches_at(&t, rule("dateModified", SmartOp::InLast, "3m"), now));
+    }
+
+    /// 基準時刻は評価ごとの now (同じ曲でも、評価する日が変われば結果が変わる)。
+    #[test]
+    fn in_last_is_relative_to_eval_time() {
+        let mut t = track(1, "X", None, None);
+        t.date_added = Some("2026-03-01T00:00:00Z".into());
+        let r = || rule("dateAdded", SmartOp::InLast, "7d");
+        assert!(matches_at(&t, r(), "2026-03-05T00:00:00Z"));
+        assert!(!matches_at(&t, r(), "2026-03-09T00:00:00Z"));
+    }
+
+    /// 日付が無い・読めない曲は値なし (inLast は満たさず notInLast は満たす)。
+    /// 値 (30d など) が読めなければ、どちらの演算もどの曲にも一致しない。
+    #[test]
+    fn in_last_missing_and_invalid_values() {
+        let now = "2026-03-31T12:00:00Z";
+        let mut t = track(1, "X", None, None);
+        assert!(!matches_at(&t, rule("lastPlayed", SmartOp::InLast, "30d"), now));
+        assert!(matches_at(&t, rule("lastPlayed", SmartOp::NotInLast, "30d"), now));
+        t.last_played = Some("not a date".into());
+        assert!(!matches_at(&t, rule("lastPlayed", SmartOp::InLast, "30d"), now));
+        assert!(matches_at(&t, rule("lastPlayed", SmartOp::NotInLast, "30d"), now));
+
+        // 別の書式 (オフセット付き・日付だけ) も読める。
+        t.last_played = Some("2026-03-30T09:00:00+09:00".into());
+        assert!(matches_at(&t, rule("lastPlayed", SmartOp::InLast, "2d"), now));
+        t.last_played = Some("2026-03-30".into());
+        assert!(matches_at(&t, rule("lastPlayed", SmartOp::InLast, "2d"), now));
+
+        for bad in ["", "30", "0d", "x"] {
+            t.last_played = Some("2026-03-30T00:00:00Z".into());
+            assert!(!matches_at(&t, rule("lastPlayed", SmartOp::InLast, bad), now), "{bad}");
+            assert!(!matches_at(&t, rule("lastPlayed", SmartOp::NotInLast, bad), now), "{bad}");
+            t.last_played = None;
+            assert!(!matches_at(&t, rule("lastPlayed", SmartOp::NotInLast, bad), now), "{bad}");
+        }
+    }
+
+    #[test]
+    fn in_last_ops_serialize_camel_case() {
+        let r = rule("dateAdded", SmartOp::InLast, "30d");
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"op\":\"inLast\""), "{json}");
+        let back: SmartRule =
+            serde_json::from_str(r#"{"field":"dateAdded","op":"notInLast","value":"3m"}"#).unwrap();
+        assert_eq!(back.op, SmartOp::NotInLast);
     }
 
     #[test]

@@ -33,6 +33,20 @@ The fields available for rules include **analysis values** in addition to basic 
 
 String conditions support contains / doesn't contain / is / is not / starts with / ends with.
 
+### Date conditions (in the last N days)
+
+For **date added** / **date modified** / **last played**, "**が過去…以内**" (is in the last) and
+"**が過去…以内でない**" (is not in the last) specify a period relative to today
+(e.g. date added is in the last 30 days, last played is not in the last 3 months).
+Enter the period as a number and a unit (**日 days / 週 weeks / か月 months**).
+
+- The period is counted from the moment the playlist is evaluated, so its contents change automatically as days pass.
+- Days and weeks mean "24 hours × N" before now; months are calendar months (on March 31, "the last 1 month" starts at the end of February).
+  A date exactly on the boundary counts as "in the last".
+- Tracks without the date (e.g. last played of a never-played track) do not match "in the last" but do match "not in the last"
+  (the same as "doesn't contain" / "is not"). For example, "last played is not in the last 3 months" includes unplayed tracks.
+- Date added is the "Date Added" imported from iTunes as-is.
+
 ### Input assistance
 
 - **Date conditions** can be specified with the native date input.
