@@ -429,7 +429,7 @@ jobs:
       CERT_SHA256: ${{ needs.build-android.outputs.cert-sha256 }}
     steps:
       - name: Download signed APK artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: android-apk
           path: android-apk
