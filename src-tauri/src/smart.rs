@@ -9,7 +9,9 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, Duration, Local, Months, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{
+    DateTime, Duration, Local, LocalResult, Months, NaiveDate, NaiveDateTime, TimeZone, Utc,
+};
 
 use crate::models::{SmartCriteria, SmartGroup, SmartOp, SmartRule, Track, TrackAnalysis};
 use crate::text_fold::{fold, FoldLevel};
@@ -91,18 +93,47 @@ pub fn format_relative_date(n: u32, unit: RelativeUnit) -> String {
 }
 
 /// 「過去 N 単位以内」の境界 (この時刻以降なら以内)。日・週は 24 時間 × N を引き、月は `now` の
-/// タイムゾーン (評価ではローカル時刻) の暦の月で引く (月末は丸める)。表せない値は None。
+/// タイムゾーン (評価ではローカル時刻) の暦の月で引く (月末は丸める)。表せない (桁あふれ) 値だけ None。
 fn relative_threshold<Tz: TimeZone>(
     now: DateTime<Tz>,
     n: u32,
     unit: RelativeUnit,
 ) -> Option<DateTime<Utc>> {
-    let t = match unit {
-        RelativeUnit::Day => now.checked_sub_signed(Duration::try_days(n as i64)?),
-        RelativeUnit::Week => now.checked_sub_signed(Duration::try_weeks(n as i64)?),
-        RelativeUnit::Month => now.checked_sub_months(Months::new(n)),
-    }?;
-    Some(t.with_timezone(&Utc))
+    let utc_now = now.with_timezone(&Utc);
+    match unit {
+        RelativeUnit::Day => utc_now.checked_sub_signed(Duration::try_days(n as i64)?),
+        RelativeUnit::Week => utc_now.checked_sub_signed(Duration::try_weeks(n as i64)?),
+        RelativeUnit::Month => {
+            // DateTime<Tz>::checked_sub_months は夏時間の重複・欠落で None になるので、
+            // 壁時計 (naive) で引いてから自前で解決する。
+            let naive = now.naive_local().checked_sub_months(Months::new(n))?;
+            let tz = now.timezone();
+            resolve_local(naive, |t| tz.from_local_datetime(t))
+                .or_else(|| utc_now.checked_sub_months(Months::new(n)))
+        }
+    }
+}
+
+/// 夏時間の切り替えで欠落した時刻を探すときに、1 時間ずつ進める最大回数
+/// (欠落は通常 1 時間。日付変更線をまたいだ 1 日の欠落まで覆う)。
+const GAP_SEARCH_HOURS: u32 = 25;
+
+/// 壁時計の時刻をタイムゾーンで解決する。1 つに決まればそれ、重複 (夏時間の終わり) なら早いほう、
+/// 欠落 (夏時間の始まり) なら 1 時間ずつ後ろへずらして最初に存在する時刻。見つからなければ None
+/// (呼び出し側が UTC の暦で引き直す)。`resolve` はテストで任意の結果を返せるよう関数で受ける。
+fn resolve_local<Tz: TimeZone>(
+    naive: NaiveDateTime,
+    resolve: impl Fn(&NaiveDateTime) -> LocalResult<DateTime<Tz>>,
+) -> Option<DateTime<Utc>> {
+    let mut t = naive;
+    for _ in 0..=GAP_SEARCH_HOURS {
+        match resolve(&t) {
+            LocalResult::Single(d) => return Some(d.with_timezone(&Utc)),
+            LocalResult::Ambiguous(earliest, _) => return Some(earliest.with_timezone(&Utc)),
+            LocalResult::None => t = t.checked_add_signed(Duration::hours(1))?,
+        }
+    }
+    None
 }
 
 /// 日付フィールドの文字列を時刻として読む。DB の主な形式は `2017-01-01T23:59:59Z` (UTC)。
@@ -1308,6 +1339,58 @@ mod tests {
             relative_threshold(at("2026-03-31T05:00:00+09:00"), 2, RelativeUnit::Week),
             Some(utc("2026-03-16T20:00:00Z"))
         );
+    }
+
+    /// 夏時間の重複・欠落でも境界が決まる (ローカル時刻の解決結果を差し替えて確かめる)。
+    #[test]
+    fn resolve_local_handles_dst() {
+        use chrono::FixedOffset;
+        let naive = |s: &str| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").unwrap();
+        let utc = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        let est = FixedOffset::west_opt(5 * 3600).unwrap();
+        let edt = FixedOffset::west_opt(4 * 3600).unwrap();
+
+        // 1 つに決まる。
+        let single = resolve_local(naive("2026-03-01T01:30:00"), |t| {
+            LocalResult::Single(est.from_local_datetime(t).unwrap())
+        });
+        assert_eq!(single, Some(utc("2026-03-01T06:30:00Z")));
+
+        // 重複 (11/1 01:30 は EDT と EST の 2 回): 早いほう (EDT = 05:30Z)。
+        let ambiguous = resolve_local(naive("2026-11-01T01:30:00"), |t| {
+            LocalResult::Ambiguous(
+                edt.from_local_datetime(t).unwrap(),
+                est.from_local_datetime(t).unwrap(),
+            )
+        });
+        assert_eq!(ambiguous, Some(utc("2026-11-01T05:30:00Z")));
+
+        // 欠落 (3/8 02:00〜03:00 が無い): 1 時間後ろの 03:30 EDT。
+        let gap = resolve_local(naive("2026-03-08T02:30:00"), |t| {
+            if t.format("%H").to_string() == "02" {
+                LocalResult::None
+            } else {
+                LocalResult::Single(edt.from_local_datetime(t).unwrap())
+            }
+        });
+        assert_eq!(gap, Some(utc("2026-03-08T07:30:00Z")));
+
+        // どこまでずらしても見つからなければ None (relative_threshold は UTC の暦で引き直す)。
+        let never = resolve_local::<FixedOffset>(naive("2026-03-08T02:30:00"), |_| LocalResult::None);
+        assert_eq!(never, None);
+    }
+
+    /// 夏時間のあるローカル時刻でも、か月の境界が None にならない (TZ=America/New_York などで意味を持つ。
+    /// どのタイムゾーンでも Some で、前後 1 か月 ± 1 日に収まる)。
+    #[test]
+    fn month_threshold_is_some_around_dst() {
+        for now in ["2026-12-01T06:30:00Z", "2026-04-08T06:30:00Z", "2026-03-31T12:00:00Z"] {
+            let now = DateTime::parse_from_rfc3339(now).unwrap().with_timezone(&Utc);
+            let th = relative_threshold(now.with_timezone(&Local), 1, RelativeUnit::Month)
+                .unwrap_or_else(|| panic!("None for {now}"));
+            let days = (now - th).num_hours() as f64 / 24.0;
+            assert!((27.0..=32.0).contains(&days), "{now}: {th} ({days} days)");
+        }
     }
 
     /// 過去 N か月の評価 (境界はローカル時刻の暦なので、境界から十分離れた日付で確かめる)。

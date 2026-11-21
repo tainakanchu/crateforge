@@ -184,6 +184,8 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKe
     const onRefocus = () => {
       if (document.visibilityState === "hidden") return;
       if (Date.now() - lastSmartCountAt.current < SMART_COUNT_REFOCUS_MS) return;
+      // focus と visibilitychange が続けて来ても 1 回だけ取り直すよう、ここで時刻を進める。
+      lastSmartCountAt.current = Date.now();
       setRefocusTick((n) => n + 1);
     };
     window.addEventListener("focus", onRefocus);
