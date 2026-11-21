@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   formatRelativeDate,
   isRelativeDateOp,
+  normalizeRelativeValue,
   parseRelativeDate,
+  relativeDateError,
   relativeCountOf,
   relativeUnitOf,
   valueForOpChange,
@@ -37,4 +39,24 @@ test("演算子の切り替えで相対日付とそれ以外を行き来する�
   assert.equal(valueForOpChange("inLast", "is", "30d"), "");
   assert.equal(valueForOpChange("inLast", "notInLast", "3m"), "3m");
   assert.equal(valueForOpChange("is", "contains", "2024"), "2024");
+});
+
+test("期間の上限は 36500 日 / 5200 週 / 1200 か月 (バックエンドと同じ)", () => {
+  assert.deepEqual(parseRelativeDate("36500d"), { count: 36500, unit: "d" });
+  assert.deepEqual(parseRelativeDate("5200w"), { count: 5200, unit: "w" });
+  assert.deepEqual(parseRelativeDate("1200m"), { count: 1200, unit: "m" });
+  for (const bad of ["36501d", "5201w", "1201m"]) {
+    assert.equal(parseRelativeDate(bad), null, bad);
+    assert.ok(relativeDateError(bad), bad);
+  }
+  assert.equal(relativeDateError("30d"), null);
+  assert.ok(relativeDateError("d"));
+});
+
+test("読み込んだ単位なしの整数は日数として正規化する", () => {
+  assert.equal(normalizeRelativeValue("30"), "30d");
+  assert.equal(normalizeRelativeValue(" 7 "), "7d");
+  assert.equal(normalizeRelativeValue("3m"), "3m");
+  assert.equal(normalizeRelativeValue(""), "");
+  assert.equal(normalizeRelativeValue("x"), "x");
 });

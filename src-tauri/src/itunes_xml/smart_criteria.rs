@@ -465,7 +465,12 @@ impl Decoder {
             _ => None,
         };
         let Some((n, unit)) = converted
-            .and_then(|(n, unit)| u32::try_from(n).ok().filter(|n| *n > 0).map(|n| (n, unit)))
+            .and_then(|(n, unit)| {
+                u32::try_from(n)
+                    .ok()
+                    .filter(|n| *n > 0 && *n <= unit.max_count())
+                    .map(|n| (n, unit))
+            })
         else {
             return self.unsupported(format!(
                 "{name} の相対日付 (件数 {}・単位 {unit} 秒) は未対応のため除外しました",
@@ -998,7 +1003,7 @@ mod tests {
         );
     }
 
-    /// 単位が不明・件数 0 の相対日付は警告付きで落とし、残りの条件は変換する。
+    /// 単位が不明・件数 0・上限超えの相対日付は警告付きで落とし、残りの条件は変換する。
     #[test]
     fn unsupported_relative_date_is_dropped() {
         let blob = slst(
@@ -1006,11 +1011,13 @@ mod tests {
             &[
                 raw_rule(0x10, 0, 0x00, &rel_data(-12, 3_600)),
                 raw_rule(0x10, 0, 0x00, &rel_data(0, 86_400)),
+                // 上限 (1200 か月) を超える期間。
+                raw_rule(0x10, 0, 0x00, &rel_data(-1201, 2_628_000)),
                 raw_rule(0x02, 1, 0x02, &str_data("Live")),
             ],
         );
         let out = decode_smart_playlist(&blob, None);
-        assert_eq!(out.warnings.len(), 2, "{:?}", out.warnings);
+        assert_eq!(out.warnings.len(), 3, "{:?}", out.warnings);
         assert_eq!(
             out.result.unwrap().rules,
             vec![r("name", SmartOp::Contains, "Live")]

@@ -11,11 +11,14 @@ import type {
   SmartSortKey,
 } from "../types";
 import {
+  RELATIVE_MAX,
   RELATIVE_UNITS,
   formatRelativeDate,
   isRelativeDateOp,
+  normalizeRelativeValue,
   parseRelativeDate,
   relativeCountOf,
+  relativeDateError,
   relativeUnitOf,
   valueForOpChange,
   type RelativeUnit,
@@ -154,7 +157,10 @@ function needsValue(op: SmartOp) {
 function toNode(g: SmartGroup): GroupNode {
   return {
     matchAll: g.matchAll,
-    rules: g.rules ?? [],
+    // 単位の無い相対日付 ("30") は日数として読み込む (そのままだと保存できない)。
+    rules: (g.rules ?? []).map((r) =>
+      isRelativeDateOp(r.op) ? { ...r, value: normalizeRelativeValue(r.value) } : r,
+    ),
     groups: (g.groups ?? []).map(toNode),
   };
 }
@@ -174,12 +180,20 @@ function hasEmptyPlaylistRule(g: GroupNode): boolean {
   );
 }
 
-/// ツリー中に値の読めない相対日付の条件 (過去 N 日以内の N が空・0 など) があるか。
-function hasInvalidRelativeRule(g: GroupNode): boolean {
-  return (
-    g.rules.some((r) => isRelativeDateOp(r.op) && !parseRelativeDate(r.value)) ||
-    g.groups.some(hasInvalidRelativeRule)
-  );
+/// ツリー中で最初に見つかった、値の読めない相対日付の条件 (N が空・0・上限超え など) の
+/// エラーメッセージ。無ければ null。
+function invalidRelativeRuleError(g: GroupNode): string | null {
+  for (const r of g.rules) {
+    if (isRelativeDateOp(r.op)) {
+      const err = relativeDateError(r.value);
+      if (err) return err;
+    }
+  }
+  for (const child of g.groups) {
+    const err = invalidRelativeRuleError(child);
+    if (err) return err;
+  }
+  return null;
 }
 
 /// 階層名 ("親 / 子") でプレイリストの選択肢を作る (同名の区別用)。編集中の自身は除く。
@@ -323,11 +337,12 @@ function RelativeDateInput({
         className="rip-input"
         type="number"
         min={1}
+        max={RELATIVE_MAX[unit]}
         step={1}
         inputMode="numeric"
         value={count}
         aria-label="期間の長さ"
-        title={invalid ? "1 以上の整数を入力してください" : undefined}
+        title={invalid ? (relativeDateError(value) ?? undefined) : undefined}
         onChange={(e) => onChange(formatRelativeDate(e.target.value, unit))}
         style={{
           flex: "1 1 50px",
@@ -561,8 +576,9 @@ export function SmartPlaylistEditor({
       setError("参照するプレイリストを選択してください");
       return;
     }
-    if (hasInvalidRelativeRule(root)) {
-      setError("「過去…以内」の期間には 1 以上の整数を入力してください");
+    const relativeError = invalidRelativeRuleError(root);
+    if (relativeError) {
+      setError(relativeError);
       return;
     }
     setBusy(true);

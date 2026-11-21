@@ -17,6 +17,10 @@ export const RELATIVE_UNITS: { value: RelativeUnit; label: string }[] = [
   { value: "m", label: "か月" },
 ];
 
+/// 単位ごとの期間の上限 (約 100 年)。バックエンドの `RelativeUnit::max_count` と一致させる。
+/// 超える値は読めない値 (保存できない / どの曲にも一致しない)。
+export const RELATIVE_MAX: Record<RelativeUnit, number> = { d: 36500, w: 5200, m: 1200 };
+
 /// 相対日付の演算子を選んだときの既定値 (過去 30 日)。
 export const DEFAULT_RELATIVE_VALUE = "30d";
 
@@ -24,13 +28,27 @@ export function isRelativeDateOp(op: SmartOp): boolean {
   return op === "inLast" || op === "notInLast";
 }
 
-/// `"30d"` → `{ count: 30, unit: "d" }`。読めない値 (0・小数・単位なし など) は null。
+/// `"30d"` → `{ count: 30, unit: "d" }`。読めない値 (0・小数・単位なし・上限超え など) は null。
 export function parseRelativeDate(value: string): RelativeDate | null {
   const m = /^(\d+)([dwm])$/i.exec(value.trim());
   if (!m) return null;
+  const unit = m[2].toLowerCase() as RelativeUnit;
   const count = Number(m[1]);
-  if (!Number.isSafeInteger(count) || count <= 0 || count > 0xffffffff) return null;
-  return { count, unit: m[2].toLowerCase() as RelativeUnit };
+  if (!Number.isSafeInteger(count) || count <= 0 || count > RELATIVE_MAX[unit]) return null;
+  return { count, unit };
+}
+
+/// 読み込んだ値の正規化: 単位の無い整数 (`"30"`) は日数とみなして `"30d"` にする
+/// (保存がブロックされないように)。それ以外はそのまま。
+export function normalizeRelativeValue(value: string): string {
+  const v = value.trim();
+  return /^\d+$/.test(v) ? `${v}d` : value;
+}
+
+/// 保存前の検証メッセージ (問題なければ null)。
+export function relativeDateError(value: string): string | null {
+  if (parseRelativeDate(value)) return null;
+  return "「過去…以内」の期間は 1 以上の整数で、日は 36500・週は 5200・か月は 1200 までです";
 }
 
 /// 編集中の数値欄 (文字列) と単位から値を作る。数値欄が空・不正でも単位は保つ

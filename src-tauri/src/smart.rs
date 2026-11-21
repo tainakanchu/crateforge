@@ -9,7 +9,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, Duration, Months, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, Local, Months, NaiveDate, NaiveDateTime, TimeZone, Utc};
 
 use crate::models::{SmartCriteria, SmartGroup, SmartOp, SmartRule, Track, TrackAnalysis};
 use crate::text_fold::{fold, FoldLevel};
@@ -24,8 +24,9 @@ pub struct EvalContext<'a> {
     /// 参照先プレイリスト (persistent_id) → メンバーの track_id 集合。
     /// 載っていない参照先は「存在しない = 空」として扱う。
     pub membership: &'a HashMap<String, HashSet<i64>>,
-    /// 相対日付 (`inLast` / `notInLast`) の基準時刻。評価パスごとに現在時刻を入れる
-    /// (結果を日をまたいで使い回さない。テストでは固定値を入れる)。
+    /// 相対日付 (`inLast` / `notInLast`) の基準時刻。評価パス (DB 層の `PlaylistResolver` 1 つ) ごとに
+    /// 一度だけ現在時刻を取り、そのパスの全評価で使う (結果を日をまたいで使い回さない。テストでは固定値)。
+    /// か月の計算はこの時刻をローカル時刻に直して行う。
     pub now: DateTime<Utc>,
 }
 
@@ -34,11 +35,29 @@ pub struct EvalContext<'a> {
 pub enum RelativeUnit {
     Day,
     Week,
-    /// 暦の月 (3 月 31 日の 1 か月前は 2 月末日)。
+    /// 暦の月 (ローカル時刻の暦で数える。3 月 31 日の 1 か月前は 2 月末日)。
     Month,
 }
 
+/// 相対日付で数えられる期間の上限 (日 / 週 / か月。約 100 年)。超える値は読めない値として扱う。
+/// フロントの `src/lib/relativeDate.ts` と一致させる。
+pub const RELATIVE_MAX_DAYS: u32 = 36_500;
+pub const RELATIVE_MAX_WEEKS: u32 = 5_200;
+pub const RELATIVE_MAX_MONTHS: u32 = 1_200;
+
+/// 相対日付の条件が使える (日付の) フィールド。
+pub const RELATIVE_DATE_FIELDS: &[&str] = &["dateAdded", "dateModified", "lastPlayed"];
+
 impl RelativeUnit {
+    /// この単位で数えられる期間の上限。
+    pub fn max_count(self) -> u32 {
+        match self {
+            RelativeUnit::Day => RELATIVE_MAX_DAYS,
+            RelativeUnit::Week => RELATIVE_MAX_WEEKS,
+            RelativeUnit::Month => RELATIVE_MAX_MONTHS,
+        }
+    }
+
     fn suffix(self) -> char {
         match self {
             RelativeUnit::Day => 'd',
@@ -49,7 +68,7 @@ impl RelativeUnit {
 }
 
 /// 相対日付の値 (`"30d"` / `"2w"` / `"3m"`) を読む。正の整数 + 単位 (d / w / m、大小無視)。
-/// 読めない値 (0・負数・単位なし・小数など) は None。
+/// 読めない値 (0・負数・単位なし・小数・上限 [`RelativeUnit::max_count`] 超など) は None。
 pub fn parse_relative_date(value: &str) -> Option<(u32, RelativeUnit)> {
     let v = value.trim();
     let unit = match v.chars().last()?.to_ascii_lowercase() {
@@ -63,7 +82,7 @@ pub fn parse_relative_date(value: &str) -> Option<(u32, RelativeUnit)> {
         return None;
     }
     let n: u32 = num.parse().ok()?;
-    (n > 0).then_some((n, unit))
+    (n > 0 && n <= unit.max_count()).then_some((n, unit))
 }
 
 /// [`parse_relative_date`] の逆 (`(30, Day)` → `"30d"`)。
@@ -71,14 +90,19 @@ pub fn format_relative_date(n: u32, unit: RelativeUnit) -> String {
     format!("{n}{}", unit.suffix())
 }
 
-/// 「過去 N 単位以内」の境界 (この時刻以降なら以内)。日・週は 24 時間単位、月は暦の月で引く。
-/// 表せない (大きすぎる) 値は None。
-fn relative_threshold(now: DateTime<Utc>, n: u32, unit: RelativeUnit) -> Option<DateTime<Utc>> {
-    match unit {
+/// 「過去 N 単位以内」の境界 (この時刻以降なら以内)。日・週は 24 時間 × N を引き、月は `now` の
+/// タイムゾーン (評価ではローカル時刻) の暦の月で引く (月末は丸める)。表せない値は None。
+fn relative_threshold<Tz: TimeZone>(
+    now: DateTime<Tz>,
+    n: u32,
+    unit: RelativeUnit,
+) -> Option<DateTime<Utc>> {
+    let t = match unit {
         RelativeUnit::Day => now.checked_sub_signed(Duration::try_days(n as i64)?),
         RelativeUnit::Week => now.checked_sub_signed(Duration::try_weeks(n as i64)?),
         RelativeUnit::Month => now.checked_sub_months(Months::new(n)),
-    }
+    }?;
+    Some(t.with_timezone(&Utc))
 }
 
 /// 日付フィールドの文字列を時刻として読む。DB の主な形式は `2017-01-01T23:59:59Z` (UTC)。
@@ -102,9 +126,13 @@ fn parse_field_date(s: &str) -> Option<DateTime<Utc>> {
 /// `inLast` / `notInLast` の判定。値が読めなければ (どちらの演算でも) 一致しない。
 /// 日付が無い・日付として読めない曲は「値なし」: inLast は満たさず、notInLast は満たす
 /// (isNot / notContains と同じ扱い)。境界ちょうど (now − N) は「以内」に入る。
+/// 日付フィールド ([`RELATIVE_DATE_FIELDS`]) 以外に付いた条件は、どちらの演算でも一致しない。
 fn relative_date_op(v: FieldVal, r: &SmartRule, now: DateTime<Utc>) -> bool {
-    let Some(threshold) =
-        parse_relative_date(&r.value).and_then(|(n, unit)| relative_threshold(now, n, unit))
+    if !RELATIVE_DATE_FIELDS.contains(&r.field.as_str()) {
+        return false;
+    }
+    let Some(threshold) = parse_relative_date(&r.value)
+        .and_then(|(n, unit)| relative_threshold(now.with_timezone(&Local), n, unit))
     else {
         return false;
     };
@@ -1211,6 +1239,13 @@ mod tests {
         for bad in ["", "d", "0d", "-1d", "1.5d", "30", "30y", "3 m", "abc", "99999999999d"] {
             assert_eq!(parse_relative_date(bad), None, "{bad}");
         }
+        // 上限 (36500 日 / 5200 週 / 1200 か月) まで読み、超えたら読めない値。
+        assert_eq!(parse_relative_date("36500d"), Some((36_500, RelativeUnit::Day)));
+        assert_eq!(parse_relative_date("5200w"), Some((5_200, RelativeUnit::Week)));
+        assert_eq!(parse_relative_date("1200m"), Some((1_200, RelativeUnit::Month)));
+        for bad in ["36501d", "5201w", "1201m"] {
+            assert_eq!(parse_relative_date(bad), None, "{bad}");
+        }
         assert_eq!(format_relative_date(30, RelativeUnit::Day), "30d");
         assert_eq!(format_relative_date(3, RelativeUnit::Month), "3m");
     }
@@ -1239,19 +1274,55 @@ mod tests {
         assert!(matches_at(&t, rule("dateAdded", SmartOp::InLast, "1d"), now));
     }
 
-    /// 過去 N か月: 暦の月で引く (3/31 の 1 か月前は 2/28、境界ちょうどを含む)。
+    /// か月の境界は `now` のタイムゾーンの暦で引く (3/31 の 1 か月前は 2/28、月末は丸める)。
+    #[test]
+    fn month_threshold_uses_local_calendar() {
+        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap();
+        let utc = |s: &str| at(s).with_timezone(&Utc);
+        // UTC の暦: 3/31 12:00Z → 2/28 12:00Z。
+        assert_eq!(
+            relative_threshold(utc("2026-03-31T12:00:00Z"), 1, RelativeUnit::Month),
+            Some(utc("2026-02-28T12:00:00Z"))
+        );
+        // 同じ瞬間でも JST (+09:00) では 3/31 21:00 → 2/28 21:00 JST。
+        assert_eq!(
+            relative_threshold(at("2026-03-31T21:00:00+09:00"), 1, RelativeUnit::Month),
+            Some(utc("2026-02-28T12:00:00Z"))
+        );
+        // UTC では 3/30 だが JST では 3/31 の瞬間: JST の暦で 3/31 → 2/28 (UTC の暦なら 2/28 20:00Z)。
+        assert_eq!(
+            relative_threshold(at("2026-03-31T05:00:00+09:00"), 1, RelativeUnit::Month),
+            Some(utc("2026-02-27T20:00:00Z"))
+        );
+        assert_eq!(
+            relative_threshold(utc("2026-03-30T20:00:00Z"), 1, RelativeUnit::Month),
+            Some(utc("2026-02-28T20:00:00Z"))
+        );
+        // 3 か月 (年をまたぐ)。
+        assert_eq!(
+            relative_threshold(at("2026-03-31T12:00:00-05:00"), 3, RelativeUnit::Month),
+            Some(utc("2025-12-31T17:00:00Z"))
+        );
+        // 日・週はタイムゾーンによらず 24 時間 × N。
+        assert_eq!(
+            relative_threshold(at("2026-03-31T05:00:00+09:00"), 2, RelativeUnit::Week),
+            Some(utc("2026-03-16T20:00:00Z"))
+        );
+    }
+
+    /// 過去 N か月の評価 (境界はローカル時刻の暦なので、境界から十分離れた日付で確かめる)。
     #[test]
     fn in_last_months_uses_calendar_months() {
         let now = "2026-03-31T12:00:00Z";
         let mut t = track(1, "X", None, None);
-        t.last_played = Some("2026-02-28T12:00:00Z".into());
+        t.last_played = Some("2026-03-02T12:00:00Z".into());
         assert!(matches_at(&t, rule("lastPlayed", SmartOp::InLast, "1m"), now));
-        t.last_played = Some("2026-02-28T11:59:59Z".into());
+        t.last_played = Some("2026-02-25T12:00:00Z".into());
         assert!(!matches_at(&t, rule("lastPlayed", SmartOp::InLast, "1m"), now));
-        // 3 か月前 = 2025-12-31T12:00:00Z。
-        t.last_played = Some("2025-12-31T12:00:00Z".into());
+        // 3 か月前 ≒ 2025-12-31。
+        t.last_played = Some("2026-01-03T00:00:00Z".into());
         assert!(matches_at(&t, rule("lastPlayed", SmartOp::InLast, "3m"), now));
-        t.last_played = Some("2025-12-31T11:00:00Z".into());
+        t.last_played = Some("2025-12-28T00:00:00Z".into());
         assert!(!matches_at(&t, rule("lastPlayed", SmartOp::InLast, "3m"), now));
         assert!(matches_at(&t, rule("lastPlayed", SmartOp::NotInLast, "3m"), now));
         // dateModified も同じ。
@@ -1293,6 +1364,18 @@ mod tests {
             assert!(!matches_at(&t, rule("lastPlayed", SmartOp::NotInLast, bad), now), "{bad}");
             t.last_played = None;
             assert!(!matches_at(&t, rule("lastPlayed", SmartOp::NotInLast, bad), now), "{bad}");
+        }
+    }
+
+    /// 日付以外のフィールドに付いた相対日付の条件は、どちらの演算でも一致しない。
+    #[test]
+    fn in_last_on_non_date_field_matches_nothing() {
+        let now = "2026-03-31T12:00:00Z";
+        let mut t = track(1, "X", Some(120), None);
+        t.comments = Some("2026-03-30T00:00:00Z".into());
+        for field in ["comments", "genre", "bpm", "playCount", "unknownField", "playlist"] {
+            assert!(!matches_at(&t, rule(field, SmartOp::InLast, "30d"), now), "{field}");
+            assert!(!matches_at(&t, rule(field, SmartOp::NotInLast, "30d"), now), "{field}");
         }
     }
 

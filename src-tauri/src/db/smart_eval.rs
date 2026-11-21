@@ -50,6 +50,9 @@ pub struct PlaylistResolver<'db> {
     memo: HashMap<i64, Resolved>,
     /// 評価中のプレイリスト (循環検出用スタック)。
     visiting: Vec<i64>,
+    /// 相対日付 (inLast など) の基準時刻。解決器 (= 評価パス) を作った時点で一度だけ取り、
+    /// このパスの全評価で使う (参照し合うスマート同士で基準がずれない)。
+    now: chrono::DateTime<chrono::Utc>,
 }
 
 impl Database {
@@ -110,6 +113,7 @@ impl Database {
             library: None,
             memo: HashMap::new(),
             visiting: Vec::new(),
+            now: chrono::Utc::now(),
         })
     }
 }
@@ -257,11 +261,10 @@ impl PlaylistResolver<'_> {
 
         self.ensure_library()?;
         let lib = self.library.as_ref().expect("library loaded");
-        // 相対日付 (inLast など) は評価のたびの現在時刻が基準。
         let ctx = EvalContext {
             level: self.level,
             membership: &membership,
-            now: chrono::Utc::now(),
+            now: self.now,
         };
         let mut matched: Vec<usize> = (0..lib.tracks.len())
             .filter(|&i| {
