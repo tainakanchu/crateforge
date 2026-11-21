@@ -116,7 +116,7 @@ discid = "0.6"
 # `zip` 本体は上の [dependencies] にある (zip ドロップ取り込み用に全 OS)。Windows では
 # 従来どおり既定機能 (bzip2 / zstd / aes など) も有効にしておく。
 [target.'cfg(target_os = "windows")'.dependencies]
-zip = "2"
+zip = "9"
 
 # === Windows 以外: rbx-cli (USB 書き出しエンジン) の Release アセット (tar.gz) の展開用 ===
 # Windows のアセットは zip なので上の `zip` を使う。
