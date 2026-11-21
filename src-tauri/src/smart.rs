@@ -129,7 +129,10 @@ fn resolve_local<Tz: TimeZone>(
     for _ in 0..=GAP_SEARCH_HOURS {
         match resolve(&t) {
             LocalResult::Single(d) => return Some(d.with_timezone(&Utc)),
-            LocalResult::Ambiguous(earliest, _) => return Some(earliest.with_timezone(&Utc)),
+            // chrono の Ambiguous は要素順が早い順とは限らない (Unix の Local は遅いほうが先) ので比較する。
+            LocalResult::Ambiguous(a, b) => {
+                return Some(a.with_timezone(&Utc).min(b.with_timezone(&Utc)))
+            }
             LocalResult::None => t = t.checked_add_signed(Duration::hours(1))?,
         }
     }
@@ -1356,14 +1359,16 @@ mod tests {
         });
         assert_eq!(single, Some(utc("2026-03-01T06:30:00Z")));
 
-        // 重複 (11/1 01:30 は EDT と EST の 2 回): 早いほう (EDT = 05:30Z)。
-        let ambiguous = resolve_local(naive("2026-11-01T01:30:00"), |t| {
-            LocalResult::Ambiguous(
-                edt.from_local_datetime(t).unwrap(),
-                est.from_local_datetime(t).unwrap(),
-            )
-        });
-        assert_eq!(ambiguous, Some(utc("2026-11-01T05:30:00Z")));
+        // 重複 (11/1 01:30 は EDT と EST の 2 回): 要素の順序によらず早いほう (EDT = 05:30Z)。
+        for (first, second) in [(est, edt), (edt, est)] {
+            let ambiguous = resolve_local(naive("2026-11-01T01:30:00"), |t| {
+                LocalResult::Ambiguous(
+                    first.from_local_datetime(t).unwrap(),
+                    second.from_local_datetime(t).unwrap(),
+                )
+            });
+            assert_eq!(ambiguous, Some(utc("2026-11-01T05:30:00Z")));
+        }
 
         // 欠落 (3/8 02:00〜03:00 が無い): 1 時間後ろの 03:30 EDT。
         let gap = resolve_local(naive("2026-03-08T02:30:00"), |t| {
