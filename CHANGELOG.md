@@ -10,37 +10,53 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.23.0] - 2026-11-22
+
 ### 日本語
 
 #### デスクトップ
-- **API を連続で叩かれると画面が固まる問題を修正**: 外部のスクリプトが API で曲の編集・アートワークの差し替え・全曲の取得を数百件続けて送ると、1 件ごとに画面がプレイリスト・曲一覧・件数・すべてのジャケットを取り直し、操作できなくなっていた。続けて届いた変更通知はおよそ 0.5 秒に 1 回にまとめて反映する（単発の書き込みはこれまでどおりすぐ反映する）。プレイリスト一覧が変わっていなければ差し替えず、スマートプレイリストの件数を二重に数え直さない。API の書き込みや全曲の取得は画面の処理と同じスレッドを占有しないようにし、プレイリスト・アルバム・アーティスト一覧などの読み出しも画面の処理を止めずに行う。
-- **API の書き込みがまれに `database is locked`（500）で失敗する問題を修正**: ライブラリを開くとき、ほかの書き込みが終わるのを待つ設定より先にデータベースの設定を変えていたため、書き込みが続いている間は待たずに失敗することがあった。先に待つ設定を入れるようにした。
+- **API を連続で叩かれると画面が固まる問題を修正**: 外部のスクリプトが API で曲の編集・アートワークの差し替え・全曲の取得を数百件続けて送ると、1 件ごとに画面がプレイリスト・曲一覧・件数・すべてのジャケットを取り直し、操作できなくなっていた。続けて届いた変更通知はおよそ 0.5 秒に 1 回にまとめて反映する（単発の書き込みはこれまでどおりすぐ反映する）。プレイリスト一覧が変わっていなければ差し替えず、スマートプレイリストの件数を二重に数え直さない。API の書き込みや全曲の取得は画面の処理と同じスレッドを占有しないようにし、プレイリスト・アルバム・アーティスト一覧などの読み出しも画面の処理を止めずに行う。 (#266)
+- **API の書き込みがまれに `database is locked`（500）で失敗する問題を修正**: ライブラリを開くとき、ほかの書き込みが終わるのを待つ設定より先にデータベースの設定を変えていたため、書き込みが続いている間は待たずに失敗することがあった。先に待つ設定を入れるようにした。 (#266)
 - **仕様変更: ツールバー右側を整理**: アイコン 15 個の横並びをやめ、左から「取り込み ▾」（ファイル / フォルダ / CD / サーバーから取り寄せ / iTunes から移行）・⋯（USB に書き出し… / iTunes XML に書き出し / 自動エクスポートの状態 / リンク切れを再チェック）・右ペインの切替にした。整理先フォルダと自動エクスポートの切替はツールバーから外し、設定 › ライブラリ だけにした（未設定・オフなどの状態はメニューの状態行に出て、クリックで設定を開く）。download / upload のアイコンを別の操作に使い回さない。狭い幅での畳み方も段階を見直した。 (#254)
 - **仕様変更: Rules・設定・ショートカット一覧の入口をサイドバーへ**: プレイリスト見出しの 3 つのボタンを ＋ メニュー 1 つにまとめ（新規プレイリスト / 新規スマートプレイリスト / 新規フォルダ /「Rules でスマートプレイリストを定義…」）、空き領域の右クリックでも同じメニューを出す。サイドバー下端に「設定」と `?`（ショートカット一覧）を置いた。`Ctrl + ,`（macOS は `Cmd + ,`）で設定を開ける。 (#254)
 - **仕様変更: 設定のセクションを再編**: 一般 / 再生 / ライブラリ / フォント / 変換 / USB 書き出し / モバイル・API / アップデート / 情報 に分けた。ReplayGain と出力デバイスは「再生」、整理先・自動エクスポート・バックアップなどは「ライブラリ」へ。プレイヤーバーの RG ボタンはなくした（ReplayGain は 設定 › 再生 で切り替える）。 (#254)
 - ライブラリが空のときの案内を「iTunes から移行」中心にした。 (#254)
 - 設定画面の説明文を ⓘ に移し、見出しを一覧しやすくした。行の下には、置き換え・ダウンロード・再起動などの注意だけを残す。 (#247)
 - **仕様変更: ライブラリの自動保存（iTunes XML 自動エクスポート）のタイミングを変更**: 変更のたびに 3 秒後に書き出すのをやめ、未書き出しの変更があるときだけ「操作（変更・キー / マウス）が 1 分止まったとき」「ほかのアプリに切り替えたとき（ウィンドウのフォーカスが外れた・最小化）」「作業が続いても最初の変更から 10 分たったとき」「アプリ終了時」に書き出すようにした。失敗したときは 1 分のアイドル後に再試行する。
+- **スマートプレイリストに相対日付の条件を追加**: 追加日・更新日・最終再生で「が過去…以内」「が過去…以内でない」を使えるようにした。期間は N 日 / 週 / か月で指定し、か月は暦の月で数える。日付が無い曲は「以内でない」に一致する。日付の項目に切り替えたときの初期の演算子は「が過去…以内」（30 日）になった。 (#267)
+- iTunes XML の取り込みとスマートプレイリストの復元で、iTunes の相対日付の条件を変換して読み込むようにした（これまでは警告付きで除外していた）。 (#267)
+- アプリに戻ったときにサイドバーの件数を数え直すようにした。 (#267)
+- **iTunes XML の取り込みを堅牢にした**: エスケープされていない `&` を含んでいても取り込み全体を失敗させず、文字として読む。未知の実体参照は、値全体を空にせずその参照の部分だけを落とす。 (#269)
+- Traktor の `collection.nml` の属性値を XML の規則どおりに読むようにした（属性値の中のタブ・改行は空白として扱う）。 (#269)
+- 依存ライブラリをセキュリティ修正を含む版に更新した（rusqlite 0.43 / quick-xml 0.41 / zip 9 ほか）。 (#269)
 
 #### API
-- **`?notify=false` と `POST /api/library/notify` を追加**: 書き込み系のリクエストに `?notify=false` を付けると、そのリクエストでは起動中のアプリの画面に変更を知らせず、変更があったことだけを覚えておく。最後に `POST /api/library/notify` を送ると、覚えておいた分をまとめて 1 回反映する（応答 `{ notified, artworkChanged }`）。付けないときはこれまでどおりすぐ反映する（続けて届いた分は 0.5 秒あたり 1 回程度にまとめる）。
-- **`PATCH /api/tracks/batch` を追加**: 曲ごとに違う編集を 1 回のリクエストでまとめて適用する。ボディは `[{ trackId, edit, expect? }, ...]`（`edit` / `expect` は `PATCH /api/tracks/{trackId}` と同じ形）。入力に誤りが 1 件でもあれば何も書かずに `400`。応答の `results` に曲ごとの `status`（`200` / `404` / `409` / `500`）・`fileWriteFailed`・`relocateFailed`・`error` を送った順で返し、1 曲が失敗しても残りは続ける。画面への反映は最後に 1 回だけ。ループバック専用。
+- **`?notify=false` と `POST /api/library/notify` を追加**: 書き込み系のリクエストに `?notify=false` を付けると、そのリクエストでは起動中のアプリの画面に変更を知らせず、変更があったことだけを覚えておく。最後に `POST /api/library/notify` を送ると、覚えておいた分をまとめて 1 回反映する（応答 `{ notified, artworkChanged }`）。付けないときはこれまでどおりすぐ反映する（続けて届いた分は 0.5 秒あたり 1 回程度にまとめる）。 (#266)
+- **`PATCH /api/tracks/batch` を追加**: 曲ごとに違う編集を 1 回のリクエストでまとめて適用する。ボディは `[{ trackId, edit, expect? }, ...]`（`edit` / `expect` は `PATCH /api/tracks/{trackId}` と同じ形）。入力に誤りが 1 件でもあれば何も書かずに `400`。応答の `results` に曲ごとの `status`（`200` / `404` / `409` / `500`）・`fileWriteFailed`・`relocateFailed`・`error` を送った順で返し、1 曲が失敗しても残りは続ける。画面への反映は最後に 1 回だけ。ループバック専用。 (#266)
+- **`smartCriteria` の演算子に `inLast` / `notInLast` を追加**: 値は `"30d"` / `"2w"` / `"3m"` のように数と単位（`d` / `w` / `m`）で指定する。 (#267)
 
 ### English
 
 #### Desktop
-- **Fixed the app freezing when the API is called in rapid succession**: when an external script sent hundreds of API requests in a row (editing tracks, replacing artwork, fetching the whole library), the app reloaded its playlists, track list, counts and every cover image after each one and became unresponsive. Change notifications that arrive back to back are now applied about once every 0.5 seconds (a single write is still reflected immediately). The playlist list is not replaced when it has not changed, so smart playlist counts are no longer recounted twice. API writes and whole-library fetches no longer hog the threads the UI relies on, and listing playlists, albums, artists and the like no longer blocks the UI.
-- **Fixed API writes occasionally failing with `database is locked` (500)**: when opening the library, a database setting was changed before the "wait for other writers" timeout was set, so it could fail immediately while other writes were in progress. The timeout is now set first.
+- **Fixed the app freezing when the API is called in rapid succession**: when an external script sent hundreds of API requests in a row (editing tracks, replacing artwork, fetching the whole library), the app reloaded its playlists, track list, counts and every cover image after each one and became unresponsive. Change notifications that arrive back to back are now applied about once every 0.5 seconds (a single write is still reflected immediately). The playlist list is not replaced when it has not changed, so smart playlist counts are no longer recounted twice. API writes and whole-library fetches no longer hog the threads the UI relies on, and listing playlists, albums, artists and the like no longer blocks the UI. (#266)
+- **Fixed API writes occasionally failing with `database is locked` (500)**: when opening the library, a database setting was changed before the "wait for other writers" timeout was set, so it could fail immediately while other writes were in progress. The timeout is now set first. (#266)
 - **Behavior change: the right side of the toolbar is reorganised**: instead of 15 icons in a row it now holds, from left to right, "取り込み ▾" (Import: files / folders / CD / fetch from server / migrate from iTunes), ⋯ ("USB に書き出し…" (Export to USB) / export iTunes XML / auto-export status / re-check missing files) and the right-pane toggle. The organize-folder button and the auto-export toggle are gone from the toolbar and live only in Settings › Library; their state (not set, off, …) is shown as a status row in the menus that opens Settings when clicked. The download / upload icons are no longer reused for different actions. The narrow-window collapse stages were revised as well. (#254)
 - **Behavior change: Rules, Settings and the shortcut list are opened from the sidebar**: the three buttons on the playlist header are now one ＋ menu (new playlist / new smart playlist / new folder / "Rules でスマートプレイリストを定義…" (define smart playlists with Rules)), and right-clicking the empty area shows the same menu. The bottom of the sidebar now has "設定" (Settings) and `?` (shortcut list). `Ctrl + ,` (`Cmd + ,` on macOS) opens Settings. (#254)
 - **Behavior change: Settings sections are reorganised**: General / Playback / Library / Fonts / Conversion / USB export / Mobile & API / Updates / About. ReplayGain and the output device moved to Playback; the organize folder, auto-export and backups moved to Library. The RG button in the player bar was removed (toggle ReplayGain in Settings › Playback). (#254)
 - The empty-library screen now leads with "iTunes から移行" (migrate from iTunes). (#254)
 - Settings descriptions moved into an ⓘ next to each label so the list is easier to scan; only short warnings (replaces the library, downloads, restarts, …) stay visible under a row. (#247)
 - **Behavior change: new timing for the library auto-save (iTunes XML auto-export)**: instead of exporting 3 seconds after every change, it now exports only when there are unexported changes, and only when there has been no change or key / mouse input for 1 minute, when you switch to another app (the window loses focus or is minimised), at most 10 minutes after the first change even if you keep working, and on exit. A failed export is retried after the next 1-minute idle period.
+- **Added relative-date conditions to smart playlists**: Date Added, Date Modified and Last Played now support "が過去…以内" (is in the last…) and "が過去…以内でない" (is not in the last…). The period is given in days, weeks or months; months are calendar months. Tracks with no date match "is not in the last…". When you switch a condition to a date field, the default operator is now "is in the last…" (30 days). (#267)
+- iTunes XML import and smart playlist restore now convert iTunes relative-date conditions instead of dropping them with a warning. (#267)
+- Sidebar counts are recounted when you return to the app. (#267)
+- **More robust iTunes XML import**: an unescaped `&` no longer fails the whole import and is read as a literal character. An unknown entity reference now drops only that reference instead of emptying the whole value. (#269)
+- Traktor `collection.nml` attribute values are now read according to the XML rules (tabs and newlines inside an attribute value are treated as spaces). (#269)
+- Updated dependencies to versions that include security fixes (rusqlite 0.43 / quick-xml 0.41 / zip 9 and others). (#269)
 
 #### API
-- **Added `?notify=false` and `POST /api/library/notify`**: add `?notify=false` to a write request to skip notifying the running app's UI for that request; the app only remembers that something changed. Send `POST /api/library/notify` at the end to apply everything remembered in a single refresh (response `{ notified, artworkChanged }`). Without the option, changes are reflected immediately as before (back-to-back changes are coalesced to about once every 0.5 seconds).
-- **Added `PATCH /api/tracks/batch`**: apply a different edit to each track in one request. The body is `[{ trackId, edit, expect? }, ...]` (`edit` / `expect` take the same shape as `PATCH /api/tracks/{trackId}`). If any item has invalid input, nothing is written and `400` is returned. `results` reports each track's `status` (`200` / `404` / `409` / `500`), `fileWriteFailed`, `relocateFailed` and `error` in request order; a failure on one track does not stop the rest. The UI is refreshed once at the end. Loopback only.
+- **Added `?notify=false` and `POST /api/library/notify`**: add `?notify=false` to a write request to skip notifying the running app's UI for that request; the app only remembers that something changed. Send `POST /api/library/notify` at the end to apply everything remembered in a single refresh (response `{ notified, artworkChanged }`). Without the option, changes are reflected immediately as before (back-to-back changes are coalesced to about once every 0.5 seconds). (#266)
+- **Added `PATCH /api/tracks/batch`**: apply a different edit to each track in one request. The body is `[{ trackId, edit, expect? }, ...]` (`edit` / `expect` take the same shape as `PATCH /api/tracks/{trackId}`). If any item has invalid input, nothing is written and `400` is returned. `results` reports each track's `status` (`200` / `404` / `409` / `500`), `fileWriteFailed`, `relocateFailed` and `error` in request order; a failure on one track does not stop the rest. The UI is refreshed once at the end. Loopback only. (#266)
+- **Added the `inLast` / `notInLast` operators to `smartCriteria`**: the value is a number and a unit (`d` / `w` / `m`), such as `"30d"`, `"2w"` or `"3m"`. (#267)
 
 ## [v0.22.0] - 2026-11-17
 
