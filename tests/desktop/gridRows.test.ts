@@ -101,6 +101,7 @@ test("gridLayout.itemRange: 見えている行の項目の範囲 (両端を含�
   assert.deepEqual(layout.itemRange(19, 19), { start: 95, end: 99 });
   // 最後の行が端数でも件数を超えない。行番号は範囲に丸める。
   assert.deepEqual(gridLayout(7, 3).itemRange(1, 99), { start: 3, end: 6 });
+  assert.deepEqual(gridLayout(7, 3).itemRange(50, 99), { start: 6, end: 6 }, "両端とも外なら最後の行");
   assert.equal(gridLayout(0, 3).itemRange(0, 0), null);
   assert.equal(layout.itemRange(3, 2), null);
 });
@@ -137,6 +138,11 @@ test("relocateExpanded: 見つからなければ閉じる。未取得の位置�
   assert.equal(relocateExpanded(ex, 1000, () => undefined, loaded), ex);
   // 件数が減って位置そのものが無くなったら、探し直す (無ければ閉じる)。
   assert.equal(relocateExpanded(ex, 2, () => undefined, loaded), null);
+  // 位置が件数とちょうど同じ (末尾の 1 つ先) も「位置が無くなった」側。
+  assert.deepEqual(relocateExpanded({ key: "c", index: 2 }, 2, () => undefined, loaded), {
+    key: "c",
+    index: 1,
+  });
   assert.deepEqual(relocateExpanded({ key: "c", index: 500 }, 2, () => undefined, loaded), {
     key: "c",
     index: 1,

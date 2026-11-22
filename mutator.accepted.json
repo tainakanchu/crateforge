@@ -1,0 +1,186 @@
+{
+  "10nqfoxf1dd": {
+    "reason": "equivalent: armIdle が呼ばれるとき idleTimer は常に null (markDirty は null のときだけ、発火時は先に null にし、flush は開始時に clearTimers する)",
+    "where": "src/lib/autoExportScheduler.ts:74:9 idleTimer !== null -> idleTimer === null"
+  },
+  "11979wgqsv6": {
+    "reason": "equivalent: markDirty でアイドルタイマーを張り直しても、発火時に最後の活動から測り直すので書き出す時刻は同じ",
+    "where": "src/lib/autoExportScheduler.ts:129:11 idleTimer === null -> true"
+  },
+  "11w68lrfl0y": {
+    "reason": "equivalent: armIdle が呼ばれるとき idleTimer は常に null (markDirty は null のときだけ、発火時は先に null にし、flush は開始時に clearTimers する)",
+    "where": "src/lib/autoExportScheduler.ts:74:9 idleTimer !== null -> false"
+  },
+  "14sjh88ick8": {
+    "reason": "equivalent: 一覧のキーは同一性の比較 (useTrackList) にだけ使う。種別の文字列を空にしても他の種別と衝突しない (要素数や形が異なる)",
+    "where": "src/lib/trackListQuery.ts:107:30 \"playlist\" -> \"\""
+  },
+  "19be37s8cbe": {
+    "reason": "equivalent: range が null なら wanted も空で、その前の missing.length === 0 で戻るので到達しない",
+    "where": "src/lib/windowedList.ts:402:9 [] -> [\"Stryker was here!\"]"
+  },
+  "19tpwfqucyc": {
+    "reason": "equivalent: 一覧のキーは同一性の比較 (useTrackList) にだけ使う。種別の文字列を空にしても他の種別と衝突しない (要素数や形が異なる)",
+    "where": "src/lib/trackListQuery.ts:78:14 \"none\" -> \"\""
+  },
+  "1bbsqfrh463": {
+    "reason": "equivalent: アイドル/上限タイマーが dirty でないときに発火することはない (markClean と flush がタイマーを止める)。発火しても flush 自身が !dirty で戻る",
+    "where": "src/lib/autoExportScheduler.ts:89:11 dirty -> true"
+  },
+  "1chkgj99d8s": {
+    "reason": "equivalent: 初期値は最初の sync で必ず上書きされる (started=false なので newGeneration し target を置き換える)。sync 前は count=0 なので何も取得しない",
+    "where": "src/lib/windowedList.ts:305:41 \"\" -> \"Stryker was here!\""
+  },
+  "1daiz3a716b": {
+    "reason": "equivalent: 一覧のキーは同一性の比較 (useTrackList) にだけ使う。種別の文字列を空にしても他の種別と衝突しない (要素数や形が異なる)",
+    "where": "src/lib/trackListQuery.ts:105:30 \"library\" -> \"\""
+  },
+  "1dmzziw21n9": {
+    "reason": "equivalent: 一覧のキーは同一性の比較 (useTrackList) にだけ使う。種別の文字列を空にしても他の種別と衝突しない (要素数や形が異なる)",
+    "where": "src/lib/trackListQuery.ts:85:9 \"playlist\" -> \"\""
+  },
+  "1fxtwghie5x": {
+    "reason": "equivalent: 初期値は最初の sync で必ず上書きされる (started=false なので newGeneration し target を置き換える)。sync 前は count=0 なので何も取得しない",
+    "where": "src/lib/windowedList.ts:310:19 true -> false"
+  },
+  "1ndnjjv6zup": {
+    "reason": "equivalent: armIdle が呼ばれるとき idleTimer は常に null (markDirty は null のときだけ、発火時は先に null にし、flush は開始時に clearTimers する)",
+    "where": "src/lib/autoExportScheduler.ts:74:29 clearT(idleTimer); -> ;"
+  },
+  "1qxmcknm0dc": {
+    "reason": "equivalent: アイドルタイマーは発火時に最後の活動からの経過を測り直し、足りなければ残りを張り直すので、最初の待ち時間を短くしても書き出す時刻は同じ",
+    "where": "src/lib/autoExportScheduler.ts:113:22 max -> min"
+  },
+  "1zpxp3lwmyg": {
+    "reason": "equivalent: armIdle は dispose 後には呼ばれない (markDirty は disposed で戻り、flush の finally は !disposed を見る、タイマーは dispose で止まる)",
+    "where": "src/lib/autoExportScheduler.ts:73:9 disposed -> false"
+  },
+  "20lsnp8wvth": {
+    "reason": "equivalent: 展開行があるとき expandRow は floor(index / n) + 1 なので常に 1 以上。0 になることはない",
+    "where": "src/lib/gridRows.ts:86:37 expandRow >= 0 -> expandRow > 0"
+  },
+  "222usy4vumd": {
+    "reason": "equivalent: failed が空なら後段の some(failed.has) も false",
+    "where": "src/lib/windowedList.ts:433:24 this.failed.size === 0 -> false"
+  },
+  "29bmm2wmbv8": {
+    "reason": "equivalent: 早期 return を外しても、直後のループが同じ条件 (size <= maxPages) で即 return する",
+    "where": "src/lib/windowedList.ts:209:9 this.pages.size <= this.maxPages -> this.pages.size < this.maxPages"
+  },
+  "29xb9651u5e": {
+    "reason": "equivalent: count <= 0 のとき end = min(count - 1, ...) < 0 <= start となり、後段の end < start で同じく null になる",
+    "where": "src/lib/windowedList.ts:223:7 count <= 0 -> false"
+  },
+  "29zvi8wdc8a": {
+    "reason": "equivalent: settle で同じ resolve をもう一度呼んでも Promise は一度しか解決しない (残った配列は次の settle / newGeneration で再度呼ばれるだけ)",
+    "where": "src/lib/windowedList.ts:475:5 this.waiters.delete(page); -> ;"
+  },
+  "2a2hs6hpi0i": {
+    "reason": "equivalent: armIdle が呼ばれるとき idleTimer は常に null (markDirty は null のときだけ、発火時は先に null にし、flush は開始時に clearTimers する)",
+    "where": "src/lib/autoExportScheduler.ts:74:9 idleTimer !== null -> true"
+  },
+  "2aqqkib8zva": {
+    "reason": "equivalent: reset 後は値が無いので、stale に残ったキーも load で必ず取得され、取得時に stale から消える",
+    "where": "src/lib/keyedCache.ts:91:5 this.stale.clear(); -> ;"
+  },
+  "2ayc5j26vi0": {
+    "reason": "equivalent: generation は比較 (=== / !==) にだけ使う。-= 1 でも毎回違う値になる",
+    "where": "src/lib/windowedList.ts:499:5 this.generation += 1 -> this.generation -= 1"
+  },
+  "2crfjqlg6xk": {
+    "reason": "equivalent: 一覧のキーは同一性の比較 (useTrackList) にだけ使う。種別の文字列を空にしても他の種別と衝突しない (要素数や形が異なる)",
+    "where": "src/lib/trackListQuery.ts:82:30 \"library\" -> \"\""
+  },
+  "2ecxdt4cmn2": {
+    "reason": "equivalent: 初期値は最初の sync で必ず上書きされる (started=false なので newGeneration し target を置き換える)。sync 前は count=0 なので何も取得しない",
+    "where": "src/lib/windowedList.ts:311:27 false -> true"
+  },
+  "2egsx1qavj9": {
+    "reason": "equivalent: 初期値は最初の sync で必ず上書きされる (started=false なので newGeneration し target を置き換える)。sync 前は count=0 なので何も取得しない",
+    "where": "src/lib/windowedList.ts:306:21 false -> true"
+  },
+  "5uyvh4kzr1": {
+    "reason": "equivalent: 書き出し中以外では dirty と dirtySince !== null が常に一致するので、この分岐の条件を変えても dirtySince は変わらない",
+    "where": "src/lib/autoExportScheduler.ts:126:13 dirtySince === null -> true"
+  },
+  "70744eonu": {
+    "reason": "equivalent: split の結果は空配列にならないので pop() が undefined を返すことはなく、?? の右辺は使われない",
+    "where": "src/lib/dropImport.ts:6:45 \"\" -> \"Stryker was here!\""
+  },
+  "7errbvd0vj": {
+    "reason": "equivalent: clearTimeout(null) は何もしない。null の確認を省いても観測できない",
+    "where": "src/lib/autoExportScheduler.ts:64:9 idleTimer !== null -> true"
+  },
+  "8aojymao3q": {
+    "reason": "equivalent: アイドル/上限タイマーが dirty でないときに発火することはない (markClean と flush がタイマーを止める)。発火しても flush 自身が !dirty で戻る",
+    "where": "src/lib/autoExportScheduler.ts:77:11 !dirty -> false"
+  },
+  "8fbrufj6yt": {
+    "reason": "equivalent: clean のときに flush を呼んでも flush 自身が !dirty で何もせず戻る",
+    "where": "src/lib/autoExportScheduler.ts:137:11 dirty -> true"
+  },
+  "bhb15n9bss": {
+    "reason": "equivalent: max 件ちょうど・以下のページを slice(0, max) しても内容は同じ",
+    "where": "src/lib/windowedList.ts:157:11 p.items.length > max -> p.items.length >= max"
+  },
+  "bl6fzqulk1": {
+    "reason": "equivalent: 成功時の inflight は markAllStale / reset で消え、新しい値がある限り load は inflight を見ない。差が出るのは値が undefined のときだけで、KeyedCache は undefined を『値が無い』として扱う前提 (get と区別できない)",
+    "where": "src/lib/keyedCache.ts:47:11 this.inflight.delete(key); -> ;"
+  },
+  "dy7g7oxzc0": {
+    "reason": "equivalent: clearTimeout(null) は何もしない。null の確認を省いても観測できない",
+    "where": "src/lib/autoExportScheduler.ts:65:9 maxTimer !== null -> true"
+  },
+  "f9rrk67c9e": {
+    "reason": "equivalent: max 件ちょうど・以下のページを slice(0, max) しても内容は同じ",
+    "where": "src/lib/windowedList.ts:157:11 p.items.length > max -> true"
+  },
+  "h70nc8bomw": {
+    "reason": "equivalent: 二度目の dispose では unlisten がすでに undefined なので、disposed の確認を省いても何も呼ばれない",
+    "where": "src/lib/tauriEvents.ts:25:9 disposed -> false"
+  },
+  "i6cnwu56ep": {
+    "reason": "equivalent: 再試行タイマーは newGeneration で clearTimeout されるので、世代の確認は二重の防御で単独では観測できない",
+    "where": "src/lib/windowedList.ts:540:21 generation === this.generation -> true"
+  },
+  "lsvwq79jqi": {
+    "reason": "equivalent: flush の finally で dirty のとき dirtySince は常に設定済み (書き出し中の markDirty か catch が設定する)",
+    "where": "src/lib/autoExportScheduler.ts:112:13 dirtySince === null -> false"
+  },
+  "mfil5swjn4": {
+    "reason": "equivalent: アイドルタイマーは発火時に最後の活動からの経過を測り直し、足りなければ残りを張り直すので、最初の待ち時間を短くしても書き出す時刻は同じ",
+    "where": "src/lib/autoExportScheduler.ts:113:29 lastActivity + idleMs -> lastActivity - idleMs"
+  },
+  "mqs3ldq2cx": {
+    "reason": "equivalent: count が 0 のとき Math.ceil(0 / pageSize) も 0",
+    "where": "src/lib/windowedList.ts:28:10 count <= 0 -> count < 0"
+  },
+  "qxcz9j8h0g": {
+    "reason": "equivalent: \\s で分割した各片は String.prototype.trim が除く空白 (WhiteSpace/LineTerminator) を含まないので trim は常に恒等",
+    "where": "src/lib/genre.ts:16:17 t.trim() -> t"
+  },
+  "qyu7zxx1bf": {
+    "reason": "equivalent: count <= 0 のとき end = min(count - 1, ...) < 0 <= start となり、後段の end < start で同じく null になる",
+    "where": "src/lib/windowedList.ts:223:7 count <= 0 -> count < 0"
+  },
+  "uxqoty5up8": {
+    "reason": "equivalent: 書き出し中以外では dirty と dirtySince !== null が常に一致するので、この分岐の条件を変えても dirtySince は変わらない",
+    "where": "src/lib/autoExportScheduler.ts:124:11 !dirty -> true"
+  },
+  "vjkqu4whbh": {
+    "reason": "equivalent: 早期 return を外しても、直後のループが同じ条件 (size <= maxPages) で即 return する",
+    "where": "src/lib/windowedList.ts:209:9 this.pages.size <= this.maxPages -> false"
+  },
+  "vp9qufuus9": {
+    "reason": "equivalent: 区切りの連続で生じる空文字列は直後の filter(Boolean) で消えるので、+ の有無で結果は変わらない",
+    "where": "src/lib/genre.ts:7:33 /[\\s;,]+/ -> /[\\s;,]/"
+  },
+  "vtdydnz2ab": {
+    "reason": "equivalent: clean のときに記録した lastActivity は、次に dirty になるとき (markDirty / 書き出し失敗) に必ず上書きされる",
+    "where": "src/lib/autoExportScheduler.ts:133:11 !dirty -> false"
+  },
+  "xnqbld1wlt": {
+    "reason": "equivalent: TRAP_CONTAINER は呼び出し側 (useFocusTrap) で同一性 (===) の比較にだけ使い、文字列の中身は観測されない",
+    "where": "src/lib/focusTrap.ts:8:31 \"container\" -> \"\""
+  }
+}

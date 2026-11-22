@@ -47,3 +47,46 @@ test("intersectRect はダイアログ枠とビューポートの共通部分を
   );
   assert.deepEqual(r, { top: 0, left: 50, width: 590, height: 480 });
 });
+
+test("下にちょうど収まるなら、上の方が広くても下に出す", () => {
+  // 境界 100..500 (内側 108..492)。ボタン下端 + 間隔 = 324、下の余白は 168。上は 186。
+  const p = placeInfoTip(btn(300, 200), { width: 200, height: 168 }, bounds);
+  assert.equal(p.placement, "below");
+  assert.equal(p.top, 300 + 18 + TIP_GAP);
+});
+
+test("下に収まらなくても、上の方が狭ければ下のまま境界内に押し上げる", () => {
+  // 内側 344..542。下の余白 88・上の余白 80 (間隔ぶんを引いた広さで比べる)。
+  const b = { top: 336, left: 100, width: 600, height: 214 };
+  const p = placeInfoTip(btn(430, 200), { width: 200, height: 100 }, b);
+  assert.equal(p.placement, "below");
+  assert.equal(p.top, 336 + 214 - TIP_MARGIN - 100);
+});
+
+test("上下の余白が同じなら下に出す", () => {
+  // 内側 336..542。下の余白 88・上の余白 88。
+  const b = { top: 328, left: 100, width: 600, height: 222 };
+  const p = placeInfoTip(btn(430, 200), { width: 200, height: 100 }, b);
+  assert.equal(p.placement, "below");
+});
+
+test("intersectRect: 重ならない・辺が接するだけのときは b を返す", () => {
+  const b = { top: 0, left: 0, width: 640, height: 480 };
+  // 横に離れている (縦は重なる)
+  assert.equal(intersectRect({ top: 10, left: 700, width: 50, height: 50 }, b), b);
+  // 縦に離れている (横は重なる)
+  assert.equal(intersectRect({ top: 500, left: 10, width: 50, height: 50 }, b), b);
+  // 右辺・下辺で接するだけ
+  assert.equal(intersectRect({ top: 10, left: 640, width: 50, height: 50 }, b), b);
+  assert.equal(intersectRect({ top: 480, left: 10, width: 50, height: 50 }, b), b);
+});
+
+test("intersectRect: 共通部分の高さは上端からの差", () => {
+  assert.deepEqual(
+    intersectRect(
+      { top: 50, left: 20, width: 100, height: 100 },
+      { top: 30, left: 0, width: 640, height: 480 },
+    ),
+    { top: 50, left: 20, width: 100, height: 100 },
+  );
+});

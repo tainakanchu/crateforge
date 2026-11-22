@@ -48,3 +48,17 @@ test("createCoalescer: cancel で保留中の末尾の実行を取り消す", ()
   vi.advanceTimersByTime(1000);
   assert.equal(count, 1);
 });
+
+test("createCoalescer: 末尾は直前の実行からちょうど窓の長さが経った時点で実行する", () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], now: 1000 });
+  const fired: Info[] = [];
+  const c = createCoalescer<Info>((v) => fired.push(v), merge, 300);
+  c.push({ artworkChanged: false }); // t=1000 先頭
+  vi.advanceTimersByTime(100);
+  c.push({ artworkChanged: true }); // t=1100 窓の中
+  assert.equal(fired.length, 1, "窓の中は保留する");
+  vi.advanceTimersByTime(199);
+  assert.equal(fired.length, 1);
+  vi.advanceTimersByTime(1);
+  assert.deepEqual(fired, [{ artworkChanged: false }, { artworkChanged: true }]);
+});

@@ -149,3 +149,23 @@ test("trackListGroupKey: 並び順だけが違う一覧は同じ、スコープ�
   ];
   assert.equal(new Set(groups).size, groups.length);
 });
+
+test("プレイリストを選んだままライブラリ表示に切り替えたらライブラリ", () => {
+  assert.deepEqual(q({ viewMode: "library", selectedPlaylistId: 7 }), {
+    kind: "library",
+    query: "",
+    sortField: "artist",
+    sortOrder: "asc",
+  });
+});
+
+test("trackListKey: プレイリストの並び順 (列・向き) だけが違っても別の一覧", () => {
+  const key = (over: Partial<TrackListState>) =>
+    trackListKey(q({ viewMode: "playlist", selectedPlaylistId: 1, ...over }));
+  assert.notEqual(key({ sortField: "bpm" }), key({ sortField: "name" }));
+  assert.notEqual(key({ sortOrder: "asc" }), key({ sortOrder: "desc" }));
+  assert.notEqual(
+    key({ playlistIsSmart: true, sortField: "bpm" }),
+    key({ playlistIsSmart: true, sortField: "name" }),
+  );
+});

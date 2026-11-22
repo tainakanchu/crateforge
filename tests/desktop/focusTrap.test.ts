@@ -1,6 +1,6 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { TRAP_CONTAINER, nextTrapFocus } from "../../src/lib/focusTrap.ts";
+import { FOCUSABLE_SELECTOR, TRAP_CONTAINER, nextTrapFocus } from "../../src/lib/focusTrap.ts";
 
 const els = ["first", "middle", "last"];
 
@@ -32,3 +32,17 @@ test("nextTrapFocus: フォーカスできる要素が無ければダイアロ�
   assert.equal(nextTrapFocus([], null, true), TRAP_CONTAINER);
 });
 
+
+test("FOCUSABLE_SELECTOR: 無効なフォーム部品と tabindex=-1 は Tab で止まらない", () => {
+  const parts = FOCUSABLE_SELECTOR.split(",").map((s) => s.trim());
+  for (const p of [
+    "button:not([disabled])",
+    "input:not([disabled])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    "summary",
+    '[tabindex]:not([tabindex="-1"])',
+  ]) {
+    assert.ok(parts.includes(p), p);
+  }
+});

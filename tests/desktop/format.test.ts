@@ -103,6 +103,9 @@ test("formatBytes", () => {
   assert.equal(formatBytes(-1), "0 B");
   assert.equal(formatBytes(Number.NaN), "0 B");
   assert.equal(formatBytes(512), "512 B");
+  assert.equal(formatBytes(5), "5 B", "B は小数を付けない");
+  assert.equal(formatBytes(10 * 1024), "10.0 KB", "10 以上は小数 1 桁");
+  assert.equal(formatBytes(100 * 1024), "100 KB", "100 以上は整数");
   assert.equal(formatBytes(1024), "1.00 KB");
   assert.equal(formatBytes(1536), "1.50 KB");
   assert.equal(formatBytes(12.3 * 1024 ** 2), "12.3 MB");

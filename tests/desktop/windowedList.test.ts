@@ -2,6 +2,7 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   PageCache,
+  WINDOW_RETRY_DELAYS_MS,
   WindowLoader,
   clampRange,
   fetchTiming,
@@ -502,6 +503,7 @@ test("WindowLoader: 件数より先にページが届いても、増えたぶん
   await flush();
   assert.equal(loader.get(249), "249");
   assert.equal(loader.get(255), undefined, "件数が確定するまでは範囲外");
+  assert.equal(loader.get(250), undefined, "件数ちょうどの位置も範囲外");
   src.calls.length = 0;
   loader.sync({ key: "a", revision: 1, count: 260 }); // あとから件数が届く
   loader.schedule();
@@ -646,4 +648,492 @@ test("WindowLoader.ensure: 再試行しても取れなければ undefined。一�
   const q = loader.ensure(700);
   loader.sync({ key: "b", revision: 0, count: 1000 });
   assert.equal(await q, undefined);
+});
+
+// ---- 境界・既定値 ----
+
+test("pageCount / pagesForRange: 負の件数は 0 件として扱う", () => {
+  assert.equal(pageCount(-1, 200), 0);
+  assert.deepEqual(pagesForRange({ start: 0, end: 10 }, -400, 200), []);
+});
+
+test("pagesForRange: 1 件だけの範囲も取る。先読みは最後のページちょうどまで", () => {
+  assert.deepEqual(pagesForRange({ start: 5, end: 5 }, 1000, 200), [0, 1]);
+  assert.deepEqual(pagesForRange({ start: 0, end: 30 }, 400, 200), [0, 1]);
+});
+
+test("既定の自動再試行は 2 回 (400ms → 1200ms)", () => {
+  assert.deepEqual(WINDOW_RETRY_DELAYS_MS, [400, 1200]);
+});
+
+test("clampRange: 1 行だけの範囲", () => {
+  assert.deepEqual(clampRange(3, 3, 10), { start: 3, end: 3 });
+  assert.deepEqual(clampRange(9, 50, 10), { start: 9, end: 9 });
+});
+
+test("isCursorKey: カーソル移動の 6 キーだけ", () => {
+  for (const k of ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"]) {
+    assert.equal(isCursorKey(k), true, k);
+  }
+  for (const k of ["", "ArrowLeft", "ArrowRight", "Tab", "end"]) assert.equal(isCursorKey(k), false, k);
+});
+
+test("PageCache: itemAt は負の通し番号に何も返さない (ページ境界の倍数でも)", () => {
+  const c = new PageCache<string>(3, 4);
+  c.set(0, ["a", "b", "c"]);
+  assert.equal(c.itemAt(-3), undefined);
+  assert.equal(c.itemAt(-1), undefined);
+});
+
+test("PageCache: 入れ直したページは「最近使った」側になる", () => {
+  const c = new PageCache<number>(2, 3);
+  c.set(0, [0, 1]);
+  c.set(1, [2, 3]);
+  c.set(2, [4, 5]);
+  c.set(0, [9, 9]); // 0 を新しい内容で入れ直す → 最も使っていないのは 1
+  c.set(3, [6, 7]);
+  assert.deepEqual(c.pageNumbers().sort(), [0, 2, 3]);
+  assert.equal(c.itemAt(0), 9);
+});
+
+test("PageCache: entries は使った順がばらばらでもページ番号の昇順", () => {
+  const c = new PageCache<string>(1, 10);
+  for (const p of [10, 3, 0, 7, 25]) c.set(p, [`p${p}`]);
+  c.touch([0, 3]);
+  assert.deepEqual(
+    [...c.entries()].map(([i]) => i),
+    [0, 3, 7, 10, 25],
+  );
+});
+
+test("PageCache.remap: 2 ページ目以降も通し番号で新しい並びを引く", () => {
+  const c = new PageCache<string>(2, 10);
+  c.set(0, ["a", "b"]);
+  c.set(1, ["c", "d"]);
+  const order = ["d", "c", "b", "a"];
+  c.remap((i) => order[i]);
+  assert.deepEqual([...c.entries()], [
+    [0, "d"],
+    [1, "c"],
+    [2, "b"],
+    [3, "a"],
+  ]);
+});
+
+// ---- WindowLoader の追加ケース ----
+
+test("WindowLoader: count は sync した件数", () => {
+  const { loader } = makeLoader(1000);
+  assert.equal(loader.count, 0);
+  loader.sync({ key: "a", revision: 0, count: 42 });
+  assert.equal(loader.count, 42);
+});
+
+test("WindowLoader.setCallbacks: 取得中の応答も新しいコールバックへ届き、以後の取得は新しい fetchPage で行う", async () => {
+  const { loader, src, changes } = makeLoader(1000);
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(0, 7);
+  let newChanges = 0;
+  const newOffsets: number[] = [];
+  loader.setCallbacks({
+    fetchPage: async (offset, limit) => {
+      newOffsets.push(offset);
+      return Array.from({ length: limit }, (_, i) => `n${offset + i}`);
+    },
+    onChange: () => {
+      newChanges += 1;
+    },
+  });
+  src.calls[0].resolve();
+  await flush();
+  assert.equal(changes(), 0);
+  assert.ok(newChanges > 0);
+  loader.setVisibleRange(15, 22); // ページ 2 (先読み) が足りない → 新しい fetchPage で取る
+  await wait(30);
+  assert.ok(newOffsets.includes(20), `新しい fetchPage: ${newOffsets}`);
+});
+
+test("WindowLoader: 件数が同じまま sync し直しても、短いページを取り直さない", async () => {
+  // 件数 25 と言われたが、実際には 23 件しか返らなかった (ページ 2 が 3 件)。
+  const { loader, src } = makeLoader(23);
+  loader.sync({ key: "a", revision: 0, count: 25 });
+  loader.setVisibleRange(20, 24);
+  for (const c of src.calls) c.resolve();
+  await flush();
+  src.calls.length = 0;
+  loader.sync({ key: "a", revision: 0, count: 25 });
+  loader.schedule();
+  assert.deepEqual(src.offsets(), [], "同じ値の sync は何も変えない");
+});
+
+test("WindowLoader: 件数が減ってから戻っても、切り捨てた古い項目は見せない", async () => {
+  const { loader, src } = makeLoader(1000);
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(0, 7);
+  for (const c of src.calls) c.resolve();
+  await flush();
+  assert.equal(loader.get(15), "15");
+  loader.sync({ key: "a", revision: 0, count: 12 });
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  assert.equal(loader.get(11), "11");
+  assert.equal(loader.get(15), undefined, "切り捨てたぶんは取り直すまで見せない");
+});
+
+test("WindowLoader: 同じ表示範囲を伝え直しても、スクロール停止待ちの取得を前倒ししない", async () => {
+  const { loader, src } = makeLoader(1000, 1000);
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(0, 7);
+  for (const c of src.calls) c.resolve();
+  await flush();
+  src.calls.length = 0;
+  // ページ 0/1 は手元にあるが、1/4 ページ以上動いたので先読み (ページ 2) は止まるまで待つ。
+  loader.setVisibleRange(8, 15);
+  assert.deepEqual(src.offsets(), []);
+  loader.setVisibleRange(8, 15); // 再描画などで同じ範囲が届く
+  assert.deepEqual(src.offsets(), []);
+});
+
+test("WindowLoader: 範囲の始まりだけ・終わりだけが変わっても新しい範囲として扱う", async () => {
+  {
+    // 終わりだけ広がる: 足りないページを (止まってから) 取る。
+    const { loader, src } = makeLoader(1000, 5);
+    loader.sync({ key: "a", revision: 0, count: 1000 });
+    loader.setVisibleRange(0, 7);
+    for (const c of src.calls) c.resolve();
+    await flush();
+    src.calls.length = 0;
+    loader.setVisibleRange(0, 25);
+    await wait(20);
+    assert.deepEqual(src.offsets(), [20, 30]);
+  }
+  {
+    // 始まりだけ動く: 次の移動量は新しい始まりから数える (少しの移動ならすぐ取る)。
+    const { loader, src } = makeLoader(1000, 1000);
+    loader.sync({ key: "a", revision: 0, count: 1000 });
+    loader.setVisibleRange(0, 29);
+    for (const c of src.calls) c.resolve();
+    await flush();
+    src.calls.length = 0;
+    loader.setVisibleRange(25, 29);
+    loader.setVisibleRange(26, 33); // 25 → 26 の 1 件だけの移動。先読みのページ 4 をすぐ取る
+    assert.deepEqual(src.offsets(), [40]);
+  }
+});
+
+test("WindowLoader: 見ているページは最近使った扱いになり、上限を超えても先に捨てられない", async () => {
+  const src = fakeSource(10_000);
+  const loader = new WindowLoader<string>({
+    fetchPage: src.fetchPage,
+    onChange: () => {},
+    pageSize: 10,
+    maxPages: 6,
+    settleMs: 0,
+  });
+  const visit = async (start: number) => {
+    loader.setVisibleRange(start, start + 7);
+    await wait(5);
+    for (const c of src.calls) c.resolve();
+    await flush();
+    await wait(5);
+    for (const c of src.calls) c.resolve();
+    await flush();
+  };
+  loader.sync({ key: "a", revision: 0, count: 10_000 });
+  await visit(0); // ページ 0, 1
+  await visit(50); // ページ 5, 6, 4
+  await visit(0); // 手元にあるページ 0, 1 に戻る (取得なし)
+  await visit(90); // ページ 9, 10, 8 → 上限 6 を超えたぶんを捨てる
+  assert.equal(loader.get(0), "0", "戻って見たページは残る");
+  assert.equal(loader.get(50), undefined, "見ていないページから捨てる");
+});
+
+test("WindowLoader: 再試行待ちのページは、スクロールしても待ち時間より前に取り直さない", async () => {
+  const src = fakeSource(1000);
+  const loader = new WindowLoader<string>({
+    fetchPage: src.fetchPage,
+    onChange: () => {},
+    pageSize: 10,
+    settleMs: 5,
+    retryDelaysMs: [1000],
+  });
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(0, 7);
+  src.calls[0].resolve();
+  src.calls[1].reject(new Error("locked")); // 先読みのページ 1 は再試行待ち
+  await flush();
+  loader.setVisibleRange(1, 8); // 少しのスクロール (表示中のページ 0 は手元にある)
+  await wait(20);
+  loader.setVisibleRange(15, 22); // ページ 1 に入る。ページ 2 を止まってから取る
+  await wait(20);
+  assert.equal(src.calls.filter((c) => c.offset === 10).length, 1, "ページ 1 は再試行の時刻まで待つ");
+  assert.ok(src.offsets().includes(20));
+});
+
+test("WindowLoader.remap: 埋められずに捨てた表示中のページは、スクロールが止まってから取り直す", async () => {
+  const { loader, src } = makeLoader(30, 15);
+  loader.sync({ key: "a", revision: 0, count: 30 });
+  loader.setVisibleRange(0, 7);
+  for (const c of src.calls) c.resolve();
+  await flush();
+  src.calls.length = 0;
+  loader.remap((i) => (i === 5 ? undefined : `${i}`)); // ページ 0 は埋められない
+  assert.deepEqual(src.offsets(), [], "すぐには取らない");
+  await wait(30);
+  assert.deepEqual(src.offsets(), [0]);
+});
+
+test("WindowLoader.hasFailedVisible: 表示中のページのどれか 1 つでも失敗なら true", async () => {
+  const src = fakeSource(1000);
+  const loader = new WindowLoader<string>({
+    fetchPage: src.fetchPage,
+    onChange: () => {},
+    pageSize: 10,
+    retryDelaysMs: [],
+  });
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(5, 14); // ページ 0, 1 が表示中
+  src.calls[0].resolve();
+  src.calls[1].reject(new Error("boom"));
+  await flush();
+  assert.equal(loader.hasFailedVisible(), true);
+});
+
+test("WindowLoader.retryFailed: 失敗が無ければ何もしない", async () => {
+  const { loader, src, changes } = makeLoader(1000);
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(0, 7);
+  for (const c of src.calls) c.resolve();
+  await flush();
+  const before = changes();
+  loader.retryFailed();
+  assert.equal(changes(), before);
+});
+
+test("WindowLoader.retryFailed: 取り直しでもまた自動の再試行があり、あきらめたらもう一度知らせる", async () => {
+  const { loader, src, errors } = makeLoader(1000);
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(0, 7);
+  src.calls[1].resolve();
+  const failPage0 = async (from: number) => {
+    for (let i = 0; i < 3; i++) {
+      src.calls.filter((c) => c.offset === 0)[from + i].reject(new Error("boom"));
+      await wait(25);
+    }
+  };
+  await failPage0(0);
+  assert.equal(errors.length, 1);
+  loader.retryFailed();
+  src.calls.filter((c) => c.offset === 0)[3].reject(new Error("again"));
+  await wait(25);
+  assert.equal(loader.hasFailedVisible(), false, "1 回目の失敗では見せずに再試行する");
+  assert.equal(src.calls.filter((c) => c.offset === 0).length, 5);
+  src.calls.filter((c) => c.offset === 0)[4].reject(new Error("again"));
+  await wait(25);
+  src.calls.filter((c) => c.offset === 0)[5].reject(new Error("again"));
+  await wait(25);
+  assert.equal(loader.hasFailedVisible(), true);
+  assert.equal(errors.length, 2);
+});
+
+test("WindowLoader: あきらめたページは再描画させ、onError は世代ごとに 1 回だけ", async () => {
+  const src = fakeSource(1000);
+  let changes = 0;
+  const errors: unknown[] = [];
+  const loader = new WindowLoader<string>({
+    fetchPage: src.fetchPage,
+    onChange: () => {
+      changes += 1;
+    },
+    onError: (e) => errors.push(e),
+    pageSize: 10,
+    retryDelaysMs: [],
+  });
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(5, 14);
+  src.calls[0].reject(new Error("a"));
+  await flush();
+  assert.equal(changes, 1, "失敗の案内を出すために再描画させる");
+  src.calls[1].reject(new Error("b"));
+  await flush();
+  assert.equal(errors.length, 1);
+});
+
+test("WindowLoader: 一覧が切り替わる前に始めた取得の失敗は記録も通知もしない", async () => {
+  const src = fakeSource(1000);
+  const errors: unknown[] = [];
+  const loader = new WindowLoader<string>({
+    fetchPage: src.fetchPage,
+    onChange: () => {},
+    onError: (e) => errors.push(e),
+    pageSize: 10,
+    retryDelaysMs: [],
+  });
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(0, 7);
+  const old = src.calls[0];
+  loader.sync({ key: "b", revision: 0, count: 1000 });
+  loader.schedule();
+  old.reject(new Error("old"));
+  await flush();
+  assert.equal(errors.length, 0);
+  assert.equal(loader.hasFailedVisible(), false);
+  const fresh = src.calls.filter((c) => c.offset === 0)[1];
+  fresh.resolve();
+  await flush();
+  assert.equal(loader.get(0), "0", "新しい一覧の取得は生きている");
+});
+
+test("WindowLoader: 一覧の取り直しでは、再試行待ち・失敗回数を持ち越さない", async () => {
+  const src = fakeSource(1000);
+  const errors: unknown[] = [];
+  const loader = new WindowLoader<string>({
+    fetchPage: src.fetchPage,
+    onChange: () => {},
+    onError: (e) => errors.push(e),
+    pageSize: 10,
+    retryDelaysMs: [1000],
+  });
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(0, 7);
+  src.calls[1].resolve();
+  src.calls[0].reject(new Error("locked")); // 1 回失敗して再試行待ち
+  await flush();
+  loader.sync({ key: "a", revision: 1, count: 1000 });
+  loader.schedule();
+  const page0 = () => src.calls.filter((c) => c.offset === 0);
+  assert.equal(page0().length, 2, "再試行待ちでも取り直しではすぐ取る");
+  page0()[1].reject(new Error("locked"));
+  await flush();
+  assert.equal(errors.length, 0, "新しい世代の 1 回目の失敗なので、まだ再試行する");
+  assert.equal(loader.hasFailedVisible(), false);
+});
+
+test("WindowLoader: stop したらスクロール停止待ちの取得もやめる", async () => {
+  const { loader, src } = makeLoader(10_000, 10);
+  loader.sync({ key: "a", revision: 0, count: 10_000 });
+  loader.setVisibleRange(0, 7);
+  for (const c of src.calls) c.resolve();
+  await flush();
+  src.calls.length = 0;
+  loader.setVisibleRange(5000, 5007); // 止まるまで待つ
+  loader.stop();
+  await wait(30);
+  assert.deepEqual(src.offsets(), []);
+});
+
+test("WindowLoader: 表示中のページが届いたら、待たずにその先読みを取る", async () => {
+  const { loader, src } = makeLoader(1000, 1000);
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(0, 7); // ページ 0, 1 を取得中
+  loader.setVisibleRange(12, 19); // ページ 1 (取得中) に移動。先読みのページ 2 は止まるまで待つ
+  assert.deepEqual(src.offsets(), [0, 10]);
+  src.calls[1].resolve(); // ページ 1 が届く
+  await flush();
+  assert.ok(src.offsets().includes(20), `${src.offsets()}`);
+});
+
+test("WindowLoader.ensure: 範囲外は取得しない。取得済みならすぐ返す。取得中のページは二重に取らない", async () => {
+  const { loader, src } = makeLoader(1000);
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  assert.equal(await loader.ensure(-1), undefined);
+  assert.equal(await loader.ensure(1000), undefined);
+  assert.deepEqual(src.offsets(), []);
+  loader.setVisibleRange(0, 7);
+  const p = loader.ensure(3); // ページ 0 は取得中
+  assert.deepEqual(src.offsets(), [0, 10]);
+  src.calls[0].resolve();
+  assert.equal(await p, "3");
+  assert.equal(await loader.ensure(0), "0", "取得済みのページ");
+  assert.deepEqual(src.offsets(), [0, 10]);
+});
+
+test("WindowLoader.ensure: 失敗として覚えたページも取りに行き、取れたら失敗の表示を消す", async () => {
+  const { loader, src } = makeLoader(1000);
+  loader.sync({ key: "a", revision: 0, count: 1000 });
+  loader.setVisibleRange(0, 7);
+  src.calls[1].resolve();
+  for (let i = 0; i < 3; i++) {
+    src.calls.filter((c) => c.offset === 0)[i].reject(new Error("boom"));
+    await wait(25);
+  }
+  assert.equal(loader.hasFailedVisible(), true);
+  const p = loader.ensure(3);
+  src.calls.filter((c) => c.offset === 0)[3].resolve();
+  assert.equal(await p, "3");
+  assert.equal(loader.hasFailedVisible(), false);
+});
+
+test("WindowLoader: 再試行のあと届いたページは、同じ世代で取り直すときまた再試行できる", async () => {
+  let total = 25;
+  const pending: { offset: number; resolve: () => void; reject: (e: unknown) => void }[] = [];
+  const errors: unknown[] = [];
+  const loader = new WindowLoader<string>({
+    fetchPage: (offset, limit) =>
+      new Promise<string[]>((resolve, reject) => {
+        pending.push({
+          offset,
+          resolve: () =>
+            resolve(Array.from({ length: Math.max(0, Math.min(limit, total - offset)) }, (_, i) => `${offset + i}`)),
+          reject,
+        });
+      }),
+    onChange: () => {},
+    onError: (e) => errors.push(e),
+    pageSize: 10,
+    retryDelaysMs: [5],
+  });
+  const page2 = () => pending.filter((c) => c.offset === 20);
+  loader.sync({ key: "a", revision: 0, count: 25 });
+  loader.setVisibleRange(20, 24);
+  for (const c of pending.filter((c) => c.offset !== 20)) c.resolve();
+  page2()[0].reject(new Error("locked"));
+  await wait(20);
+  page2()[1].resolve(); // 再試行で届く (5 件)
+  await flush();
+  assert.equal(loader.get(24), "24");
+  // 件数だけが増えた: 短いページ 2 を同じ世代のまま取り直す。
+  total = 30;
+  loader.sync({ key: "a", revision: 0, count: 30 });
+  loader.schedule();
+  page2()[2].reject(new Error("locked"));
+  await flush();
+  assert.equal(errors.length, 0, "このページの失敗は 1 回目なので再試行する");
+  await wait(20);
+  page2()[3].resolve();
+  await flush();
+  assert.equal(loader.get(29), "29");
+});
+
+test("WindowLoader.ensure: 再試行待ちのページを先に取ったら、そのページは以後ふつうに取り直せる", async () => {
+  let total = 25;
+  const pending: { offset: number; resolve: () => void; reject: (e: unknown) => void }[] = [];
+  const loader = new WindowLoader<string>({
+    fetchPage: (offset, limit) =>
+      new Promise<string[]>((resolve, reject) => {
+        pending.push({
+          offset,
+          resolve: () =>
+            resolve(Array.from({ length: Math.max(0, Math.min(limit, total - offset)) }, (_, i) => `${offset + i}`)),
+          reject,
+        });
+      }),
+    onChange: () => {},
+    pageSize: 10,
+    retryDelaysMs: [1000],
+  });
+  const page2 = () => pending.filter((c) => c.offset === 20);
+  loader.sync({ key: "a", revision: 0, count: 25 });
+  loader.setVisibleRange(20, 24);
+  for (const c of pending.filter((c) => c.offset !== 20)) c.resolve();
+  page2()[0].reject(new Error("locked")); // 再試行待ち (1 秒後)
+  await flush();
+  const p = loader.ensure(22); // 待たずに取りに行く
+  assert.equal(page2().length, 2);
+  page2()[1].resolve();
+  assert.equal(await p, "22");
+  // 件数が増えて短いページ 2 を取り直すときは、すぐ取りに行く。
+  total = 30;
+  loader.sync({ key: "a", revision: 0, count: 30 });
+  loader.schedule();
+  assert.equal(page2().length, 3);
 });

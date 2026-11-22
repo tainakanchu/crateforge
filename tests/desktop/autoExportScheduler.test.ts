@@ -1,10 +1,14 @@
-import { test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import {
   IDLE_MS,
   MAX_WAIT_MS,
   createAutoExportScheduler,
 } from "../../src/lib/autoExportScheduler.ts";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 // 注入用の偽の時計とタイマー。advance(ms) で時間を進め、期限の来たタイマーを順に発火する。
 function fakeClock() {
@@ -166,6 +170,7 @@ test("書き出し中の変更は、終わったあとアイドルタイマー�
   assert.equal(runs(), 1);
   assert.equal(s.isInFlight(), true);
   s.markDirty();
+  assert.equal(clock.pending(), 0, "書き出し中はタイマーを張らない (終わってから張る)");
   s.noteFocusLost(); // 書き出し中は二重に走らせない
   await clock.advance(0);
   assert.equal(runs(), 1);
@@ -202,7 +207,113 @@ test("markClean (終了時の書き出し済み) でタイマーを止める", a
   const { clock, s, runs } = setup();
   s.markDirty();
   s.markClean();
+  assert.equal(s.isDirty(), false);
   assert.equal(clock.pending(), 0);
   await clock.advance(MAX_WAIT_MS);
   assert.equal(runs(), 0);
+});
+
+test("変更が続いても上限のタイマーは 1 つだけで、markClean ですべて止まる", async () => {
+  const { clock, s } = setup();
+  s.markDirty();
+  await clock.advance(1_000);
+  s.markDirty();
+  await clock.advance(1_000);
+  s.markDirty();
+  s.markClean();
+  assert.equal(clock.pending(), 0);
+});
+
+test("上限は最初の変更の時刻から数える (起動直後でなくても)", async () => {
+  const { clock, s, runs } = setup();
+  await clock.advance(5_000);
+  s.markDirty();
+  for (let elapsed = 0; elapsed < MAX_WAIT_MS - 10_000; elapsed += 10_000) {
+    await clock.advance(10_000);
+    s.noteInput();
+  }
+  await clock.advance(9_999);
+  assert.equal(runs(), 0);
+  await clock.advance(1);
+  assert.equal(runs(), 1);
+});
+
+/** 書き出しを途中で止めておき、テストから成功 / 失敗させる。 */
+function blockingSetup() {
+  let finish: (err?: Error) => void = () => {};
+  const startedAt: number[] = [];
+  const r = setup(() => {
+    startedAt.push(r.clock.now());
+    return new Promise<void>((resolve, reject) => {
+      finish = (err) => (err ? reject(err) : resolve());
+    });
+  });
+  return { ...r, startedAt, finish: (err?: Error) => finish(err) };
+}
+
+for (const outcome of ["成功", "失敗"] as const) {
+  test(`書き出し中の変更の上限は、書き出しの終了 (${outcome}) ではなくその変更の時刻から数える`, async () => {
+    const { clock, s, runs, finish, startedAt } = blockingSetup();
+    s.markDirty();
+    s.noteFocusLost(); // t=0 で書き出し開始
+    await clock.advance(1_000);
+    s.markDirty(); // t=1000 書き出し中の変更
+    for (let i = 0; i < 9; i++) {
+      await clock.advance(11_000);
+      s.noteInput(); // 書き出し中も操作が続く
+    }
+    finish(outcome === "失敗" ? new Error("boom") : undefined); // t=100000 で終わる
+    await clock.advance(0);
+    assert.equal(runs(), 1);
+    // 操作が続いてアイドルにならない。上限は t=1000 + MAX_WAIT_MS。
+    while (runs() === 1 && clock.now() < 2 * MAX_WAIT_MS) {
+      await clock.advance(10_000);
+      s.noteInput();
+    }
+    assert.deepEqual(startedAt, [0, 1_000 + MAX_WAIT_MS]);
+  });
+}
+
+test("clean のときの flush は書き出さない", async () => {
+  const { s, runs } = setup();
+  await s.flush();
+  assert.equal(runs(), 0);
+});
+
+test("dispose 後は変更も書き出しも受け付けず、タイマーを残さない", async () => {
+  const { clock, s, runs } = setup();
+  s.markDirty();
+  s.dispose();
+  assert.equal(clock.pending(), 0);
+  s.markDirty();
+  assert.equal(s.isDirty(), true, "dispose 前の変更は残る");
+  assert.equal(clock.pending(), 0);
+  await s.flush();
+  s.noteFocusLost();
+  await clock.advance(MAX_WAIT_MS * 2);
+  assert.equal(runs(), 0);
+
+  const b = setup();
+  b.s.dispose();
+  b.s.markDirty();
+  assert.equal(b.s.isDirty(), false, "dispose 後の変更は記録しない");
+});
+
+test("時計とタイマーを注入しなければ実時間で動く", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], now: 0 });
+  let runs = 0;
+  const s = createAutoExportScheduler({
+    run: async () => {
+      runs++;
+    },
+  });
+  s.markDirty();
+  await vi.advanceTimersByTimeAsync(IDLE_MS - 1);
+  assert.equal(runs, 0);
+  await vi.advanceTimersByTimeAsync(1);
+  assert.equal(runs, 1);
+  s.markDirty();
+  s.markClean();
+  await vi.advanceTimersByTimeAsync(MAX_WAIT_MS);
+  assert.equal(runs, 1, "markClean で実タイマーも止まる");
 });
