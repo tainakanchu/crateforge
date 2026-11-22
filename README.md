@@ -45,7 +45,7 @@ pnpm tauri build           # OS ネイティブパッケージを生成
 Tauri は **OS 上で直接ビルドする方式が前提** です (Windows ビルドは Windows、macOS ビルドは macOS で)。
 CI は次のように分かれています:
 
-- `.github/workflows/ci.yml` — PR / main への push で走る**軽量チェック**（フロントの型チェック + `cargo test`、Windows は `cargo check`）。インストーラ生成や成果物アップロードはしません。アプリコードに無関係な変更 (docs / plugins) では走りません。
+- `.github/workflows/ci.yml` — PR / main への push で走る**軽量チェック**（デスクトップ TS のテスト `pnpm test` + フロントの型チェック + `cargo test`、Windows は `cargo check`）。インストーラ生成や成果物アップロードはしません。アプリコードに無関係な変更 (docs / plugins) では走りません。
 - `.github/workflows/release.yml` — **タグ `v*` を push したとき (または手動実行) だけ** Windows / macOS / Linux のフルビルドを行い、全成果物を添付した GitHub Release を自動作成します。同じタグで **Android APK**（Android Auto 対応・署名済み）もビルドし、desktop の Release とは独立に（APK の成否は desktop Release に影響しません）、両方成功した後に同じ Release へ添付します。
 - `.github/workflows/mobile.yml` — `clients/**`（モバイル / TV / 共有パッケージ）の PR / main push で走るモバイル用チェック（型・テスト・`expo prebuild` 回帰・未署名 APK のビルドと検査）。署名鍵は使いません。
 

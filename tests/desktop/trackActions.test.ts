@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { afterEach, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import {
   addTracksToPlaylist,
@@ -17,6 +17,10 @@ import {
   trackActionFailureMessage,
 } from "../../src/lib/trackActions.ts";
 import type { TrackActionKind } from "../../src/lib/trackActions.ts";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 /** 呼び出しを記録するフェイク API。enqueueTracksNext は実装と同じく「現在曲の直後」へ渡した順で挿入する。 */
 function fakeApi(opts: { failOn?: string } = {}) {
@@ -160,8 +164,8 @@ test("runTrackAction: 成功したら true を返し、通知しない", async (
   assert.deepEqual(notes, []);
 });
 
-test("runTrackAction: 失敗したら throw せず false を返し、理由つきで 1 回通知する", async (t) => {
-  t.mock.method(console, "error", () => {});
+test("runTrackAction: 失敗したら throw せず false を返し、理由つきで 1 回通知する", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
   const notes: string[] = [];
   const ok = await runTrackAction((m) => notes.push(m), "enqueue", async () => {
     throw new Error("device busy");
@@ -170,8 +174,8 @@ test("runTrackAction: 失敗したら throw せず false を返し、理由つ�
   assert.deepEqual(notes, ["キューへの追加に失敗しました: device busy"]);
 });
 
-test("runTrackAction: Tauri の {message} 形式の失敗も理由を読む ([object Object] にしない)", async (t) => {
-  t.mock.method(console, "error", () => {});
+test("runTrackAction: Tauri の {message} 形式の失敗も理由を読む ([object Object] にしない)", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
   const notes: string[] = [];
   await runTrackAction((m) => notes.push(m), "rating", async () => {
     throw { code: "db", message: "database is locked" };
@@ -179,8 +183,8 @@ test("runTrackAction: Tauri の {message} 形式の失敗も理由を読む ([ob
   assert.deepEqual(notes, ["レーティングを変更できませんでした: database is locked"]);
 });
 
-test("runTrackAction: 実 API の手順と組み合わせると、途中の失敗が通知される", async (t) => {
-  t.mock.method(console, "error", () => {});
+test("runTrackAction: 実 API の手順と組み合わせると、途中の失敗が通知される", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
   const api = fakeApi({ failOn: "enqueueTracksNext([1,2,3])" });
   const notes: string[] = [];
   const ok = await runTrackAction((m) => notes.push(m), "playNext", () =>

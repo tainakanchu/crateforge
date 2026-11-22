@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { baseName, isZipPath, looksImportable } from "../../src/lib/dropImport.ts";
 
@@ -24,4 +24,11 @@ test("zip 以外の判定は従来どおり", () => {
 test("baseName はファイル名を返す", () => {
   assert.equal(baseName("/a/b/Album.zip"), "Album.zip");
   assert.equal(baseName("C:\\a\\Album.zip"), "Album.zip");
+});
+
+test("拡張子らしいものは英数 5 文字以内の全体だけ (記号を含むサフィックスはフォルダ名とみなす)", () => {
+  assert.equal(looksImportable("/a/Mix vol.2-final"), true);
+  assert.equal(looksImportable("/a/Live 2001.part_1"), true);
+  assert.equal(looksImportable("/a/notes.backup"), true, "6 文字は拡張子とみなさない");
+  assert.equal(looksImportable("/a/notes.bak"), false);
 });

@@ -47,3 +47,6 @@ src-tauri/icons/android/
 src-tauri/icons/ios/
 src-tauri/icons/Square*Logo.png
 src-tauri/icons/StoreLogo.png
+
+# Mutation testing (@mizchi/mutator): キャッシュとレポート。mutator.accepted.json はコミットする
+.mutator/

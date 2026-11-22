@@ -1,6 +1,7 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
+  RELATIVE_UNITS,
   formatRelativeDate,
   isRelativeDateOp,
   normalizeRelativeValue,
@@ -59,4 +60,38 @@ test("読み込んだ単位なしの整数は日数として正規化する", ()
   assert.equal(normalizeRelativeValue("3m"), "3m");
   assert.equal(normalizeRelativeValue(""), "");
   assert.equal(normalizeRelativeValue("x"), "x");
+});
+
+test("単位の選択肢は 日 / 週 / か月 の順 (UI の表示名)", () => {
+  assert.deepEqual(RELATIVE_UNITS, [
+    { value: "d", label: "日" },
+    { value: "w", label: "週" },
+    { value: "m", label: "か月" },
+  ]);
+});
+
+test("単位の後ろに余計な文字が続く値は読めない", () => {
+  for (const bad of ["30dd", "30days", "2w1", "3mx"]) {
+    assert.equal(parseRelativeDate(bad), null, bad);
+  }
+});
+
+test("正規化は全体が整数のときだけ日数にする (末尾が数字なだけの値は変えない)", () => {
+  assert.equal(normalizeRelativeValue("x30"), "x30");
+  assert.equal(normalizeRelativeValue("-5"), "-5");
+  assert.equal(normalizeRelativeValue("2024-01-01"), "2024-01-01");
+});
+
+test("数値欄の前後の空白は値に含めない", () => {
+  assert.equal(formatRelativeDate(" 30 ", "d"), "30d");
+  assert.equal(relativeUnitOf("3w "), "w");
+  assert.equal(relativeUnitOf(" 3m"), "m");
+  assert.equal(relativeCountOf(" 12m "), "12");
+});
+
+test("単位の無い値は数値欄にそのまま出す (単位は末尾の 1 文字だけを見る)", () => {
+  assert.equal(relativeCountOf("12"), "12");
+  assert.equal(relativeCountOf("1d2"), "1d2");
+  assert.equal(relativeUnitOf("1d2"), "d");
+  assert.equal(relativeUnitOf("1w2"), "d");
 });

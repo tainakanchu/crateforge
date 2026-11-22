@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { KeyedCache } from "../../src/lib/keyedCache.ts";
 
@@ -86,4 +86,85 @@ test("update: 覚えている値だけ書き換える。同じ値なら通知し
   assert.deepEqual(c.get("k"), [1, 2, 3]);
   assert.equal(changes, 1);
   assert.deepEqual(c.keys(), ["k"]);
+});
+
+test("markAllStale のあと取り直した値は新しい扱いになり、次の load では取らない", async () => {
+  const c = new KeyedCache<string>();
+  await c.load("k", async () => "old");
+  c.markAllStale();
+  let calls = 0;
+  const fetch = async () => {
+    calls++;
+    return "new";
+  };
+  await c.load("k", fetch);
+  await c.load("k", fetch);
+  assert.equal(calls, 1);
+});
+
+test("markAllStale: 取り直し前に始めた取得は待たず、新しく取得する", async () => {
+  const c = new KeyedCache<string>();
+  const slow = deferred<string>();
+  void c.load("k", () => slow.promise);
+  c.markAllStale();
+  let calls = 0;
+  const p = c.load("k", async () => {
+    calls++;
+    return "after change";
+  });
+  assert.equal(calls, 1);
+  assert.equal(await p, "after change");
+  slow.resolve("before change");
+});
+
+test("reset / markAllStale を重ねても、その前に始めた取得の結果は覚えない", async () => {
+  for (const order of [["stale", "reset"], ["reset", "stale"]] as const) {
+    const c = new KeyedCache<string>();
+    const slow = deferred<string>();
+    const p = c.load("k", () => slow.promise);
+    for (const op of order) {
+      if (op === "stale") c.markAllStale();
+      else c.reset();
+    }
+    slow.resolve("old");
+    await p;
+    assert.equal(c.get("k"), undefined, order.join(" → "));
+  }
+});
+
+test("失敗の通知: 失敗したら 1 回通知する。切り替え前に始めた取得の失敗は記録しない", async () => {
+  let changes = 0;
+  const c = new KeyedCache<string>(() => changes++);
+  await assert.rejects(c.load("k", async () => Promise.reject(new Error("boom"))));
+  assert.equal(changes, 1);
+
+  const c2 = new KeyedCache<string>(() => changes++);
+  const slow = deferred<string>();
+  const p = c2.load("k", () => slow.promise);
+  c2.reset();
+  changes = 0;
+  slow.reject(new Error("old"));
+  await assert.rejects(p);
+  assert.equal(c2.isFailed("k"), false);
+  assert.equal(changes, 0);
+});
+
+test("reset: 値と失敗の記録を捨て、捨てるものがあったときだけ通知する", async () => {
+  let changes = 0;
+  const c = new KeyedCache<string>(() => changes++);
+  c.reset();
+  assert.equal(changes, 0, "空なら通知しない");
+
+  await c.load("a", async () => "A");
+  changes = 0;
+  c.reset();
+  assert.equal(changes, 1);
+  assert.equal(c.get("a"), undefined);
+  assert.deepEqual(c.keys(), []);
+
+  await assert.rejects(c.load("b", async () => Promise.reject(new Error("boom"))));
+  changes = 0;
+  c.reset();
+  assert.equal(changes, 1, "失敗だけでも通知する");
+  assert.equal(c.isFailed("b"), false);
 });
