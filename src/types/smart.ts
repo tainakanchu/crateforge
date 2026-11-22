@@ -10,7 +10,11 @@ export type SmartOp =
   | "gte"
   | "lte"
   | "exists"
-  | "notExists";
+  | "notExists"
+  /// 日付が過去 N 日 / 週 / か月以内 (評価時点の現在時刻基準)。value は "30d" / "2w" / "3m"。
+  | "inLast"
+  /// inLast の否定 (日付が無い曲も一致)。
+  | "notInLast";
 
 /// 1 条件。`field: "playlist"` は「プレイリストに含まれる (is) / 含まれない (isNot)」で、
 /// `value` に参照先プレイリストの persistentId を入れる。

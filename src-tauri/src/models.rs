@@ -746,6 +746,11 @@ pub enum SmartOp {
     Lte,
     Exists,
     NotExists,
+    /// 日付フィールドが「過去 N 日 / 週 / か月以内」(評価時点の現在時刻基準)。
+    /// `value` は `"30d"` / `"2w"` / `"3m"` (正の整数 + 単位 d / w / m)。
+    InLast,
+    /// [`SmartOp::InLast`] の否定。日付が無い曲も一致する (isNot / notContains と同じ扱い)。
+    NotInLast,
 }
 
 // === Audio file conversion ===

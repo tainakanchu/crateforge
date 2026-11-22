@@ -439,6 +439,7 @@ mod tests {
             &EvalContext {
                 level: FoldLevel::Standard,
                 membership: &membership,
+                now: chrono::Utc::now(),
             },
         )
     }
