@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { command, commandKeys } from "../commands/registry";
 
 interface Shortcut {
   keys: string[];
@@ -92,7 +93,7 @@ const GROUPS: Group[] = [
   {
     title: "選曲ワークベンチ",
     items: [
-      { keys: ["Ctrl", "]"], label: "右ペインを表示" },
+      { keys: commandKeys("toggleRightPane"), label: command("toggleRightPane").label },
       { keys: ["Ctrl", "1"], label: "再生中タブ" },
       { keys: ["Ctrl", "2"], label: "次に再生タブ" },
       { keys: ["Ctrl", "3"], label: "Crate タブ" },
@@ -121,8 +122,12 @@ const GROUPS: Group[] = [
     ],
   },
   {
-    title: "ヘルプ",
-    items: [{ keys: ["?"], label: "このショートカット一覧" }],
+    title: "ヘルプ・設定",
+    // ラベルとキー表記は commands/registry から引く (ツールバー・サイドバーと同じ定義)。
+    items: [
+      { keys: commandKeys("openShortcutHelp"), label: command("openShortcutHelp").label },
+      { keys: commandKeys("openSettings"), label: `${command("openSettings").label}を開く` },
+    ],
   },
 ];
 

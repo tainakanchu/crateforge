@@ -34,11 +34,11 @@ Changes to `shuffle` / `repeat` / `volume` made from [mobile or the remote](../m
 
 ### ReplayGain
 
-You can toggle ReplayGain (per-track volume normalization, −18 LUFS reference) in settings.
+You can toggle ReplayGain (per-track volume normalization, −18 LUFS reference) under **Settings → "再生" (Playback)** (there is no toggle in the player bar).
 
 ### Output device
 
-Under **Settings → General → Output device** you can choose the audio output used for playback (booth output, laptop speakers, a USB audio interface, and so on).
+Under **Settings → Playback → Output device** you can choose the audio output used for playback (booth output, laptop speakers, a USB audio interface, and so on).
 
 - **System default** follows the OS default output (when you change the default in the OS, Crateforge follows within a few seconds).
 - Switching while playing keeps **the current track, position, play / pause state, queue, volume and ReplayGain** as they are.
@@ -86,7 +86,7 @@ While casting, the button is highlighted, and states such as connecting / reconn
 - The PC and the cast device must be on the **same LAN**.
 - Crateforge's **built-in API server must be running with "LAN exposure" enabled**, so the cast device can fetch the audio from the PC.
   If it is off when you pick a device, a **confirmation dialog** appears and LAN exposure is turned on only if you agree (it is never exposed without asking).
-  You can turn it off again at any time in [Settings → Mobile / API](../api-server/).
+  You can turn it off again at any time in [Settings → Mobile / API (モバイル・API)](../api-server/).
 - mDNS (multicast) must get through. In the following cases the device may not be found or may fail to connect:
   - The router has **AP isolation** on, or the PC is on a different network such as a guest Wi-Fi
   - A firewall blocks **UDP 5353 (mDNS)** or **inbound connections on the API port (default 8787)**
@@ -129,7 +129,7 @@ It is not designed for use over the internet or on public Wi-Fi shared with stra
 Crateforge does not implement AirPlay itself. On macOS you play to an AirPlay speaker by making it the OS sound output.
 
 1. In **System Settings → Sound → Output** (or Control Center), choose the AirPlay speaker.
-2. Keep Crateforge's **Settings → General → Output device** on **System default**.
+2. Keep Crateforge's **Settings → Playback → Output device** on **System default**.
    When the OS default output changes, Crateforge follows within a few seconds.
 3. If the AirPlay device is listed there, you can also select it directly.
 

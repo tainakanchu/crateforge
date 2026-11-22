@@ -15,6 +15,7 @@ import { RulesPanel } from "./components/rules/RulesPanel";
 import { ConvertDialog } from "./components/ConvertDialog";
 import { SmartPlaylistEditor } from "./components/SmartPlaylistEditor";
 import { SettingsDialog } from "./components/SettingsDialog";
+import type { SettingsSection } from "./components/SettingsDialog";
 import { PairingApprovalDialog } from "./components/PairingApprovalDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { DiscDetectedDialog } from "./components/DiscDetectedDialog";
@@ -51,6 +52,7 @@ import {
   mergeInboxSources,
 } from "./lib/triage";
 import { loadSetWorkspacePersist } from "./lib/setWorkspacePersist";
+import { createAutoExportScheduler, type AutoExportScheduler } from "./lib/autoExportScheduler";
 import type { ConvertMode, DiscToc, PlaybackState, RepeatMode, Track } from "./types";
 import { isTauri } from "./lib/env";
 import { createCoalescer } from "./lib/coalesce";
@@ -152,13 +154,22 @@ export default function App() {
   const mountSyncedRef = useRef(false);
   // 直前のポーリングで見えた Rust 側の shuffle / repeat / volume。
   const lastRemoteRef = useRef<RemotePlayerState | null>(null);
-  // 自動 XML エクスポート用: ライブラリに変更があったか。
-  const libraryDirtyRef = useRef(false);
-  // デバウンス自動保存用。
-  const autoExportTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const autoExportInFlightRef = useRef(false);
-  // scheduleAutoExport から最新の runAutoExport を参照するための ref (循環依存回避)。
+  // スケジューラから最新の runAutoExport を参照するための ref (循環依存回避)。
   const runAutoExportCallbackRef = useRef<() => Promise<void>>(async () => {});
+  // iTunes 互換 XML の自動エクスポート (「ライブラリの自動保存」) のタイミング管理。
+  // 未書き出しの変更 (dirty) を持ち、アイドル 60 秒・フォーカス喪失・最大 10 分で書き出す
+  // (src/lib/autoExportScheduler.ts)。
+  const autoExportRef = useRef<AutoExportScheduler | null>(null);
+  if (autoExportRef.current === null) {
+    autoExportRef.current = createAutoExportScheduler({
+      canRun: () => {
+        const st = useStore.getState();
+        return st.autoExportEnabled && !!st.autoExportPath;
+      },
+      run: () => runAutoExportCallbackRef.current(),
+    });
+  }
+  const autoExport = autoExportRef.current;
   // ライブラリが変わるたびに増える値 (ストアに置き、各ビューが見て取り直す)。
   const reloadCount = useStore((s) => s.libraryRevision);
   const [ripOpen, setRipOpen] = useState(false);
@@ -173,7 +184,8 @@ export default function App() {
     name?: string;
   } | null>(null);
   const [installing, setInstalling] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // 設定ダイアログ (開いているときは表示するセクション)。
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [syncProvisionOpen, setSyncProvisionOpen] = useState(false);
   // USB 書き出しダイアログ (開いているときは初期選択のプレイリスト ID 群)。
   const [usbExportIds, setUsbExportIds] = useState<number[] | null>(null);
@@ -619,14 +631,14 @@ export default function App() {
       const st = useStore.getState();
       const pending = st.pendingUpdate;
       const needsExport =
-        st.autoExportEnabled && !!st.autoExportPath && libraryDirtyRef.current;
+        st.autoExportEnabled && !!st.autoExportPath && autoExport.isDirty();
       if (!pending && !needsExport) return; // 何も無ければ通常どおり閉じる
       event.preventDefault();
       // 閉じる前に最新のライブラリを書き出しておく。
       if (needsExport && st.autoExportPath) {
         try {
           await libraryApi.exportLibrary(st.autoExportPath);
-          libraryDirtyRef.current = false;
+          autoExport.markClean();
         } catch (e) {
           console.error("auto-export on close failed:", e);
         }
@@ -756,19 +768,11 @@ export default function App() {
     };
   }, []);
 
-  const scheduleAutoExport = useCallback(() => {
-    clearTimeout(autoExportTimerRef.current);
-    autoExportTimerRef.current = setTimeout(() => {
-      runAutoExportCallbackRef.current();
-    }, 3000);
-  }, []);
-
+  // 実際の書き出し。いつ呼ぶか (dirty 判定・多重実行防止・失敗時の再試行) はスケジューラが決める。
+  // 失敗時は throw して、スケジューラに dirty へ戻させる (アイドルタイマーで再試行)。
   const runAutoExport = useCallback(async () => {
-    const { autoExportEnabled, autoExportPath } = useStore.getState();
-    if (!autoExportEnabled || !autoExportPath || !libraryDirtyRef.current) return;
-    if (autoExportInFlightRef.current) return;
-    autoExportInFlightRef.current = true;
-    libraryDirtyRef.current = false; // optimistic クリア
+    const { autoExportPath } = useStore.getState();
+    if (!autoExportPath) return;
     try {
       await libraryApi.exportLibrary(autoExportPath);
       // XML の自動エクスポートに成功したタイミングで、あわせて library.db 自体も
@@ -783,15 +787,11 @@ export default function App() {
         }
       }
     } catch (e) {
-      libraryDirtyRef.current = true;
       console.error("auto-export failed:", e);
       useStore.getState().pushToast("error", "ライブラリの自動保存に失敗しました");
-      scheduleAutoExport();
-    } finally {
-      autoExportInFlightRef.current = false;
-      if (libraryDirtyRef.current) scheduleAutoExport();
+      throw e;
     }
-  }, [scheduleAutoExport]);
+  }, []);
   // ref を最新の実装で更新する。
   runAutoExportCallbackRef.current = runAutoExport;
 
@@ -807,8 +807,7 @@ export default function App() {
         if (info.artworkChanged) useStore.getState().bumpArtworkEpoch();
         reloadPlaylists();
         bumpLibraryRevision();
-        libraryDirtyRef.current = true;
-        scheduleAutoExport();
+        autoExport.markDirty();
       },
       (a, b) => ({ artworkChanged: a.artworkChanged || b.artworkChanged }),
       LIBRARY_CHANGED_WINDOW_MS,
@@ -819,14 +818,13 @@ export default function App() {
         coalescer.cancel();
         unlisten();
       });
-  }, [reloadPlaylists, scheduleAutoExport, bumpLibraryRevision]);
+  }, [reloadPlaylists, autoExport, bumpLibraryRevision]);
 
   const triggerReload = useCallback(() => {
-    libraryDirtyRef.current = true; // 変更があったので次回の自動エクスポート対象。
-    scheduleAutoExport();
+    autoExport.markDirty(); // 変更があったので次回の自動エクスポート対象。
     bumpLibraryRevision();
     reloadPlaylists();
-  }, [reloadPlaylists, scheduleAutoExport, bumpLibraryRevision]);
+  }, [reloadPlaylists, autoExport, bumpLibraryRevision]);
 
 
   // 取り寄せ / 送信の完了後は、曲一覧に加えて解析結果 (BPM/Key/Energy) も読み直す
@@ -897,18 +895,28 @@ export default function App() {
     });
   }, [setRipStatus, appendRipLog, pushToast, triggerReload]);
 
-  // iTunes 互換 XML の自動エクスポート: デバウンスで3秒後に保存。5分インターバルはセーフティネット。
+  // iTunes 互換 XML の自動エクスポート: 操作 (キー / ポインタ / ホイール) をアイドル判定に、
+  // ウィンドウのフォーカス喪失・非表示を「他のアプリへ切り替えた」合図に使う。
+  // 未書き出しの変更が無いときは noteInput が何もしないので、入力ごとの負荷はほぼ無い。
   useEffect(() => {
     if (!isTauri) return;
-    const INTERVAL_MS = 5 * 60 * 1000; // 5 分 (セーフティネット)
-    const id = setInterval(() => {
-      runAutoExport();
-    }, INTERVAL_MS);
-    return () => {
-      clearInterval(id);
-      clearTimeout(autoExportTimerRef.current);
+    const onInput = () => autoExport.noteInput();
+    const onBlur = () => autoExport.noteFocusLost();
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") autoExport.noteFocusLost();
     };
-  }, [runAutoExport]);
+    const opts: AddEventListenerOptions = { capture: true, passive: true };
+    const inputEvents = ["keydown", "pointerdown", "wheel"] as const;
+    for (const ev of inputEvents) window.addEventListener(ev, onInput, opts);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      for (const ev of inputEvents) window.removeEventListener(ev, onInput, opts);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
+      // スケジューラ自体はアプリと同じ寿命 (StrictMode の再マウントで dirty を失わないよう破棄しない)。
+    };
+  }, [autoExport]);
 
   // Keyboard shortcuts (issue #1).
   useEffect(() => {
@@ -957,6 +965,13 @@ export default function App() {
         const next = Math.min(1, Math.max(0, volume + delta));
         setVolume(next);
         if (isTauri) playbackApi.setVolume(next).catch(() => {});
+        return;
+      }
+
+      // Ctrl/Cmd+, で設定を開く (#254)。入力中でも効かせる。
+      if (cmd && !e.shiftKey && !e.altKey && e.key === ",") {
+        e.preventDefault();
+        setSettingsSection((cur) => cur ?? "general");
         return;
       }
 
@@ -1235,6 +1250,9 @@ export default function App() {
         onPlaylistsChanged={triggerReload}
         onEditSmart={(id, name) => setSmartEditor({ playlistId: id, name })}
         onUsbExport={(ids) => setUsbExportIds(ids)}
+        onOpenRules={() => setRulesOpen(true)}
+        onOpenSettings={() => setSettingsSection("general")}
+        onOpenHelp={() => setHelpOpen(true)}
         reloadKey={reloadCount}
       />
       <div className="cb-main">
@@ -1242,15 +1260,13 @@ export default function App() {
         <Toolbar
           onLibraryChanged={triggerReload}
           onOpenRipDialog={() => setRipOpen(true)}
-          onOpenRulesPanel={() => setRulesOpen(true)}
           onOpenSyncProvision={() => setSyncProvisionOpen(true)}
           onOpenUsbExport={() =>
             setUsbExportIds(
               viewMode === "playlist" && selectedPlaylistId != null ? [selectedPlaylistId] : [],
             )
           }
-          onOpenSettings={() => setSettingsOpen(true)}
-          onOpenHelp={() => setHelpOpen(true)}
+          onOpenSettings={(section) => setSettingsSection(section ?? "general")}
         />
         {viewMode === "inbox" && !triageMode && (
           <div className="inbox-banner">
@@ -1306,7 +1322,8 @@ export default function App() {
         <RightRail
           onPlaylistsChanged={triggerReload}
           onOpenSync={() => setSyncProvisionOpen(true)}
-          onOpenSettings={() => setSettingsOpen(true)}
+          // 「エクスポート先を設定」から開く → 自動エクスポートのある ライブラリ。
+          onOpenSettings={() => setSettingsSection("library")}
         />
       )}
       <PlayerBar />
@@ -1349,8 +1366,11 @@ export default function App() {
           onSaved={triggerReload}
         />
       )}
-      {settingsOpen && (
-        <SettingsDialog onClose={() => setSettingsOpen(false)} />
+      {settingsSection && (
+        <SettingsDialog
+          initialSection={settingsSection}
+          onClose={() => setSettingsSection(null)}
+        />
       )}
       {syncProvisionOpen && (
         <SyncProvisionDialog

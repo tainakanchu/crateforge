@@ -320,6 +320,49 @@ select optgroup {
   line-height: 1.5;
 }
 
+/* サイドバー下端のフッター: 設定 / ショートカット一覧 (#254)。 */
+.cb-side-foot {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--bd);
+}
+.cb-side-footbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--tx2);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cb-side-footbtn svg {
+  color: var(--mut);
+}
+.cb-side-footbtn:hover {
+  background: var(--hover);
+  color: var(--tx);
+}
+.cb-side-footbtn:focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: -2px;
+}
+.cb-side-footq {
+  margin-left: auto;
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+  font: 700 13px/1 var(--mono);
+}
+
 /* ============================================================
    Main
    ============================================================ */
@@ -490,10 +533,6 @@ select optgroup {
   width: 34px;
   padding: 0;
   justify-content: center;
-}
-/* ショートカット一覧を開く "?" ボタン (#150) */
-.cb-btn-q {
-  font: 700 14px/1 var(--mono);
 }
 
 .cb-tb-spacer {
@@ -1400,6 +1439,59 @@ select optgroup {
   margin-top: 3px;
   line-height: 1.5;
   max-width: 460px;
+}
+/* 見出し + ⓘ (#247)。説明は ⓘ に、行内には注意・副作用だけを残す。 */
+.settings-rowtitle .infotip {
+  margin-left: 5px;
+  vertical-align: -3px;
+}
+
+/* InfoTip (ⓘ ボタン + ポップオーバー) */
+.infotip {
+  display: inline-flex;
+}
+.infotip-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--mut);
+  cursor: help;
+}
+.infotip-btn:hover,
+.infotip-btn.on {
+  color: var(--ac);
+  background: var(--ac-13);
+}
+.infotip-btn:focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: 1px;
+}
+.infotip-pop {
+  position: fixed;
+  z-index: 1100;
+  width: max-content;
+  max-width: min(300px, calc(100vw - 32px));
+  padding: 8px 10px;
+  border: 1px solid var(--bd-strong);
+  border-radius: 8px;
+  background: var(--bg3);
+  color: var(--tx2);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.55;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
+}
+.infotip-pop[hidden] {
+  display: none;
 }
 /* コントロールは基本は縮めないが、長い選択肢を持つ select (出力デバイス等) で
    ダイアログが横にはみ出さないよう、行幅を上限に縮められるようにする。 */
@@ -3157,6 +3249,72 @@ select optgroup {
   font-weight: 600;
   letter-spacing: 0.4px;
   color: var(--mut);
+}
+
+/* 共通メニュー (Menu.tsx, #254)。⋯ メニューの見た目 (.cb-morepop) をそのまま使う。 */
+.cb-menu-scrim {
+  z-index: 98;
+}
+.cb-menu.cb-sortpop {
+  z-index: 99;
+}
+.cb-menu .cb-menu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-menu .cb-menu-iconpad {
+  width: 15px;
+  flex-shrink: 0;
+}
+.cb-menu .cb-menu-kbd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--mut);
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.cb-menu-sep {
+  height: 1px;
+  background: var(--bd);
+  margin: 5px 4px;
+}
+/* 状態行: 行全体が 1 つの menuitem (クリックで設定を開く)。 */
+.cb-menu .cb-menu-status {
+  color: var(--tx2);
+}
+.cb-menu .cb-menu-dot {
+  width: 7px;
+  height: 7px;
+  margin: 0 4px;
+  border-radius: 50%;
+  background: var(--mut);
+  flex-shrink: 0;
+}
+.cb-menu .cb-menu-status.ok .cb-menu-dot {
+  background: var(--ac);
+}
+.cb-menu .cb-menu-status.warn .cb-menu-dot {
+  background: #e3b341;
+}
+
+/* ツールバー右側: 取り込み ▾ / ⋯ | 右ペイン (#254) */
+.cb-tb-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--bd);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+.cb-btn .cb-btn-caret {
+  margin-left: -3px;
+}
+.cb-btn.cb-btn-iconcaret {
+  padding: 0 7px 0 9px;
+  gap: 2px;
 }
 
 /* ============================================================

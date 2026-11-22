@@ -15,7 +15,7 @@ This feature has **not yet been tested on real CDJ / XDJ hardware by the develop
 
 ## Exporting
 
-1. In the sidebar, **right-click a playlist or folder → "USB に書き出し…"** (Export to USB), or use **"USB に書き出し"** in the toolbar (inside the ⋯ menu when the window is narrow).
+1. In the sidebar, **right-click a playlist or folder → "USB に書き出し…"** (Export to USB), or use the toolbar's **⋯ menu → "USB に書き出し…"** (the dialog opens with the playlist currently shown preselected).
 2. Choose the **playlists to export**. Selecting a folder exports its playlists **with the hierarchy**. Smart playlists are exported with their contents at the time of the export.
 3. Choose the **destination**: pick a USB stick from the list of mounted volumes, or any folder with "フォルダ…" (Folder…). The last destination is remembered.
 4. Set the **options** (below).

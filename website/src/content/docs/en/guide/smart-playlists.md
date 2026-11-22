@@ -10,7 +10,7 @@ Because it evaluates the entire library every time you open it, it is always kep
 
 ## Creating and editing
 
-- Create a new one with the **🎛 button** in the sidebar.
+- Create a new one with the **＋ button → "新規スマートプレイリスト" (New smart playlist)** in the sidebar playlist header (right-clicking the blank area of the playlist list shows the same menu). To define one in Rules (YAML) instead, open the Rules panel from the same menu's **"Rules でスマートプレイリストを定義…" (Define smart playlists with Rules…)**.
 - For an existing Smart Playlist, edit its rules with **right-click → "条件を編集" (Edit rules)**.
 
 ## Rules
@@ -65,5 +65,5 @@ Tracks themselves stay in the library either way.
 
 :::note
 Smart Playlists in an iTunes XML have their criteria converted on import (see [Library import](../import/)).
-For a library you have already imported, **"iTunes XML からスマートプレイリストを復元…" (restore smart playlists from iTunes XML)** in the toolbar sets just the criteria again.
+For a library you have already imported, **"取り込み ▾" → "スマートプレイリストを復元…" (restore smart playlists)** in the toolbar sets just the criteria again.
 :::

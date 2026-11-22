@@ -7,6 +7,12 @@ import { useTrackListCount } from "../hooks/useTrackList";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { Icon } from "./Icon";
 import { ColumnPicker } from "./ColumnPicker";
+import { MenuButton } from "./Menu";
+import type { MenuEntry } from "./Menu";
+import { MAX_FIT_LEVEL, toolbarFold } from "./toolbarFold";
+import { command, commandShortcut } from "../commands/registry";
+import type { CommandId } from "../commands/registry";
+import type { SettingsSection } from "./SettingsDialog";
 import { SmartRestoreDialog } from "./SmartRestoreDialog";
 import { useArtistsResult } from "./ArtistsView";
 import type { LibraryStats, SortField, ViewMode } from "../types";
@@ -21,11 +27,10 @@ import {
 interface ToolbarProps {
   onLibraryChanged: () => void;
   onOpenRipDialog: () => void;
-  onOpenRulesPanel: () => void;
   onOpenSyncProvision: () => void;
   onOpenUsbExport: () => void;
-  onOpenSettings: () => void;
-  onOpenHelp: () => void;
+  /** 設定ダイアログを指定のセクションで開く (状態行から ライブラリ を開く)。 */
+  onOpenSettings: (section?: SettingsSection) => void;
 }
 
 function formatDuration(ms: number): string {
@@ -81,32 +86,11 @@ const STATUS_CLEAR_MS = 8000;
 // ツールバーは「実際にはみ出したか」を測って段階的に畳む (D1)。幅のしきい値で決めると、
 // 日本語ラベル・ソート項目名・検索範囲の切替の有無などで実際の必要幅がずれ、
 // 1024 幅 + 右ペインで表示切替/並び順/列ボタンに到達できなくなっていた。
-// 畳み段階 (fitLevel):
-//   0: すべて表示
-//   1: 右側のアクション群を ⋯ メニューへ
-//   2: 表示切替・列ボタンをアイコンのみ、並び順は項目名だけ、検索範囲は短い表記
-//   3: 並び順を方向矢印だけに
-//   4: 表示切替・並び順・列も ⋯ メニューへ (⋯ から開く)
-//   5: 検索範囲の切替も ⋯ メニューへ
+// 畳み段階 (fitLevel) ごとに何を畳むかは toolbarFold.ts (テストで固定) を参照。
 // 横スクロールはしない (WebKitGTK ではスクロールバー領域がクリックを奪うため)。
-const MAX_FIT_LEVEL = 5;
-/** 段階 0 (アクション群を横並び) で検索欄に残したい最小幅。 */
-const SEARCH_MIN_WITH_ACTIONS = 260;
-const MORE_MENU_WIDTH = 248;
-
-// ⋯ メニューにも通常のボタンにも同じ定義から描画するためのアクション記述。
-interface ToolAction {
-  id: string;
-  label: string;
-  icon: string;
-  title: string;
-  onClick: () => void;
-  disabled?: boolean;
-  on?: boolean;
-  primary?: boolean;
-  /** 通常表示時にラベルまで出すか（false ならアイコンのみ） */
-  showLabel?: boolean;
-}
+/** 取り込みをバーに出している段階 (< 3) で検索欄に残したい最小幅。 */
+const SEARCH_MIN_WITH_ACTIONS = 200;
+const MORE_MENU_WIDTH = 260;
 
 // ツールバーは横スクロールするため、ポップオーバーは fixed で画面基準に置いてクリップを避ける。
 function anchoredPopStyle(el: HTMLElement | null, width: number): React.CSSProperties {
@@ -129,11 +113,9 @@ const VIEW_TITLE: Record<ViewMode, string> = {
 export function Toolbar({
   onLibraryChanged,
   onOpenRipDialog,
-  onOpenRulesPanel,
   onOpenSyncProvision,
   onOpenUsbExport,
   onOpenSettings,
-  onOpenHelp,
 }: ToolbarProps) {
   const {
     viewMode,
@@ -173,7 +155,8 @@ export function Toolbar({
   const [importingFiles, setImportingFiles] = useState(false);
   const [importingFolders, setImportingFolders] = useState(false);
   const [checkingFiles, setCheckingFiles] = useState(false);
-  const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
+  // 整理先フォルダ (undefined = 未取得)。設定ダイアログで変わるので、取り込みメニューを開くたびに読み直す。
+  const [libraryRoot, setLibraryRoot] = useState<string | null | undefined>(undefined);
   const [status, setStatusRaw] = useState("");
   const statusTimerRef = useRef<number | null>(null);
 
@@ -211,16 +194,13 @@ export function Toolbar({
   const [stats, setStats] = useState<LibraryStats | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
   // ツールバー行の実効幅 (右ペインの表示・リサイズに追従) と畳み段階 (上の fitLevel 参照)。
   const [fitLevel, setFitLevel] = useState(0);
   // Web フォントの読み込み完了で文字幅が変わるので測り直す。
   const [fontsTick, setFontsTick] = useState(0);
-  const compact = fitLevel >= 1;
-  const narrow = fitLevel >= 2;
-  const tiny = fitLevel >= 3;
-  const controlsInMenu = fitLevel >= 4;
-  const scopeInMenu = fitLevel >= 5;
+  const fold = toolbarFold(fitLevel);
+  const narrow = fold.controlsIconOnly;
+  const { controlsInMenu, scopeInMenu, actionsInMenu, actionsIconOnly } = fold;
   // 検索ボックス: 表示用ローカル state（即時反映）。store への反映はデバウンス。
   const [localSearch, setLocalSearch] = useState(searchQuery);
 
@@ -229,7 +209,6 @@ export function Toolbar({
   const mainRef = useRef<HTMLDivElement>(null);
   const sortBtnRef = useRef<HTMLButtonElement>(null);
   const moreBtnRef = useRef<HTMLButtonElement>(null);
-  const moreMenuRef = useRef<HTMLDivElement>(null);
   const isListLike = viewMode !== "artists";
 
   // ツールバー幅を監視して畳み具合を切り替える（初回描画前に確定させたいので layout effect）。
@@ -249,51 +228,6 @@ export function Toolbar({
     };
   }, []);
 
-  // 広くなって ⋯ ボタン自体が消える場合はメニューも閉じる。
-  useEffect(() => {
-    if (!compact) setMoreOpen(false);
-  }, [compact]);
-
-  // メニューを開いたら先頭項目にフォーカス。
-  useEffect(() => {
-    if (!moreOpen) return;
-    const first = moreMenuRef.current?.querySelector<HTMLButtonElement>(
-      '[role^="menuitem"]:not(:disabled)',
-    );
-    first?.focus();
-  }, [moreOpen]);
-
-  // Esc で閉じる / 上下キーで移動。
-  const handleMoreKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      setMoreOpen(false);
-      moreBtnRef.current?.focus();
-      return;
-    }
-    const items = Array.from(
-      moreMenuRef.current?.querySelectorAll<HTMLButtonElement>(
-        '[role^="menuitem"]:not(:disabled)',
-      ) ?? [],
-    );
-    if (items.length === 0) return;
-    const cur = items.indexOf(document.activeElement as HTMLButtonElement);
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      const next =
-        e.key === "ArrowDown"
-          ? (cur + 1) % items.length
-          : (cur - 1 + items.length) % items.length;
-      items[next]?.focus();
-    } else if (e.key === "Home") {
-      e.preventDefault();
-      items[0]?.focus();
-    } else if (e.key === "End") {
-      e.preventDefault();
-      items[items.length - 1]?.focus();
-    }
-  }, []);
-
   const refreshStats = useCallback(async () => {
     try {
       setStats(await libraryApi.getLibraryStats());
@@ -307,24 +241,15 @@ export function Toolbar({
     refreshStats();
   }, [refreshStats, libraryRevision, listCount, playlists.length]);
 
-  useEffect(() => {
+  const refreshLibraryRoot = useCallback(() => {
     libraryApi
       .getLibraryRoot()
       .then((r) => setLibraryRoot(r))
-      .catch(() => setLibraryRoot(null));
+      .catch(() => setLibraryRoot(undefined));
   }, []);
-
-  const handleSetLibraryRoot = useCallback(async () => {
-    const dir = await open({ directory: true, multiple: false });
-    if (typeof dir !== "string") return;
-    try {
-      await libraryApi.setLibraryRoot(dir);
-      setLibraryRoot(dir);
-      setStatus(`整理先を設定: ${dir}`);
-    } catch (err) {
-      setStatus(`整理先の設定に失敗: ${err}`);
-    }
-  }, []);
+  useEffect(() => {
+    refreshLibraryRoot();
+  }, [refreshLibraryRoot]);
 
   // store の searchQuery が外部（Ctrl+L / Escape など）で変わったら表示も同期する。
   useEffect(() => {
@@ -531,26 +456,6 @@ export function Toolbar({
     }
   }, [setStatus]);
 
-  // iTunes 互換 XML の自動エクスポートを ON/OFF。ON 時にパス未設定なら出力先を聞く。
-  const handleToggleAutoExport = useCallback(async () => {
-    if (autoExportEnabled) {
-      setAutoExport(false, autoExportPath);
-      setStatus("自動エクスポート: OFF");
-      return;
-    }
-    let path = autoExportPath;
-    if (!path) {
-      const picked = await save({
-        filters: [{ name: "iTunes Library XML", extensions: ["xml"] }],
-        defaultPath: "iTunes Library.xml",
-      });
-      if (!picked) return;
-      path = picked;
-    }
-    setAutoExport(true, path);
-    setStatus(`自動エクスポート: ON（${path}）`);
-  }, [autoExportEnabled, autoExportPath, setAutoExport]);
-
   // View title + subcount.
   const activePlaylist =
     viewMode === "playlist"
@@ -656,120 +561,171 @@ export function Toolbar({
         return;
       }
     }
-    // アクション群を横に並べる (段階 0) のは、検索欄に十分な幅が残るときだけ。
+    // 取り込みをバーに並べる (段階 < 3) のは、検索欄に十分な幅が残るときだけ。
     const sbox = el.querySelector<HTMLElement>(".cb-sbox");
     const searchCramped =
-      fitLevel === 0 && !!sbox && sbox.getBoundingClientRect().width < SEARCH_MIN_WITH_ACTIONS;
+      !actionsInMenu && !!sbox && sbox.getBoundingClientRect().width < SEARCH_MIN_WITH_ACTIONS;
     if ((searchCramped || el.scrollWidth > el.clientWidth + 1) && fitLevel < MAX_FIT_LEVEL) {
       setFitLevel(fitLevel + 1);
     }
   });
 
-  // 幅が足りないときに ⋯ メニューへ畳むアクション群（挙動は畳んでも同じ）。
-  const overflowActions: ToolAction[] = [
-    {
-      id: "sync",
-      label: "サーバーから取り寄せ",
-      icon: "download",
-      title: "接続済みサーバーからプレイリストと曲を取り寄せる",
-      onClick: onOpenSyncProvision,
-      showLabel: true,
-    },
-    {
-      id: "usbExport",
-      label: "USB に書き出し",
-      icon: "upload",
-      title: "プレイリストを CDJ 用 USB (rekordbox 互換) に書き出す",
-      onClick: onOpenUsbExport,
-    },
-    {
-      id: "import",
-      label: "iTunes XML を取り込む",
-      icon: "download",
-      title: "既存の iTunes Library.xml を取り込む",
-      onClick: handleImport,
-      disabled: importing,
-      primary: true,
-    },
-    {
-      id: "restoreSmart",
-      label: "iTunes XML からスマートプレイリストを復元…",
-      icon: "sliders",
-      title:
-        "iTunes XML からスマートプレイリストを復元…\n" +
-        "取り込み済みのプレイリストに iTunes の条件だけを設定し直す (曲・プレイリストは取り込まない)",
-      onClick: () => setSmartRestoreOpen(true),
-    },
-    {
-      id: "importFiles",
-      label: "ファイルを追加",
-      icon: "filePlus",
-      title: "音楽ファイルをライブラリに追加",
-      onClick: handleImportFiles,
+  // メニュー項目 (ラベル・アイコンは commands/registry の静的メタデータから引く)。
+  const cmdItem = (
+    id: CommandId,
+    onSelect: () => void,
+    extra?: { disabled?: boolean; title?: string },
+  ): MenuEntry => {
+    const c = command(id);
+    return { kind: "item", id, label: c.label, icon: c.icon, onSelect, ...extra };
+  };
+
+  // 取り込み ▾ の中身。段階 3 以上では ⋯ の「取り込み」セクションにそのまま入る。
+  const importEntries: MenuEntry[] = [
+    cmdItem("importFiles", handleImportFiles, {
       disabled: importingFiles,
-    },
-    {
-      id: "importFolders",
-      label: "フォルダを追加",
-      icon: "folder",
-      title: "フォルダを丸ごと取り込む (サブフォルダも再帰的に走査)",
-      onClick: handleImportFolders,
+      title: "音楽ファイルをライブラリに追加",
+    }),
+    cmdItem("importFolders", handleImportFolders, {
       disabled: importingFolders,
-    },
-    {
-      id: "rip",
-      label: "CD を取り込む",
-      icon: "disc",
-      title: "音楽 CD を取り込む (リッピング)",
-      onClick: onOpenRipDialog,
-    },
-    {
-      id: "rules",
-      label: "プレイリストルール (Rules)",
-      icon: "layers",
-      title: "YAML のルールからスマートプレイリストを作る",
-      onClick: onOpenRulesPanel,
-    },
-    {
-      id: "libraryRoot",
-      label: "整理先フォルダ",
-      icon: "folderPlus",
-      title: libraryRoot
-        ? `整理先 (編集時に自動でフォルダ分け): ${libraryRoot}\nクリックで変更`
-        : "整理先フォルダを設定 (未設定だと自動整理オフ)",
-      onClick: handleSetLibraryRoot,
-      on: !!libraryRoot,
-    },
-    {
-      id: "export",
-      label: "iTunes XML に書き出し",
-      icon: "upload",
-      title: "ライブラリを iTunes 互換の XML に書き出す",
-      onClick: handleExport,
-      disabled: exporting || (stats?.trackCount ?? 0) === 0,
-    },
-    {
-      id: "autoExport",
-      label: "自動エクスポート",
-      icon: "clock",
-      title: autoExportEnabled
-        ? `自動 XML エクスポート: ON\n${autoExportPath ?? ""}\n(変更時に約30分間隔＋終了時に自動書き出し)\nクリックで OFF`
-        : "iTunes 互換 XML を自動エクスポート (変更時のみ・約30分間隔＋終了時)",
-      onClick: handleToggleAutoExport,
-      on: autoExportEnabled,
-    },
-    {
-      id: "rescanFiles",
-      label: "リンク切れを再チェック",
-      icon: "warning",
+      title: "フォルダを丸ごと取り込む (サブフォルダも再帰的に走査)",
+    }),
+    cmdItem("ripCd", onOpenRipDialog, { title: "音楽 CD を取り込む (リッピング)" }),
+    { kind: "separator", id: "sep-sync" },
+    cmdItem("syncProvision", onOpenSyncProvision, {
+      title: "接続済みサーバーからプレイリストと曲を取り寄せる",
+    }),
+    { kind: "separator", id: "sep-itunes" },
+    { kind: "section", id: "sec-itunes", label: "iTunes から移行" },
+    cmdItem("importItunesXml", handleImport, {
+      disabled: importing,
+      title: "既存の iTunes Library.xml を取り込む",
+    }),
+    cmdItem("restoreSmart", () => setSmartRestoreOpen(true), {
       title:
-        "全曲のファイルが今もあるか確認し直す (外付けドライブの接続後など)\n" +
-        "見つからない曲は検索で missing:yes と入力すると一覧できます",
-      onClick: handleRescanFiles,
-      disabled: checkingFiles || (stats?.trackCount ?? 0) === 0,
-    },
+        "取り込み済みのプレイリストに iTunes の条件だけを設定し直す (曲・プレイリストは取り込まない)",
+    }),
+    // 整理先フォルダが未設定のときだけ状態行を出す (設定済みなら何も出さない)。
+    ...(libraryRoot === null
+      ? ([
+          { kind: "separator", id: "sep-root" },
+          {
+            kind: "status",
+            id: "libraryRoot",
+            label: "整理先フォルダ: 未設定",
+            tone: "warn",
+            title: "設定 › ライブラリ で整理先フォルダを設定します (未設定だと自動整理オフ)",
+            onSelect: () => onOpenSettings("library"),
+          },
+        ] satisfies MenuEntry[])
+      : []),
   ];
 
+  // 自動エクスポートの状態行 (設定 › ライブラリ が唯一の設定場所)。
+  const autoExportStatus: MenuEntry = {
+    kind: "status",
+    id: "autoExport",
+    label: autoExportEnabled
+      ? autoExportPath
+        ? "自動エクスポート: オン"
+        : "自動エクスポート: 出力先が未設定"
+      : "自動エクスポート: オフ",
+    tone: autoExportEnabled ? (autoExportPath ? "ok" : "warn") : "off",
+    title:
+      (autoExportEnabled && autoExportPath ? `${autoExportPath}\n` : "") +
+      "設定 › ライブラリ で変更します",
+    onSelect: () => onOpenSettings("library"),
+  };
+
+  // 表示中のプレイリストがあれば、それを書き出し対象として開く。
+  const usbTitle = activePlaylist
+    ? `“${activePlaylist.name}” を USB に書き出し`
+    : "プレイリストを CDJ 用 USB (rekordbox 互換) に書き出す";
+
+  // ⋯ メニューの中身。畳み段階に応じて、検索範囲・表示・取り込み/書き出しのセクションが加わる。
+  const moreEntries = (): MenuEntry[] => {
+    const out: MenuEntry[] = [];
+    if (scopeInMenu && viewMode === "playlist") {
+      out.push({ kind: "section", id: "sec-scope", label: "検索範囲" });
+      for (const [scope, label] of [
+        ["playlist", "このプレイリスト"],
+        ["library", "ライブラリ全体"],
+      ] as const) {
+        out.push({
+          kind: "radio",
+          id: `scope-${scope}`,
+          label,
+          icon: "search",
+          checked: searchScope === scope,
+          onSelect: () => setSearchScope(scope),
+        });
+      }
+    }
+    if (controlsInMenu) {
+      out.push({ kind: "section", id: "sec-view", label: "表示" });
+      for (const [mode, label, icon] of [
+        ["list", "リスト表示", "list"],
+        ["albums", "アルバム表示", "grid"],
+        ["tracks", "トラックウォール表示", "disc"],
+      ] as const) {
+        out.push({
+          kind: "radio",
+          id: `view-${mode}`,
+          label,
+          icon,
+          checked: displayMode === mode,
+          onSelect: () => setDisplayMode(mode),
+        });
+      }
+      out.push({
+        kind: "item",
+        id: "sort",
+        icon: "chevronD",
+        label:
+          `並び順: ${curSort?.label ?? "—"}` +
+          (manualSortActive ? "" : sortOrder === "asc" ? " ↑" : " ↓") +
+          "…",
+        onSelect: () => {
+          setPickerOpen(false);
+          setSortOpen(true);
+        },
+      });
+      if (isListLike && displayMode === "list") {
+        out.push({
+          kind: "item",
+          id: "columns",
+          icon: "sliders",
+          label: `表示する列… (${fields.length})`,
+          onSelect: () => {
+            setSortOpen(false);
+            setPickerOpen(true);
+          },
+        });
+      }
+    }
+    if (actionsInMenu) {
+      out.push({ kind: "section", id: "sec-import", label: "取り込み" }, ...importEntries);
+      out.push({ kind: "section", id: "sec-export", label: "書き出し" });
+    } else if (controlsInMenu || (scopeInMenu && viewMode === "playlist")) {
+      out.push({ kind: "section", id: "sec-ops", label: "操作" });
+    }
+    out.push(
+      cmdItem("usbExport", onOpenUsbExport, { title: usbTitle }),
+      cmdItem("exportItunesXml", handleExport, {
+        disabled: exporting || (stats?.trackCount ?? 0) === 0,
+        title: "ライブラリを iTunes 互換の XML に書き出す",
+      }),
+      autoExportStatus,
+      { kind: "separator", id: "sep-rescan" },
+      cmdItem("rescanFiles", handleRescanFiles, {
+        disabled: checkingFiles || (stats?.trackCount ?? 0) === 0,
+        title: "全曲のファイルが今もあるか確認し直す (外付けドライブの接続後など)",
+      }),
+    );
+    return out;
+  };
+
+  const railShortcut = commandShortcut("toggleRightPane");
 
   return (
     <>
@@ -881,13 +837,16 @@ export function Toolbar({
               onClick={() => {
                 setSortOpen((v) => !v);
                 setPickerOpen(false);
-                setMoreOpen(false);
               }}
               title={`並び順: ${curSort?.label ?? "—"}`}
             >
               {/* ソートフィールド名＋現在の昇順/降順を常時表示 (狭いときは項目名を省く) */}
-              {tiny ? "" : narrow ? `${curSort?.label ?? "—"} ` : `並び順: ${curSort?.label ?? "—"} `}
-              {manualSortActive ? (tiny ? "≡" : "") : sortOrder === "asc" ? "↑" : "↓"}
+              {fold.sortLabel === "arrow"
+                ? ""
+                : fold.sortLabel === "field"
+                  ? `${curSort?.label ?? "—"} `
+                  : `並び順: ${curSort?.label ?? "—"} `}
+              {manualSortActive ? (fold.sortLabel === "arrow" ? "≡" : "") : sortOrder === "asc" ? "↑" : "↓"}
               <Icon name="chevronD" size={12} />
             </button>
             )}
@@ -939,7 +898,6 @@ export function Toolbar({
                 onClick={() => {
                   setPickerOpen((v) => !v);
                   setSortOpen(false);
-                  setMoreOpen(false);
                 }}
                 title="表示する列を選ぶ"
                 aria-label="表示する列を選ぶ"
@@ -954,183 +912,52 @@ export function Toolbar({
           </div>
 
           <div className="cb-tb-actions">
-            {/* 幅に余裕があるときは従来どおり横並び、狭いときは ⋯ メニューに畳む。 */}
-            {!compact &&
-              overflowActions.map((a) => (
-                <button
-                  key={a.id}
-                  className={
-                    "cb-btn" +
-                    (a.showLabel ? "" : " cb-btn-iconly") +
-                    (a.primary ? " primary" : "") +
-                    (a.on ? " on" : "")
-                  }
-                  onClick={a.onClick}
-                  disabled={a.disabled}
-                  title={a.title}
-                >
-                  <Icon name={a.icon} size={a.showLabel ? 15 : 16} />
-                  {a.showLabel && a.label}
-                </button>
-              ))}
-            {compact && (
-              <>
-                <button
-                  ref={moreBtnRef}
-                  className={"cb-btn cb-btn-iconly" + (moreOpen ? " on" : "")}
-                  onClick={() => {
-                    setMoreOpen((v) => !v);
-                    setSortOpen(false);
-                    setPickerOpen(false);
-                  }}
-                  title="その他の操作"
-                  aria-haspopup="menu"
-                  aria-expanded={moreOpen}
-                >
-                  <Icon name="more" size={16} />
-                </button>
-                {moreOpen && (
-                  <>
-                    <div className="cb-scrim" onClick={() => setMoreOpen(false)} />
-                    <div
-                      ref={moreMenuRef}
-                      className="cb-sortpop cb-morepop"
-                      role="menu"
-                      aria-label="その他の操作"
-                      style={anchoredPopStyle(moreBtnRef.current, MORE_MENU_WIDTH)}
-                      onKeyDown={handleMoreKeyDown}
-                    >
-                      {scopeInMenu && viewMode === "playlist" && (
-                        <>
-                          <div className="cb-morepop-section">検索範囲</div>
-                          {(
-                            [
-                              ["playlist", "このプレイリスト"],
-                              ["library", "ライブラリ全体"],
-                            ] as const
-                          ).map(([scope, label]) => (
-                            <button
-                              key={scope}
-                              type="button"
-                              role="menuitemradio"
-                              aria-checked={searchScope === scope}
-                              className={"cb-sortitem" + (searchScope === scope ? " on" : "")}
-                              onClick={() => {
-                                setMoreOpen(false);
-                                setSearchScope(scope);
-                              }}
-                            >
-                              <Icon name="search" size={15} />
-                              {label}
-                            </button>
-                          ))}
-                        </>
-                      )}
-                      {controlsInMenu && (
-                        <>
-                          <div className="cb-morepop-section">表示</div>
-                          {(
-                            [
-                              ["list", "リスト表示", "list"],
-                              ["albums", "アルバム表示", "grid"],
-                              ["tracks", "トラックウォール表示", "disc"],
-                            ] as const
-                          ).map(([mode, label, icon]) => (
-                            <button
-                              key={mode}
-                              type="button"
-                              role="menuitemradio"
-                              aria-checked={displayMode === mode}
-                              className={"cb-sortitem" + (displayMode === mode ? " on" : "")}
-                              onClick={() => {
-                                setMoreOpen(false);
-                                setDisplayMode(mode);
-                              }}
-                            >
-                              <Icon name={icon} size={15} />
-                              {label}
-                            </button>
-                          ))}
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="cb-sortitem"
-                            onClick={() => {
-                              setMoreOpen(false);
-                              setPickerOpen(false);
-                              setSortOpen(true);
-                            }}
-                          >
-                            <Icon name="chevronD" size={15} />
-                            並び順: {curSort?.label ?? "—"}
-                            {manualSortActive ? "" : sortOrder === "asc" ? " ↑" : " ↓"}…
-                          </button>
-                          {isListLike && displayMode === "list" && (
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className="cb-sortitem"
-                              data-colpicker-toggle
-                              onClick={() => {
-                                setMoreOpen(false);
-                                setSortOpen(false);
-                                setPickerOpen(true);
-                              }}
-                            >
-                              <Icon name="sliders" size={15} />
-                              表示する列… ({fields.length})
-                            </button>
-                          )}
-                          <div className="cb-morepop-section">操作</div>
-                        </>
-                      )}
-                      {overflowActions.map((a) => (
-                        <button
-                          key={a.id}
-                          type="button"
-                          role="menuitem"
-                          className={"cb-sortitem" + (a.on ? " on" : "")}
-                          onClick={() => {
-                            setMoreOpen(false);
-                            a.onClick();
-                          }}
-                          disabled={a.disabled}
-                          title={a.title}
-                        >
-                          <Icon name={a.icon} size={15} />
-                          {a.label}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </>
+            {/* 取り込み ▾ / ⋯ (USB 書き出し・iTunes XML ほか) | 右ペイン (#254)。狭いときは段階的に畳む。 */}
+            {!actionsInMenu && (
+              <MenuButton
+                entries={importEntries}
+                menuLabel="取り込み"
+                className={"cb-btn" + (actionsIconOnly ? " cb-btn-iconcaret" : "")}
+                title="取り込み (ファイル / フォルダ / CD / サーバー / iTunes)"
+                ariaLabel="取り込み"
+                onOpen={refreshLibraryRoot}
+                width={MORE_MENU_WIDTH}
+              >
+                <Icon name="importTray" size={15} />
+                {!actionsIconOnly && "取り込み"}
+                <Icon name="chevronD" size={12} className="cb-btn-caret" />
+              </MenuButton>
             )}
+            <MenuButton
+              entries={moreEntries}
+              menuLabel="その他"
+              className="cb-btn cb-btn-iconly"
+              title="その他"
+              ariaLabel="その他"
+              buttonRef={moreBtnRef}
+              onOpen={() => {
+                setSortOpen(false);
+                setPickerOpen(false);
+                if (actionsInMenu) refreshLibraryRoot();
+              }}
+              width={MORE_MENU_WIDTH}
+            >
+              <Icon name="more" size={16} />
+            </MenuButton>
+            <span className="cb-tb-divider" aria-hidden />
             <button
+              type="button"
               className={"cb-btn cb-btn-iconly" + (rightRailVisible ? " on" : "")}
               onClick={toggleRightRail}
+              aria-pressed={rightRailVisible}
               title={
                 rightRailVisible
-                  ? "右ペイン (再生中 / Crate) を隠す"
-                  : "右ペイン (再生中 / Crate) を表示"
+                  ? "右ペインを隠す"
+                  : `右ペインを表示${railShortcut ? ` (${railShortcut})` : ""}`
               }
+              aria-label={rightRailVisible ? "右ペインを隠す" : "右ペインを表示"}
             >
-              <Icon name="eye" size={16} />
-            </button>
-            <button
-              className="cb-btn cb-btn-iconly cb-btn-q"
-              onClick={onOpenHelp}
-              title="キーボードショートカット一覧 (?)"
-              aria-label="キーボードショートカット一覧"
-            >
-              ?
-            </button>
-            <button
-              className="cb-btn cb-btn-iconly"
-              onClick={onOpenSettings}
-              title="設定"
-            >
-              <Icon name="settings" size={16} />
+              <Icon name={command("toggleRightPane").icon} size={16} />
             </button>
           </div>
         </div>

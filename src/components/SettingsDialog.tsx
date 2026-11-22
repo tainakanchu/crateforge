@@ -16,6 +16,7 @@ import type { ApiServerStatus } from "../api/server";
 import * as fontsApi from "../api/fonts";
 import type { CjkFontStatus } from "../api/fonts";
 import { Icon } from "./Icon";
+import { InfoTip } from "./InfoTip";
 import { LicenseList } from "./LicenseList";
 import { KEY_NOTATIONS, KEY_NOTATION_LABELS, isKeyNotation } from "../lib/keyNotation";
 import { playRipChime } from "../lib/ripChime";
@@ -23,16 +24,28 @@ import { useEscapeKey } from "../hooks/useEscapeKey";
 
 const REPO_URL = "https://github.com/tainakanchu/crateforge";
 
-type Section = "general" | "fonts" | "ffmpeg" | "usb" | "api" | "updates" | "about";
+export type SettingsSection =
+  | "general"
+  | "playback"
+  | "library"
+  | "fonts"
+  | "ffmpeg"
+  | "usb"
+  | "api"
+  | "updates"
+  | "about";
+type Section = SettingsSection;
 
 const SECTIONS: { key: Section; label: string; icon: string }[] = [
   { key: "general", label: "一般", icon: "sliders" },
+  { key: "playback", label: "再生", icon: "play" },
+  { key: "library", label: "ライブラリ", icon: "folder" },
   { key: "fonts", label: "フォント", icon: "sliders" },
-  { key: "ffmpeg", label: "変換 (ffmpeg)", icon: "waveform" },
-  { key: "usb", label: "USB 書き出し (rbx-cli)", icon: "upload" },
-  { key: "api", label: "モバイル / API", icon: "info" },
+  { key: "ffmpeg", label: "変換", icon: "waveform" },
+  { key: "usb", label: "USB 書き出し", icon: "usb" },
+  { key: "api", label: "モバイル・API", icon: "info" },
   { key: "updates", label: "アップデート", icon: "download" },
-  { key: "about", label: "情報・ライセンス", icon: "info" },
+  { key: "about", label: "情報", icon: "info" },
 ];
 
 // ライセンス表記（CLI 経由で別プロセス起動している ffmpeg と、主な OSS 依存）。
@@ -53,6 +66,8 @@ const CREDITS: { name: string; license: string; note?: string }[] = [
 
 interface SettingsDialogProps {
   onClose: () => void;
+  /** 開いたときに表示するセクション (既定は 一般)。 */
+  initialSection?: SettingsSection;
 }
 
 function mb(bytes: number): string {
@@ -73,7 +88,7 @@ function relativeFromNow(iso: string): string {
   return `${day}日前に接続`;
 }
 
-export function SettingsDialog({ onClose }: SettingsDialogProps) {
+export function SettingsDialog({ onClose, initialSection = "general" }: SettingsDialogProps) {
   const {
     replayGain,
     setReplayGain,
@@ -93,7 +108,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   // トースト通知（alert の代わりに使用）
   const pushToast = useStore((s) => s.pushToast);
 
-  const [section, setSection] = useState<Section>("general");
+  const [section, setSection] = useState<Section>(initialSection);
   const [version, setVersion] = useState("");
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
   const [showLicenses, setShowLicenses] = useState(false);
@@ -814,36 +829,67 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             {section === "general" && (
               <>
                 <Row
-                  title="整理先フォルダ"
-                  desc="設定すると、メタデータ編集時に <整理先>/<AlbumArtist>/<Album>/ へ自動でファイルを整理します。"
+                  title="Key 表記"
+                  info="表示だけが変わります。保存値（Camelot）や互換判定・検索（key:8A）はそのままです。"
                 >
-                  <div className="settings-pathrow">
-                    <span className="settings-path" title={libraryRoot ?? ""}>
-                      {libraryRoot || "未設定（自動整理オフ）"}
-                    </span>
-                    <button
-                      className="toolbar-btn"
-                      onClick={handleDetectLibraryRoot}
-                      title="既存の曲のパスから整理先フォルダを推定して設定します"
-                    >
-                      <Icon name="sparkle" size={14} /> 自動検出
-                    </button>
-                    <button className="toolbar-btn" onClick={handleSetLibraryRoot}>
-                      <Icon name="folderOpen" size={14} /> 選択
-                    </button>
-                  </div>
+                  <select
+                    value={keyNotation}
+                    onChange={(e) => {
+                      if (isKeyNotation(e.target.value)) setKeyNotation(e.target.value);
+                    }}
+                  >
+                    {KEY_NOTATIONS.map((n) => (
+                      <option key={n} value={n}>
+                        {KEY_NOTATION_LABELS[n]}
+                      </option>
+                    ))}
+                  </select>
                 </Row>
 
                 <Row
+                  title="字体ゆれ吸収"
+                  info="検索とスマートプレイリストで、字体の違いを同じ文字として扱います。強いほど広くヒットし、検索は少し重くなります。"
+                >
+                  <select
+                    value={foldLevel}
+                    onChange={(e) => handleChangeFoldLevel(e.target.value)}
+                  >
+                    <option value="standard">標準（かな・全半角・大小＋漢字字体 繁/簡/日）</option>
+                    <option value="light">軽量（かな・全半角・大小のみ）</option>
+                    <option value="off">オフ（完全一致・最速）</option>
+                  </select>
+                </Row>
+
+                <Row
+                  title="CD 取り込みの完了音"
+                  info="CD の取り込みが終わると短い通知音を鳴らします（失敗時は低めの音）。再生中の曲には影響しません。"
+                >
+                  <div className="settings-pathrow">
+                    <button
+                      className="toolbar-btn"
+                      onClick={() => playRipChime("done")}
+                      title="完了音を試聴します"
+                    >
+                      <Icon name="play" size={14} /> 試聴
+                    </button>
+                    <Toggle on={ripSoundEnabled} onClick={() => setRipSoundEnabled(!ripSoundEnabled)} />
+                  </div>
+                </Row>
+              </>
+            )}
+
+            {section === "playback" && (
+              <>
+                <Row
                   title="ReplayGain"
-                  desc="曲ごとの音量差をならして再生します（解析済みの曲に適用）。"
+                  info="曲ごとの音量差をならして再生します（解析済みの曲だけ）。"
                 >
                   <Toggle on={replayGain} onClick={handleToggleReplayGain} />
                 </Row>
 
                 <Row
                   title="出力デバイス"
-                  desc="再生に使うオーディオ出力。切り替えても再生中の曲・位置・キューはそのまま引き継がれます。「システム既定」は OS の既定出力に追従します。"
+                  info="切り替えても再生中の曲・位置・キューはそのままです。「システム既定」は OS の既定出力に追従します。"
                 >
                   <div className="settings-pathrow">
                     <select
@@ -886,44 +932,36 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     <span className="settings-path">出力デバイスが見つかりません</span>
                   </div>
                 )}
+              </>
+            )}
 
+            {section === "library" && (
+              <>
                 <Row
-                  title="Key 表記"
-                  desc="曲のキーの表示形式。保存値（Camelot）や互換判定・検索（key:8A）は変わりません。"
-                >
-                  <select
-                    value={keyNotation}
-                    onChange={(e) => {
-                      if (isKeyNotation(e.target.value)) setKeyNotation(e.target.value);
-                    }}
-                  >
-                    {KEY_NOTATIONS.map((n) => (
-                      <option key={n} value={n}>
-                        {KEY_NOTATION_LABELS[n]}
-                      </option>
-                    ))}
-                  </select>
-                </Row>
-
-                <Row
-                  title="CD 取り込みの完了音"
-                  desc="CD の取り込みが終わったときに短い通知音を鳴らします（失敗時は低めの音）。再生中の曲には影響しません。"
+                  title="整理先フォルダ"
+                  desc="設定しただけでは既存のファイルは移動しません。"
+                  info="取り込み・CD 取り込みの保存先と、メタデータ編集時の整理先です（<整理先>/<AlbumArtist>/<Album>/）。"
                 >
                   <div className="settings-pathrow">
+                    <span className="settings-path" title={libraryRoot ?? ""}>
+                      {libraryRoot || "未設定（自動整理オフ）"}
+                    </span>
                     <button
                       className="toolbar-btn"
-                      onClick={() => playRipChime("done")}
-                      title="完了音を試聴します"
+                      onClick={handleDetectLibraryRoot}
+                      title="既存の曲のパスから整理先フォルダを推定して設定します"
                     >
-                      <Icon name="play" size={14} /> 試聴
+                      <Icon name="sparkle" size={14} /> 自動検出
                     </button>
-                    <Toggle on={ripSoundEnabled} onClick={() => setRipSoundEnabled(!ripSoundEnabled)} />
+                    <button className="toolbar-btn" onClick={handleSetLibraryRoot}>
+                      <Icon name="folderOpen" size={14} /> 選択
+                    </button>
                   </div>
                 </Row>
 
                 <Row
                   title="iTunes 互換 XML の自動エクスポート"
-                  desc="変更があったときだけ、約30分間隔＋アプリ終了時に Library XML を自動で書き出します。"
+                  info="ライブラリに変更があると、操作が 1 分止まったとき・他のアプリに切り替えたとき・アプリ終了時に Library XML を書き出します（作業が続いても 10 分ごとに書き出し）。"
                 >
                   <Toggle on={autoExportEnabled} onClick={handleToggleAutoExport} />
                 </Row>
@@ -939,24 +977,17 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 )}
 
                 <Row
-                  title="字体ゆれ吸収"
-                  desc="検索とスマートプレイリストの字体ゆれ吸収。強いほど広くヒットしますが検索は少し重くなります。"
+                  title="自動エクスポート時にあわせてバックアップ"
+                  info="自動エクスポートが成功したとき library.db もバックアップします（直近5件を保持、30分未満の間隔ではスキップ）。"
                 >
-                  <select
-                    value={foldLevel}
-                    onChange={(e) => handleChangeFoldLevel(e.target.value)}
-                  >
-                    <option value="standard">標準（かな・全半角・大小＋漢字字体 繁/簡/日）</option>
-                    <option value="light">軽量（かな・全半角・大小のみ）</option>
-                    <option value="off">オフ（完全一致・最速）</option>
-                  </select>
+                  <Toggle on={autoBackupEnabled} onClick={() => setAutoBackupEnabled(!autoBackupEnabled)} />
                 </Row>
 
                 <div className="settings-sectitle">ライブラリのバックアップ</div>
 
                 <Row
                   title="今すぐバックアップ"
-                  desc="解析結果・スキップ数・スマートプレイリストの条件・同期状態など、XML エクスポートには含まれないデータも含めて library.db 全体を保存します。"
+                  info="解析結果やスマートプレイリストの条件など、XML に入らないデータも含めて library.db 全体を保存します。"
                 >
                   <button className="toolbar-btn" onClick={handleBackupNow} disabled={backupBusy}>
                     <Icon name="save" size={14} /> {backupBusy ? "保存中…" : "今すぐバックアップ"}
@@ -965,7 +996,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                 <Row
                   title="バックアップから復元"
-                  desc="選んだバックアップファイルで現在のライブラリを置き換えます。復元前に自動で整合性チェックを行います。"
+                  desc="今のライブラリを置き換えます。"
+                  info="復元前に自動で整合性チェックを行い、壊れていれば復元しません。"
                 >
                   <button className="toolbar-btn" onClick={handlePickRestoreFile} disabled={restoreBusy}>
                     <Icon name="folderOpen" size={14} /> バックアップから復元…
@@ -974,7 +1006,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                 <Row
                   title="整合性チェック"
-                  desc="library.db が壊れていないか検査します（PRAGMA integrity_check）。"
+                  info="library.db が壊れていないか調べます（PRAGMA integrity_check）。"
                 >
                   <button className="toolbar-btn" onClick={handleCheckIntegrity} disabled={integrityBusy}>
                     <Icon name="checkCircle" size={14} /> {integrityBusy ? "確認中…" : "整合性チェック"}
@@ -983,7 +1015,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                 <Row
                   title="最適化 (VACUUM)"
-                  desc="削除された分のディスク領域を回収し、ファイルを再編成します。曲数が多い場合は数秒〜数十秒かかることがあります。"
+                  info="削除した分のディスク領域を回収します。曲が多いと数十秒かかることがあります。"
                 >
                   <button className="toolbar-btn" onClick={handleVacuum} disabled={vacuumBusy}>
                     <Icon name="sparkle" size={14} /> {vacuumBusy ? "最適化中…" : "最適化 (VACUUM)"}
@@ -992,19 +1024,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                 <Row
                   title="技術情報を再読み取り"
-                  desc="ビットレート・サンプルレート・ファイルサイズ・コーデックが未取得の曲だけを、ファイルから読み直します。曲名などの編集内容は変更しません。"
+                  info="ビットレートなどが未取得の曲だけ、ファイルから読み直します。曲名などの編集内容は変わりません。"
                 >
                   <button className="toolbar-btn" onClick={handleRefreshTechMeta} disabled={techBusy}>
                     <Icon name="waveform" size={14} />{" "}
                     {techBusy ? `読み取り中…${techProgress ? ` ${techProgress}` : ""}` : "技術情報を再読み取り"}
                   </button>
-                </Row>
-
-                <Row
-                  title="自動エクスポート時にあわせてバックアップ"
-                  desc="iTunes 互換 XML の自動エクスポートが成功したとき、あわせて library.db もバックアップします（直近5件を保持、30分未満の間隔ではスキップ）。"
-                >
-                  <Toggle on={autoBackupEnabled} onClick={() => setAutoBackupEnabled(!autoBackupEnabled)} />
                 </Row>
               </>
             )}
@@ -1013,7 +1038,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               <>
                 <Row
                   title="表示フォント"
-                  desc="アプリ全体の基本フォント。CJK（漢字・かな）はこの後ろで Noto CJK に統一されます。"
+                  info="アプリ全体の基本フォント。漢字・かなはこの後ろの Noto CJK でそろえます。"
                 >
                   <select
                     value={uiFont}
@@ -1035,7 +1060,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                 <Row
                   title="CJK フォント (Noto Sans CJK)"
-                  desc="簡体字・繁体字・日本語を1つのフォントに統一します。約31MB を初回のみダウンロードします（インストーラには同梱しません）。"
+                  desc="初回に約31MB をダウンロードします。"
+                  info="簡体字・繁体字・日本語を 1 つのフォントでそろえます。インストーラには入っていません。"
                 >
                   <span className={"settings-badge" + (cjkStatus?.installed ? " ok" : " warn")}>
                     {cjkStatus?.installed ? (
@@ -1073,7 +1099,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               <>
                 <Row
                   title="ffmpeg の状態"
-                  desc="MP3/FLAC などへの変換に使います。CLI 経由で外部プロセスとして呼び出すだけで、本体には組み込みません。"
+                  info="MP3/FLAC などへの変換に使う外部ツール。本体には組み込まず、別プロセスで呼び出します。"
                 >
                   <span className={"settings-badge" + (ffStatus?.available ? " ok" : " warn")}>
                     {ffStatus?.available ? (
@@ -1142,7 +1168,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               <>
                 <Row
                   title="rbx-cli の状態"
-                  desc="USB 書き出し（CDJ / rekordbox 互換）に使う外部ツールです。別プロセスとして呼び出すだけで、本体には組み込みません。"
+                  info="USB 書き出し（CDJ / rekordbox 互換）に使う外部ツール。本体には組み込まず、別プロセスで呼び出します。"
                 >
                   <span className={"settings-badge" + (rbxStatus?.available ? " ok" : " warn")}>
                     {rbxStatus == null ? (
@@ -1225,7 +1251,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                 <Row
                   title="Traktor の collection.nml"
-                  desc="USB 書き出しで「Traktor のキュー/グリッドを使う」ときに読みます（書き出しの時だけ読み、Crateforge には保存しません）。"
+                  info="USB 書き出しで「Traktor のキュー/グリッドを使う」ときだけ読みます（Crateforge には保存しません）。"
                 >
                   <span className={"settings-badge" + (nmlStatus?.exists ? " ok" : " warn")}>
                     {nmlStatus?.exists ? "検出" : "未検出"}
@@ -1275,7 +1301,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                 <Row
                   title="API サーバーを有効化"
-                  desc="有効にすると 127.0.0.1:ポート番号 で REST API を公開します。"
+                  info="有効にすると 127.0.0.1 の下のポートで REST API を公開します。"
                 >
                   <Toggle
                     on={apiStatus?.enabled ?? false}
@@ -1285,7 +1311,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                 <Row
                   title="ポート番号"
-                  desc="待受ポート（1〜65535）。有効中に変更すると即時再起動します。"
+                  desc="有効中に変えるとすぐ再起動します。"
                 >
                   <div className="settings-pathrow">
                     <input
@@ -1335,7 +1361,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 {/* 見出しと同じ文言を繰り返さない (D9)。行は操作 (オン/オフ) の名前にする。 */}
                 <Row
                   title="LAN に公開する"
-                  desc="同じ Wi-Fi のスマホの Crateforge モバイルアプリや、スマホ / TV のブラウザ（ウェブプレイヤー）からライブラリを再生・操作できます。アクセスにはトークンが必要です。"
+                  info="同じ Wi-Fi のモバイルアプリや、スマホ / TV のブラウザ（ウェブプレイヤー）から再生・操作できます。トークンが必要です。"
                 >
                   <Toggle
                     on={apiStatus?.lanEnabled ?? false}
@@ -1442,7 +1468,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                     <Row
                       title="アクセストークン"
-                      desc="再生成すると既存 URL のトークンは無効になります。"
+                      desc="再生成すると今のトークンは使えなくなります。"
                     >
                       <div className="settings-pathrow">
                         <span className="settings-badge mono" style={{ fontFamily: "monospace" }}>
@@ -1490,7 +1516,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       </span>
                     </div>
 
-                    <Row title="ペアリングコード" desc="端末の画面に表示されたコードを入力して承認します。">
+                    <Row title="ペアリングコード">
                       <div className="settings-pathrow">
                         <input
                           type="text"
@@ -1599,7 +1625,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
             {section === "updates" && (
               <>
-                <Row title="現在のバージョン" desc="">
+                <Row title="現在のバージョン">
                   <span className="settings-badge">{version || "—"}</span>
                 </Row>
                 <div className="settings-actions">
@@ -1626,7 +1652,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                 <Row
                   title="閉じるときに更新"
-                  desc="アプリを閉じるタイミングで自動的にインストール/差し替えを行います。"
+                  info="アプリを閉じるときに更新をインストールします。"
                 >
                   {pendingUpdate ? (
                     <div className="settings-pathrow">
@@ -1780,19 +1806,30 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   );
 }
 
+/**
+ * 設定の 1 行 (#247)。
+ * - `info`: 説明。見出し横の ⓘ に入れる (ホバー / クリック / フォーカスで表示)。
+ * - `desc`: 行内に常に見せる短い注記。データが消える・置き換わる、ダウンロードが走る、
+ *   再起動するなど、操作の前に知っておくべき注意や副作用だけに使う。
+ */
 function Row({
   title,
   desc,
+  info,
   children,
 }: {
   title: string;
-  desc: string;
+  desc?: string;
+  info?: string;
   children: React.ReactNode;
 }) {
   return (
     <div className="settings-row">
       <div className="settings-rowtext">
-        <div className="settings-rowtitle">{title}</div>
+        <div className="settings-rowtitle">
+          {title}
+          {info && <InfoTip text={info} label={`${title} の説明`} />}
+        </div>
         {desc && <div className="settings-rowdesc">{desc}</div>}
       </div>
       <div className="settings-rowctl">{children}</div>

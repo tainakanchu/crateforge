@@ -248,7 +248,7 @@ export function GigReadinessDialog({
           } else {
             pushToast(
               "info",
-              "ツールバーの Sync / 同期 から Prepare for Gig を開けます",
+              "ツールバーの「取り込み」›「サーバーから取り寄せ」から Prepare for Gig を開けます",
             );
           }
           break;
@@ -257,7 +257,7 @@ export function GigReadinessDialog({
             onOpenSettings();
             onClose();
           } else {
-            pushToast("info", "設定 → 一般 で自動エクスポート先を指定できます");
+            pushToast("info", "設定 → ライブラリ で自動エクスポート先を指定できます");
           }
           break;
         case "dismiss-lint":
@@ -279,7 +279,7 @@ export function GigReadinessDialog({
     } else {
       pushToast(
         "info",
-        "ツールバーの Sync からデバイス同期・Prepare for Gig を実行できます",
+        "ツールバーの「取り込み」›「サーバーから取り寄せ」からデバイス同期・Prepare for Gig を実行できます",
       );
     }
   }, [onOpenSync, onClose, pushToast]);

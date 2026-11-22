@@ -46,7 +46,7 @@ Because it is unsigned, Gatekeeper shows a warning on first launch. Bypass it in
 ## First launch
 
 1. Launching the app opens an empty library.
-2. If you already have an `iTunes Library.xml`, import it with **"iTunes XML を取り込む" (Import iTunes XML)** in the toolbar ([Library import](../import/)).
+2. If you already have an `iTunes Library.xml`, import it with **"取り込み ▾" (Import) → "iTunes XML を取り込む…" (Import iTunes XML)** in the toolbar ([Library import](../import/)).
 3. If you don't have an XML, you can import your own music files directly with **"ファイルを追加" (Add Files)**.
 
 The source of truth for the library lives in SQLite (WAL), so after the first import it opens instantly every time after that.
@@ -70,7 +70,7 @@ In-app auto-update is **Windows-only**. For macOS / Linux, download the latest v
 
 Analysis results, skip counts, Smart Playlist criteria, and sync state are not part of the iTunes-compatible XML.
 The library itself (`library.db`), which holds all of that, is managed under
-**Settings → "一般" (General) → "ライブラリのバックアップ" (Library backup)**.
+the backup section of **Settings → "ライブラリ" (Library)**.
 
 - **今すぐバックアップ (Back up now)** — saves the whole `library.db` (you can choose the destination).
 - **バックアップから復元… (Restore from a backup…)** — replaces the current library with the backup you pick.
