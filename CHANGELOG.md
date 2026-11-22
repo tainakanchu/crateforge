@@ -10,6 +10,18 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+## [v0.23.1] - 2026-11-23
+
+### 日本語
+
+#### モバイル（Android）
+- **Android 版 APK を添付**: v0.23.0 ではテスト用のファイルの取得が Maven Central に拒否されて Android 版 APK のビルドが止まり、Release に添付されなかったため、この版で添付する（内容は v0.23.0 と同じ。デスクトップ版にも変更はない）。 (#270)
+
+### English
+
+#### Mobile (Android)
+- **Android APK attached**: in v0.23.0 Maven Central refused the download of a file the tests need, so the Android APK build stopped and the APK was not attached to the Release; it is attached in this version (the contents are the same as v0.23.0, and the desktop app is unchanged). (#270)
+
 ## [v0.23.0] - 2026-11-22
 
 ### 日本語
