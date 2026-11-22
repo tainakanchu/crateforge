@@ -101,7 +101,7 @@ trash = "5"
 # ドラッグ＆ドロップした zip の展開 (importer::zip_extract)。全 OS で使う。
 # 音楽の zip は stored / deflate がほぼすべて (Windows のエクスプローラーは大きいと deflate64)。
 # 既定機能の bzip2 / zstd / xz / aes は C ライブラリや暗号を引き込むので外す
-# (Windows では下の `zip = "2"` が既定機能を有効にするので従来どおり)。
+# (Windows では下の `[target.windows] zip` が既定機能を有効にするので従来どおり)。
 zip = { version = "9", default-features = false, features = ["deflate", "deflate64"] }
 # UTF-8 フラグの無い zip のエントリ名 (Windows 製の CP932 / Shift_JIS) を読む。
 encoding_rs = "0.8"

@@ -213,7 +213,7 @@ fn extract_ffmpeg(zip_bytes: &[u8], dest: &std::path::Path) -> Result<(), String
     for i in 0..zip.len() {
         let name = {
             let f = zip.by_index(i).map_err(|e| e.to_string())?;
-            f.name().replace('\\', "/")
+            f.name().map_err(|e| e.to_string())?.replace('\\', "/")
         };
         if name.ends_with("bin/ffmpeg.exe") {
             target = Some(i);

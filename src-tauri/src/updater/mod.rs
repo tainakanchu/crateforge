@@ -244,7 +244,10 @@ fn apply_portable_update(zip_bytes: &[u8]) -> Result<String, String> {
     for i in 0..zip.len() {
         let name = {
             let f = zip.by_index(i).map_err(|e| e.to_string())?;
-            f.name().replace('\\', "/").to_lowercase()
+            f.name()
+                .map_err(|e| e.to_string())?
+                .replace('\\', "/")
+                .to_lowercase()
         };
         if name.ends_with("crateforge.exe") {
             idx = Some(i);

@@ -759,7 +759,7 @@ fn extract_to(archive: std::fs::File, mut out: std::fs::File) -> Result<(), Stri
     let mut zip = zip::ZipArchive::new(archive).map_err(|e| format!("zip を開けません: {e}"))?;
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(|e| e.to_string())?;
-        let name = f.name().replace('\\', "/");
+        let name = f.name().map_err(|e| e.to_string())?.replace('\\', "/");
         if f.is_file() && name.rsplit('/').next() == Some(EXE) {
             std::io::copy(&mut f, &mut out).map_err(|e| format!("書き込みに失敗: {e}"))?;
             use std::io::Write;

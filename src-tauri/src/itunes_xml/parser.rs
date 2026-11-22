@@ -135,8 +135,12 @@ pub fn resolve_file_url(url: &str) -> String {
 
 fn parse_itunes_xml(content: &str) -> Result<(Vec<RawTrack>, Vec<RawPlaylist>), String> {
     let mut reader = Reader::from_str(content);
-    // 実体参照の前後の空白を落とさないよう trim しない (Start でバッファをクリアするので要素間の空白は残らない)。
+    // quick-xml 0.38+ は実体参照を別イベントで返すため、イベント単位で trim すると
+    // `Rock &amp; Roll` の `&` 前後の空白が落ちる。trim はせず、End で値全体の前後の
+    // XML 空白だけを落とす (0.37 の trim_text(true) と同じ結果)。
     reader.config_mut().trim_text(false);
+    // エスケープされていない `&` (サードパーティ製 XML など) でファイル全体を失敗させず、文字として読む。
+    reader.config_mut().allow_dangling_amp = true;
 
     let mut tracks = Vec::new();
     let mut playlists = Vec::new();
@@ -238,6 +242,10 @@ fn parse_itunes_xml(content: &str) -> Result<(Vec<RawTrack>, Vec<RawPlaylist>), 
             }
             Ok(Event::End(ref e)) => {
                 let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let trimmed = text_buf.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
+                if trimmed.len() != text_buf.len() {
+                    text_buf = trimmed.to_string();
+                }
 
                 if skipping {
                     skip_depth -= 1;
@@ -453,6 +461,23 @@ mod tests {
 </dict></dict></plist>"#;
         let (tracks, _) = parse_itunes_xml(xml).unwrap();
         assert_eq!(tracks[0].get_str("Name"), Some("Rock & Roll <Live> あ"));
+    }
+
+    /// 値の前後の空白は従来 (quick-xml 0.37 の trim_text) どおり落とし、実体参照まわりの空白は残す。
+    /// エスケープされていない `&` は文字として読み、取り込み全体を失敗させない。
+    #[test]
+    fn values_are_trimmed_and_dangling_amp_is_literal() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Tracks</key><dict>
+<key>1</key><dict><key>Track ID</key><integer>1</integer>
+<key>Name</key><string>  pad &amp; me </string>
+<key>Artist</key><string>AT&T</string>
+<key>Comments</key><string> </string></dict>
+</dict></dict></plist>"#;
+        let (tracks, _) = parse_itunes_xml(xml).unwrap();
+        assert_eq!(tracks[0].get_str("Name"), Some("pad & me"));
+        assert_eq!(tracks[0].get_str("Artist"), Some("AT&T"));
+        assert_eq!(tracks[0].get_str("Comments"), Some(""));
     }
 
     /// `<data>` は改行・タブ入りの base64 で来る。get_data でバイト列に戻せる
