@@ -10,6 +10,26 @@ Each release is documented in both Japanese and English.
 
 ## [Unreleased]
 
+### 日本語
+
+#### デスクトップ
+- **API を連続で叩かれると画面が固まる問題を修正**: 外部のスクリプトが API で曲の編集・アートワークの差し替え・全曲の取得を数百件続けて送ると、1 件ごとに画面がプレイリスト・曲一覧・件数・すべてのジャケットを取り直し、操作できなくなっていた。続けて届いた変更通知はおよそ 0.5 秒に 1 回にまとめて反映する（単発の書き込みはこれまでどおりすぐ反映する）。プレイリスト一覧が変わっていなければ差し替えず、スマートプレイリストの件数を二重に数え直さない。API の書き込みや全曲の取得は画面の処理と同じスレッドを占有しないようにし、プレイリスト・アルバム・アーティスト一覧などの読み出しも画面の処理を止めずに行う。
+- **API の書き込みがまれに `database is locked`（500）で失敗する問題を修正**: ライブラリを開くとき、ほかの書き込みが終わるのを待つ設定より先にデータベースの設定を変えていたため、書き込みが続いている間は待たずに失敗することがあった。先に待つ設定を入れるようにした。
+
+#### API
+- **`?notify=false` と `POST /api/library/notify` を追加**: 書き込み系のリクエストに `?notify=false` を付けると、そのリクエストでは起動中のアプリの画面に変更を知らせず、変更があったことだけを覚えておく。最後に `POST /api/library/notify` を送ると、覚えておいた分をまとめて 1 回反映する（応答 `{ notified, artworkChanged }`）。付けないときはこれまでどおりすぐ反映する（続けて届いた分は 0.5 秒あたり 1 回程度にまとめる）。
+- **`PATCH /api/tracks/batch` を追加**: 曲ごとに違う編集を 1 回のリクエストでまとめて適用する。ボディは `[{ trackId, edit, expect? }, ...]`（`edit` / `expect` は `PATCH /api/tracks/{trackId}` と同じ形）。入力に誤りが 1 件でもあれば何も書かずに `400`。応答の `results` に曲ごとの `status`（`200` / `404` / `409` / `500`）・`fileWriteFailed`・`relocateFailed`・`error` を送った順で返し、1 曲が失敗しても残りは続ける。画面への反映は最後に 1 回だけ。ループバック専用。
+
+### English
+
+#### Desktop
+- **Fixed the app freezing when the API is called in rapid succession**: when an external script sent hundreds of API requests in a row (editing tracks, replacing artwork, fetching the whole library), the app reloaded its playlists, track list, counts and every cover image after each one and became unresponsive. Change notifications that arrive back to back are now applied about once every 0.5 seconds (a single write is still reflected immediately). The playlist list is not replaced when it has not changed, so smart playlist counts are no longer recounted twice. API writes and whole-library fetches no longer hog the threads the UI relies on, and listing playlists, albums, artists and the like no longer blocks the UI.
+- **Fixed API writes occasionally failing with `database is locked` (500)**: when opening the library, a database setting was changed before the "wait for other writers" timeout was set, so it could fail immediately while other writes were in progress. The timeout is now set first.
+
+#### API
+- **Added `?notify=false` and `POST /api/library/notify`**: add `?notify=false` to a write request to skip notifying the running app's UI for that request; the app only remembers that something changed. Send `POST /api/library/notify` at the end to apply everything remembered in a single refresh (response `{ notified, artworkChanged }`). Without the option, changes are reflected immediately as before (back-to-back changes are coalesced to about once every 0.5 seconds).
+- **Added `PATCH /api/tracks/batch`**: apply a different edit to each track in one request. The body is `[{ trackId, edit, expect? }, ...]` (`edit` / `expect` take the same shape as `PATCH /api/tracks/{trackId}`). If any item has invalid input, nothing is written and `400` is returned. `results` reports each track's `status` (`200` / `404` / `409` / `500`), `fileWriteFailed`, `relocateFailed` and `error` in request order; a failure on one track does not stop the rest. The UI is refreshed once at the end. Loopback only.
+
 ## [v0.22.0] - 2026-11-17
 
 ### 日本語

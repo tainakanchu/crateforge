@@ -237,6 +237,21 @@ crate-api.sh PATCH /api/tracks/12 '{"genre":"Disco Funk","expect":{"persistentId
 crate-api.sh PATCH /api/tracks '{"trackIds":[12,7,30],"edit":{"rating":80}}'
 crate-api.sh PATCH /api/tracks '{"persistentIds":["0A1B2C3D4E5F6071","0A1B2C3D4E5F6072"],"edit":{"genre":"Taiwan Pop"}}'
 ```
+### `PATCH /api/tracks/batch`（曲ごとに違う編集をまとめて）
+ボディ `[{ "trackId": i64, "edit": { ...単体 PATCH と同じフィールド }, "expect"?: { ...単体 PATCH と同じ } }, ...]` → 各曲に順に適用（処理内容は単体 PATCH と同一）。
+入力の誤り（範囲外の `rating`・不正な `keyCamelotUser` など）が 1 件でもあれば**どの曲にも書かずに `400`**（`index` = 誤りの位置）。
+→ `{ "updated": n, "results": [{ "trackId", "status", "fileWriteFailed", "relocateFailed", "error"? }, ...] }`（送った順）。`status` は単体 PATCH が返すステータス（`200` / `404` 曲が無い / `409` `expect` 不一致 / `500`）。1 曲の失敗で残りは止まらない。ループバック専用（LAN からは `403`）。
+```
+crate-api.sh PATCH /api/tracks/batch '[{"trackId":12,"edit":{"genre":"Disco Funk"},"expect":{"persistentId":"0A1B2C3D4E5F6071"}},{"trackId":7,"edit":{"rating":80}}]'
+```
+
+### UI への反映を後回しにする（`?notify=false` / `POST /api/library/notify`）
+書き込みのたびに GUI へ `library-changed` が飛ぶ（連続した書き込みは 0.5 秒あたり 1 回程度にまとめられる）。数百件を流すときは、書き込み系のリクエストに `?notify=false` を付けて GUI への通知を止め、最後に `POST /api/library/notify` で 1 回だけ反映させる（→ `{ "notified": bool, "artworkChanged": bool }`。止めていた変更が無ければ何もしない）。
+```
+crate-api.sh PATCH '/api/tracks/12?notify=false' '{"rating":80}'
+crate-api.sh POST /api/library/notify
+```
+
 **スクリプトで多数の曲を書き換えるとき**（ジャンルの一括付け直し等）は、`GET` で取った `persistentId` をそのまま使う一括 PATCH（`persistentIds`）か、単体 PATCH に `If-Match` / `expect` を付けて送ること。`id` を trackId と取り違えると、`trackId` だけの指定では無関係な曲を黙って上書きしてしまう。
 
 ### `POST /api/tracks/{trackId}/rating`

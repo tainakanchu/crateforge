@@ -131,7 +131,8 @@ pub fn get_playback_state(app: AppHandle) -> Result<PlaybackState, String> {
     Ok(coordinator(&app).get_state())
 }
 
-#[tauri::command]
+// 読み取りのみ。ライブラリ変更のたびに呼ばれるのでメインスレッドで実行しない。
+#[tauri::command(async)]
 pub fn get_recent_tracks(app: AppHandle, limit: Option<i64>) -> Result<Vec<Track>, String> {
     let db = open_db(&app)?;
     db.get_recent_tracks(limit.unwrap_or(50))

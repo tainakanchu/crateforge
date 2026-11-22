@@ -72,6 +72,10 @@ Crateforge は **ローカル HTTP API サーバー** を内蔵しています�
   `rating` は 0〜100 で、範囲外は `400`（何も更新されません）。`rating` だけの更新では `dateModified` は進みません。
 - `PATCH /api/tracks`（`{trackIds, edit}` または `{persistentIds, edit}`） — 複数曲の一括更新。`trackIds` と `persistentIds` はどちらか一方だけ指定します（両方・どちらも無しは `400`）。
   見つからない曲は `notFound` に指定した値（trackId / persistentId）で返ります。
+- `PATCH /api/tracks/batch`（`[{ trackId, edit, expect? }, ...]`） — 曲ごとに違う編集をまとめて適用。`edit` / `expect` は単体の `PATCH` と同じ形です。
+  入力の誤り（範囲外の `rating` など）が 1 件でもあれば何も書かずに `400`（`index` が誤りの位置）。
+  応答 `{ updated, results }` の `results` は送った順に `{ trackId, status, fileWriteFailed, relocateFailed, error? }` で、
+  `status` は単体の `PATCH` が返すステータス（`200` / `404` / `409` / `500`）。1 曲が失敗しても残りは続けます。
 - `POST /api/tracks/genre-tags/add` / `/remove` — ジャンルタグを末尾に一括で増減。
 
 **取り違え防止（任意）**: `PATCH /api/tracks/{trackId}` はヘッダー `If-Match: <persistentId>`、
@@ -121,6 +125,11 @@ GUI に即時反映します。書き戻しの処理はデスクトップ GUI �
 - `DELETE /api/playlists/{id}/tracks/{trackId}` — 曲を 1 件外す
 
 API 経由の変更は `library-changed` イベントで起動中アプリの UI に即時反映されます。
+続けて何件も書き込んだときは、UI の更新を 0.5 秒あたり 1 回程度にまとめます。
+
+**UI への反映を後回しにする**: 書き込み系のリクエストに `?notify=false` を付けると、そのリクエストでは UI に知らせず、
+変更があったことだけを覚えておきます。最後に `POST /api/library/notify` を送ると、覚えておいた分をまとめて 1 回反映します
+（応答 `{ notified, artworkChanged }`。覚えた分が無ければ何もしません）。大量の書き込みをスクリプトで流すときに使います。
 
 ### AI 選曲（dj-curator）
 

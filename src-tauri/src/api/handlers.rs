@@ -240,12 +240,25 @@ fn apply_effective_bpm(
 }
 
 /// `GET /api/tracks` — DB から取得 (q 有無で search/get を切替) → 構造化フィルタ → offset/limit。
+/// 全件取得になりうるので、DB の読み出しとフィルタはブロッキング用スレッドで行う。
 pub async fn list_tracks(
     State(state): State<ApiState>,
     headers: axum::http::HeaderMap,
     Query(q): Query<TracksQuery>,
     Query(bq): Query<EffectiveBpmQuery>,
 ) -> Result<Json<Vec<Track>>, ApiError> {
+    super::run_blocking(move || list_tracks_blocking(&state, &headers, &q, &bq))
+        .await
+        .map(Json)
+}
+
+/// [`list_tracks`] の本体 (同期)。
+fn list_tracks_blocking(
+    state: &ApiState,
+    headers: &axum::http::HeaderMap,
+    q: &TracksQuery,
+    bq: &EffectiveBpmQuery,
+) -> Result<Vec<Track>, ApiError> {
     let db = state.db()?;
 
     // 1. 取得: q があればトークン検索、無ければ全件取得 (どちらも sort/order は DB に委譲)。
@@ -358,8 +371,8 @@ pub async fn list_tracks(
     //    (二重スライスを避ける)。それ以外 (q 無し or 追加フィルタ有り) は従来どおり。
     if db_pushdown {
         // 実効 BPM (タグ ?? 解析値) にそろえる (A4)。
-        apply_effective_bpm(&db, &state, &headers, &bq, &mut tracks)?;
-        return Ok(Json(tracks));
+        apply_effective_bpm(&db, state, headers, bq, &mut tracks)?;
+        return Ok(tracks);
     }
     let offset = q.offset.unwrap_or(0).max(0) as usize;
     let mut sliced: Vec<Track> = if offset >= tracks.len() {
@@ -372,8 +385,8 @@ pub async fn list_tracks(
         }
     };
     // 実効 BPM (タグ ?? 解析値) にそろえる (A4)。
-    apply_effective_bpm(&db, &state, &headers, &bq, &mut sliced)?;
-    Ok(Json(sliced))
+    apply_effective_bpm(&db, state, headers, bq, &mut sliced)?;
+    Ok(sliced)
 }
 
 /// `GET /api/tracks/:trackId` — 1 曲取得。見つからなければ 404。
@@ -1967,17 +1980,23 @@ pub async fn set_track_artwork(
     if body.is_empty() {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty request body"));
     }
-    let db = state.db()?;
-    let track = db
-        .get_track_by_track_id(track_id)?
-        .ok_or_else(|| ApiError::not_found("track not found"))?;
-    check_track_preconditions(&track, if_match_header(&headers)?.as_deref(), None)?;
-    let path_str = track.location_path.as_deref().unwrap_or("");
-    if path_str.is_empty() {
-        return Err(ApiError::not_found("no file path for this track"));
-    }
-    crate::artwork::set_picture(path_str, body.to_vec())
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let if_match = if_match_header(&headers)?;
+    // DB の読み出しとタグの書き込みはブロッキング用スレッドで行う。
+    let st = state.clone();
+    super::run_blocking(move || {
+        let db = st.db()?;
+        let track = db
+            .get_track_by_track_id(track_id)?
+            .ok_or_else(|| ApiError::not_found("track not found"))?;
+        check_track_preconditions(&track, if_match.as_deref(), None)?;
+        let path_str = track.location_path.as_deref().unwrap_or("");
+        if path_str.is_empty() {
+            return Err(ApiError::not_found("no file path for this track"));
+        }
+        crate::artwork::set_picture(path_str, body.to_vec())
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))
+    })
+    .await?;
     state.notify_artwork_changed();
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1991,17 +2010,23 @@ pub async fn delete_track_artwork(
     Path(track_id): Path<i64>,
     headers: axum::http::HeaderMap,
 ) -> Result<StatusCode, ApiError> {
-    let db = state.db()?;
-    let track = db
-        .get_track_by_track_id(track_id)?
-        .ok_or_else(|| ApiError::not_found("track not found"))?;
-    check_track_preconditions(&track, if_match_header(&headers)?.as_deref(), None)?;
-    let path_str = track.location_path.as_deref().unwrap_or("");
-    if path_str.is_empty() {
-        return Err(ApiError::not_found("no file path for this track"));
-    }
-    crate::artwork::remove_cover(path_str)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let if_match = if_match_header(&headers)?;
+    // DB の読み出しとタグの書き込みはブロッキング用スレッドで行う。
+    let st = state.clone();
+    super::run_blocking(move || {
+        let db = st.db()?;
+        let track = db
+            .get_track_by_track_id(track_id)?
+            .ok_or_else(|| ApiError::not_found("track not found"))?;
+        check_track_preconditions(&track, if_match.as_deref(), None)?;
+        let path_str = track.location_path.as_deref().unwrap_or("");
+        if path_str.is_empty() {
+            return Err(ApiError::not_found("no file path for this track"));
+        }
+        crate::artwork::remove_cover(path_str)
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))
+    })
+    .await?;
     state.notify_artwork_changed();
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2967,8 +2992,24 @@ pub async fn patch_track(
     Query(bq): Query<EffectiveBpmQuery>,
     ExtractJson(body): ExtractJson<PatchTrackBody>,
 ) -> Result<Json<Value>, ApiError> {
+    // DB 更新・タグの書き戻し・フォルダ移動はブロッキング用スレッドで行う。
+    let st = state.clone();
+    let res = super::run_blocking(move || patch_track_blocking(&st, track_id, &headers, &bq, body))
+        .await?;
+    state.notify_library_changed(None);
+    Ok(Json(res))
+}
+
+/// [`patch_track`] の本体 (同期)。通知は呼び出し側で行う。
+fn patch_track_blocking(
+    state: &ApiState,
+    track_id: i64,
+    headers: &axum::http::HeaderMap,
+    bq: &EffectiveBpmQuery,
+    body: PatchTrackBody,
+) -> Result<Value, ApiError> {
     let db = state.db()?;
-    let if_match = if_match_header(&headers)?;
+    let if_match = if_match_header(headers)?;
     if body
         .expect
         .as_ref()
@@ -2993,15 +3034,14 @@ pub async fn patch_track(
         None => return Err(ApiError::not_found("track not found")),
     };
     // 応答の `track.bpm` も他の曲 API と同じ規則 (書き戻しは effectiveBpm=false でタグ値)。
-    apply_effective_bpm(&db, &state, &headers, &bq, std::slice::from_mut(&mut r.track))?;
+    apply_effective_bpm(&db, state, headers, bq, std::slice::from_mut(&mut r.track))?;
     let track_val = serde_json::to_value(&r.track)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    state.notify_library_changed(None);
-    Ok(Json(json!({
+    Ok(json!({
         "track": track_val,
         "fileWriteFailed": r.file_write_failed,
         "relocateFailed": r.relocate_failed,
-    })))
+    }))
 }
 
 /// `POST /api/tracks/{trackId}/rating` のボディ。
@@ -3048,6 +3088,20 @@ pub async fn patch_tracks_bulk(
     State(state): State<ApiState>,
     ExtractJson(body): ExtractJson<BulkTrackEdit>,
 ) -> Result<Json<Value>, ApiError> {
+    // 曲ごとの DB 更新・タグの書き戻し・フォルダ移動はブロッキング用スレッドで行う。
+    let st = state.clone();
+    let (res, updated) = super::run_blocking(move || patch_tracks_bulk_blocking(&st, body)).await?;
+    if updated > 0 {
+        state.notify_library_changed(None);
+    }
+    Ok(Json(res))
+}
+
+/// [`patch_tracks_bulk`] の本体 (同期)。応答と更新した曲数を返す。通知は呼び出し側で行う。
+fn patch_tracks_bulk_blocking(
+    state: &ApiState,
+    body: BulkTrackEdit,
+) -> Result<(Value, i64), ApiError> {
     let db = state.db()?;
     // 入力の検証は 1 回だけ、どの曲にも書く前に行う (対象が空でも不正な入力は 400)。
     let edit = crate::library::edit::check_edit(&body.edit)?;
@@ -3096,15 +3150,129 @@ pub async fn patch_tracks_bulk(
             None => not_found.push(requested),
         }
     }
+    Ok((
+        json!({
+            "updated": updated,
+            "fileWriteFailed": file_write_failed,
+            "relocateFailed": relocate_failed,
+            "notFound": not_found,
+        }),
+        updated,
+    ))
+}
+
+/// `PATCH /api/tracks/batch` の 1 件。`edit` と `expect` は `PATCH /api/tracks/{trackId}` と同じ形
+/// (ただし編集フィールドは平置きせず `edit` に入れる)。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchTrackEdit {
+    pub track_id: i64,
+    pub edit: crate::models::TrackEdit,
+    #[serde(default)]
+    pub expect: Option<TrackExpect>,
+}
+
+/// `PATCH /api/tracks/batch` — 曲ごとに違う編集をまとめて適用する。
+/// ボディは `[{ "trackId": n, "edit": {...}, "expect"?: {...} }, ...]`。各曲には
+/// `PATCH /api/tracks/{trackId}` と同じ処理 (DB 更新 + タグ書き戻し + 整理) を順に行う。
+///
+/// - 入力 (`edit` の値・`expect.persistentId` の空文字) は先に全件を検証し、1 件でも誤りがあれば
+///   どの曲にも書かずに 400 (`index` = 誤りのある要素の位置)。
+/// - 曲ごとの結果は `results` に入力と同じ順で返す:
+///   `{ trackId, status, fileWriteFailed, relocateFailed, error? }`。`status` は単体 PATCH が
+///   返すはずの HTTP ステータス (200 / 404 曲が無い / 409 `expect` 不一致 / 500 DB エラー)。
+///   1 曲の失敗で残りを止めない。
+/// - 応答 `{ "updated": n, "results": [...] }`。1 曲でも更新したら library-changed を最後に 1 回だけ送る
+///   (`?notify=false` ならためるだけ)。
+pub async fn patch_tracks_batch(
+    State(state): State<ApiState>,
+    ExtractJson(items): ExtractJson<Vec<BatchTrackEdit>>,
+) -> Result<Json<Value>, ApiError> {
+    // DB 更新・タグの書き戻し・フォルダ移動はブロッキング用スレッドで行う。
+    let st = state.clone();
+    let (res, updated) = super::run_blocking(move || patch_tracks_batch_blocking(&st, items)).await?;
     if updated > 0 {
         state.notify_library_changed(None);
     }
-    Ok(Json(json!({
-        "updated": updated,
-        "fileWriteFailed": file_write_failed,
-        "relocateFailed": relocate_failed,
-        "notFound": not_found,
-    })))
+    Ok(Json(res))
+}
+
+/// [`patch_tracks_batch`] の本体 (同期)。応答と更新した曲数を返す。通知は呼び出し側で行う。
+fn patch_tracks_batch_blocking(
+    state: &ApiState,
+    items: Vec<BatchTrackEdit>,
+) -> Result<(Value, i64), ApiError> {
+    // 1. 全件の入力を先に検証する (途中の曲まで書いてから 400 にしない)。
+    let mut checked = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let with_index = |e: ApiError| {
+            let mut extra = serde_json::Map::new();
+            extra.insert("index".to_string(), json!(index));
+            ApiError(e.0, format!("items[{index}]: {}", e.1), Some(extra))
+        };
+        if item
+            .expect
+            .as_ref()
+            .and_then(|e| e.persistent_id.as_deref())
+            .is_some_and(|pid| pid.trim().is_empty())
+        {
+            return Err(with_index(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid expect.persistentId",
+            )));
+        }
+        let edit = crate::library::edit::check_edit(&item.edit)
+            .map_err(|e| with_index(ApiError::from(e)))?;
+        checked.push(edit);
+    }
+
+    // 2. 曲ごとに適用する。失敗は結果に記録して次の曲へ進む。
+    let db = state.db()?;
+    let mut updated = 0_i64;
+    let mut results: Vec<Value> = Vec::with_capacity(items.len());
+    for (item, edit) in items.iter().zip(checked.iter()) {
+        let id = item.track_id;
+        let outcome = (|| -> Result<crate::library::edit::TrackEditOutcome, ApiError> {
+            if let Some(expect) = item.expect.as_ref() {
+                let current = db
+                    .get_track_by_track_id(id)?
+                    .ok_or_else(|| ApiError::not_found("track not found"))?;
+                check_track_preconditions(&current, None, Some(expect))?;
+            }
+            crate::library::edit::apply_checked_edit(&db, id, edit)?
+                .ok_or_else(|| ApiError::not_found("track not found"))
+        })();
+        match outcome {
+            Ok(r) => {
+                updated += 1;
+                results.push(json!({
+                    "trackId": id,
+                    "status": 200,
+                    "fileWriteFailed": r.file_write_failed,
+                    "relocateFailed": r.relocate_failed,
+                }));
+            }
+            Err(e) => results.push(json!({
+                "trackId": id,
+                "status": e.0.as_u16(),
+                "fileWriteFailed": false,
+                "relocateFailed": false,
+                "error": e.1,
+            })),
+        }
+    }
+    Ok((json!({ "updated": updated, "results": results }), updated))
+}
+
+/// `POST /api/library/notify` — `?notify=false` の書き込みでためた library-changed を
+/// まとめて 1 回送り、ためた分をクリアする。ためた分が無ければ何も送らない。
+/// 応答 `{ "notified": bool, "artworkChanged": bool }` (`notified` = 送ったか)。
+pub async fn flush_library_notify(State(state): State<ApiState>) -> Json<Value> {
+    let flushed = state.flush_held_changes();
+    Json(json!({
+        "notified": flushed.is_some(),
+        "artworkChanged": flushed.is_some_and(|c| c.artwork_changed),
+    }))
 }
 
 #[cfg(test)]
