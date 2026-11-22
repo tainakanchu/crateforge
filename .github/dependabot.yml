@@ -23,3 +23,9 @@ updates:
       github-actions:
         patterns:
           - "*"
+    ignore:
+      # setup-gradle v6 defaults to the proprietary "enhanced" cache provider
+      # (gradle-actions-caching). Stay on v5 until we decide on
+      # `cache-provider: basic` or accept those terms.
+      - dependency-name: "gradle/actions*"
+        versions: [">= 6"]

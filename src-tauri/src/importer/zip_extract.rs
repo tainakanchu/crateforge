@@ -77,7 +77,7 @@ pub fn is_zip_file(path: &Path) -> bool {
 ///
 /// UTF-8 フラグ付き / Unicode Path 拡張フィールド付きのエントリは zip クレートが
 /// UTF-8 のバイト列を返すので、最初の分岐でそのまま通る。
-fn decode_entry_name(raw: &[u8], crate_default: &str) -> String {
+fn decode_entry_name(raw: &[u8], crate_default: Option<&str>) -> String {
     if let Ok(s) = std::str::from_utf8(raw) {
         return s.to_string();
     }
@@ -85,7 +85,9 @@ fn decode_entry_name(raw: &[u8], crate_default: &str) -> String {
     if !had_errors {
         return s.into_owned();
     }
-    crate_default.to_string()
+    crate_default
+        .map(str::to_string)
+        .unwrap_or_else(|| String::from_utf8_lossy(raw).into_owned())
 }
 
 /// エントリ名の判定結果。
@@ -217,7 +219,7 @@ fn plan_entries<R: Read + io::Seek>(
         let entry = archive
             .by_index_raw(index)
             .map_err(|e| zip_error_message(&e))?;
-        let name = decode_entry_name(entry.name_raw(), entry.name());
+        let name = decode_entry_name(entry.name_raw(), entry.name().ok().as_deref());
         let rel = match classify_entry_path(&name) {
             EntryPath::Unsafe => {
                 return Err(format!(
@@ -1001,12 +1003,12 @@ mod tests {
 
     #[test]
     fn decode_prefers_utf8_then_shift_jis_then_crate_default() {
-        assert_eq!(decode_entry_name("曲.flac".as_bytes(), "x"), "曲.flac");
+        assert_eq!(decode_entry_name("曲.flac".as_bytes(), Some("x")), "曲.flac");
         let (sjis, _, _) = encoding_rs::SHIFT_JIS.encode("曲.flac");
-        assert_eq!(decode_entry_name(&sjis, "x"), "曲.flac");
+        assert_eq!(decode_entry_name(&sjis, Some("x")), "曲.flac");
         // Shift_JIS としても不正 (0x81 の後に 0x20) → クレートの解釈。
         assert_eq!(
-            decode_entry_name(&[0x81, 0x20, b'a'], "fallback"),
+            decode_entry_name(&[0x81, 0x20, b'a'], Some("fallback")),
             "fallback"
         );
     }

@@ -94,7 +94,7 @@ jobs:
           exit 1
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -104,13 +104,13 @@ jobs:
       # package_json_file を packageManager の無い clients/package.json に向けて衝突を避け、
       # モバイル系ジョブでは pnpm 10.28.0 を明示する。desktop の release.yml / ci.yml は無変更。
       - name: Setup pnpm (clients/ uses pnpm 10)
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 10.28.0
           package_json_file: clients/package.json
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
@@ -122,7 +122,7 @@ jobs:
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.pnpm-store.outputs.path }}
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('clients/pnpm-lock.yaml') }}
@@ -132,7 +132,7 @@ jobs:
       # React Native の Gradle プラグインが JDK 17 の toolchain を要求する (foojay での自動取得は不可)。
       # 17 と 21 を入れ、最後に書いた 21 を JAVA_HOME にする。17 は JAVA_HOME_17_X64 経由で Gradle に渡す。
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: temurin
           java-version: |
@@ -141,13 +141,13 @@ jobs:
 
       # PR (fork 含む) ではキャッシュを読むだけ。tag / main の実行がキャッシュを育てる。
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
         with:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
 
       - name: Cache Android NDK / CMake
         id: sdk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ env.ANDROID_HOME }}/ndk/${{ env.ANDROID_NDK_VERSION }}
@@ -264,7 +264,7 @@ jobs:
 
       - name: Upload Kotlin test reports
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android-kotlin-test-reports-${{ inputs.signed && 'release' || 'pr' }}
           path: |
@@ -392,7 +392,7 @@ jobs:
       # 署名済み APK は release.yml の release-android ジョブが `android-apk` を取得して Release に添付する。
       # 名前を `crateforge-` で始めない: desktop の release ジョブ (pattern: crateforge-*) に混ざらないように。
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ inputs.signed && 'android-apk' || 'android-apk-debug-signed' }}
           path: |

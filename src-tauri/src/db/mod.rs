@@ -73,12 +73,12 @@ impl Database {
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; \
              PRAGMA temp_store=MEMORY; PRAGMA cache_size=-32000;",
         )?;
-        let db = Database {
+        let mut db = Database {
             conn,
             lists: list_cache::Handle::new(&path_str, Some(&db_path)),
             path: path_str,
         };
-        db.lists.watch(&db.conn);
+        db.lists.watch(&mut db.conn)?;
         register_functions(&db.conn)?;
         {
             let mut done = migrated_paths().lock().unwrap_or_else(|e| e.into_inner());
@@ -191,12 +191,12 @@ impl Database {
         let conn = Connection::open_in_memory()?;
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let db = Database {
+        let mut db = Database {
             conn,
             path: ":memory:".to_string(),
             lists: list_cache::Handle::new(&format!(":memory:{n}"), None),
         };
-        db.lists.watch(&db.conn);
+        db.lists.watch(&mut db.conn)?;
         register_functions(&db.conn)?;
         schema::create_tables(&db.conn)?;
         migrate(&db.conn)?;
