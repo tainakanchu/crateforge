@@ -49,12 +49,10 @@ Get Info / Edit and adding to the Crate take up to 1,000 tracks at a time.
 
 ## Toolbar
 
-- When the window is narrow, the actions on the right (Import iTunes XML / Add Files / Add Folder / Rip CD / Playlist Rules /
-  organize folder / Export iTunes XML / auto-export / fetch from server; labels are shown in Japanese) collapse into a **⋯ menu**.
-  They behave exactly the same when collapsed, and the search box keeps a minimum width. When it gets even narrower, the view
-  switcher (List / Albums / Tracks) and the columns button become icon-only and Sort shrinks to the field name / arrow. If it still does not fit (e.g. 1024 px wide with the right pane open),
-  the view switcher, Sort, columns and the playlist search scope move into the ⋯ menu as well. Collapsing is decided by whether the controls actually overflow (the toolbar never scrolls sideways).
-- The **`?` button** at the far right opens the keyboard shortcut list (same as the `?` key).
+- The right side holds, from left to right, **"取り込み ▾" (Import)** (files / folders / CD / fetch from server / migrate from iTunes), the **⋯ menu** ("USB に書き出し…" (Export to USB) first, then export iTunes XML / auto-export status / re-check missing files), and the right-pane toggle (`Ctrl + ]` also shows the pane). Labels are shown in Japanese.
+- When the window is narrow, the toolbar collapses step by step. First the view switcher and columns button become icon-only and Sort shows only the field name; narrower still, Sort shows only the arrow. Next Import becomes icon-only, and then it folds into the **⋯ menu** (as an "Import" section; Export to USB is always the first item of that menu). If it still does not fit (e.g. 1024 px wide with the right pane open), the view switcher, Sort and columns move into the ⋯ menu, and finally the playlist search scope does too. They behave exactly the same when collapsed. The search box and the right-pane toggle never collapse (the toolbar never scrolls sideways).
+- Settings and the keyboard shortcut list open from the footer at the bottom of the sidebar: the **"設定" (Settings)** button (`Ctrl + ,`, `Cmd + ,` on macOS) and the **`?` button** (same as the `?` key).
+- The organize folder and the iTunes XML auto-export are configured under **Settings → "ライブラリ" (Library)**.
 
 ## Sorting
 
@@ -118,7 +116,7 @@ to the library view, and the syntax above works exactly the same inside a playli
 
 ## Keyboard shortcuts
 
-Press `?` (or the `?` button in the toolbar) to show the shortcut list overlay.
+Press `?` (or the `?` button at the bottom of the sidebar) to show the shortcut list overlay.
 
 ### Playback
 

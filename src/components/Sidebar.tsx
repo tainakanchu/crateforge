@@ -3,6 +3,9 @@ import { useStore } from "../store/useStore";
 import * as playlistsApi from "../api/playlists";
 import { Icon } from "./Icon";
 import { DeletePlaylistDialog } from "./DeletePlaylistDialog";
+import { MenuButton, MenuPopup } from "./Menu";
+import type { MenuEntry } from "./Menu";
+import { command, commandShortcut } from "../commands/registry";
 import { getTrackIdsData, hasTrackIdsData } from "../lib/trackDrag";
 import appIcon from "../assets/app-icon.png";
 import type { Playlist, ViewMode } from "../types";
@@ -13,6 +16,12 @@ interface SidebarProps {
   onEditSmart: (playlistId: number | null, name?: string) => void;
   /** USB 書き出しダイアログを、このプレイリスト / フォルダを選んだ状態で開く。 */
   onUsbExport: (playlistIds: number[]) => void;
+  /** Rules (YAML でスマートプレイリストを定義) パネルを開く。 */
+  onOpenRules: () => void;
+  /** 設定ダイアログを開く (フッターの「設定」)。 */
+  onOpenSettings: () => void;
+  /** キーボードショートカット一覧を開く (フッターの ?)。 */
+  onOpenHelp: () => void;
   /** ライブラリ変更のたびに増える値。スマートプレイリストの件数を数え直す (D9)。 */
   reloadKey?: number;
 }
@@ -152,7 +161,15 @@ const NAV: NavItem[] = [
 /// アプリに戻ったときにスマートプレイリストの件数を数え直す最短間隔 (バックエンドの一覧キャッシュの寿命と同じ)。
 const SMART_COUNT_REFOCUS_MS = 60_000;
 
-export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKey }: SidebarProps) {
+export function Sidebar({
+  onPlaylistsChanged,
+  onEditSmart,
+  onUsbExport,
+  onOpenRules,
+  onOpenSettings,
+  onOpenHelp,
+  reloadKey,
+}: SidebarProps) {
   const {
     viewMode,
     playlists,
@@ -537,6 +554,23 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKe
     );
   };
 
+  // ＋ メニューと、一覧の空き領域の右クリックメニューは同じ定義から描く。
+  const createEntries: MenuEntry[] = [
+    { ...command("newPlaylist"), kind: "item", onSelect: () => startCreate(false) },
+    { ...command("newSmartPlaylist"), kind: "item", onSelect: () => onEditSmart(null) },
+    { ...command("newFolder"), kind: "item", onSelect: () => startCreate(true) },
+    { kind: "separator", id: "sep-rules" },
+    {
+      ...command("openRules"),
+      kind: "item",
+      title: "YAML のルールからスマートプレイリストを作る",
+      onSelect: onOpenRules,
+    },
+  ];
+  const settingsCmd = command("openSettings");
+  const settingsKey = commandShortcut("openSettings");
+  const helpCmd = command("openShortcutHelp");
+
   return (
     <aside className="cb-side">
       <div className="cb-brand">
@@ -573,27 +607,17 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKe
       <div className="cb-lbl">
         <span>プレイリスト</span>
         <span className="cb-lbl-actions">
-          <button
+          <MenuButton
+            entries={createEntries}
+            menuLabel="新規作成"
             className="cb-iconbtn"
-            title="新規プレイリスト"
-            onClick={() => startCreate(false)}
+            title="新規作成"
+            ariaLabel="新規作成"
+            align="start"
+            width={260}
           >
             <Icon name="plus" size={14} />
-          </button>
-          <button
-            className="cb-iconbtn"
-            title="新規フォルダ"
-            onClick={() => startCreate(true)}
-          >
-            <Icon name="folderPlus" size={14} />
-          </button>
-          <button
-            className="cb-iconbtn"
-            title="新規スマートプレイリスト"
-            onClick={() => onEditSmart(null)}
-          >
-            <Icon name="sliders" size={14} />
-          </button>
+          </MenuButton>
         </span>
       </div>
 
@@ -635,16 +659,25 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKe
         )}
       </div>
 
-      {(menu || blankMenu) && (
+      {blankMenu && (
+        <MenuPopup
+          entries={createEntries}
+          label="新規作成"
+          placement={{ x: blankMenu.x, y: blankMenu.y }}
+          width={260}
+          onClose={() => setBlankMenu(null)}
+        />
+      )}
+
+      {menu && (
         <>
           {/* クリックアウェイ用の透明オーバーレイ */}
           <div
             style={{ position: "fixed", inset: 0, zIndex: 99 }}
-            onClick={() => { setMenu(null); setBlankMenu(null); }}
+            onClick={() => setMenu(null)}
             onContextMenu={(e) => {
               e.preventDefault();
               setMenu(null);
-              setBlankMenu(null);
             }}
           />
           {menu && (
@@ -655,35 +688,30 @@ export function Sidebar({ onPlaylistsChanged, onEditSmart, onUsbExport, reloadKe
               onClose={() => setMenu(null)}
             />
           )}
-          {blankMenu && (
-            <SidebarContextMenu
-              x={blankMenu.x}
-              y={blankMenu.y}
-              actions={[
-                {
-                  id: "new-playlist",
-                  icon: "plus",
-                  label: "新規プレイリスト",
-                  run: () => startCreate(false),
-                },
-                {
-                  id: "new-folder",
-                  icon: "folderPlus",
-                  label: "新規フォルダ",
-                  run: () => startCreate(true),
-                },
-                {
-                  id: "new-smart",
-                  icon: "sliders",
-                  label: "新規スマートプレイリスト",
-                  run: () => onEditSmart(null),
-                },
-              ]}
-              onClose={() => setBlankMenu(null)}
-            />
-          )}
         </>
       )}
+
+      {/* 設定とショートカット一覧の入口はここだけ (#254)。 */}
+      <div className="cb-side-foot">
+        <button
+          type="button"
+          className="cb-side-footbtn"
+          onClick={onOpenSettings}
+          title={`${settingsCmd.label}${settingsKey ? ` (${settingsKey})` : ""}`}
+        >
+          <Icon name={settingsCmd.icon} size={15} />
+          {settingsCmd.label}
+        </button>
+        <button
+          type="button"
+          className="cb-side-footbtn cb-side-footq"
+          onClick={onOpenHelp}
+          title={`${helpCmd.label} (?)`}
+          aria-label={helpCmd.label}
+        >
+          ?
+        </button>
+      </div>
 
       {deleteTarget && (
         <DeletePlaylistDialog

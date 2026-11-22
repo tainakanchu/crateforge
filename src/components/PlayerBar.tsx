@@ -34,9 +34,10 @@ const PLAYER_NARROW_W = 900;
 const SEEK_MIN = 180;
 function seekWidthFor(playerW: number, audition: boolean): number {
   const narrow = playerW < PLAYER_NARROW_W;
-  // 右端の操作群 (RG・キュー・キャスト・ミュート・音量) の幅 + 余裕。styles.css の
+  // 右端の操作群 (キュー・キャスト・ミュート・音量) の幅 + 余裕。styles.css の
   // .cb-pr の gap / .cb-vbar の幅 (通常 92px・narrow 56px) と対応する。
-  const sideMin = narrow ? 172 : 216;
+  // (RG ボタン = 約 16px + gap を外した分を差し引いた値。)
+  const sideMin = narrow ? 147 : 188;
   const gap = narrow ? 16 : 24;
   const max = audition ? 520 : 460;
   const pref = playerW * (audition ? 0.44 : 0.4) + 120;
@@ -50,11 +51,9 @@ export function PlayerBar() {
     volume,
     shuffle,
     repeat,
-    replayGain,
     setVolume,
     setShuffle,
     setRepeat,
-    setReplayGain,
     setRailTab,
     pushToast,
     showRemainingTime,
@@ -259,12 +258,6 @@ export function PlayerBar() {
     }
   }, [repeat, setRepeat, pushToast]);
 
-  const handleReplayGainToggle = useCallback(async () => {
-    const next = !replayGain;
-    setReplayGain(next);
-    await playbackApi.setReplayGain(next);
-  }, [replayGain, setReplayGain]);
-
   const seekToRatio = useCallback(
     (ratio: number) => {
       if (playback.durationMs <= 0) return;
@@ -463,16 +456,8 @@ export function PlayerBar() {
         </div>
       </div>
 
-      {/* right: replaygain + queue + 再生先 + volume */}
+      {/* right: queue + 再生先 + volume (ReplayGain は 設定 › 再生 だけで切り替える #254) */}
       <div className="cb-pr">
-        <button
-          className={"cb-pr-btn cb-tg" + (replayGain ? " on" : "")}
-          title={replayGain ? "ReplayGain: オン（曲ごとの音量を揃える）" : "ReplayGain: オフ"}
-          onClick={handleReplayGainToggle}
-          style={{ fontSize: 11, fontWeight: 700 }}
-        >
-          RG
-        </button>
         <button className="cb-pr-btn" title="次に再生 (キュー)" onClick={handleOpenQueue}>
           <Icon name="queue" size={16} />
         </button>

@@ -10,7 +10,7 @@ Enabling it lets you integrate with AI agents (such as dj-curator) and play and 
 
 ## Enabling and listen address
 
-Enable the API server under **"Mobile / API"** in settings.
+Enable the API server under **"モバイル・API" (Mobile / API)** in settings.
 
 - It is **OFF** by default. The default port is **8787**.
 - By default it listens on **`127.0.0.1` (loopback only)**.

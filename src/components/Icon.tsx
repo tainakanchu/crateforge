@@ -67,6 +67,13 @@ export const ICON_PATHS: Record<string, string> = {
   cast: '<path d="M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><path d="M2 12a9 9 0 018 8"/><path d="M2 16a5 5 0 014 4"/><path d="M2 20h.01"/>',
   laptop: '<rect x="4" y="4" width="16" height="11" rx="2"/><path d="M2 19h20"/>',
   refresh: '<path d="M21 12a9 9 0 11-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  // ツールバー (#254): 取り込み (トレイへ入れる) / USB 書き出し / 右ペイン付きウィンドウ。
+  // download / upload は別々の操作に使い回さない。
+  importTray:
+    '<path d="M12 3v10M8 9l4 4 4-4"/><path d="M3 14h4.5l1.5 3h6l1.5-3H21v5a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>',
+  // USB メモリ: 上に角ばったコネクタ (接点 2 つ)、下に本体。南京錠に見えないよう角は丸めない。
+  usb: '<path d="M8 9V2h8v7"/><path d="M10.5 5h1M12.5 5h1"/><rect x="6" y="9" width="12" height="13" rx="2"/><path d="M10 15h4"/>',
+  panelRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
   // Inbox / Triage (#118)
   inbox:
     '<path d="M4 6a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2z"/><path d="M4 12h4l2 3h4l2-3h4"/>',

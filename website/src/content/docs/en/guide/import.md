@@ -9,7 +9,7 @@ You can import a library into Crateforge from either the **iTunes / Music `Libra
 
 ## Importing the iTunes / Music Library.xml
 
-From **"iTunes XML を取り込む" (Import iTunes XML)** in the toolbar, select an `iTunes Library.xml` (Apple plist format).
+From **"取り込み ▾" (Import) → "iTunes XML を取り込む…" (Import iTunes XML)** in the toolbar, select an `iTunes Library.xml` (Apple plist format).
 
 - It is read with a streaming SAX parser, so even large libraries import fast.
 - The import uses streaming parsing and reproduces tracks, playlists, and the **folder hierarchy** (Persistent ID / Parent Persistent ID).
@@ -21,7 +21,7 @@ Crateforge [Smart Playlist](../smart-playlists/) rules (including "Playlist is",
 Rules that cannot be converted, such as "Checked" or "Last Skipped", are dropped; if no rule remains,
 the playlist is kept as a static snapshot instead. Exported XML contains the evaluated track list (the criteria themselves are not exported).
 
-For a library you have already imported, **"iTunes XML からスマートプレイリストを復元…" (restore smart playlists from iTunes XML)** in the toolbar sets the criteria again
+For a library you have already imported, **"取り込み ▾" → "スマートプレイリストを復元…" (restore smart playlists)** in the toolbar sets the criteria again
 without re-importing the XML (also select an older library XML to resolve references to old IDs by name).
 :::
 
@@ -32,7 +32,7 @@ without re-importing the XML (also select an older library XML to resolve refere
 
 ## Importing music files
 
-With **"ファイルを追加" (Add Files)** in the toolbar, you can import your own music files directly (multiple selection supported).
+With **"取り込み ▾" → "ファイルを追加…" (Add Files)** in the toolbar, you can import your own music files directly (multiple selection supported).
 
 - Supported formats: **FLAC / MP3 / M4A / WAV / Ogg / Opus / AIFF** and more.
 - Tags (title / artist / album / genre / year, etc.) are read with `lofty`.
@@ -40,7 +40,7 @@ With **"ファイルを追加" (Add Files)** in the toolbar, you can import your
 
 ## Importing whole folders ("フォルダを追加" (Add Folder) / drag and drop)
 
-Pick a folder with **"フォルダを追加" (Add Folder)** in the toolbar (inside the ⋯ menu when the window is narrow) and it
+Pick a folder with **"取り込み ▾" → "フォルダを追加…" (Add Folder)** in the toolbar and it
 **walks subfolders recursively**, importing every supported file it finds. **Dragging and dropping** onto the window
 goes through the same path, so you can drop a mix of files and folders ([zip files work too](#dropping-a-zip-file)).
 
@@ -85,10 +85,10 @@ Zip files cannot be picked in the "ファイルを追加" (Add Files) dialog; th
 
 ### Organize folder (auto-organize)
 
-If you set an "organize folder (library root)" in settings, files are placed under
+If you set an "organize folder (library root)" under **Settings → "ライブラリ" (Library)** (while it is unset, the status row "整理先フォルダ: 未設定" at the end of the "取り込み ▾" menu also opens that page), files are placed under
 `<organize folder>/<album artist>/<album>/` with iTunes-style renaming on import and edit.
 
-Using **"Auto-detect"** in settings infers the organize folder from the paths of existing tracks and sets it.
+Using **"Auto-detect"** on the same page infers the organize folder from the paths of existing tracks and sets it.
 
 ## Writing tags back to files
 
@@ -132,10 +132,9 @@ Deleting actual files is **limited to files inside the organize folder (library 
 Tracks whose files can no longer be found — because an external drive or NAS was disconnected, or the files were
 moved in Finder — are shown as missing ("見つかりません").
 
-- **"リンク切れを再チェック" (Re-check missing files)** (on the right of the toolbar, or inside the **⋯** menu
-  when the window is narrow) — checks again whether every track's file still exists. Tracks whose files have
+- **"リンク切れを再チェック" (Re-check missing files)** (in the toolbar's **⋯** menu) — checks again whether every track's file still exists. Tracks whose files have
   disappeared become missing, and tracks whose files are back (for example after reconnecting the drive) return
-  to normal. Progress and the result ("N 曲のファイルが見つかりません" — N files not found) are shown below the toolbar.
+  to normal. Progress and the result ("N 曲のファイルが見つかりません" — N files not found) are shown below the toolbar; the completion message also tells you that missing tracks can be listed by searching `missing:yes`.
 - Type **`missing:yes`** in the search box to list only the missing tracks (`missing:no` lists tracks whose files exist).
 - Right-click a track → **"ファイルの場所を指定…" (Locate file…)** (single selection) — pick the file at its new
   location in the file dialog and the track is repointed to it. Play counts, ratings, playlists and analysis
@@ -143,7 +142,7 @@ moved in Finder — are shown as missing ("見つかりません").
 
 ## Exporting iTunes-compatible XML
 
-With **"iTunes XML に書き出し" (Export iTunes XML)** in the toolbar, you can export an `iTunes Library.xml` (Apple plist format).
+With **"iTunes XML に書き出し" (Export iTunes XML)** in the toolbar's **⋯** menu, you can export an `iTunes Library.xml` (Apple plist format).
 You can hand it to DJ software that reads iTunes XML, such as rekordbox / Serato / Traktor.
 
 The exported XML includes the following.
@@ -155,15 +154,21 @@ The exported XML includes the following.
 
 ### Auto-export
 
-Turning on the **🕐 toggle** in the toolbar automatically exports the Library XML **only when there have been changes, roughly every 30 minutes plus on exit**.
+Turning on the iTunes-compatible XML auto-export under **Settings → "ライブラリ" (Library)** automatically exports the Library XML, only when the library has changed, at these moments:
+
+- **after 1 minute of inactivity** (60 seconds since the last change and the last key / mouse input)
+- **when you switch to another app** (the window loses focus or is minimised)
+- **at most 10 minutes after the first change**, even if you keep working
+- **on exit**
+
 This is handy when you always want to keep your DJ software fed with the latest library.
 
 When an auto-export succeeds, `library.db` is backed up along with it
-(toggle it under [library backups](../install/) in settings).
+(toggle it under [library backups](../install/) in **Settings → "ライブラリ"**). The current state (on / off / output location not set) is also shown in the ⋯ menu, and clicking it opens the same settings.
 
 ## Importing from a CD (ripping)
 
-From **"CD を取り込む" (Rip CD)** in the toolbar, you can import a physical CD (track info is fetched automatically from MusicBrainz, and cover art from the Cover Art Archive).
+From **"取り込み ▾" → "CD を取り込む…" (Rip CD)** in the toolbar, you can import a physical CD (track info is fetched automatically from MusicBrainz, and cover art from the Cover Art Archive).
 
 1. Choose the **"ドライブ" (Drive)** and click "🔍 ディスクを検出" (Detect Disc). Connected CD drives (e.g. `E:` on Windows, `/dev/sr0` / `/dev/cdrom` on Linux) are listed automatically, and the drive that was last read successfully is remembered as the next default. If yours isn't listed, pick "その他…" (Other) to type it manually (fallback defaults when nothing is detected: Linux: `/dev/cdrom`, macOS: `disk1`, Windows: `D:`)
 
