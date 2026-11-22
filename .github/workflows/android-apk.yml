@@ -10,6 +10,9 @@ name: Android APK (reusable)
 #
 # fork の PR では signed: false 固定（呼び出し側が secrets を渡さない）。さらに本ワークフロー側でも
 # pull_request 系イベントでの signed: true を拒否する二重の安全網を入れている。
+#
+# Kotlin unit tests の前に Robolectric の android-all jar を事前取得して ~/.m2 に置く（429 対策。
+# キャッシュ + Google の Maven Central ミラー → repo1 の順で取得 + sha512 検証。失敗しても警告のみで続行）。
 
 on:
   workflow_call:
@@ -81,6 +84,12 @@ jobs:
     runs-on: ubuntu-24.04
     # RN の release ビルドは 15–25 分 + NDK/CMake 取得。詰まったときに 6h 占有しないための上限。
     timeout-minutes: 90
+    env:
+      # Kotlin unit tests (Robolectric 4.17, 全テスト @Config(sdk = [34])) が要求する android-all-instrumented の版。
+      # Robolectric を上げたら合わせて更新する。ずれていても Robolectric が自分で取得するだけで壊れはしない。
+      # 版を上げるときは ROBOLECTRIC_ANDROID_ALL_SHA512（jar の sha512）も必ず一緒に更新する。
+      ROBOLECTRIC_ANDROID_ALL_VERSION: 14-robolectric-10818077-i7
+      ROBOLECTRIC_ANDROID_ALL_SHA512: 7cdc0b1306e7865f1acd25a363073149654caee5b8e278c5ae37ff4724185724eff39f0b0111800b521e640bb28698d9d2e655134a801569a0f07470e7b5f455
     outputs:
       version-name: ${{ steps.version.outputs.name }}
       version-code: ${{ steps.version.outputs.code }}
@@ -257,6 +266,55 @@ jobs:
             echo "::warning::tracked files still differ after prebuild:"
             git status --porcelain --untracked-files=no
           fi
+
+      # Robolectric 4.17 は実行時に Maven Central から android-all-instrumented を取得するが、CI から
+      # HTTP 429 を返されてテストが落ちたことがあるため、ローカル Maven リポジトリ (~/.m2) へ事前に配置する
+      # （あれば Robolectric はネットワークに出ない）。キャッシュ → 無ければ curl で取得。
+      # 取得元は Google の Maven Central ミラー → repo1.maven.org の順。ミラーを先に使う理由: repo1 が
+      # GitHub ランナーに 429 を返し、Retry-After に従って長時間止まったため（retry の合計時間にも上限を付ける）。
+      # jar と pom が両方取れ、jar の sha512 が env の期待値と一致した取得元だけを採用する。
+      # 取得に失敗しても警告のみで続行し、その場合は従来どおり Robolectric が自分で取りに行く。
+      - name: Cache Robolectric android-all-instrumented
+        id: robolectric-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository/org/robolectric/android-all-instrumented
+          key: robolectric-android-all-instrumented-${{ env.ROBOLECTRIC_ANDROID_ALL_VERSION }}
+
+      - name: Prefetch Robolectric android-all-instrumented
+        if: ${{ steps.robolectric-cache.outputs.cache-hit != 'true' }}
+        timeout-minutes: 15
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          ver="$ROBOLECTRIC_ANDROID_ALL_VERSION"
+          want="$ROBOLECTRIC_ANDROID_ALL_SHA512"
+          name="android-all-instrumented-${ver}"
+          path="org/robolectric/android-all-instrumented/${ver}"
+          dest="$HOME/.m2/repository/${path}"
+          tmp="$(mktemp -d)"
+          fetch() {
+            curl -fsSL --connect-timeout 20 --max-time 600 --retry 3 --retry-delay 10 --retry-max-time 120 -o "$2" "$1"
+          }
+          for repo in \
+            "https://maven-central.storage-download.googleapis.com/maven2" \
+            "https://repo1.maven.org/maven2"; do
+            rm -f "$tmp/$name.jar" "$tmp/$name.pom"
+            if fetch "$repo/$path/$name.jar" "$tmp/$name.jar" && fetch "$repo/$path/$name.pom" "$tmp/$name.pom"; then
+              if (cd "$tmp" && printf '%s  %s\n' "$want" "$name.jar" | sha512sum -c -); then
+                mkdir -p "$dest"
+                cp "$tmp/$name.jar" "$tmp/$name.pom" "$dest/"
+                echo "prefetched $name from $repo into $dest"
+                exit 0
+              fi
+              rm -f "$tmp/$name.jar" "$tmp/$name.pom"
+              echo "::warning::sha512 mismatch for $name.jar from $repo"
+            else
+              echo "::warning::could not fetch $name from $repo"
+            fi
+          done
+          echo "::warning::could not prefetch $name from any source; Robolectric will download it itself"
+          exit 0
 
       - name: Kotlin unit tests (expo-crateforge-android-auto)
         working-directory: clients/apps/mobile/android
