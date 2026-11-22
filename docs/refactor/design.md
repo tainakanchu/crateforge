@@ -9,7 +9,7 @@
 ## 原則
 
 1. **ロジックは純関数に出してテストで固定し、hook / コンポーネント / コマンドは薄い配線にする。**
-   デスクトップのテストは `node --test tests/desktop/*.test.ts` (DOM なし)、clients は jest、
+   デスクトップのテストは `pnpm test` (Vitest、`tests/desktop/*.test.ts`、DOM なし)、clients は jest、
    Rust は `cargo test` (in-memory SQLite)。
 2. **設定フラグの多い万能部品を作らない。** 小さな hook・関数を組み合わせる。コピー間で
    本質的に違う部分 (対象 ID の決め方、データ源、キャッシュ方式、TV の D-pad フォーカス) は共有しない。

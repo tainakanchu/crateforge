@@ -1,6 +1,6 @@
 // デスクトップ UI の純粋ロジックのテスト (Node 組み込みのテストランナー + 型ストリップ)。
 // 実行: pnpm test
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { initialRipDevice } from "../../src/lib/disc.ts";
 

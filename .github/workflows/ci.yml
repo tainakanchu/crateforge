@@ -14,6 +14,8 @@ on:
       - "pnpm-lock.yaml"
       - "tsconfig*.json"
       - "vite.config.ts"
+      - "vitest.config.ts"
+      - "tests/desktop/**"
       - "index.html"
       - ".github/workflows/**"
   pull_request:
@@ -25,6 +27,8 @@ on:
       - "pnpm-lock.yaml"
       - "tsconfig*.json"
       - "vite.config.ts"
+      - "vitest.config.ts"
+      - "tests/desktop/**"
       - "index.html"
       - ".github/workflows/**"
   workflow_dispatch:
@@ -88,6 +92,10 @@ jobs:
 
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
+
+      # デスクトップ TS の純ロジックのテスト (Vitest、tests/desktop/*.test.ts)。
+      - name: Desktop TS tests
+        run: pnpm test
 
       # tsc -b + vite build。型チェックと、tauri の generate_context! が要求する
       # ../dist の生成を兼ねる (これが無いと cargo がコンパイルできない)。

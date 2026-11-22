@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { isListKeyEvent } from "../../src/lib/listKeys.ts";
 import type { ListKeyContext } from "../../src/lib/listKeys.ts";
