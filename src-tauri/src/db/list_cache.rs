@@ -268,7 +268,7 @@ impl Handle {
     }
 
     /// このコネクションの書き込みを見張り、コミットのたびにリビジョンを進める。
-    pub(crate) fn watch(&self, conn: &rusqlite::Connection) {
+    pub(crate) fn watch(&self, conn: &mut rusqlite::Connection) -> rusqlite::Result<()> {
         use std::sync::atomic::{AtomicU8, Ordering};
         const ANY: u8 = 1;
         const RELEVANT: u8 = 2;
@@ -284,11 +284,11 @@ impl Handle {
                 };
                 on_update.fetch_or(bits, Ordering::Relaxed);
             },
-        ));
+        ))?;
         let on_rollback = touched.clone();
         conn.rollback_hook(Some(move || {
             on_rollback.store(0, Ordering::Relaxed);
-        }));
+        }))?;
         let shared = self.shared.clone();
         conn.commit_hook(Some(move || {
             let bits = touched.swap(0, Ordering::Relaxed);
@@ -297,7 +297,8 @@ impl Handle {
             let relevant = bits & RELEVANT != 0 || bits & ANY == 0;
             lock(&shared.scope).committed(relevant, Instant::now());
             false // コミットは止めない
-        }));
+        }))?;
+        Ok(())
     }
 
     fn data_version(&self) -> Option<i64> {

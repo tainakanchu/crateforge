@@ -20,8 +20,8 @@ tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-rusqlite = { version = "0.34", features = ["bundled", "functions", "collation", "hooks"] }
-quick-xml = "0.37"
+rusqlite = { version = "0.43", features = ["bundled", "functions", "collation", "hooks"] }
+quick-xml = "0.41"
 rodio = { version = "0.22", features = ["symphonia-all"] }
 url = "2"
 percent-encoding = "2"
@@ -102,7 +102,7 @@ trash = "5"
 # 音楽の zip は stored / deflate がほぼすべて (Windows のエクスプローラーは大きいと deflate64)。
 # 既定機能の bzip2 / zstd / xz / aes は C ライブラリや暗号を引き込むので外す
 # (Windows では下の `zip = "2"` が既定機能を有効にするので従来どおり)。
-zip = { version = "2", default-features = false, features = ["deflate", "deflate64"] }
+zip = { version = "9", default-features = false, features = ["deflate", "deflate64"] }
 # UTF-8 フラグの無い zip のエントリ名 (Windows 製の CP932 / Shift_JIS) を読む。
 encoding_rs = "0.8"
 
@@ -116,7 +116,7 @@ discid = "0.6"
 # `zip` 本体は上の [dependencies] にある (zip ドロップ取り込み用に全 OS)。Windows では
 # 従来どおり既定機能 (bzip2 / zstd / aes など) も有効にしておく。
 [target.'cfg(target_os = "windows")'.dependencies]
-zip = "2"
+zip = "9"
 
 # === Windows 以外: rbx-cli (USB 書き出しエンジン) の Release アセット (tar.gz) の展開用 ===
 # Windows のアセットは zip なので上の `zip` を使う。

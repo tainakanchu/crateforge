@@ -135,7 +135,8 @@ pub fn resolve_file_url(url: &str) -> String {
 
 fn parse_itunes_xml(content: &str) -> Result<(Vec<RawTrack>, Vec<RawPlaylist>), String> {
     let mut reader = Reader::from_str(content);
-    reader.config_mut().trim_text(true);
+    // 実体参照の前後の空白を落とさないよう trim しない (Start でバッファをクリアするので要素間の空白は残らない)。
+    reader.config_mut().trim_text(false);
 
     let mut tracks = Vec::new();
     let mut playlists = Vec::new();
@@ -266,7 +267,7 @@ fn parse_itunes_xml(content: &str) -> Result<(Vec<RawTrack>, Vec<RawPlaylist>), 
                         } else if let Some(vtype) = pending_value_type.take() {
                             let val = match vtype.as_str() {
                                 "string" => PlistValue::Str(text_buf.clone()),
-                                "integer" => PlistValue::Int(text_buf.parse().unwrap_or(0)),
+                                "integer" => PlistValue::Int(text_buf.trim().parse().unwrap_or(0)),
                                 "date" => PlistValue::Date(text_buf.clone()),
                                 "data" => PlistValue::Data(text_buf.clone()),
                                 _ => PlistValue::Str(text_buf.clone()),
@@ -288,7 +289,7 @@ fn parse_itunes_xml(content: &str) -> Result<(Vec<RawTrack>, Vec<RawPlaylist>), 
                         } else if let Some(vtype) = pending_value_type.take() {
                             let val = match vtype.as_str() {
                                 "string" => PlistValue::Str(text_buf.clone()),
-                                "integer" => PlistValue::Int(text_buf.parse().unwrap_or(0)),
+                                "integer" => PlistValue::Int(text_buf.trim().parse().unwrap_or(0)),
                                 "date" => PlistValue::Date(text_buf.clone()),
                                 "data" => PlistValue::Data(text_buf.clone()),
                                 _ => PlistValue::Str(text_buf.clone()),
@@ -301,7 +302,7 @@ fn parse_itunes_xml(content: &str) -> Result<(Vec<RawTrack>, Vec<RawPlaylist>), 
                             state = State::InSinglePlaylist;
                         } else if tag == "key" {
                         } else if pending_value_type.take().is_some() {
-                            if let Ok(tid) = text_buf.parse::<i64>() {
+                            if let Ok(tid) = text_buf.trim().parse::<i64>() {
                                 current_playlist.track_ids.push(tid);
                             }
                         }
@@ -331,9 +332,27 @@ fn parse_itunes_xml(content: &str) -> Result<(Vec<RawTrack>, Vec<RawPlaylist>), 
                     _ => {}
                 }
             }
+            // quick-xml 0.38+ は `&amp;` などの実体参照を Text と分けて GeneralRef として返す。
+            // テキストは Start でクリアされるので、ここでは追記して連結する。
             Ok(Event::Text(ref e)) => {
                 if !skipping {
-                    text_buf = e.unescape().unwrap_or_default().to_string();
+                    text_buf.push_str(&e.decode().unwrap_or_default());
+                }
+            }
+            Ok(Event::GeneralRef(ref e)) => {
+                if !skipping {
+                    if let Ok(Some(c)) = e.resolve_char_ref() {
+                        text_buf.push(c);
+                    } else {
+                        match e.decode().as_deref() {
+                            Ok("amp") => text_buf.push('&'),
+                            Ok("lt") => text_buf.push('<'),
+                            Ok("gt") => text_buf.push('>'),
+                            Ok("quot") => text_buf.push('"'),
+                            Ok("apos") => text_buf.push('\''),
+                            _ => {}
+                        }
+                    }
                 }
             }
             Err(e) => return Err(format!("XML parse error: {}", e)),
@@ -424,6 +443,17 @@ impl RawPlaylist {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entity_references_in_text_are_resolved() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Tracks</key><dict>
+<key>1</key><dict><key>Track ID</key><integer>1</integer>
+<key>Name</key><string>Rock &amp; Roll &lt;Live&gt; &#12354;</string></dict>
+</dict></dict></plist>"#;
+        let (tracks, _) = parse_itunes_xml(xml).unwrap();
+        assert_eq!(tracks[0].get_str("Name"), Some("Rock & Roll <Live> あ"));
+    }
 
     /// `<data>` は改行・タブ入りの base64 で来る。get_data でバイト列に戻せる
     /// (以前は get_str で見ていたためスマートプレイリストを検出できなかった)。
