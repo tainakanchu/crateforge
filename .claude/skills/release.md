@@ -10,7 +10,9 @@ Cut a clean release: write changelog → bump version everywhere → commit → 
 The GitHub Actions workflow (`release.yml`) picks the tag up, builds every platform
 (Windows / macOS / Linux) in parallel, and then a dedicated `release` job — which `needs` all
 build jobs — publishes a **single** GitHub Release with all assets attached at once
-(Windows `.exe` / portable zip / `.msi` / NSIS, macOS `.dmg`, Linux `.AppImage` / `.deb`).
+(Windows x64 `.exe` / portable zip / `.msi` / NSIS, Windows ARM64 portable zip / NSIS, macOS `.dmg`,
+Linux `.AppImage` / `.deb`). The ARM64 assets are attached only if `smoke-windows-arm64` passed;
+an ARM64 failure never blocks the release (ARM64 updaters fall back to the x64 assets).
 
 The same tag also builds the **Android (Android Auto) APK** in GitHub Actions (`build-android`: `expo prebuild` + Gradle
 `assembleRelease`, signed with the repo Secrets — EAS Build is **not** used for Android). A separate `release-android` job attaches

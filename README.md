@@ -58,7 +58,8 @@ git push -u origin main
 # リリース (フルビルド + GitHub Release) を作りたいとき
 git tag v0.1.0 && git push --tags
 # ↑ tag を push すると release.yml が走り、下記を添付した GitHub Release を自動作成:
-#   - Windows: 単体 .exe / portable .zip / .msi + setup .exe
+#   - Windows: 単体 .exe / portable .zip / .msi + setup .exe (x64)
+#              ARM64: setup .exe + portable .zip (x64 ランナーでクロスビルド、MSI なし)
 #   - macOS:   .dmg  /  Linux: .AppImage + .deb
 #   - Android: crateforge-android-<version>.apk + .apk.sha256 (Android Auto 対応。署名鍵は GitHub Secrets)
 ```
@@ -81,6 +82,11 @@ pnpm tauri build
 #   src-tauri\target\release\crateforge.exe
 #   src-tauri\target\release\bundle\msi\*.msi
 #   src-tauri\target\release\bundle\nsis\*-setup.exe
+
+# ARM64 版 (x64 の PC からクロスビルド。VS の "MSVC ARM64 build tools" と LLVM (clang) が必要)
+rustup target add aarch64-pc-windows-msvc
+pnpm tauri build --target aarch64-pc-windows-msvc --bundles nsis
+#   src-tauri\target\aarch64-pc-windows-msvc\release\bundle\nsis\*_arm64-setup.exe
 ```
 
 **注意**: Windows ビルドでは `discid` クレートを外しているため、**CD リッピング機能 (TOC 自動取得) は無効**になります (`compute_disc_id` で TOC を手動入力すれば MusicBrainz 検索はできます)。物理 CD リッピングを使うには Linux / macOS でビルドした版を使ってください。

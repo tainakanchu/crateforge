@@ -116,6 +116,167 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  # === Windows ARM64 (aarch64-pc-windows-msvc): x64 ランナーでクロスビルド ===
+  # 配布物は NSIS セットアップ + ポータブル zip のみ（MSI は作らない: Tauri の WiX (MSI) は
+  # ARM64 に対応しないため）。x64 の成果物・ファイル名は上の `build` ジョブのまま変えない。
+  # 素の crateforge.exe は Release に載せない（x64 の crateforge.exe とファイル名が衝突し、
+  # release ジョブが basename で平坦にアップロードするため）。exe はポータブル zip に入っている。
+  # アプリ内アップデータ (src-tauri/src/updater) は資産名の `arm64` で自分のアーキの資産を選ぶ。
+  build-windows-arm64:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Rust
+        # master ブランチの SHA に固定し、toolchain は入力で指定する (README 推奨形)。
+        # @stable ブランチの commit は master の履歴外で GC され得るため SHA 固定に使わない。
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: aarch64-pc-windows-msvc
+
+      # ring (rustls の暗号) は aarch64-pc-windows-msvc の C コードを cl.exe ではなく clang で
+      # コンパイルする (ring の build.rs が `clang` を呼ぶ)。ランナー同梱の LLVM を PATH に通す。
+      # rusqlite (bundled) / zstd などの C は cc クレートが VS の ARM64 クロスツールでビルドする。
+      - name: Ensure clang is on PATH (ring on ARM64)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command clang -ErrorAction SilentlyContinue)) {
+            $llvm = "C:\Program Files\LLVM\bin"
+            if (-not (Test-Path "$llvm\clang.exe")) { throw "clang not found (needed by ring for aarch64-pc-windows-msvc)" }
+            Add-Content -Path $env:GITHUB_PATH -Value $llvm
+            $env:PATH = "$llvm;$env:PATH"
+          }
+          clang --version
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri
+
+      - name: Install JS deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Frontend typecheck
+        run: pnpm typecheck
+
+      - name: Tauri build (release, ARM64, NSIS only)
+        run: pnpm tauri build --target aarch64-pc-windows-msvc --bundles nsis
+        env:
+          CARGO_TERM_COLOR: always
+
+      # x64 と同じ中身 (exe + portable.txt)。zip に入れる前に、exe が本当に ARM64 の PE か確かめる
+      # (クロスビルドの取り違えで x64 の exe を arm64 の名前で配らないため)。
+      - name: Create portable zip
+        shell: pwsh
+        run: |
+          $ver = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $exe = "src-tauri/target/aarch64-pc-windows-msvc/release/crateforge.exe"
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $exe).Path)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          Write-Host ("PE machine: 0x{0:X4}" -f $machine)
+          if ($machine -ne 0xAA64) { throw ("crateforge.exe is not ARM64 (machine 0x{0:X4})" -f $machine) }
+          $dir = "portable_pkg"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item $exe "$dir/crateforge.exe" -Force
+          Set-Content -Path "$dir/portable.txt" -Encoding utf8 -Value @(
+            "Crateforge (portable)",
+            "",
+            "Keep crateforge.exe and portable.txt together in the same folder.",
+            "In-app updates replace this exe directly (no installer needed).",
+            "ffmpeg is fetched on first conversion and kept across updates."
+          )
+          $zip = "Crateforge_${ver}_arm64_portable.zip"
+          Compress-Archive -Path "$dir/*" -DestinationPath $zip -Force
+          Write-Host "Created $zip"
+
+      - name: Show built artifacts
+        shell: pwsh
+        run: |
+          Write-Host "=== Standalone exe (not uploaded) ==="
+          Get-ChildItem src-tauri\target\aarch64-pc-windows-msvc\release\*.exe | Format-Table Name, Length
+          Write-Host "=== Portable zip ==="
+          Get-ChildItem Crateforge_*_arm64_portable.zip -ErrorAction SilentlyContinue | Format-Table Name, Length
+          Write-Host "=== NSIS ==="
+          Get-ChildItem -Recurse src-tauri\target\aarch64-pc-windows-msvc\release\bundle\nsis\*.exe -ErrorAction SilentlyContinue | Format-Table Name, Length
+
+      - name: Upload portable zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: crateforge-windows-arm64-portable
+          path: Crateforge_*_arm64_portable.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: crateforge-windows-arm64-installer
+          path: src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  # === Windows ARM64 のスモークテスト: 実機 (windows-11-arm ランナー) で起動を確認する ===
+  # クロスビルドした exe が ARM64 の PE であること、起動して 10 秒後も生きていること
+  # (= 起動直後に DLL 解決などで落ちないこと) を確かめる。UI の操作はしない。
+  # 失敗しても desktop Release 全体は止めない。release ジョブがこのジョブの成功時だけ
+  # ARM64 の資産を載せる (ARM64 ユーザーのアップデータは x64 の資産にフォールバックする)。
+  smoke-windows-arm64:
+    needs: build-windows-arm64
+    runs-on: windows-11-arm
+    timeout-minutes: 15
+
+    steps:
+      - name: Download ARM64 portable zip
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: crateforge-windows-arm64-portable
+          path: arm64-portable
+
+      - name: Extract and check PE machine (ARM64)
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem arm64-portable\Crateforge_*_arm64_portable.zip | Select-Object -First 1
+          if (-not $zip) { throw "portable zip not found" }
+          Expand-Archive -Path $zip.FullName -DestinationPath app -Force
+          if (-not (Test-Path app\portable.txt)) { throw "portable.txt missing from the zip" }
+          $exe = (Resolve-Path app\crateforge.exe).Path
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          if ([System.Text.Encoding]::ASCII.GetString($bytes, $pe, 4) -ne "PE`0`0") { throw "not a PE file" }
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          Write-Host ("PE machine: 0x{0:X4}" -f $machine)
+          if ($machine -ne 0xAA64) { throw ("expected ARM64 (0xAA64), got 0x{0:X4}" -f $machine) }
+          Write-Host "Runner arch: $env:PROCESSOR_ARCHITECTURE"
+
+      # 起動して 10 秒後も終了していなければ OK とし、強制終了する。起動直後のクラッシュ
+      # (DLL 不足・アーキ違い) を検出するのが目的で、ウィンドウの表示内容は見ない。
+      - name: Launch and check it stays alive
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path app\crateforge.exe).Path
+          $p = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) {
+            throw ("crateforge.exe exited within 10s (exit code {0})" -f $p.ExitCode)
+          }
+          Write-Host "crateforge.exe is running (pid $($p.Id)); stopping it."
+          Stop-Process -Id $p.Id -Force
+          Get-Process -Name msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
   # === Linux: AppImage + deb（手動 DL 用。アプリ内自動更新は Windows 専用のまま）===
   build-linux:
     runs-on: ubuntu-22.04
@@ -325,10 +486,13 @@ jobs:
   # でも落とせない」状態を一瞬見てしまう。全ビルドの完了を待ち、かつ Windows ビルド
   # (アップデータが参照する portable zip / exe を生成) が成功していることを必須にして、
   # 全 OS のアセットを揃えてから 1 回だけ Release を作成する。
-  # always() なので macOS / Linux が失敗しても Windows さえ通れば公開する
-  # (これらは手動 DL 用で、アプリ内アップデータには影響しないため)。
+  # always() なので macOS / Linux / Windows ARM64 が失敗しても Windows (x64) さえ通れば公開する
+  # (macOS / Linux は手動 DL 用で、アプリ内アップデータには影響しない。ARM64 の資産が無い
+  # Release では、ARM64 版のアップデータは x64 の資産にフォールバックする)。
+  # ARM64 の資産は、ビルドに加えて実機スモークテスト (smoke-windows-arm64) が通ったときだけ載せる。
+  # workflow_dispatch (手動実行) はビルドとスモークテストだけを行う dry run で、Release は作らない。
   release:
-    needs: [build, build-linux, build-macos]
+    needs: [build, build-linux, build-macos, build-windows-arm64, smoke-windows-arm64]
     if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
@@ -343,6 +507,16 @@ jobs:
         with:
           pattern: crateforge-*
           path: release-assets
+
+      # ARM64 のビルドは通ったが実機スモークテストが通らなかった (失敗・スキップ) ときは、
+      # ARM64 の資産を載せない。壊れた ARM64 版を配るより、x64 版 (エミュレーションで動く) に
+      # フォールバックさせるほうが安全なため。
+      - name: Drop ARM64 assets unless the smoke test passed
+        if: ${{ needs.smoke-windows-arm64.result != 'success' }}
+        run: |
+          echo "::warning::smoke-windows-arm64 result: ${{ needs.smoke-windows-arm64.result }} — ARM64 assets are not published"
+          rm -rf release-assets/crateforge-windows-arm64-*
+          ls -la release-assets
 
       # macOS .app / Linux AppImage に同梱している libdiscid (LGPL-2.1-or-later) の
       # 「対応するソース」を、バイナリと同じ場所 (この Release) から入手できるようにする
