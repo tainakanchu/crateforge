@@ -113,6 +113,14 @@ const STALE_LOCK: Duration = Duration::from_secs(15 * 60);
 /// 同時に 1 つだけダウンロードする。
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
 
+/// ARM64 Windows ビルドがダウンロードする rbx-cli のターゲット。
+///
+/// TODO(rbx-cli ARM64): rbx-cli 0.2.0 には ARM64 Windows (`aarch64-pc-windows-msvc`) のアセットが
+/// 無いので、当面は x64 版を Windows on Arm の x64 エミュレーションで動かす。ARM64 のアセットを
+/// 出す rbx-cli を [`RBX_CLI_VERSION`] に固定したら、この値を `"aarch64-pc-windows-msvc"` に変え、
+/// [`RELEASE_TARGETS`] と [`PINNED_SHA256`] にも同じターゲットを足す (揃っていないとテストが落ちる)。
+const WINDOWS_ARM64_TARGET: &str = "x86_64-pc-windows-msvc";
+
 /// このビルドのターゲットに対応する Release のターゲット名 (release.yml のマトリクス)。
 pub fn target_triple() -> Option<&'static str> {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
@@ -121,6 +129,8 @@ pub fn target_triple() -> Option<&'static str> {
         Some("x86_64-apple-darwin")
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         Some("x86_64-pc-windows-msvc")
+    } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+        Some(WINDOWS_ARM64_TARGET)
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Some("x86_64-unknown-linux-gnu")
     } else {
@@ -833,6 +843,8 @@ mod tests {
             RELEASE_TARGETS.len(),
             "stale pins for an old version?"
         );
+        // ARM64 Windows が取りに行くターゲットも表に含まれる (= 固定ハッシュがある)。
+        assert!(RELEASE_TARGETS.contains(&WINDOWS_ARM64_TARGET));
         // このビルドのターゲットも表に含まれる。
         if let Some(t) = target_triple() {
             assert!(RELEASE_TARGETS.contains(&t));

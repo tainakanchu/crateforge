@@ -71,29 +71,87 @@ fn body_requires_installer(body: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+/// Windows ビルドのアーキテクチャ（アップデートで取る資産の選別に使う）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WinArch {
+    X64,
+    Arm64,
+}
+
+impl WinArch {
+    /// このビルドのアーキテクチャ。
+    fn current() -> Self {
+        if cfg!(target_arch = "aarch64") {
+            WinArch::Arm64
+        } else {
+            WinArch::X64
+        }
+    }
+}
+
+/// 資産名からアーキテクチャを判定する。`arm64` / `aarch64` を含めば ARM64、
+/// それ以外（`x64` / `x86_64` / `amd64`、またはアーキ表記なしの旧来の `crateforge.exe` 等）は x64。
+fn asset_arch(name: &str) -> WinArch {
+    let n = name.to_lowercase();
+    if n.contains("arm64") || n.contains("aarch64") {
+        WinArch::Arm64
+    } else {
+        WinArch::X64
+    }
+}
+
+/// Windows 向けの配布物か（portable zip / インストーラ / exe）。
+/// macOS の `*_aarch64.dmg` などを「ARM64 の Windows 資産あり」と数えないために使う。
+fn is_windows_asset(name: &str) -> bool {
+    let n = name.to_lowercase();
+    is_portable_zip_url(&n) || n.ends_with(".exe") || n.ends_with(".msi")
+}
+
 /// Windows 向けの資産選択（純粋関数・クロスプラットフォームでテスト可能）。
-/// ポータブル運用、または installer 必須でない通常更新は `*_portable.zip` を優先
-/// （= その場で exe 差し替え・インストーラ不要）。zip が無い / installer 必須なら
+///
+/// まず `arch` に一致する資産だけから選ぶ。x64 ビルドは ARM64 の資産を決して選ばない。
+/// ARM64 ビルドは ARM64 の資産を優先し、Release に ARM64 の Windows 資産が 1 つも無い
+/// （ARM64 ビルドを出す前の古い版）ときだけ x64 の資産にフォールバックする（エミュレーションで動く）。
+///
+/// 同じアーキの中では、ポータブル運用、または installer 必須でない通常更新は `*_portable.zip`
+/// を優先（= その場で exe 差し替え・インストーラ不要）。zip が無い / installer 必須なら
 /// インストーラ（setup → msi → exe）にフォールバックする。
 fn select_windows_asset(
     assets: &[GhAsset],
+    arch: WinArch,
     portable: bool,
     installer_required: bool,
 ) -> Option<String> {
-    let find = |pred: &dyn Fn(&str) -> bool| {
-        assets
-            .iter()
-            .find(|a| pred(&a.name.to_lowercase()))
-            .map(|a| a.browser_download_url.clone())
+    let select_in = |want: WinArch| {
+        let find = |pred: &dyn Fn(&str) -> bool| {
+            assets
+                .iter()
+                .filter(|a| asset_arch(&a.name) == want)
+                .find(|a| pred(&a.name.to_lowercase()))
+                .map(|a| a.browser_download_url.clone())
+        };
+        if portable || !installer_required {
+            if let Some(z) = find(&|n| is_portable_zip_url(n)) {
+                return Some(z);
+            }
+        }
+        find(&|n| n.ends_with("-setup.exe") || n.contains("setup"))
+            .or_else(|| find(&|n| n.ends_with(".msi")))
+            .or_else(|| find(&|n| n.ends_with(".exe")))
     };
-    if portable || !installer_required {
-        if let Some(z) = find(&|n| is_portable_zip_url(n)) {
-            return Some(z);
+    match arch {
+        WinArch::X64 => select_in(WinArch::X64),
+        WinArch::Arm64 => {
+            let has_arm64 = assets
+                .iter()
+                .any(|a| asset_arch(&a.name) == WinArch::Arm64 && is_windows_asset(&a.name));
+            if has_arm64 {
+                select_in(WinArch::Arm64)
+            } else {
+                select_in(WinArch::X64)
+            }
         }
     }
-    find(&|n| n.ends_with("-setup.exe") || n.contains("setup"))
-        .or_else(|| find(&|n| n.ends_with(".msi")))
-        .or_else(|| find(&|n| n.ends_with(".exe")))
 }
 
 /// この OS 向けのダウンロード資産を選ぶ。Windows のみ対応。
@@ -101,7 +159,7 @@ fn pick_asset(assets: &[GhAsset], portable: bool, installer_required: bool) -> O
     if !cfg!(target_os = "windows") {
         return None;
     }
-    select_windows_asset(assets, portable, installer_required)
+    select_windows_asset(assets, WinArch::current(), portable, installer_required)
 }
 
 pub async fn check_for_update() -> Result<UpdateInfo, String> {
@@ -370,7 +428,7 @@ mod tests {
             asset("Crateforge_0.6.3_x64_portable.zip"),
             asset("Crateforge_0.6.3_x64_en-US.msi"),
         ];
-        let url = select_windows_asset(&assets, false, false).unwrap();
+        let url = select_windows_asset(&assets, WinArch::X64, false, false).unwrap();
         assert!(url.ends_with("_portable.zip"), "got {url}");
     }
 
@@ -380,7 +438,7 @@ mod tests {
             asset("Crateforge_0.6.3_x64-setup.exe"),
             asset("Crateforge_0.6.3_x64_portable.zip"),
         ];
-        let url = select_windows_asset(&assets, false, true).unwrap();
+        let url = select_windows_asset(&assets, WinArch::X64, false, true).unwrap();
         assert!(url.contains("setup"), "got {url}");
     }
 
@@ -390,7 +448,7 @@ mod tests {
             asset("Crateforge_0.6.3_x64-setup.exe"),
             asset("Crateforge_0.6.3_x64_portable.zip"),
         ];
-        let url = select_windows_asset(&assets, true, true).unwrap();
+        let url = select_windows_asset(&assets, WinArch::X64, true, true).unwrap();
         assert!(url.ends_with("_portable.zip"), "got {url}");
     }
 
@@ -400,8 +458,156 @@ mod tests {
             asset("Crateforge_0.6.3_x64-setup.exe"),
             asset("Crateforge_0.6.3_x64_en-US.msi"),
         ];
-        let url = select_windows_asset(&assets, false, false).unwrap();
+        let url = select_windows_asset(&assets, WinArch::X64, false, false).unwrap();
         assert!(url.contains("setup"), "got {url}");
+    }
+
+    /// v0.24 以降の Release に並ぶ Windows 資産（x64 + ARM64）と他 OS の資産。
+    fn both_arch_assets() -> Vec<GhAsset> {
+        vec![
+            asset("crateforge.exe"),
+            asset("Crateforge_0.24.0_arm64-setup.exe"),
+            asset("Crateforge_0.24.0_arm64_portable.zip"),
+            asset("Crateforge_0.24.0_x64-setup.exe"),
+            asset("Crateforge_0.24.0_x64_en-US.msi"),
+            asset("Crateforge_0.24.0_x64_portable.zip"),
+            asset("Crateforge_0.24.0_aarch64.dmg"),
+            asset("Crateforge_0.24.0_amd64.AppImage"),
+            asset("Crateforge_0.24.0_amd64.deb"),
+        ]
+    }
+
+    /// ARM64 ビルドを出す前の Release（x64 の Windows 資産のみ。macOS は aarch64）。
+    fn x64_only_assets() -> Vec<GhAsset> {
+        vec![
+            asset("crateforge.exe"),
+            asset("Crateforge_0.23.1_x64-setup.exe"),
+            asset("Crateforge_0.23.1_x64_en-US.msi"),
+            asset("Crateforge_0.23.1_x64_portable.zip"),
+            asset("Crateforge_0.23.1_aarch64.dmg"),
+        ]
+    }
+
+    fn pick(assets: &[GhAsset], arch: WinArch, portable: bool, installer_required: bool) -> String {
+        let url = select_windows_asset(assets, arch, portable, installer_required)
+            .unwrap_or_else(|| panic!("no asset for {arch:?}"));
+        url.rsplit('/').next().unwrap().to_string()
+    }
+
+    #[test]
+    fn asset_arch_is_classified_by_name() {
+        assert_eq!(
+            asset_arch("Crateforge_0.24.0_arm64_portable.zip"),
+            WinArch::Arm64
+        );
+        assert_eq!(
+            asset_arch("Crateforge_0.24.0_ARM64-setup.exe"),
+            WinArch::Arm64
+        );
+        assert_eq!(asset_arch("crateforge-aarch64.exe"), WinArch::Arm64);
+        assert_eq!(
+            asset_arch("Crateforge_0.24.0_x64_portable.zip"),
+            WinArch::X64
+        );
+        assert_eq!(asset_arch("crateforge-x86_64.exe"), WinArch::X64);
+        assert_eq!(asset_arch("crateforge-amd64.exe"), WinArch::X64);
+        // アーキ表記なしの旧来の資産は x64 とみなす。
+        assert_eq!(asset_arch("crateforge.exe"), WinArch::X64);
+    }
+
+    #[test]
+    fn x64_never_picks_arm64_assets() {
+        let assets = both_arch_assets();
+        assert_eq!(
+            pick(&assets, WinArch::X64, false, false),
+            "Crateforge_0.24.0_x64_portable.zip"
+        );
+        assert_eq!(
+            pick(&assets, WinArch::X64, true, true),
+            "Crateforge_0.24.0_x64_portable.zip"
+        );
+        assert_eq!(
+            pick(&assets, WinArch::X64, false, true),
+            "Crateforge_0.24.0_x64-setup.exe"
+        );
+    }
+
+    #[test]
+    fn x64_installer_path_skips_arm64_even_when_listed_first() {
+        // arm64 の zip / setup が先に並んでいても x64 を選ぶ。
+        let assets = vec![
+            asset("Crateforge_0.24.0_arm64_portable.zip"),
+            asset("Crateforge_0.24.0_arm64-setup.exe"),
+            asset("Crateforge_0.24.0_x64-setup.exe"),
+            asset("Crateforge_0.24.0_x64_en-US.msi"),
+        ];
+        // x64 の zip が無ければ x64 のインストーラ（arm64 の zip には行かない）。
+        assert_eq!(
+            pick(&assets, WinArch::X64, false, false),
+            "Crateforge_0.24.0_x64-setup.exe"
+        );
+        assert_eq!(
+            pick(&assets, WinArch::X64, false, true),
+            "Crateforge_0.24.0_x64-setup.exe"
+        );
+    }
+
+    #[test]
+    fn arm64_prefers_arm64_assets() {
+        let assets = both_arch_assets();
+        assert_eq!(
+            pick(&assets, WinArch::Arm64, false, false),
+            "Crateforge_0.24.0_arm64_portable.zip"
+        );
+        assert_eq!(
+            pick(&assets, WinArch::Arm64, true, true),
+            "Crateforge_0.24.0_arm64_portable.zip"
+        );
+        assert_eq!(
+            pick(&assets, WinArch::Arm64, false, true),
+            "Crateforge_0.24.0_arm64-setup.exe"
+        );
+    }
+
+    #[test]
+    fn arm64_falls_back_to_x64_when_release_has_no_arm64_windows_assets() {
+        // macOS の aarch64.dmg は「ARM64 の Windows 資産」に数えない。
+        let assets = x64_only_assets();
+        assert_eq!(
+            pick(&assets, WinArch::Arm64, false, false),
+            "Crateforge_0.23.1_x64_portable.zip"
+        );
+        assert_eq!(
+            pick(&assets, WinArch::Arm64, true, false),
+            "Crateforge_0.23.1_x64_portable.zip"
+        );
+        assert_eq!(
+            pick(&assets, WinArch::Arm64, false, true),
+            "Crateforge_0.23.1_x64-setup.exe"
+        );
+    }
+
+    #[test]
+    fn installer_required_stays_within_arch() {
+        let assets = both_arch_assets();
+        assert_eq!(
+            pick(&assets, WinArch::X64, false, true),
+            "Crateforge_0.24.0_x64-setup.exe"
+        );
+        assert_eq!(
+            pick(&assets, WinArch::Arm64, false, true),
+            "Crateforge_0.24.0_arm64-setup.exe"
+        );
+        // ARM64 に MSI は無い。setup が欠けた版でも x64 の MSI には行かない。
+        let no_arm64_setup = vec![
+            asset("Crateforge_0.24.0_arm64_portable.zip"),
+            asset("Crateforge_0.24.0_x64-setup.exe"),
+            asset("Crateforge_0.24.0_x64_en-US.msi"),
+        ];
+        assert_eq!(
+            select_windows_asset(&no_arm64_setup, WinArch::Arm64, false, true),
+            None
+        );
     }
 
     #[test]

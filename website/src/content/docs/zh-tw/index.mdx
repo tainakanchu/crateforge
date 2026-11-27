@@ -59,7 +59,7 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 ## 支援的作業系統
 
-- **Windows** — `.exe` / 可攜式 `.zip` / `.msi` / 安裝程式 `.exe`。支援應用程式內自動更新（就地替換 exe）。
+- **Windows** — x64：`.exe` / 可攜式 `.zip` / `.msi` / 安裝程式 `.exe`；ARM64：可攜式 `.zip` / 安裝程式 `.exe`。支援應用程式內自動更新（就地替換 exe，並選擇相同架構的版本）。
 - **macOS** — **未簽署** 的 `.dmg`（Apple Silicon 原生）。首次啟動需要繞過 Gatekeeper。
 - **Linux** — `.AppImage`（單一檔案）與 `.deb`。
 

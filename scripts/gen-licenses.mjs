@@ -194,7 +194,7 @@ function libdiscidEntry() {
 const RUNTIME_EXTRAS = [
   libdiscidEntry(),
   {
-    name: "FFmpeg (BtbN win64 GPL build)",
+    name: "FFmpeg (BtbN win64 / winarm64 GPL build)",
     version: "runtime",
     kind: "runtime",
     license: "GPL-3.0-or-later",
@@ -202,7 +202,8 @@ const RUNTIME_EXTRAS = [
     text:
       "FFmpeg は本アプリには同梱されません。MP3/FLAC/ALAC への変換や CD 取り込みの\n" +
       "エンコード時に、外部プロセスとして CLI を呼び出すために使用します。バイナリは\n" +
-      "BtbN による公式 win64 ビルド（GPL）を上流から自動ダウンロードし、ユーザーの\n" +
+      "BtbN による公式 win64 / winarm64 ビルド（GPL、アプリのアーキに合わせる）を上流から\n" +
+      "自動ダウンロードし、ユーザーの\n" +
       "ローカル領域に保存します（本アプリの配布物には含めず、リンクもしません = mere\n" +
       "aggregation）。FFmpeg は GPL-3.0-or-later の下で配布されています。ソースおよび\n" +
       "ライセンス全文: https://www.ffmpeg.org/  /  https://www.gnu.org/licenses/gpl-3.0.html",

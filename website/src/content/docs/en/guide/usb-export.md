@@ -107,7 +107,7 @@ The export itself is done by the external tool **[rbx-cli](https://github.com/ta
 - If rbx-cli is not installed yet, **download** it from the export dialog (or **Settings → USB 書き出し (rbx-cli)**). It is fetched from the upstream GitHub release, its SHA-256 checksum is verified, and it is saved in the app's data folder.
 - **rbx-cli 0.2.0 or newer** is required (if you downloaded 0.1.x before, download it again when the dialog asks).
 - rbx-cli is looked up as "path set in Settings → downloaded copy", and only a version speaking a supported protocol with the required features is used (for safety, an `rbx-cli` on PATH is never picked up on its own). To use your own build, set it via **"パスを指定…"** (Set path…) in Settings.
-- Release binaries exist for Windows (x86-64), macOS (Apple silicon / Intel) and Linux (x86-64, glibc 2.39 or newer).
+- Release binaries exist for Windows (x86-64), macOS (Apple silicon / Intel) and Linux (x86-64, glibc 2.39 or newer). For now, Crateforge for Windows on ARM64 downloads the x86-64 rbx-cli and runs it under emulation.
 
 :::note
 rbx-cli is GPL-2.0-or-later software (its release binaries include an LGPL-3.0 component, so they are effectively GPL-3.0). Crateforge (MIT) does not link it; it only runs it as an external command.

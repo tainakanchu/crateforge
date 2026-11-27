@@ -59,7 +59,7 @@
 ### 1.6 その他
 - `expo-crateforge-mdns`（`clients/packages/expo-crateforge-mdns`）: `expo-module.config.json` + `android/build.gradle`（`expo-module-gradle-plugin`）+ `src/index.ts` で `requireOptionalNativeModule`。mobile/tv は `"workspace:*"` 依存で autolinking。これを雛形にする。
 - Expo config plugin の mod 実行順: **plugins 配列で後に書いたものが先に実行される**（`withMod` は自 action → `nextMod`）。
-- `src-tauri/src/updater` は `releases/latest` の asset を Windows 用に `_portable.zip`→`setup`→`.msi`→`.exe` で選ぶ。`*.apk` / `*.apk.sha256` はどれにもマッチしない。body の `[installer-required]` マーカーのみ参照。
+- `src-tauri/src/updater` は `releases/latest` の asset を Windows 用に、自分のアーキ (x64 / ARM64、資産名の `arm64` / `aarch64` で判定) の中から `_portable.zip`→`setup`→`.msi`→`.exe` で選ぶ。`*.apk` / `*.apk.sha256` はどれにもマッチしない。body の `[installer-required]` マーカーのみ参照。
 
 ---
 

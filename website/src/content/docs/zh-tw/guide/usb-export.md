@@ -107,7 +107,7 @@ Traktor 與 rekordbox / CDJ 對 MP3 解碼起點的處理不同，**MP3 的 Cue 
 - 尚未安裝 rbx-cli 時，可在匯出對話框（或 **設定 → USB 書き出し (rbx-cli)**）中 **下載**。會從上游的 GitHub Release 取得，確認 SHA-256 校驗碼後儲存到應用程式的資料資料夾。
 - 需要 **rbx-cli 0.2.0 以上**（若先前下載的是 0.1.x，請依對話框的提示重新取得）。
 - rbx-cli 依「設定中指定的路徑 → 已下載的版本」順序尋找，且只使用支援的協定版本與所需功能的版本（為了安全，不會自行使用 PATH 上的 `rbx-cli`）。若要使用自行建置的 rbx-cli，請透過設定中的 **「パスを指定…」**（指定路徑…）指定。
-- 發行的執行檔支援 Windows（x86-64）/ macOS（Apple Silicon / Intel）/ Linux（x86-64，glibc 2.39 以上）。
+- 發行的執行檔支援 Windows（x86-64）/ macOS（Apple Silicon / Intel）/ Linux（x86-64，glibc 2.39 以上）。ARM64 版 Windows 的 Crateforge 目前會下載 x86-64 版的 rbx-cli 並以模擬方式執行。
 
 :::note
 rbx-cli 為 GPL-2.0-or-later 授權的軟體（發行的執行檔含有 LGPL-3.0 的元件，因此實質上為 GPL-3.0）。Crateforge（MIT）不會連結它，只會以外部指令呼叫。

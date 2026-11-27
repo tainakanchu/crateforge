@@ -4,7 +4,9 @@
 //!   1. アプリのキャッシュ  (`<app_local_data>/bin/ffmpeg[.exe]`)  ← 自動DLの保存先
 //!   2. 旧バンドル resource (`<resource_dir>/ffmpeg.exe`)          ← 旧インストール互換
 //!   3. PATH 上の `ffmpeg`
-//! いずれも無ければ Windows のみ BtbN の win64 GPL ビルドを取得してキャッシュへ置く。
+//!
+//! いずれも無ければ Windows のみ BtbN の GPL ビルド（x64 は win64、ARM64 は winarm64）を
+//! 取得してキャッシュへ置く。
 //!
 //! ライセンス: ffmpeg は CLI 経由で別プロセス起動しているだけ（リンクしていない）なので
 //! 本体のライセンスには影響しない。自動DLはユーザーが上流(BtbN)から取得する形であり、
@@ -24,10 +26,14 @@ pub const EXE: &str = "ffmpeg.exe";
 #[cfg(not(target_os = "windows"))]
 pub const EXE: &str = "ffmpeg";
 
-/// BtbN の最新 win64 GPL ビルド（zip 内に `.../bin/ffmpeg.exe`）。
-#[cfg(target_os = "windows")]
+/// BtbN の最新 GPL ビルド（zip 内に `ffmpeg-master-latest-<arch>-gpl/bin/ffmpeg.exe`）。
+/// アプリのアーキに合わせる: x64 は win64、ARM64 は winarm64（エミュレーションさせない）。
+#[cfg(all(target_os = "windows", not(target_arch = "aarch64")))]
 const DOWNLOAD_URL: &str =
     "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+const DOWNLOAD_URL: &str =
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-winarm64-gpl.zip";
 
 /// 設定画面向けの ffmpeg の状態。
 #[derive(Serialize, Clone)]
@@ -203,6 +209,7 @@ pub async fn download(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// zip から `.../bin/ffmpeg.exe` だけを取り出して `dest` に書き出す。
+/// 最上位フォルダ名（`...-win64-gpl` / `...-winarm64-gpl`）には依存しない。
 #[cfg(target_os = "windows")]
 fn extract_ffmpeg(zip_bytes: &[u8], dest: &std::path::Path) -> Result<(), String> {
     use std::io::{Read, Write};

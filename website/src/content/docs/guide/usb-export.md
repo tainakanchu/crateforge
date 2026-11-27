@@ -107,7 +107,7 @@ USB への書き出しは、外部ツール **[rbx-cli](https://github.com/taina
 - rbx-cli がまだ無いときは、書き出しダイアログ（または **設定 → USB 書き出し (rbx-cli)**）の **ダウンロード** で、上流の GitHub Release から取得します。チェックサム（SHA-256）を確認してから、アプリのデータフォルダに保存します。
 - **rbx-cli 0.2.0 以降** が必要です（以前の 0.1.x をダウンロード済みの場合は、ダイアログの案内に従って取得し直してください）。
 - 使われる rbx-cli は「設定で指定したパス → ダウンロード済みのもの」の順に探し、対応するプロトコル・機能を持つものだけを使います（安全のため、PATH 上の `rbx-cli` を勝手に使うことはありません）。自分でビルドした rbx-cli は、設定の **「パスを指定…」** で使えます。
-- 配布バイナリは Windows（x86-64）/ macOS（Apple Silicon / Intel）/ Linux（x86-64、glibc 2.39 以降）向けです。
+- 配布バイナリは Windows（x86-64）/ macOS（Apple Silicon / Intel）/ Linux（x86-64、glibc 2.39 以降）向けです。ARM64 版 Windows の Crateforge は、当面 x86-64 版の rbx-cli をダウンロードしてエミュレーションで動かします。
 
 :::note
 rbx-cli は GPL-2.0-or-later（配布バイナリは LGPL-3.0 の部品を含むため実質 GPL-3.0）のソフトウェアです。Crateforge（MIT）とはリンクせず、外部コマンドとして呼び出すだけです。

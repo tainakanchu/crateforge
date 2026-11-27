@@ -50,7 +50,7 @@ const SECTIONS: { key: Section; label: string; icon: string }[] = [
 
 // ライセンス表記（CLI 経由で別プロセス起動している ffmpeg と、主な OSS 依存）。
 const CREDITS: { name: string; license: string; note?: string }[] = [
-  { name: "FFmpeg (BtbN win64 build)", license: "GPL-3.0", note: "変換時に外部プロセスとして利用。配布物には含めず上流から取得します。" },
+  { name: "FFmpeg (BtbN win64 / winarm64 build)", license: "GPL-3.0", note: "変換時に外部プロセスとして利用。配布物には含めず上流から取得します。" },
   { name: "rbx-cli (rbxport ベース)", license: "GPL-2.0-or-later", note: "USB 書き出し (CDJ / rekordbox 互換) に外部プロセスとして利用。配布物には含めず、必要時に上流の GitHub Release から取得します。" },
   { name: "Tauri", license: "MIT / Apache-2.0" },
   { name: "React / React DOM", license: "MIT" },
@@ -1134,7 +1134,7 @@ export function SettingsDialog({ onClose, initialSection = "general" }: Settings
                   <div className="settings-note">
                     <Icon name="info" size={14} />
                     <span>
-                      未検出のときは、<b>BtbN</b> の公式 win64 ビルド（GPL）を取得して
+                      未検出のときは、<b>BtbN</b> の公式ビルド（GPL。x64 は win64、ARM64 は winarm64）を取得して
                       <code> %LOCALAPPDATA%\\…\\bin </code> に保存します。アプリを更新しても消えません。
                     </span>
                   </div>

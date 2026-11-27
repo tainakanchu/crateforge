@@ -3,7 +3,7 @@ title: Installation
 description: Downloading Crateforge, first launch, in-app auto-update, and creating shortcuts.
 ---
 
-Crateforge supports Windows / macOS / Linux. The latest version is available from
+Crateforge supports Windows (x64 / ARM64) / macOS / Linux. The latest version is available from
 [Releases](https://github.com/tainakanchu/crateforge/releases/latest) on GitHub.
 
 > Screenshots to be added
@@ -12,11 +12,26 @@ Crateforge supports Windows / macOS / Linux. The latest version is available fro
 
 | OS | Distribution format | Notes |
 |---|---|---|
-| **Windows** | standalone `.exe` / portable `.zip` / `.msi` / setup `.exe` | Supports in-app auto-update |
+| **Windows (x64)** | standalone `.exe` / portable `.zip` / `.msi` / setup `.exe` | Supports in-app auto-update |
+| **Windows (ARM64)** | portable `.zip` / setup `.exe` (no `.msi`) | Supports in-app auto-update |
 | **macOS** | `.dmg` (Apple Silicon native) | **Unsigned**. The first launch requires bypassing Gatekeeper |
 | **Linux** | `.AppImage` (single file) / `.deb` | |
 
 ### Windows
+
+**Pick the file that matches your PC.** The architecture is part of the file name.
+
+| PC | Portable | Installer |
+|---|---|---|
+| Typical Windows PC (Intel / AMD, x64) | `Crateforge_<version>_x64_portable.zip` | `Crateforge_<version>_x64-setup.exe` / `Crateforge_<version>_x64_en-US.msi` |
+| Windows on ARM (Snapdragon Copilot+ PCs etc., ARM64) | `Crateforge_<version>_arm64_portable.zip` | `Crateforge_<version>_arm64-setup.exe` |
+
+- If you are not sure, check **Settings → System → About → System type** ("ARM-based processor" means ARM64).
+- **The `.msi` is x64-only.** On ARM64, use the setup `.exe` or the portable `.zip`.
+  The standalone `crateforge.exe` without `arm64` in its name is also the x64 build.
+- The x64 build also runs on ARM64 PCs under emulation, but the ARM64 build is faster.
+- The in-app updater automatically picks the file for **the same architecture as the build you are running** (an x64 install is never switched to ARM64, or vice versa).
+- The ARM64 build also downloads the ARM64 ffmpeg for conversion. rbx-cli (used for USB export) has no ARM64 build yet, so for now the x64 rbx-cli runs under emulation (see [USB export](../usb-export/)).
 
 - **Installer (setup `.exe` / `.msi`)** — a standard installation.
   Creating a **desktop shortcut from the installer is off by default** (enable it during installation if you want one).

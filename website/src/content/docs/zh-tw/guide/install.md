@@ -3,7 +3,7 @@ title: 安裝
 description: 關於 Crateforge 的下載、首次啟動、應用程式內自動更新與捷徑建立。
 ---
 
-Crateforge 支援 Windows / macOS / Linux。最新版可從 GitHub 的
+Crateforge 支援 Windows（x64 / ARM64）/ macOS / Linux。最新版可從 GitHub 的
 [Releases](https://github.com/tainakanchu/crateforge/releases/latest) 取得。
 
 > 截圖稍後補上
@@ -12,11 +12,26 @@ Crateforge 支援 Windows / macOS / Linux。最新版可從 GitHub 的
 
 | OS | 發佈形式 | 備註 |
 |---|---|---|
-| **Windows** | 單一 `.exe` / 可攜式 `.zip` / `.msi` / 安裝程式 `.exe` | 支援應用程式內自動更新 |
+| **Windows（x64）** | 單一 `.exe` / 可攜式 `.zip` / `.msi` / 安裝程式 `.exe` | 支援應用程式內自動更新 |
+| **Windows（ARM64）** | 可攜式 `.zip` / 安裝程式 `.exe`（無 `.msi`） | 支援應用程式內自動更新 |
 | **macOS** | `.dmg`（Apple Silicon 原生） | **未簽署**。首次需繞過 Gatekeeper |
 | **Linux** | `.AppImage`（單一檔案） / `.deb` | |
 
 ### Windows
+
+**請選擇符合您電腦的檔案。** 檔名中包含架構。
+
+| 電腦 | 可攜版 | 安裝版 |
+|---|---|---|
+| 一般的 Windows 電腦（Intel / AMD，x64） | `Crateforge_<版本>_x64_portable.zip` | `Crateforge_<版本>_x64-setup.exe` / `Crateforge_<版本>_x64_en-US.msi` |
+| ARM 版 Windows（Snapdragon 的 Copilot+ PC 等，ARM64） | `Crateforge_<版本>_arm64_portable.zip` | `Crateforge_<版本>_arm64-setup.exe` |
+
+- 不確定時，請查看 **設定 → 系統 → 關於** 的「系統類型」（若顯示 ARM 架構的處理器即為 ARM64）。
+- **`.msi` 僅限 x64。** ARM64 請使用安裝程式 `.exe` 或可攜式 `.zip`。
+  檔名中沒有 `arm64` 的單一 `crateforge.exe` 也是 x64 版。
+- x64 版在 ARM64 電腦上也能透過模擬執行，但 ARM64 版較快。
+- 應用程式內更新會自動選擇 **與目前使用版本相同架構** 的檔案（x64 版不會被換成 ARM64 版，反之亦然）。
+- ARM64 版轉換用的 ffmpeg 也會自動取得 ARM64 版。USB 匯出使用的 rbx-cli 目前尚無 ARM64 版，因此暫時以模擬方式使用 x64 版（請參閱 [USB 匯出](../usb-export/)）。
 
 - **安裝版（安裝程式 `.exe` / `.msi`）** — 一般安裝方式。
   從安裝程式 **建立桌面捷徑的選項預設為關閉**（如有需要，請於安裝時啟用）。

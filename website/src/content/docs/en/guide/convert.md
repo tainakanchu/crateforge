@@ -55,7 +55,7 @@ It can also be run from the local API (`POST /api/convert-replace`; see [API ser
 Conversion **uses ffmpeg as an external process**.
 
 - **Windows** — ffmpeg is not bundled; it is **fetched and cached automatically on first use**.
-  The resolution order is: cache in `%LOCALAPPDATA%` → (legacy bundled resource) → PATH → if none, download from upstream (BtbN). ffmpeg is retained even when you update the app.
+  The resolution order is: cache in `%LOCALAPPDATA%` → (legacy bundled resource) → PATH → if none, download from upstream (BtbN; the win64 build for x64, the winarm64 build for ARM64). ffmpeg is retained even when you update the app.
 - **macOS / Linux** — uses the **ffmpeg on your PATH** (please install it separately).
 
 :::note

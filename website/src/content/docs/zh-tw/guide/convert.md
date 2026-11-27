@@ -55,7 +55,7 @@ description: 以 ffmpeg 轉換為 mp3 / aac / opus / flac / alac / wav，含位�
 轉換 **以外部程序的方式使用 ffmpeg**。
 
 - **Windows** — 不隨附 ffmpeg，而是 **在首次使用時自動取得並快取**。
-  解析順序為 `%LOCALAPPDATA%` 的快取 →（舊有的隨附資源）→ PATH → 都沒有時再從上游（BtbN）下載。即使更新應用程式，ffmpeg 也會保留。
+  解析順序為 `%LOCALAPPDATA%` 的快取 →（舊有的隨附資源）→ PATH → 都沒有時再從上游（BtbN）下載（x64 版為 win64、ARM64 版為 winarm64 的組建）。即使更新應用程式，ffmpeg 也會保留。
 - **macOS / Linux** — 使用 **PATH 上的 ffmpeg**（請另行安裝）。
 
 :::note

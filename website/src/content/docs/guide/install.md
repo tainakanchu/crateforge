@@ -3,7 +3,7 @@ title: インストール
 description: Crateforge のダウンロード・初回起動・アプリ内自動アップデート・ショートカット作成について。
 ---
 
-Crateforge は Windows / macOS / Linux に対応しています。最新版は GitHub の
+Crateforge は Windows（x64 / ARM64）/ macOS / Linux に対応しています。最新版は GitHub の
 [Releases](https://github.com/tainakanchu/crateforge/releases/latest) から入手できます。
 
 > 画像は後日追加
@@ -12,11 +12,26 @@ Crateforge は Windows / macOS / Linux に対応しています。最新版は G
 
 | OS | 配布形態 | 備考 |
 |---|---|---|
-| **Windows** | 単体 `.exe` / ポータブル `.zip` / `.msi` / セットアップ `.exe` | アプリ内の自動更新に対応 |
+| **Windows（x64）** | 単体 `.exe` / ポータブル `.zip` / `.msi` / セットアップ `.exe` | アプリ内の自動更新に対応 |
+| **Windows（ARM64）** | ポータブル `.zip` / セットアップ `.exe`（`.msi` なし） | アプリ内の自動更新に対応 |
 | **macOS** | `.dmg`（Apple Silicon ネイティブ） | **未署名**。初回は Gatekeeper の回避が必要 |
 | **Linux** | `.AppImage`（単一ファイル） / `.deb` | |
 
 ### Windows
+
+**PC の種類に合ったファイルを選んでください。** ファイル名にアーキテクチャが入っています。
+
+| PC | ポータブル版 | インストーラ版 |
+|---|---|---|
+| 一般的な Windows PC（Intel / AMD、x64） | `Crateforge_<版>_x64_portable.zip` | `Crateforge_<版>_x64-setup.exe` / `Crateforge_<版>_x64_en-US.msi` |
+| ARM 版 Windows（Snapdragon の Copilot+ PC など、ARM64） | `Crateforge_<版>_arm64_portable.zip` | `Crateforge_<版>_arm64-setup.exe` |
+
+- どちらか分からないときは **設定 → システム → バージョン情報** の「システムの種類」を見てください（「ARM ベース プロセッサ」なら ARM64）。
+- **`.msi` は x64 専用** です。ARM64 版はセットアップ `.exe` かポータブル `.zip` を使ってください。
+  名前に `arm64` の付かない単体の `crateforge.exe` も x64 版です。
+- ARM64 の PC でも x64 版はエミュレーションで動きますが、ARM64 版のほうが高速です。
+- アプリ内アップデートは **今使っている版と同じアーキテクチャ** のファイルを自動で選びます（x64 版が ARM64 版に、またはその逆に入れ替わることはありません）。
+- ARM64 版では、変換用の ffmpeg も ARM64 版を自動取得します。USB 書き出しに使う rbx-cli は ARM64 版がまだ無いため、当面は x64 版をエミュレーションで使います（[USB 書き出し](../usb-export/)）。
 
 - **インストーラ版（セットアップ `.exe` / `.msi`）** — 通常のインストール。
   インストーラからの **デスクトップショートカット作成は既定でオフ** です（必要ならインストール時に有効化してください）。

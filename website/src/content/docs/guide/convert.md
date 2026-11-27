@@ -54,7 +54,7 @@ description: ffmpeg による mp3 / aac / opus / flac / alac / wav への変換�
 変換は **ffmpeg を外部プロセスとして利用** します。
 
 - **Windows** — ffmpeg は同梱せず、**初回利用時に自動取得＋キャッシュ** します。
-  解決順は `%LOCALAPPDATA%` のキャッシュ → （旧バージョンの同梱 resource）→ PATH → どれも無ければ上流（BtbN）からダウンロード。アプリを更新しても ffmpeg は保持されます。
+  解決順は `%LOCALAPPDATA%` のキャッシュ → （旧バージョンの同梱 resource）→ PATH → どれも無ければ上流（BtbN）からダウンロード（x64 版は win64、ARM64 版は winarm64 のビルド）。アプリを更新しても ffmpeg は保持されます。
 - **macOS / Linux** — **PATH 上の ffmpeg** を利用します（別途インストールしておいてください）。
 
 :::note

@@ -15,6 +15,9 @@
 - **デスクトップ**: Tauri 2 (Rust)
 - **バックエンド**: Rust + SQLite (WAL) / `rodio` (再生) / `lofty` (タグ解析) / `cdparanoia` + `flac` / `lame` / `ffmpeg` (リッピング/エンコード) / MusicBrainz + Cover Art Archive (CD メタデータ)
 - **対応 OS**: Linux / macOS / Windows (Windows は物理 CD リッピング不可)
+  - Windows は x64 と ARM64 (aarch64) の 2 アーキを配布する。x64 は単体 `.exe` / ポータブル `.zip` / `.msi` / NSIS セットアップ `.exe`、ARM64 は NSIS セットアップ `.exe` (`*_arm64-setup.exe`) とポータブル `.zip` (`*_arm64_portable.zip`) のみ (MSI は x64 専用、ARM64 の単体 `.exe` は Release に載せない)。
+  - アプリ内アップデータは自分のアーキの資産を選ぶ (資産名に `arm64` / `aarch64` を含むものが ARM64、それ以外は x64)。x64 版は ARM64 の資産を選ばない。ARM64 版は ARM64 の資産を優先し、ARM64 の資産が無い Release に限り x64 の資産 (エミュレーションで動く) にフォールバックする。ポータブル zip 優先 / `[installer-required]` でインストーラ、の規則は各アーキ内で同じ。
+  - ffmpeg の自動取得はアーキに合わせる (x64 は BtbN の win64、ARM64 は winarm64)。rbx-cli は ARM64 版の配布物が無いため、ARM64 でも当面は x64 版 (`x86_64-pc-windows-msvc`) をエミュレーションで使う。
 
 ### 1.3 ターゲットユーザー像
 - 数千〜数万曲の音楽ライブラリを iTunes 形式で保有しているユーザー
