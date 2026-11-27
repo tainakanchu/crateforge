@@ -5,7 +5,6 @@ name: Release (full build + GitHub Release)
 on:
   push:
     tags: ["v*"]
-    branches: ["claude/ecstatic-sagan-iqxvns"]  # TEMP: test run, revert before merge
   workflow_dispatch:
 
 permissions:
